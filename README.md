@@ -6,5 +6,5 @@ HiP (Hesperus is Phosphorus) is a tool that ...
 ## License
 HiP is released under the MIT license.
 
-## Refreneces
+## References
 HiP design and
