@@ -11,7 +11,7 @@ To use it, clone the repository, install required packages and run the Jupyter n
 git clone https://github.com/0xjet/hip.git
 cd hip
 pip install -r requirements.txt
-jupyter notebook hip_pipeline.ipynb´´
+jupyter notebook hip_pipeline.ipynb
 ```
 
 ## License
