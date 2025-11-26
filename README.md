@@ -5,7 +5,7 @@ HiP (Hesperus is Phosphorus) is a tool that produces clusters formed by the thre
 
 HiP uses Python 3.x and Jupyter notebooks (or JupyterLab) to process and normalize threat actor taxonomies and alias mappings. All required data is provided in the repository. It does require installing some dependencies, as listed in `requirements.txt`.
 
-To use it, clone the repository (make sure git LFS is installed and configured on your system), install required packages, and run the Jupyter notebook:
+To use it, clone the repository (make sure git LFS is installed and configured on your system), install the required packages, and run the Jupyter notebook:
 
 ```bash
 git clone https://github.com/0xjet/hip.git
