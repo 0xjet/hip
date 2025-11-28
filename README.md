@@ -20,4 +20,4 @@ HiP is released under the MIT license.
 ## References
 HiP design, analysis, and limitations are documented in the paper:
 
-* G. Roa, M. Suarez, J. Tapiador. [Hesperus is Phosphorus: Mapping Threat Actor Naming Taxonomies at Scale](foo), November 2025.
+* G. Roa, M. Suarez-Roman, J. Tapiador. [Hesperus is Phosphorus: Mapping Threat Actor Naming Taxonomies at Scale](foo), November 2025.
