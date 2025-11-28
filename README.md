@@ -1,5 +1,5 @@
 # HiP
-HiP (Hesperus is Phosphorus) is a tool that produces clusters formed by the threat actor names given to the same entity by different CTI vendors. HiP leverages public catalogs (taxonomies) of threat actor names and mappings among them.
+HiP (Hesperus is Phosphorus) is a tool that produces clusters formed by the threat actor names given to the same entity by different CTI vendors. HiP leverages public catalogs (taxonomies) of threat actor names and mappings among them. 
 
 ## How to use it
 
