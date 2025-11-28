@@ -1,0 +1,95 @@
+{
+    "id": "beaeee9e-738d-49ff-bb9c-3c5ada3eef83",
+    "created_at": "2023-01-12T15:00:24.126152Z",
+    "updated_at": "2025-03-27T02:09:18.563105Z",
+    "deleted_at": null,
+    "sha1_hash": "6ad2f3c54bc0440fc2324ce997ac1a47f7a5e3b0",
+    "title": "2021-09-19 - Discovering Linux ELF Beacon of Cobalt Strike Tool",
+    "authors": "",
+    "file_creation_date": "2022-05-28T00:37:43Z",
+    "file_modification_date": "2022-05-28T00:37:43Z",
+    "file_size": 1727177,
+    "plain_text": "# Discovering Linux ELF beacon of Cobalt Strike tool\n\n**[notes.netbytesec.com/2021/09/discovering-linux-elf-beacon-of-cobalt_18.html](https://notes.netbytesec.com/2021/09/discovering-linux-elf-beacon-of-cobalt_18.html)**\n\nFareed\n\nThis post was authored by Fareed.\n\n\n-----\n\n## Introduction\n\nCobalt Strike is a tool used for red teaming and penetration testing to demonstrate the cyber\nattack. Cobalt Strike is a commercial, full-featured, remote access tool that bills itself as\n\"adversary simulation software designed to execute targeted attacks and emulate the postexploitation actions of advanced threat actors\". Cobalt Strike’s interactive post-exploit\ncapabilities cover the full range of ATT&CK tactics, all executed within a single, integrated\nsystem.\n\nNowadays, real attackers and cyber threat actors have been used this tool a lot in their\noperations to conduct a cyber-attack against their target. Today, we see another evolution of\nCobalt Strike where the threat actor has developed a Linux version of a payload of Cobalt\nStrike where it gets 0 detection in the VirusTotal and remains stealthy in our client premises\nfor more than 3 months.\n\n## Graph flow\n\nFigure 1: Graph flow of the malware\n\nBased on figure 1, the malware has a simple function routine. The core function of this\nmalware is to make the beacon connection to the attacker Cobalt Strike server via DNS\nusing the Cobalt Strike Malleable C2 config embedded in the malware. The other interesting\npart when reversing this malware is how they decrypt strings and data in the heap and parse\nthose data to set up the DNS request.\n\n## Technical analysis findings\n\n### Initial assessment\n\nBased on the THOR scanner’s result given to the Netbytesec team, the hashes of the\nmalware are as follows:\n\n3db3e55b16a7b1b1afb970d5e77c5d98\nc5718ec198d13ef5e3f81cecd0811c98\n\nThe YARA rule that matched with the THOR scanner detection is\n“CobaltStrike_C2_Encoded_Config_Indicator” which creates the first bad indicator of this\n\n\n-----\n\nmalicious file.\nThe Netbytesec analyst try to run the malware in our malware analysis lab using Ubuntu\n20.04 OS but the malware giving an error related to library dependencies.\n\nTested on Ubuntu distro\n\nAfter verifying the infected server’s OS which is CentOS 7, the Netbytesec team runs the\nprogram in CentOS 7 to mimic the real infected infrastructure of the malware executed. As a\nresult, the malware successfully runs in CentOS 7 without any error unlike in the Ubuntu OS.\nThe Netbytesec team believes that the malware was customized to run only in RedHat\nDistribution as the Netbytesec experimenting to run the malware in Debian and Ubuntu and\ngive us the same error result.\n\nTested on CentOS 7\n\nOur first initial assessment is to check for any detection from the Anti-Virus engine in the\nVirusTotal as our client has uploaded the malware into the VirusTotal. The malware has zero\ndetection in VirusTotal as shown in figure 2 which is quite interesting to reverse this binary.\n\n\n-----\n\nFigure 2: VirusTotal result\n\nWhile in the Joe Sandbox, the file was detected as malicious with 48 scores per 100. In the\nsandbox result, the malware was detected as highly malicious only because of the YARA\nsignatures that detect Cobalt Strike C2 encoded profile config instead of malicious behavior\nactivity.\n\nFigure 3: Joe Sandbox result\n\n\n-----\n\nFigure 4: YARA signature in Joe Sandbox\n\nTo verify the Cobalt Strike C2 profile, the Netbytesec analyst manually analyzed the Linux\nprogram without depending only on the YARA signature as it can be false positive. The\nNetbytesec analyst parses the profile config to extract the information of the Cobalt Strike\nconfig. As shown in figure 5 below, the information about the Cobalt Strike C2 config profile\ncan be read include the C2 server DNS and other details.\n\nFigure 5: CS config information\n\n\n-----\n\nBased on figure 5, the beacon type of this malware will be deliver using DNS. Thus, DNS\nbeaconing will be performed when the malware is executed. Also, we can see the\n“PublicKey_MD5” value. Once the beacon is executed, the beacon then needs to\ncommunicate with the Team Server. Whenever a beacon checks in to the Cobalt Strike Team\nServer destination, it sends an encrypted metadata blob. The metadata blob is encrypted\nusing this RSA public key, extracted from the stager which is the malware. The other\ninteresting information about the config is how the data communication request headers\ninclude GET and POST requests between the infected machine and the Cobalt Strike team\nserver will be communicated after the malware run.\n\nThe malware used two C2 server domains which are update.microsoftkernel.com and\nupdate.microsofthk.com. Inspecting both domains showing that the domains resolved to IP\naddress 160.202.163.100 and last seen was in 2021-09-06. From the result above, the\nNetbytesec team conduct OSINT research on both domains and found a tweet about it from\nthe year 2019. Based on the tweet shown in the figure below, this is another strong indicator\nthat the author of the malware uses the Cobalt Strike tool as part of the cyberattack on our\nclient-server infrastructure.\n\nFigure 6: A tweet containing both C2 server domains\n\n### Reverse engineering analysis\n\nFocusing on the malware inner code itself, once the malware is executed, it will run in the\nbackground silently without giving any output on the screen as the first code of the main\nfunction of the malware is calling the daemon function at line 8 shown in the decompiler\nscreenshot below. (Most of the function has been renamed to ease our analysis).\n\n\n-----\n\nFigure 7: The first part of the main function\n\nAt the address 4035F3 (line 9), the malware will execute a subroutine renamed as\n“wrap_sys_getid” which will be used to get thread ID (TID) or the Process ID (PID) of the\nrunning malware. This called function will return the number of the TID and serve the number\ninto function “j_srand” to generate an integer number.\nOn the next line at the address 4035FF which is renamed as “wrap_decryption”, the malware\ncalls this subroutine function that will be used to decrypt and parse most of the encrypted\nstrings and data in the malware executable to be used to create network request to the\nattacker infrastructure. In figure 8 below, the decryption routine of the XOR encoded Cobalt\nStrike config using XOR key 0x69.\n\n\n-----\n\nFigure 8: Decryption algorithm of encoded CS config\n\nMoreover, in the function renamed as “wrap_decryption”, the malware also includes a\nfunction to read resolver configuration files which are used to configure DNS name servers in\nLinux OS.\n\n\n-----\n\nFigure 9: Read resolve.conf\n\nWhen debugging a part of “wrap_decryption”, there is a part where the program will parse\nout the C2 domains from the config allocated in memory previously explained. The parsed\nC2 domains is made at the line shown in Figures 10.\n\n\n-----\n\nFigure 10: Parsing the first C2 domain from config\n\nThe below figure shows some of the strings that have been decrypted and parsed in memory\nafter the function “wrap_wrap_decryption” finished execute. These strings did not appear if\nthe program are not running. Thus, dynamic analysis or execution is required to dump the\nstrings from the memory. These strings then will be used to build and create C2\ncommunication in a function renamed as “wrap_connection_c2” explain later.\n\n\n-----\n\nFigure 12: In-memory strings\n\nBesides that, another interesting function to investigate is a function renamed as\n“wrap_enumeration_and_createb64”. In the subroutine function, it will enumerate and get the\ninfected host’s information.\n\n\n-----\n\nFigure 13: Subroutine wrap_enumeration_and_createb64 decompiled code\n\nFor example, in the following figure, the malware tries to get the process ID and uname.\n\nFigure 14: Function getpid and wrap_uname get the call\n\nOther than that, the information that the malware enumerates is the PID of the process, IP\naddress of the host, UID, hostname, and kernel info. All this info will be appended and save\nin the heap. This collected host information will be encrypted using the public RSA key then\nencoded using base64. The construction of the base64 string in the malware is located at\nfunction address 0x40C53B.\n\n\n-----\n\nFigure 15: Base64 construction\n\nThe generation of the base64 is using the base64 BIO filter function from the OpenSSL\ncrypto library. This is a filter BIO that base64 encodes any data written through it and\ndecodes any data read through it. The base64 will be saved in the heap that will be used as\npart of communication in the DNS beaconing.\n\nThe last part of the malware’s core functionality is the C2 connection and sleep function\nshown in the red box as follows:\n\n\n-----\n\nFigure 16: While loop of the C2 beacon connection\n\nThe function “wrap_connection_c2” is a switch case that contains 6 cases. The most\nimportant and interesting case is case 2 where all the beacon connections are created and\nmake to communicate with the C2 server.\n\nFigure 17: Part of case 2 code\n\n\n-----\n\nIn the sub_40D440 subroutine function, the Netbytesec team analyst discovers the IP\naddress of the Cobalt Strike as it appends the IP address to the request header “Host: ”. As\nseen in the figure below, IP address 160.202.163.100 is matching with the PCAP\ncommunication. This IP address is matching with the previous OSINT research result on\nboth domains.\n\nFigure 18: IP address append to host\n\nOSINT research on this IP found that the IP has a historical record of the Cobalt Strike\nserver using port 80.\n\n\n-----\n\nFigure 19: https://github.com/fox-it/cobaltstrike-extraneous-space/blob/master/cobaltstrike\nservers.csv\n\nAlso, the passive DNS of the IP is matched with the DNS found early which are\n_microsoftkernel.com and microsofthk.com. The IP was also flagged as malicious which has_\ncommunicated with a malicious file recently.\n\nFigure 20: Virustotal result of the malicious IP\n\nFinally, the connection is officially create using the function BIO_s_connect(). This is a\nwrapper around the platform's TCP/IP socket connection routines. The connection is created\nand set up using the strings and data like URL and cookies append along with the GET\nrequest headers to complete the connection to the attacker infrastructure.\n\n\n-----\n\nFigure 21: Function BIO_s_connect called by the malware\n\n## DNS beaconing\n\nThe figure below shows the malware requesting tasks via DNS which response using the\nTXT channel.\n\nFigure 25: Pcap capture of the TXT query and response\n\nThe result of the TXT query is encoded in base64 and encrypted in AES contains the task\nfrom the Team Server. For example:\n\n\n-----\n\nFigure 26: Pcap capture of the TXT query and response\n\nAs explained from the CS blog, when Cobalt Strike’s DNS server gets the request, it checks\nif any tasks are available for that Beacon instance. If no tasks are available, it returns a\nresponse that tells Beacon to go to sleep. If a task is available, the Cobalt Strike DNS server\nreturns an IP address. The compromised system then connects to that IP address and\nmakes an HTTP GET request to download its tasks. The tasks are encrypted. That's why we\nsee there is HTTP GET request construction in the code. This is the hybrid communication\nmodel. The idea here is that DNS requests on a regular interval are less likely to get noticed\nthan, say, HTTP requests on a regular interval.\n\nTo track the compromise events, the NetByteSec Splunk analyst discovers that a few servers\nof our client's have made the DNS beaconing to the Cobalt Strike since April 2021.\n\n_Figure 27: Splunk detection on the IP_\n\n## Conclusion\n\n\n-----\n\nThe attacker has dropped their malicious software in the servers and run the malware. The\nmalware has the ability to run in the background and create a DNS beacon connection to the\nCobalt Strike C2 server hosted on IP 160.202.163.100. Before the malware is set up and\ncreates the connection, the malware will decrypt a lot of strings and data include Cobalt\nStrike config, and then parse and append it to the function that will make the connection\nfunction. Most of the findings of OSINT research of the found IP address and Domain tell that\nthese IOCs are positive belong to an attacker that is using the Cobalt Strike tool to conduct\nthe attack. The Netbytesec team believes that this cyber attack was conducted by an actor\nwho were able to tweak and port the Cobalt Strike payload to Linux's based version and\nremain stealthy after compromised our client.\n\n## Indicator of Compromises\n\n**IP address**\n\n160.202.163.100\n\n**Domains**\n\nmicrosoftkernel.com\nmicrosofthk.com\n\n**Subdomains**\n\nupdate.microsoftkernel.com\nupdate.microsofthk.com\n\n**Hash**\n\n3db3e55b16a7b1b1afb970d5e77c5d98\n\nc5718ec198d13ef5e3f81cecd0811c98\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-09-19 - Discovering Linux ELF Beacon of Cobalt Strike Tool.pdf"
+    ],
+    "report_names": [
+        "2021-09-19 - Discovering Linux ELF Beacon of Cobalt Strike Tool.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f809bfcb-b200-4988-80a8-be78ef6a52ef",
+            "created_at": "2023-01-06T13:46:39.186988Z",
+            "updated_at": "2025-03-27T02:00:03.016358Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "Adept Libra"
+            ],
+            "source_name": "MISPGALAXY:TeamTNT",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c3ca592f-0669-49bd-ab5c-310007ab2fb4",
+            "created_at": "2022-10-25T15:50:23.334495Z",
+            "updated_at": "2025-03-27T02:00:55.445098Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "TeamTNT"
+            ],
+            "source_name": "MITRE:TeamTNT",
+            "tools": [
+                "Peirates",
+                "MimiPenguin",
+                "LaZagne",
+                "Hildegard"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535624,
+    "ts_updated_at": 1743041358,
+    "ts_creation_date": 1653698263,
+    "ts_modification_date": 1653698263,
+    "files": {
+        "pdf": "https://archive.orkl.eu/6ad2f3c54bc0440fc2324ce997ac1a47f7a5e3b0.pdf",
+        "text": "https://archive.orkl.eu/6ad2f3c54bc0440fc2324ce997ac1a47f7a5e3b0.txt",
+        "img": "https://archive.orkl.eu/6ad2f3c54bc0440fc2324ce997ac1a47f7a5e3b0.jpg"
+    }
+}

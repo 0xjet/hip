@@ -1,0 +1,83 @@
+{
+    "id": "36a274d8-0d1d-4c2c-8130-58d1001648e4",
+    "created_at": "2023-01-12T15:06:31.220337Z",
+    "updated_at": "2025-03-27T02:09:18.041166Z",
+    "deleted_at": null,
+    "sha1_hash": "2a47bba9c06c8f85e47cfdb77dda976e375fefb2",
+    "title": "2020-12-23 - SolarWinds - Understanding & Detecting the SUPERNOVA Webshell Trojan",
+    "authors": "",
+    "file_creation_date": "2022-08-18T03:25:45Z",
+    "file_modification_date": "2022-08-18T03:25:45Z",
+    "file_size": 1673911,
+    "plain_text": "# SolarWinds | Understanding & Detecting the SUPERNOVA Webshell Trojan\n\n**[sentinelone.com/labs/solarwinds-understanding-detecting-the-supernova-webshell-trojan](https://www.sentinelone.com/labs/solarwinds-understanding-detecting-the-supernova-webshell-trojan)**\n\nMarco Figueroa\n\n_By Marco Figueroa, James Haughom and Jim Walter_\n\n## Introduction\n\nThe recent SolarWinds’ Orion supply chain attack has proven to be one of the most\nlayered and damaging attacks of 2020, consisting of multiple artifacts and sophisticated\nTTPs.\nSeveral distinct malware families have emerged in relation to the compromise. These\n[include the SUNBURST backdoor, SUPERNOVA, COSMICGALE & TEARDROP.](https://www.sentinelone.com/labs/solarwinds-sunburst-backdoor-inside-the-apt-campaign/)\nOrganizations protected by SentinelOne’s [Singularity platform are fully protected](https://www.sentinelone.com/platform/)\nagainst all of these new threats.\n\nIn this post, we provide an analysis of the SUPERNOVA trojan, describing how the\nweaponized DLL payload differs from the legitimate version it supplanted. Further, we\ndisclose some new Indicators of Compromise that may, in addition to previously documented\nIoCs, help security teams to detect when the malicious webshell is active.\n\n## Overview of SolarWinds’ Malware Components\n\n\n-----\n\nThe sophisticated nature of the SolarWinds compromise has resulted in a flurry of new\nmalware families, each with different characteristics and behaviors.\n\nSUNBURST refers to a .NET backdoor (written in C#). This backdoor was distributed\nas part of a trojanized MSI (Windows installer) patch and distributed via SolarWinds\nupdating mechanisms.\nTEARDROP is a memory-resident implant used (primarily) to distribute the Cobalt\nStrike beacon payload.\nCOSMICGALE refers to certain malicious PowerShell scripts that are executed on\ncompromised hosts.\nSUPERNOVA refers to a web shell implant used to distribute and execute additional\ncode on exposed hosts.\n\nBelow, we focus on understanding and detecting the SUPERNOVA web shell implant.\n\n## The Trojanized App_Web_logoimagehandler DLL\n\nThe SUPERNOVA web shell implant is a trojanized copy of a legitimate DLL .NET library in\nthe SolarWinds Orion web application. The purpose of the original DLL is to serve up a userconfigured logo to web pages in the Orion web application.\n\nModifying the legitimate SolarWindows DLL for malicious use required just a few key\nchanges, and upon analysis appears deceptively ‘elegant’. Below, we illustrate some of the\nkey differences between the legitimate SolarWinds DLL and the weaponized ‘SUPERNOVA’\nDLL.\n\nThe attackers injected an additional method, `DynamicRun(), into the legitimate`\nSolarWinds’ LogoImageHandler class from the\n```\nApp_Web_logoimagehandler.ashx.b6031896.dll, turning the benign DLL into a\n\n```\nsophisticated webshell.\n\n\n-----\n\n-----\n\nA legitimate instance of `App_Web_logoimagehandler.ashx.b6031896.dll :`\n\nA weaponized instance of `App_Web_logoimagehandler.ashx.b6031896.dll :`\n\n\n-----\n\nThe added `DynamicRun() method is called by the` `ProcessRequest() method, which`\nhandles HTTP requests. The attackers added a `try/catch block to the beginning of this`\nmethod’s source code to parse part of the HTTP request and redirect control flow to the\nattacker’s `DynamicRun() method.`\n\nThe legitimate `ProcessRequest() method:`\n\nAnd the weaponized ProcessRequest() with added try/catch block:\n\n\n-----\n\nThe additional code simply extracts data in the form of name-value from the `Request`\nproperty of an instance of the `HttpContext class. Once extracted, these four values will be`\npassed to `DynamicRun() to be executed, and the method’s return value will be written back`\nto the attacker as an HTTP response.\n\nThe `DynamicRun() method is where the true functionality of the SUPERNOVA webshell`\nresides. This method accepts a blob of C# source code, along with the class to instantiate,\nthe method to invoke, and the method’s arguments. These parameters will be used to\ncompile and execute an in-memory .NET assembly sent by the attackers over HTTP.\n\nThe .NET `CSharpCodeProvider class is the mechanism used to perform the in-memory`\ncompilation. As you can see below, the `GenerateInMemory parameter is set to true,`\nmeaning a physical assembly will not be written to disk, allowing minimal forensic artifacts to\n\n\n-----\n\nbe created. The last parameter passed to the in-memory compiler is the blob of C# source\ncode supplied by the attacker’s HTTP request to be compiled.\n\nBreakdown of parameters:\n\nIf no errors arise during compilation, the malware instantiates the respective class, invokes\nthe method passed as the third argument to the function, and returns the results.\n\nThis functionality allows the attackers to compile and execute .NET payloads at will, all within\nthe context of SolarWinds. This mechanism does not leverage any exploit, but simply abuses\nlegitimate .NET functionality. This is powerful, as it allows the malware to execute robust\ncompiled code on the fly, without dropping any additional files to the file system or running\nany obvious or noisy commands being sent over the wire.\n\n## Detecting SUPERNOVA Webshell Activity\n\nDuring our research, we created a PoC, leveraging the same `CSharpCodeProvider`\nmechanism SUPERNOVA uses for in-memory compilation of .NET assemblies. We found\nthat during the compilation process, the native .NET-related utilities `CSC.exe and`\n```\nCVTRES.exe are spawned as child processes of the calling process.\n\n```\n\n-----\n\nPassed as arguments to CSC and CVTRES are paths to randomly named temporary files\nthat are used by these utilities during the compilation process.\n\nProcess tree:\n\nProcess tree with command lines:\n```\n- \"C:UsersREMDesktoptest_compiler.exe\"\n\n----- \"C:WindowsMicrosoft.NETFramework64v4.0.30319csc.exe\" /noconfig /fullpaths\n@\"C:UsersREMAppDataLocalTemp2aklqpvi.cmdline\"\n\n-------------\"C:WindowsMicrosoft.NETFramework64v4.0.30319cvtres.exe /NOLOGO /READONLY\n/MACHINE:IX86 \"/OUT:C:UsersREMAppDataLocalTempRES23D1.tmp\"\n\"c:UsersREMAppDataLocalTempCSCF78C0CD1119A4E50AA11E695677D803B.TMP\"\n\n\n```\nThe syntax of these command lines are as follows.\n\n**CSC:**\n```\n\"C:WindowsMicrosoft.NETFramework64<version>csc.exe\" /noconfig /fullpaths\n@\"C:Users<user>AppDataLocalTemp<random_string>.cmdline\"\n\n```\n**CVTRES:**\n```\n\"C:WindowsMicrosoft.NETFramework64<version>cvtres.exe /NOLOGO /READONLY /MACHINE:IX86\n\"/OUT:C:Users<user>AppDataLocalTemp<random_string>.tmp\"\n\"c:Users<user>AppDataLocalTemp<random_string>.TMP\"\n\n\n```\nThis process tree can provide valuable insight into when the SUPERNOVA webshell is\npotentially active and receiving commands from C2. This behavior may precede additional\nattacker activity on the box, such as lateral movement, spawned processes, or dropped files.\n\n## Conclusion\n\nMany organizations are currently working hard to understand and quantify their risks and\nexposure to the issues arising from the SolarWinds supply chain attack. While the analysis of\nthe SolarWinds breach (and related offshoot attacks) are ongoing, it is already safe to say\nthat this could be considered one of the more organized and sophisticated campaigns of\n2020.\n\nGiven the scope of this campaign, there are a few helpful things to keep in mind.\n\nWhile SolarWinds estimates ~18000 installs of the malicious update, that does not\nmean all those same organizations have been fully breached. Current intelligence\nsuggests over 140 full-blown ‘victims’\n\n\n-----\n\nThe main C2 infrastructure has been seized and subsequently sinkholed by Microsoft\nand other industry partners. This is now being used as a ‘kill switch’ for the existing\nmalware.\n[SolarWinds released a patch/update on December 15th. Orion Platform Platform](https://www.solarwinds.com/securityadvisory)\nv2020.2.1 HF2 [has been made available for all customers running vulnerable versions](https://www.solarwinds.com/securityadvisory)\nof SolarWinds Orion. For Platform v2019 customers, Orion Platform v2019.4 HF 6 is\navailable. In addition, SolarWinds has taken measures to ensure that all malicious files\nhave been removed from their servers.\n\nAt SentinelLabs, we continue our analysis and to update all pertinent resources as new\ninformation comes to light. We encourage all to review existing resources for ongoing\n[updates and information. The SentinelOne Singularity Platform protects and prevents](https://www.sentinelone.com/platform/)\nmalicious behaviors associated with all attacks related to the SolarWinds breach.\n\n## Further Resources\n\n[SolarWinds SUNBURST Backdoor: Inside the APT Campaign](https://www.sentinelone.com/wp-content/uploads/solarwinds-sunburst-backdoor-inside-the-stealthy-apt-campaign/)\n\n[FireEye/SolarWinds: Taking Action and Staying Protected](https://www.sentinelone.com/blog/fireeye-breached-taking-action-and-staying-protected/)\n\n[SentinelOne’s free tool to determine if your devices are vulnerable to SUNBURST](https://www.sentinelone.com/lp/sunburst/)\n\n## Indicators of Compromise\n\n**SUPERNOVA Hashes:**\n\nSHA256\n\nC15abaf51e78ca56c0376522d699c978217bf041a3bd3c71d09193efa5717c71\n\nSHA1\n\n75af292f34789a1c782ea36c7127bf6106f595e8\n\nMD5\n\n56ceb6d0011d87b6e4d7023d7ef85676\n\n**YARA Rule for SUPERNOVA**\n\n\n-----\n\n```\nimport pe\n\nrule SentinelLabs_SUPERNOVA\n\n{\n\n     meta:\n\n          description = \"Identifies potential versions of\nApp_Web_logoimagehandler.ashx.b6031896.dll weaponized with SUPERNOVA\"\n\n          date = \"2020-12-22\"\n\n          author = \"SentinelLabs\"\n\n     strings:\n\n          $ = \"clazz\"\n\n          $ = \"codes\"\n\n          $ = \"args\"\n\n          $ = \"ProcessRequest\"\n\n          $ = \"DynamicRun\"\n\n          $ = \"get_IsReusable\"\n\n          $ = \"logoimagehandler.ashx\" wide\n\n          $ = \"SiteNoclogoImage\" wide\n\n          $ = \"SitelogoImage\" wide\n\n     condition:\n\n          (uint16(0) == 0x5A4D and uint32(uint32(0x3C)) == 0x00004550 and\npe.imports(\"mscoree.dll\")) and all of them\n\n}\n\n```\n**SUPERNOVA MITRE ATT&CK TTPs**\n\n[Input Capture: Credential API Hooking – T1056](https://attack.mitre.org/techniques/T1056/004/)\n\n[Subvert Trust Controls: Code Signing – T1553](https://attack.mitre.org/techniques/T1553/002/)\n\n[Supply Chain Compromise – T1195](https://attack.mitre.org/techniques/T1195/)\n\n[Exfiltration – TA0010](https://attack.mitre.org/tactics/TA0010/)\n\n[Application Layer Protocol – T1071](https://attack.mitre.org/techniques/T1071/)\n\n[Dynamic Resolution: Domain Generation Algorithms – T1568.002](https://attack.mitre.org/techniques/T1568/002/)\n[Indicator Removal On Host – T1070](https://attack.mitre.org/techniques/T1070/)\n\n[Masquerading – T1036](https://attack.mitre.org/techniques/T1036/)\n\n[Obfuscated Files or Information – T1027](https://attack.mitre.org/techniques/T1027/)\n\n[Process Discovery – T1057](https://attack.mitre.org/techniques/T1057/)\n\n[Create or Modify System Process: Windows Service – T1543.003](https://attack.mitre.org/techniques/T1543/003/)\n\n[Remote Services – T1021](https://attack.mitre.org/techniques/T1021/)\n\n[System Services: Service Execution – T1568.002](https://attack.mitre.org/techniques/T1569/002/)\n\n[Valid Accounts – T1078](https://attack.mitre.org/techniques/T1078/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-12-23 - SolarWinds - Understanding & Detecting the SUPERNOVA Webshell Trojan.pdf"
+    ],
+    "report_names": [
+        "2020-12-23 - SolarWinds - Understanding & Detecting the SUPERNOVA Webshell Trojan.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535991,
+    "ts_updated_at": 1743041358,
+    "ts_creation_date": 1660793145,
+    "ts_modification_date": 1660793145,
+    "files": {
+        "pdf": "https://archive.orkl.eu/2a47bba9c06c8f85e47cfdb77dda976e375fefb2.pdf",
+        "text": "https://archive.orkl.eu/2a47bba9c06c8f85e47cfdb77dda976e375fefb2.txt",
+        "img": "https://archive.orkl.eu/2a47bba9c06c8f85e47cfdb77dda976e375fefb2.jpg"
+    }
+}

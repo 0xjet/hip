@@ -1,0 +1,138 @@
+{
+    "id": "2cd66667-7711-42a5-80de-4d1ad4b36ac0",
+    "created_at": "2022-10-25T16:48:21.847287Z",
+    "updated_at": "2025-03-27T02:13:09.686056Z",
+    "deleted_at": null,
+    "sha1_hash": "486a65ba17141147d3d9fff2a0c26109edf78fab",
+    "title": "Reversing The Inception APT Malware",
+    "authors": "Bluecoat",
+    "file_creation_date": "2015-01-21T14:33:22Z",
+    "file_modification_date": "2015-01-21T14:33:22Z",
+    "file_size": 939082,
+    "plain_text": "After reading the Inception paper by Snorre Fagerland and Waylon Grange, I got curious about this threat\n\nand did some reversing. I felt that it would be good to write a technical blog about the process - maybe it\n\ncould be helpful or interesting for some.\n\n**RTF file Analysis**\n\nMD5: 4a4874fa5217a8523bf4d1954efb26ef\n\nExploit: CVE-2012-0158\n\nAs we can see in following screen shot, this is a RTF [Rich Text Format] file. Its common that attackers use\n\ndocument files such as these as bait.\n\nIt is common that shellcode starts with a NOPsled. In following screenshot we can see that the embedded\n\nshellcode starts with NOP slide. NOP, or No OPeration - is a single-byte opcode that does nothing. It has\n\nthe hex value of 0x90.\n\n**Embedded Shellcode Analysis - First Level**\n\nNow, to the functionality of the shellcode. We will ignore the first two prolog instructions, and for\n\nremaining statements I have inserted comments to help understanding what is happening in this chunk of\n\n\n-----\n\nkernel32.dll. It needs these to find the API addresses it requires for the rest of the infection.\n\nIn screenshot below, Function 00120F82 is the malware's own GetProcAddress function which takes two\n\nparameters\n\n1. Base address of the system dll\n\n2. Hash of the API name.\n\nThe function returns the memory address of the API.\n\n**Functionality of function 00120F82 ( GetProcAddress)**\n\nAs shown in the next screenshot, this function parses the “export name pointer table” of the .dll [ex.\n\nkernel32.dll] and generates a hash for each function. It compares this with the argument API hash (Ex\n\nDF7D9BAD for GetFileSize, see above screenshot) using the CMP EDI, ESI instruction. Once the matching\n\nAPI is found it parses the Export Address Table and returns the respective API address to the caller in\n\nEAX register.\n\n\n-----\n\nThe document contains two levels of shellcode. We are analyzing first level, and in the following code we\n\ncan see a typical egghunting method: It attempts to open the already opened rtf file by checking file\n\nhandles in memory. It starts with a handle with the value 4 and verifies it by doing GetFileSize on it. If this\n\nfails it does ADD ESI,4 again (adds 4 to the handle) until the API succeeds. When this happens it checks\n\nthe file offset 0x8300 for the marker 0x54405450. Again, if this matches up, it allocates memory into\n\nwhich it reads the file content and jumps to the 2[nd] level shellcode with a JMP EBX.\n\n\n-----\n\n**Second Level Shell Code Analysis**\n\nNow we have landed into the second level shellcode, but it is obfuscated to evade static analysis. At the\n\ninitial stage there are few instructions waiting to help us. This is the deobfuscation code. We can see that\n\n0x23B * 4 is the number of bytes obfuscated, POP EBX is the get EIP instruction and 0x5687F945 is the\n\ndeobfuscation XOR key.\n\n\n-----\n\nIn following code we can see the hexadecimal value that corresponds to the library name being pushed to\n\nthe LoadLibrary function, as well as two loops to get the API addresses using “CALL 02E203E2” function.\n\nHere also it uses hashes to look up APIs.\n\n|Hash|API|Hash|API|\n|---|---|---|---|\n|73E2D87E|ExitProcess|0C0397EC|GlobalAlloc|\n|7CB922F6|GlobalFree|10FA6516|ReadFile|\n|36EF7370|GetCommandLineA|76DA08AC|SetFilePointer|\n|0E8AFE98|WinExec|DF7D9BAD|GetFileSize|\n|E9238AD9|_lwrite|6DD38706|CoUninitialize|\n|E88A49EA|_lcreat|EB9E05F5|CoSetProxyBlanket|\n|5B8ACA33|GetTempPathA|6E26C880|CoCreateInstance|\n|0FFD97FB|CloseHandle|7FC7A3CB|CoInitializeEx|\n\n\n-----\n\nIn the following code it searches for the embedded VBS file inside the RTF file in memory. It checks for\n\nthe file size in a loop, and if the size is larger than 0x2000 then it sets the file ponter to 0x8C14 to compare\n\nwith the VBS file marker as we can see in following screenshot.\n\n\n-----\n\nAfter finding the VBS marker in memory, it decrypts the VBS file in two iterations. In the first loop it\n\ndecrypts and in the second loop it swaps the low and high bytes of the first 0x100 16-bit words, after which\n\nit writes the file to a file named “Temp/ew_Rg.vbs”.\n\n\n-----\n\n**Payload .VBS file Analysis**\n\nThe following screenshot shows a part of the .VBS payload file dropped by .RTF file. First line is the\n\nencrypted .dll 4[th] line contains Key to decrypt the .dll. Remaining part is self-explanatory.\n\nThe instruction c = Crypt(c,k) function decrypts the encrypted dll and returns the decrypted dll. (See the\n\nscreenshot above)\n\nc= encrypted dll.\n\nk = decryption key.\n\n\n-----\n\nFollowing function writes byte by byte to the dropped.dll file.\n\nFinally, the following code executes the “regsvr32” command to run the wmiprvse.dll in silent mode and\n\nsets the run key in registry.\n\n**Payload “wmiprvse.dll” file Analysis**\n\nThis first level of deobfuscation in wmiprvse.dll takes around 3-4 minutes to finish. Then it allocates\n\nmemory using VirtualAlloc and writes the unpacked code to newly allocated memory before it jumps to\n\nthe unpacked code as shown in following screen shot.\n\n\n-----\n\nThis dll has 3 layers of unpacking. The one above is level one, below iyou can see level two. We can see\n\nthe passing of the control to the newly unpacked .dll @CALL EAX.\n\nIt's very time-consuming to understand the functionality of the dll as it decrypts and builds its own\n\nruntime import table to hinder the analysis. Analyst cannot directly see which API gets called.\n\n\n-----\n\n[Finally we can see it’s connecting to webdav.cloudme.com and cleartext credentials in following](http://webdev.cloudme.com/)\n\nscreenshot.\n\n\n-----\n\nMalware tries to communicate with the user account created at the WebDAV C&C to exfiltrate system and\n\nuser information.\n\nReference:\n\n**https://www.bluecoat.com/security-blog/2014-12-09/blue-coat-exposes-%E2%80%9C-**\n\n**inception-framework%E2%80%9D-very-sophisticated-layered-malware**\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "d63ae2b7-445f-460d-965d-2676dacdb6de",
+            "created_at": "2022-10-25T15:59:19.552139Z",
+            "updated_at": "2022-10-25T15:59:19.552139Z",
+            "deleted_at": null,
+            "name": "APTnotes",
+            "url": "https://github.com/aptnotes/data",
+            "description": "APTnotes data",
+            "reports": null
+        },
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        },
+        {
+            "id": "bf5be533-fa31-4590-ae37-5761c97ffa34",
+            "created_at": "2022-10-25T16:13:58.389257Z",
+            "updated_at": "2022-10-25T16:13:58.389257Z",
+            "deleted_at": null,
+            "name": "Malpedia",
+            "url": "https://malpedia.caad.fkie.fraunhofer.de",
+            "description": "Malpedia is a free service offered by Fraunhofer FKIE",
+            "reports": null
+        },
+        {
+            "id": "6825b8cb-7d82-43d2-b0b0-d51c7e255b42",
+            "created_at": "2023-01-06T13:46:37.642134Z",
+            "updated_at": "2023-01-06T13:46:37.642134Z",
+            "deleted_at": null,
+            "name": "MISPGALAXY",
+            "url": "https://www.misp-project.org/galaxy.html",
+            "description": "MISP Galaxy Clusters",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://app.box.com/s/sctzfr6aoagpzb9aoajcodvn6we7e055",
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2015/2015.01.20.Reversing_the_Inception_APT_malware/Inception_APT_Analysis_Bluecoat.pdf",
+        "https://paper.seebug.org/papers/APT/APT_CyberCriminal_Campagin/2015/Inception_APT_Analysis_Bluecoat.pdf"
+    ],
+    "report_names": [
+        "Inception_APT_Analysis_Bluecoat",
+        "Inception_APT_Analysis_Bluecoat.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "02c9f3f6-5d10-456b-9e63-750286048149",
+            "created_at": "2022-10-25T16:07:23.722884Z",
+            "updated_at": "2025-03-27T02:02:09.945869Z",
+            "deleted_at": null,
+            "main_name": "Inception Framework",
+            "aliases": [
+                "ATK 116",
+                "Blue Odin",
+                "Clean Ursa",
+                "Cloud Atlas",
+                "Inception Framework",
+                "Operation Cloud Atlas",
+                "Operation RedOctober",
+                "The Rocra"
+            ],
+            "source_name": "ETDA:Inception Framework",
+            "tools": [
+                "Lastacloud",
+                "PowerShower",
+                "VBShower"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "77b28afd-8187-4917-a453-1d5a279cb5e4",
+            "created_at": "2022-10-25T15:50:23.768278Z",
+            "updated_at": "2025-03-27T02:00:55.5423Z",
+            "deleted_at": null,
+            "main_name": "Inception",
+            "aliases": [
+                "Inception Framework",
+                "Cloud Atlas"
+            ],
+            "source_name": "MITRE:Inception",
+            "tools": [
+                "PowerShower",
+                "VBShower",
+                "LaZagne"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "04a7ebaa-ebb1-4971-b513-a0c86886d932",
+            "created_at": "2023-01-06T13:46:38.784965Z",
+            "updated_at": "2025-03-27T02:00:02.91817Z",
+            "deleted_at": null,
+            "main_name": "Inception Framework",
+            "aliases": [
+                "ATK116",
+                "Blue Odin",
+                "Clean Ursa",
+                "Cloud Atlas",
+                "G0100"
+            ],
+            "source_name": "MISPGALAXY:Inception Framework",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716501,
+    "ts_updated_at": 1743041589,
+    "ts_creation_date": 1421850802,
+    "ts_modification_date": 1421850802,
+    "files": {
+        "pdf": "https://archive.orkl.eu/486a65ba17141147d3d9fff2a0c26109edf78fab.pdf",
+        "text": "https://archive.orkl.eu/486a65ba17141147d3d9fff2a0c26109edf78fab.txt",
+        "img": "https://archive.orkl.eu/486a65ba17141147d3d9fff2a0c26109edf78fab.jpg"
+    }
+}

@@ -1,0 +1,94 @@
+{
+    "id": "1dc02658-9a64-4aa2-ba31-9d776b0c52d5",
+    "created_at": "2023-01-12T14:59:13.65381Z",
+    "updated_at": "2025-03-27T02:13:37.682946Z",
+    "deleted_at": null,
+    "sha1_hash": "bebcd0fed4b2095e4f525f06229dff75ebfe2853",
+    "title": "2020-11-05 - Hunting Emotet with Brim and Zeek",
+    "authors": "",
+    "file_creation_date": "2022-05-28T18:25:59Z",
+    "file_modification_date": "2022-05-28T18:25:59Z",
+    "file_size": 118923,
+    "plain_text": "# Hunting Emotet with Brim and Zeek\n\n**[medium.com/brim-securitys-knowledge-funnel/hunting-emotet-with-brim-and-zeek-1000c2f5c1ff](https://medium.com/brim-securitys-knowledge-funnel/hunting-emotet-with-brim-and-zeek-1000c2f5c1ff)**\n\nOliver Rochford December 8, 2020\n\nOliv\ner\n\n\n[Oliver Rochford](https://medium.com/@oliver-77164?source=post_page-----1000c2f5c1ff--------------------------------)\n\nNov 5, 2020\n\n\n8 min read\n\n[The US Cybersecurity and Infrastructure Security Agency recently released an advisory](https://us-cert.cisa.gov/ncas/alerts/aa20-280a)\n[warning of a resurgence of the Emotet malware.](https://www.malwarebytes.com/emotet/)\n\nEmotet started out in [2014 as a Banking Trojan, but has since evolved into a sophisticated](https://www.zdnet.com/article/meet-the-white-hat-group-fighting-emotet-the-worlds-most-dangerous-malware/)\nmalware, offered on the Darknet as a commercial Cybercrime-as-a-Service platform.\n\nVictims that are infected with Emotet are usually targeted with a phishing email containing a\nmacro-enabled malicious document, or a link to one hosted on a compromised website. The\n[malware frequently acts as a “dropper” and downloads additional components and payloads.](https://blog.malwarebytes.com/detections/trojan-dropper/)\nEmotet has [worming capabilities and may attempt to enumerate and infect further victims on](https://blog.malwarebytes.com/detections/worm/)\naccessible networks. Command and Control (C2) is executed via HTTP POST requests on\nports 80, 443 and 8080 to randomized alphanumerical named directories on compromised C2\nservers.\n\nWhat makes Emotet really dangerous is that it is sold as an operational platform to a variety of\ndifferent threat actors with diverse motivations. Further, the malware can deploy different\npayloads depending on the objective — from stealing banking credentials to ransomware. It is\nessentially infrastructure-as-a-service for hacking. In practise this means that it constantly\nevolves and can come in many guises.\n\nWith Emotet on the rise again, blue team and incident response teams should familiarise\nthemselves with how this dangerous threat behaves and evaluate how best to detect and hunt\nit. Luckily, there are samples available. In this article, we are specifically working with the\n[following sample from the good people at Malware Traffic Analysis:](https://www.malware-traffic-analysis.net/)\n\n[We’ll also be using the Brim Desktop client. Let’s go hunt!](https://github.com/brimsec/brim)\n\n**TIP! You can find detailed installation instructions for Brim on Windows, Linux and**\n[macOS under https://github.com/brimsec/brim/wiki/Installation](https://github.com/brimsec/brim/wiki/Installation)\n\n\n-----\n\n## Finding Patient X\n\nAs we discussed in the first [article, a good first step when investigating malware is to](https://medium.com/brim-securitys-knowledge-funnel/five-elegant-brim-queries-to-threat-hunt-in-zeek-logs-and-packet-captures-30eec4c09933)\ninvestigate the DNS activity, specifically for which domains there are resolution requests. Zeek\nprovides a DNS protocol analyzer specifically for this purpose.\n\nZeek’s DNS stream in Brim\nTo gain an overview of what’s going on, we’ll use a ZQL query to stack the queries by count\n```\n_path=dns | count() by query | sort -r\n\n```\n\n-----\n\nCount of unique DNS queries\nWe see a number of different windows network requests, for example for “WORKGROUP”,\nsome legitimate “Microsoft.com” requests, and single requests to threat-intelligence related\naddresses such as for Spamhaus. We can right-click on any domain we do not recognize and\nverify them using [VirusTotal.](https://www.virustotal.com/gui/)\n\n\n-----\n\nRight-click on any domain to validate it using VirusTotal\nVirusTotal flags one of the domains, “ t-privat.de”, as malicious, and known to have hosted\nmalware in the past. We now have a trail to follow.\n\n\n-----\n\nVirusTotal shows the suspicious URI as malicious\n\n\n-----\n\nDetails for the malicious Domain\nA nice little blind check at this point is to verify if the relevant Host A Record IP address\n“81.169.145.161” is present anywhere else in our dataset.\n\n\n-----\n\nHit! The IP address related to the VirusTotal alert matches our data\nThe search returns positive — we are looking at the same threat that was submitted to\nVirusTotal. Note the file transfer via HTTP to an internal host. That’s something we want to\ninvestigate further.\n\n[We’ll revisit one of our Power Queries to show all of the relevant file activity within our data that](https://medium.com/brim-securitys-knowledge-funnel/five-elegant-brim-queries-to-threat-hunt-in-zeek-logs-and-packet-captures-30eec4c09933)\nhas a complete filename, but extend it to provide us with a tailored view showing us only the\nfields that are relevant to us at this juncture:\n```\nfilename!=null | cut _path, tx_hosts, rx_hosts, conn_uids, mime_type, filename, md5,\nsha1\n\n```\n\n-----\n\nCurated File Activity view — the Plot thickens\nThere are a number of strange looking HTTP connections with filenames lacking any type of\nextension or MIME type. We also find the full filename, “UR608.exe”, from our malicious\ninternet host “81.169.145.161” (t-privat.de). Thanks to Zeek’s MD5 and SHA1 processors, we\ncan harness VirusTotal again. Our Patient X is “10.9.1.101”.\n\n\n-----\n\nEmotet sighted! VirusTotal confirms the file is associated with known malware.\n\n## Identifying Command and Control\n\nNow that we’ve verified the initial point of access for the attack, we can follow how the attack\nunfolded. When we reviewed the files contained in our data, we saw three other connections\noriginating from the infected system. If we double-click on any of the records in question, we\nconjure up a detailed view showing a waterfall that includes all app transactions and file\npayloads throughout the life of a flow:\n\n\n-----\n\nConnection Diagram for the suspicious HTTP requests from our Patient X\nWe can see a connection over a three minute time period. If you’re familiar with Zeek, the “dpd”\nand “weird” events immediately stick out. Let’s look into these. You can pivot right into the\nrelevant details by clicking on any entry in the Connection Diagram. Zeek’s “Dynamic Protocol\n[Detection” (dpd) stream processor detects network protocol anomalies. The “weird” processor](https://zeek.org/2019/11/13/what-is-weird-in-zeek/)\non the other hand alerts on unusual activity such as malformed requests.\n\n\n-----\n\nBrim’s detailed view for Zeek’s “dpd” stream\n\n\n-----\n\nBrim’s detailed view for Zeek’s “weird” stream\n\n\n-----\n\nBrim’s detailed view for Zeek’s “weird” stream\nZeek has detected that the connection in question does not appear to be standard HTTP. Of\nnote is also the non-standard destination port “8080” under “id.resp_p”, commonly used for\nHTTP Proxying . We’d usually expect to see port 443 for web traffic, or port 80 in rare legacy\ncases. Attackers will frequently attempt C2 via ports that have a high probability of being\npermitted through any network access controls such as a firewall. VirusTotal also confirms that\nthe IP address “118.110.236.121” is malicious. Lastly, when we look at the Log Detail for the\ninitial HTTP requests, we see it’s an HTTP POST request. The random character URI also\nseems suspicious:\n\n\n-----\n\nHTTP POST request to URI including randomized alphanumeric directory name\nA safe hunch would be that this is the command and control (C2) traffic we’re seeing here.\nWhen we filter for our suspected C2 Server “118.110.236.121” with the HTTP POST method in\nthe Zeek HTTP Stream, we can see the beaconing:\n\n\n-----\n\nEmotet C2 Traffic\n\n## Enumerating Command and Control\n\n**TIP! To evade detection and provide redundancy against C2 servers being blocked by**\ninclusion on threat intelligence sources, Malware operators use a network of\ncompromised systems for their command and control infrastructure. The list of C2 servers\nare constantly updated to try and always stay one step ahead of threat researchers. If\nyou’re interested in further details about how Malware C2 works, see this article:\nhttps://searchsecurity.techtarget.com/feature/Command-and-control-servers-The-puppetmasters-that-govern-malware\n\n\n-----\n\nIt would be unusual for Emotet to rely on a single C2 instance. One way we can quickly validate\nthis is to search for any additional HTTP POST requests Victim X may be sending:\n```\nid.orig_h=10.9.1.101 method=POST | cut ts, uid, id, method, uri, status_code\n\n```\nHTTP POST activity from Patient X\nVictim X is concerningly making a number of other successful suspicious HTTP POST\nrequests. VirusTotal confirms that all of the involved destination IP addresses are malicious.\n\n\n-----\n\nVirusTotal confirms our suspicious IP address is malicious\nA further search for the malicious IP addresses in our data yields no further results, but of\ncourse we can now take our list (45.230.228.26, 118.110.236.121, 195.123.242.119) and\nconduct further searches across other detection and search tools, for example a SIEM, as well\nas adding them to our access control deny list.\n\n## Evaluating the spread of Infection\n\nAs Emotet is known to propagate via the network, we should also establish whether any other\nhosts have been infected.\n\n\n-----\n\nFirst let s see what sort of traffic our data contains. We can lean on Zeek s streams here again,\nand generate a list of any contained in the packet capture with associated counts:\n```\n_path | count() by _path | sort -r\n\n```\nZeek Streams by count\nInterestingly enough, we don’t see any activity that would indicate internal reconnaissance or\npropagation. If present, we’d typically expect to see something like Windows SMB and\nDCE/RPC activity here. This does not necessarily mean that no further infection occurred —\njust that we don’t have any indicators in our data.\n\n\n-----\n\nLastly, just to be sure, we ll enumerate any connections our patient X may have attempted on\nthe internal network. For this, we’re going to use ZQL’s [rich data typing, specifically that there is](https://github.com/brimsec/zq/blob/master/zql/docs/data-types/README.md)\nan IP address data type that supports CIDR filtering:\n```\nid.orig_h=10.9.1.101 id.resp_h=~10.0.0.0/8 | count() by id.resp_h,_path\n\n```\nAll connections in the 10.0.0.0/8 subnet that patient X communicated with\nWe see there is some DNS traffic to two other hosts, which we may assume are DNS servers.\nNothing in the data indicates further infections.\n\n## Putting it all together\n\n\n-----\n\nWhile we didn t see any propagation events, we did successfully pinpoint the initial infection,\nidentified Patient X and enumerated the C2 servers. This will allow us to conduct further threat\nhunting, develop detections and create signatures and watch lists for blocking the threat on the\nnetwork. The diagram below outlines the activity we’ve been investigating:\n\n## Emotet Sample observed activity\n\nEmotet Incident outline\n\n## Observed Indicators of Compromise\n\n\n-----\n\n## Observed MITRE ATT&CK Techniques\n\nWe assume that the malicious file we observed being downloaded from “t-privat.de” was the tail\nend of an initial phishing attempt. That would entail the following MITRE ATT&CK Techniques:\n\n**:002 :**\n\nEmotet has been delivered by phishing emails containing links\n\n**:001**\n\nEmotet has relied upon users clicking on a malicious link delivered through spearphishing.\n\n\n-----\n\nThe following MITRE ATT&CK Tactic was also observed:\n\n**:001**\n\nAdversaries may communicate using application layer protocols associated with web traffic to\navoid detection/network filtering by blending in with existing traffic. Commands to the remote\nsystem, and often the results of those commands, will be embedded within the protocol traffic\nbetween the client and server.\n\n## Conclusion\n\nWe hope you enjoyed our little Emotet safari. There’s also a video version of this article, you\n[can find it under https://www.youtube.com/watch?v=CW1rNrd7KYU.](https://www.youtube.com/watch?v=CW1rNrd7KYU)\n\nAlso, don’t forget to check out our last two articles, Five Elegant Brim Queries to Threat Hunt in\nZeek Logs and Packet Captures and [Investigating Network traffic activity using Brim and Zeek.](https://medium.com/brim-securitys-knowledge-funnel/investigating-network-traffic-activity-using-brim-and-zeek-97efdf725f8e)\nAnd watch this space, there’s more coming soon!\n\nIn the meantime, if you haven’t checked out Brim yet, go ahead. It’s free and it’s Open Source.\n\n[https://www.brimsecurity.com/](https://www.brimsecurity.com/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-11-05 - Hunting Emotet with Brim and Zeek.pdf"
+    ],
+    "report_names": [
+        "2020-11-05 - Hunting Emotet with Brim and Zeek.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "e0ffe8ec-caee-414f-8fd5-b69ffd262e6f",
+            "created_at": "2024-05-01T02:03:07.950544Z",
+            "updated_at": "2025-03-27T02:05:17.265795Z",
+            "deleted_at": null,
+            "main_name": "BRONZE FLEETWOOD",
+            "aliases": [
+                "DPD ",
+                "Keyhole Panda ",
+                "Mulberry Typhoon ",
+                "Poisoned Flight ",
+                "TG-2754 ",
+                "APT5 "
+            ],
+            "source_name": "Secureworks:BRONZE FLEETWOOD",
+            "tools": [
+                " Comfoo",
+                " Gh0st RAT",
+                " Isastart",
+                " Leouncia",
+                " OrcaRAT",
+                " PCShare",
+                " Skeleton Key",
+                " SlyPidgin",
+                " VinSelf",
+                "Binanen"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535553,
+    "ts_updated_at": 1743041617,
+    "ts_creation_date": 1653762359,
+    "ts_modification_date": 1653762359,
+    "files": {
+        "pdf": "https://archive.orkl.eu/bebcd0fed4b2095e4f525f06229dff75ebfe2853.pdf",
+        "text": "https://archive.orkl.eu/bebcd0fed4b2095e4f525f06229dff75ebfe2853.txt",
+        "img": "https://archive.orkl.eu/bebcd0fed4b2095e4f525f06229dff75ebfe2853.jpg"
+    }
+}

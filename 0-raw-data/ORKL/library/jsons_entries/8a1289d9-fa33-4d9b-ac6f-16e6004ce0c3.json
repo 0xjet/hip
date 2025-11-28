@@ -1,0 +1,99 @@
+{
+    "id": "8a1289d9-fa33-4d9b-ac6f-16e6004ce0c3",
+    "created_at": "2023-01-12T15:05:36.953779Z",
+    "updated_at": "2025-03-27T02:05:48.179579Z",
+    "deleted_at": null,
+    "sha1_hash": "81c548ff7d60e89b6fdd6944ec277eb2b863edf2",
+    "title": "2022-01-13 - Decrypting Qakbot’s Encrypted Registry Keys",
+    "authors": "",
+    "file_creation_date": "2022-05-28T15:26:37Z",
+    "file_modification_date": "2022-05-28T15:26:37Z",
+    "file_size": 486982,
+    "plain_text": "# Decrypting Qakbot’s Encrypted Registry Keys\n\n**[trustwave.com/en-us/resources/blogs/spiderlabs-blog/decrypting-qakbots-encrypted-registry-keys/](https://www.trustwave.com/en-us/resources/blogs/spiderlabs-blog/decrypting-qakbots-encrypted-registry-keys/)**\n\nSince the return of the Qakbot Trojan in early September 2021, especially through\n[SquirrelWaffle malicious spam campaigns, we’ve received a few Qakbot samples to](https://securityaffairs.co/wordpress/124613/malware/qakbot-trojan-squirrelwaffle.html)\nanalyze from our Trustwave DFIR and Global Threats Operations teams.\n\nQakbot is a banking Trojan that has been around since 2007. It has been continually\ndeveloped, with new capabilities introduced such as lateral movement, the ability to\nexfiltrate email and browser data, and to install additional malware. One new skill is to insert\nencrypted data into the registry. One of the requests we received from Trustwave’s DFIR\nand Global Threats Operations teams is for us to decrypt the registry data that Qakbot\ncreated. We duly jumped into this task, and, as it was a bit of fun, decided to blog about it.\n\n\n-----\n\n_Figure 1. A sample of an encrypted registry key that Qakbot creates_\n\n[There are only a few good detailed analyses of Qakbot out there (see here,](https://securelist.com/qakbot-technical-analysis/103931/?web_view=true) [here, and](https://www.binarydefense.com/qakbot-upgrades-to-stealthier-persistence-method/) [here)](https://www.microsoft.com/security/blog/2021/12/09/a-closer-look-at-qakbots-latest-building-blocks-and-how-to-knock-them-down/)\nbut in them we didn’t really find any technical details on how to decrypt these registry keys.\nIn this blog, we will do our best to explain that trick and we hope this will help fellow\nmalware reversers.\n\n## The Flow\n\nFor those who don't have time to read the whole blog, we’ve prepared a graph below to\nshow the decryption flow:\n\n\n-----\n\n_Figure 2. Qakbot's registry data decryption flow._\n\n## Key generation\n\nInitially, system information is gathered by Qakbot from the infected host, including:\n\n[1. Computer Name (using GetComputerNameW)](https://docs.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getcomputernamew)\n[2. Volume Serial Number (using GetVolumeInformationW)](https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getvolumeinformationw)\n[3. User Account Name (using LookUpAccountSidW)](https://docs.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-lookupaccountsidw)\n\nLet's take, for example, our infected machine's information:\n\n\n-----\n\nComputer name:   DESKTOP-4NQG47A (converted to UPPERCASE)\n\nVolume Serial:   2797280851 (converted from the hexadecimal serial number\nA6BB1E53)\n\nUser Account Name: SECRET ACCOUNT (converted to UPPERCASE)\n\nThis information is then concatenated to form a password:\n\nDESKTOP-4NQG47A2797280851SECRET ACCOUNT\n\nThe password is then hashed using a modified CRC32_shift4 algorithm.\n\n_Figure 3. Modified CRC32 shift4 function._\n\nThe resulting hash in this example is AC E9 B5 8D - we will call this PASSWORDHASH.\n\nPASSWORD = \"DESKTOP-4NQG47A2797280851SECRET ACCOUNT\"\n\nmit_crc32_shift4(PASSWORD) // returned value “\\xac\\xe9\\xb5\\x8d”\n\nPASSWORDHASH = “\\xac\\xe9\\xb5\\x8d”\n\n## Configuration ID\n\nEach registry key value name that the Qakbot malware created is a configuration field\ndefined by a one-byte ID. This ID is also used to salt the PASSWORDHASH.\n\nJoining both the ID and PASSWORDHASH, then hashing them with the SHA1 algorithm,\nwill get a derived key, that we will call DERIVED_KEY.\n\nSHA1(<1 bytes ID> + <3 byte \\x00 padding> + < 4 bytesCRC32 Hash KEY_B>) =\nDERIVED_KEY\n\n\n-----\n\nLet s take for example: ID = 0Eh and PASSWORDHASH = \\xac\\xe9\\xb5\\x8d\n\nSHA1(“\\x0e” + ”\\x00\\x00\\x00” + “\\xac\\xe9\\xb5\\x8d”) =\n\\x7a\\x2b\\x30\\xb1\\xaf\\x46\\xeb\\xc0\\xe3\\xc7\\xf6\\x9b\\xf1\\x97\\x2b\\x05\\xd5\\xca\\x06\\x8f\n\nThe SHA1 hash result will be used as a derived key to decrypt the registry key value data\nrespective to the ID using the RC4 algorithm.\n\n## Decrypting the Registry:\n\nTo determine which specific registry key value name it will decrypt the ID and\nDERIVED_KEY are joined together and hashed using the CRC32_shift4 algorithm to obtain\nthe registry value name.\n\nmit_crc32_shift4(\"\\x0e\\x00\\x00\\x00\" + \" \\xac\\xe9\\xb5\\x8d\") -> \"\\x6a\\xae\\x40\\xdd\"\n\nThe screenshot below shows the specific registry key value name (6aae40dd) that can be\ndecrypted with RC4 Algorithm using the DERIVED_KEY:\n\n\\x7a\\x2b\\x30\\xb1\\xaf\\x46\\xeb\\xc0\\xe3\\xc7\\xf6\\x9b\\xf1\\x97\\x2b\\x05\\xd5\\xca\\x06\\x8f\n\nApplying the RC4 algorithm to decrypt the registry key-value data from the value name\n\"6aae40dd\" reveals the configuration containing the malware installation timestamp.\n\n6aae40dd id=14 (0x0e)\n\n03 01 16 00 00 00 35 3b 31 3b 30 7c 33 3b 32 31 | ......5;1;0|3;2\n\n3b 31 36 33 38 37 35 32 30 35 35 00 8e 53 03 0b | 1;1638752055..S.\n\ndf e5 f0 2d bf 42 cb 70 bf 1d 62 d1 d8 ec 1a c5 | ....-.B.p..b....\n\na8 f4 cf d8 e1 c4 bd 52 18 d6 68 a6 e2 95 03 f8 | ........R..h....\n\nc8 c9 a3 41 7a ff 6b 69 11 2b 1b 9b 60 d4 19 49 | ....Az.ki.+..`..\n\n00 eb f5 7f 08 24 86 c0 10 6d 55 d7 bd ce 2c 23 | I.....$...mU...,\n\ne9 d7 91 b1                   | #....\n\n## Decryption Tool:\n\n[We wrote a decryption tool to aid this process and it is available in our Github account](https://github.com/drole/qakbot-registry-decrypt)\nrepository. This tool may help malware reversers and security researchers decrypt Qakbot’s\nregistry keys.\n\n\n-----\n\nUsage: qakbot-registry-decrypt.py [options]\nOptions:\n-h, --help      show this help message and exit\n-r REGISTRY_PATH, --regpath=REGISTRY_PATH\nregistry path where Qakbot's encrypted data is stored.\n(e.g. 'HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Efwramsn')\n-p PASSWORD, --password=PASSWORD\npassword (optional)\n\n**Example Usage:**\n\n_Figure 4. Qakbot registry decryptor tool_\n\n## IOCs:\n\nQakbot DLL\n\nMD5: 90aac91ba4336bdb252dee699d32d78d\n\nMD5: a53c130fe120348b9bfa188ab93b6ad4\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-01-13 - Decrypting Qakbot’s Encrypted Registry Keys.pdf"
+    ],
+    "report_names": [
+        "2022-01-13 - Decrypting Qakbot’s Encrypted Registry Keys.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "452d2d74-e812-45d6-b0fe-b8a6cc4ebd01",
+            "created_at": "2022-10-25T16:07:23.562676Z",
+            "updated_at": "2025-03-27T02:02:09.865955Z",
+            "deleted_at": null,
+            "main_name": "Earth Berberoka",
+            "aliases": [
+                "GamblingPuppet"
+            ],
+            "source_name": "ETDA:Earth Berberoka",
+            "tools": [
+                "Agent.dhwf",
+                "AngryRebel",
+                "AsyncRAT",
+                "CinaRAT",
+                "Destroy RAT",
+                "DestroyRAT",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "Kaba",
+                "Korplug",
+                "Moudour",
+                "Mydoor",
+                "PCRat",
+                "PlugX",
+                "PuppetLoader",
+                "Quasar RAT",
+                "QuasarRAT",
+                "RedDelta",
+                "Sogu",
+                "TIGERPLUG",
+                "TVT",
+                "Thoper",
+                "Trochilus RAT",
+                "Xamtrav",
+                "Yggdrasil",
+                "oRAT"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "2664d6f5-f918-4978-87f8-f6afad7402c6",
+            "created_at": "2023-01-06T13:46:39.393669Z",
+            "updated_at": "2025-03-27T02:00:03.073942Z",
+            "deleted_at": null,
+            "main_name": "Earth Berberoka",
+            "aliases": [
+                "GamblingPuppet"
+            ],
+            "source_name": "MISPGALAXY:Earth Berberoka",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535936,
+    "ts_updated_at": 1743041148,
+    "ts_creation_date": 1653751597,
+    "ts_modification_date": 1653751597,
+    "files": {
+        "pdf": "https://archive.orkl.eu/81c548ff7d60e89b6fdd6944ec277eb2b863edf2.pdf",
+        "text": "https://archive.orkl.eu/81c548ff7d60e89b6fdd6944ec277eb2b863edf2.txt",
+        "img": "https://archive.orkl.eu/81c548ff7d60e89b6fdd6944ec277eb2b863edf2.jpg"
+    }
+}

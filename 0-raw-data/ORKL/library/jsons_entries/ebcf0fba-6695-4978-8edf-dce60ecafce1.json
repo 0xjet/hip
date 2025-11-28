@@ -1,0 +1,93 @@
+{
+    "id": "ebcf0fba-6695-4978-8edf-dce60ecafce1",
+    "created_at": "2023-01-12T15:09:38.815733Z",
+    "updated_at": "2025-03-27T02:06:09.22253Z",
+    "deleted_at": null,
+    "sha1_hash": "afdaf7f132049e6c89c70aa7debb6878f7427f7f",
+    "title": "2017-09-20 - The Formidable FormBook Form Grabber",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:10:33Z",
+    "file_modification_date": "2022-05-28T19:10:33Z",
+    "file_size": 470637,
+    "plain_text": "# The Formidable FormBook Form Grabber\n\n**[arbornetworks.com/blog/asert/formidable-formbook-form-grabber/](https://www.arbornetworks.com/blog/asert/formidable-formbook-form-grabber/)**\n\n\nNETSCOUT Blog\n\n\nby [ASERT Team on September 20th, 2017](https://www.netscout.com/blog/asert/asert-team)\nMore and more we’ve been seeing references to a malware family known as FormBook. Per\nits advertisements it is an infostealer that steals form data from various web browsers and\nother applications. It is also a keylogger and can take screenshots. The malware code is\ncomplicated, busy, and fairly obfuscated--there are no Windows API calls or obvious strings.\nThis post will start to explore some of these obfuscations to get a better understanding of\nhow FormBook works.\n\n## Samples\n\n[The main sample used for this analysis is available on the KernelMode.info forum or](http://www.kernelmode.info/forum/viewtopic.php?f=16&t=4796) on\nVirusTotal. It is version 2.9 of FormBook. Two other samples are referenced as well:\n\n[FormBook 3.0](https://www.virustotal.com/en/file/d90d9e829656cb0b5dfb76faad37b35c6b5383763bd29a3d73c65311ab31dac5/analysis/)\n[FormBook 2.6](https://www.virustotal.com/en/file/0e2678f5d0173246c464a42aced9a6f5494e9f2619257ba7e468834e8708b726/analysis/)\n\n\n-----\n\n## Building Blocks\n\nLet us start with three building blocks that will be used in later sections. First, most of\nFormBook’s data is stored encrypted in various locations--we’ll call these “encbufs”. Encbufs\nvary in size and are referenced with functions similar to this:\n\nThis is a shellcoding\n\ntechnique to determine which address a piece of code is running at. In this example, the\nfunction will return 0x3380FAC. The encbuf will start two bytes after the returned address—\njumping over the pop and retn instructions. Every encbuf starts with what looks like a normal\nx86 function prologue—push ebp; mov ebp, esp—but this is trickery. If you continue to\ndisassemble this code, it quickly becomes gibberish: The second and third building blocks\nare decryption functions—decrypt_func1 and decrypt_func2 respectively. Decrypt_func1\niterates through the encrypted data and depending on the byte value copies a certain\namount of data from certain offsets of the encrypted data to the plaintext data. Note: the\nlength value passed to this function is the length of the plaintext. The length of the encrypted\ndata isn’t explicitly stated. The other decryption function, decrypt_func2, can be broken up\ninto three rounds: subtractions, RC4, and then additions. We’ve implemented both of these\n[functions in a Python class, which can be found on GitHub.](https://github.com/tildedennis/malware/blob/master/formbook/formbook_decryption.py)\n\n## Windows API Calls\n\nAll calls to the Windows API are done at run time via function name hashing. The hashing\nalgorithm is CRC32, though it is not the CRC32B version as implemented in Python’s\nbinascii.crc32 function. We used the Crc32Bzip2 function from the Python module crccheck\nto generate the correct values. Function names are converted to lowercase before hashing.\nFor some of the API calls, the hashes are hardcoded into the code. An example would be\n0xf5d02cd8, which resolves to ExitProcess. A listing of a bunch of Windows API function\n[names and their corresponding hashes is available on GitHub. For other calls, the API hash](https://raw.githubusercontent.com/tildedennis/malware/master/formbook/hashes.txt)\nis fetched from an encbuf using a convoluted mechanism that can be separated into two\nsteps. First, the encbuf containing the hashes is decrypted. This requires two other encbufs,\nthe decryption functions from above, and some SHA1 hashing:\n\n\n-----\n\nThe second step is specifying an index into the decrypted encbuf and decrypting the hash:\n\n[A listing of indexes, hashes, and their corresponding functions is available on GitHub. There](https://github.com/tildedennis/malware/blob/master/formbook/func_index_hashes.txt)\nare six additional API calls where the hashes are stored in a separate encbuf. We’ll point this\nencbuf out in another section, but they map to the following network related functions:\n\nsocket (0x46a9bfc5)\nhtons (0xe9cef9bb)\nWSAStartup (0xa83c6f74)\nsend (0x6e3cd283)\nconnect (0x8c9cf4aa)\nclosesocket (0x4194fdf)\n\n**Strings Strings are obfuscated in two ways. Some of them are built a DWORD at a time on**\nthe stack:\n\n\n-----\n\nThe rest are stored in an encbuf. The strings encbuf is first decrypted using decrypt_func1.\nThe decrypted encbuf contains an array of variable length encrypted strings, which can be\nrepresented like:\n```\nstruct {\n  BYTE size;\n  BYTE *encrypted_string[size];\n}\n\n```\nA particular string is referenced by an index number and is decrypted using decrypt_func2:\n\n[A listing of the decrypted strings and their indexes are available on GitHub. Command](https://github.com/tildedennis/malware/blob/master/formbook/decrypted_strings.txt)\n**and Control (C2) URLs The C2 URLs are stored in a “config” encbuf and the mechanism to**\nget at them are convoluted and spread out over multiple functions. The first step of the\nmechanism is to figure out what process the injected FormBook code is running in.\nDepending on the injected process, a C2 index is saved and a 20-byte key is extracted from\nan encbuf and decrypted. Here is the snippet of code for when FormBook is running in\nexplorer.exe:\n\nNext, the config encbuf goes through a series of decryption steps:\n\n\n-----\n\nNote: in the “Windows API Calls” section above we mentioned that six of the hashes were\nstored in a separate encbuf. In the screenshot above, we’ve made a comment where this\nencbuf comes from. The “decrypt_s205” function contains more decryption:\n\nAt this point, the config encbuf is decrypted, but the C2s are still obfuscated. Note that up\nto six C2s can be referenced depending on which process FormBook is running in. The final\nstep is one more round of decryption using the process specific key from the first step:\n\nIterating through the possible C2 offsets and keys for the analyzed sample we get:\n\n\n-----\n\nInitially we thought there would be up to six different C2s encrypted with different keys, but\nit’s just the same C2. This was the case for all the other samples we spot-checked as well.\n**Decoy C2 URLs? While reviewing a sandbox run of a FormBook 3.0 sample, we noticed**\nphone home traffic to multiple C2s:\n\nBut when we extracted the C2s from its config encbuf we got a completely different C2:\n\nDigging further into this, we noticed that starting in this version there were additional\n[encrypted strings. These can be seen in this listing on GitHub. In particular starting at index](https://github.com/tildedennis/malware/blob/master/formbook/version_3_0_decrypted_strings.txt)\n78 there are 64 seemly random domains (including the ones seen in our sandbox run).\nTracing these strings in the code we see that 15 of these are randomly selected into an array\nand then one of them is randomly replaced with the C2 from the config encbuf. At a quick\nglance there doesn’t seem to be any overlap of these domains from sample to sample. They\nall seem to be registered, but by different entities. Some of them show up in search engines\n\n\n-----\n\nwith benign looking data, but most return HTTP page not found s. For now, our theory is that\nthese are randomly chosen decoy C2s. C2 Communications FormBook uses HTTP—both\nGETs and POSTs—for C2. An example of the initial phone home looks like this:\n\nThe query parameter “id” contains data encrypted with the following process:\n\nUnlike other parts of\n\nFormBook, the generation of the “comms_key” is easy—it boils down to the SHA1 digest of\nthe C2. Using a Python snippet, the communications key for the analyzed sample can be\ngenerated like this:\n\nThe\n\n“transform_b64_chars” function does the following character transformation:\n\n+ -> / -> _\n= -> .\n\nThe encrypted data from above looks like this once decrypted:\n```\nFBNG:DDE857B32.9:Microsoft Windows XP x86:QWRtaW4=\n\n```\nIt is mostly “:” delimited and consists of the following fields:\n\nMessage type (FBNG)\nBot ID and bot version (missing “:”) (DDE857B3 and 2.9)\nWindows version\nBase64 encoded username\n\n\n-----\n\n[Based on the leaked C2 panel code (see this KernelMode.info forum thread) there are a few](http://www.kernelmode.info/forum/viewtopic.php?f=16&t=4796)\ntypes of phone home messages:\n\nKNOCK_POST – the initial phone home as shown above\nRESULT_POST – results of a task\nIMAGE_POST – screenshot\nKEY_POST – key logger logs\nForm logger logs\n\nAn example of an IMAGE_POST from another sample (version 2.6) looks like this:\n\nThere are three POST parameters:\n\ndat – encrypted data\nun – base64 encoded username\nbr – web browser identifier\n\nThe encrypted data is decrypted as above (using www[.]wowtracking[.]info/list/hx47/ as the\nC2 key component) and the first 100 decrypted bytes look like this:\n\nHere we can see:\n\n\n-----\n\nMessage type (FBIMG)\nBot ID (DDE857B3)\nAnd the start of a JPEG file\n\nThe JPEG file shows a screenshot of one of ASERT’s finest sandboxen:\n\n## Conclusion\n\nFormBook is an infostealing malware that we’ve been seeing more and more of recently.\nThis post has been an analysis of some of the obfuscations used in the FormBook malware\nto start getting an understanding of how it works. Based on samples in our malware zoo and\nsearch engine results, it seems to have gotten its start sometime in early 2016. With a cheap\nprice tag (a few hundred dollars), general availability (for sale on Hack Forums), and a\nsupposed release of a “cracked builder” there are quite a few FormBook samples and\ncampaigns in the wild and we only expect to see more.\n\nPosted In\n\nAnalysis\nBotnets\nEncryption\nInteresting Research\nMalware\nReverse Engineering\nthreat analysis\n\n\n-----\n\n## Subscribe\n\n_Sign up now to receive the latest notifications and updates from NETSCOUT's ASERT._\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2017/2017-09-20 - The Formidable FormBook Form Grabber.pdf"
+    ],
+    "report_names": [
+        "2017-09-20 - The Formidable FormBook Form Grabber.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "7c053836-8f50-4d40-bc5c-7088967e1b57",
+            "created_at": "2022-10-25T16:07:24.549525Z",
+            "updated_at": "2025-03-27T02:02:10.278474Z",
+            "deleted_at": null,
+            "main_name": "Rocke",
+            "aliases": [
+                "Aged Libra",
+                "Iron Group",
+                "Rocke"
+            ],
+            "source_name": "ETDA:Rocke",
+            "tools": [
+                "Godlua",
+                "Kerberods",
+                "LSD",
+                "Pro-Ocean",
+                "Xbash"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "905eabd9-2b7f-483d-86bd-0c72f96b4162",
+            "created_at": "2023-01-06T13:46:39.02749Z",
+            "updated_at": "2025-03-27T02:00:02.980813Z",
+            "deleted_at": null,
+            "main_name": "Rocke",
+            "aliases": [
+                "Aged Libra"
+            ],
+            "source_name": "MISPGALAXY:Rocke",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "0b02af5f-2027-42b7-a6f2-51e2fd49ba7f",
+            "created_at": "2022-10-25T15:50:23.360509Z",
+            "updated_at": "2025-03-27T02:00:55.45329Z",
+            "deleted_at": null,
+            "main_name": "Rocke",
+            "aliases": [
+                "Rocke"
+            ],
+            "source_name": "MITRE:Rocke",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536178,
+    "ts_updated_at": 1743041169,
+    "ts_creation_date": 1653765033,
+    "ts_modification_date": 1653765033,
+    "files": {
+        "pdf": "https://archive.orkl.eu/afdaf7f132049e6c89c70aa7debb6878f7427f7f.pdf",
+        "text": "https://archive.orkl.eu/afdaf7f132049e6c89c70aa7debb6878f7427f7f.txt",
+        "img": "https://archive.orkl.eu/afdaf7f132049e6c89c70aa7debb6878f7427f7f.jpg"
+    }
+}

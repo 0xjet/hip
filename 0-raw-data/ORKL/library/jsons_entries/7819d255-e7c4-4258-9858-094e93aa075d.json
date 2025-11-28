@@ -1,0 +1,42 @@
+{
+    "id": "7819d255-e7c4-4258-9858-094e93aa075d",
+    "created_at": "2023-01-12T15:05:38.101436Z",
+    "updated_at": "2025-03-27T02:05:51.439342Z",
+    "deleted_at": null,
+    "sha1_hash": "67bba07722f833507d2b4f2495a70384238bfd51",
+    "title": "2019-08-01 - Decrypting L0rdix RAT’s C2",
+    "authors": "",
+    "file_creation_date": "2022-05-28T02:43:50Z",
+    "file_modification_date": "2022-05-28T02:43:50Z",
+    "file_size": 2519456,
+    "plain_text": "# Recent Posts\n\n**bromium.com/decrypting-l0rdix-rats-c2/**\n\n[HP Threat Research Blog • Decrypting L0rdix RAT’s C2](https://www.bromium.com/blog/)\n\n## Decrypting L0rdix RAT’s C2\n\n\nAugust 2, 2019\n\n\nIn my [previous blog post on L0rdix RAT, I took a look at its panel and builder components](https://www.bromium.com/an-analysis-of-l0rdix-rat-panel-and-builder/)\nthat have been circulating through underground forums recently. As part of that analysis, I\nidentified a key (“3sc3RLrpd17”) which was embedded in one of the PHP pages in L0rdix’s\npanel. A SHA-256 hash is calculated of this key, which is used as the AES key to encrypt\nand decrypt L0rdix’s command and control (C2) communications. When a sample is\ngenerated using L0rdix’s builder, the operator is able to decide this key.\n\nIn this post, I examine L0rdix’s C2 encryption and decryption functions in more detail and\ndiscuss how to automate the task of identifying, decrypting and extracting L0rdix C2 traffic\nfrom a PCAP using Python.\n\n**L0rdix’s configuration structure**\n\nL0rdix’s configuration contains 10 fields, which are encrypted and sent as URL query strings\nin a HTTP POST request to the connect.php page of the panel. The configuration settings of\ndeployed bots are updated by sending similar POST requests to the bots from the panel.\n\n**Query String** **Configuration Field**\n\n\n-----\n\nh= Hardware ID\n\no= Operating system\n\nc= CPU\n\ng= GPU\n\nw= Installed antivirus\n\np= Privileges of current user\n\nr= Hash rate\n\nf= L0rdix profile in use\n\nrm= RAM\n\nd= Drives\n\n**L0rdix C2 encryption and decryption steps**\n\nL0rdix encrypts its C2 communications using the following steps:\n\n1. Encrypts the plaintext using AES in Cipher Block Chaining (CBC) mode with a 256-bit\n\nkey and 16-byte initialisation vector (IV).\n2. Base64 encodes the ciphertext.\n3. Replaces plus (+) characters with tildes (~).\n4. URL encodes the ciphertext.\n\nFigure 1 – L0rdix RAT’s C# encryption function.\n\nFor example, the ciphertext of “Windows 7 Enterprise” looks like this:\n\n\n-----\n\n_buNpZksa9PSEshjHiM9XNI84ku2X6Zy2Syr7zdzvxMM%3d_\n\nWe can decrypt the ciphertext by performing the encryption actions in reverse:\n\n_buNpZksa9PSEshjHiM9XNI84ku2X6Zy2Syr7zdzvxMM= (After URL decoding)_\n_6ee369664b1af4f484b218c788cf57348f3892ed97e99cb64b2afbcddcefc4c3 (Hex_\nrepresentation after Base64 decoding)\n_Windows 7 Enterprise (After AES decryption)_\n\n**Default key or single operator**\n\nAfter analysing more L0rdix samples in the wild, it became clear that many of them use the\nkey found in the leaked panel to encrypt their C2 channels. There are two realistic\npossibilities for the re-occurrence of this key:\n\n1. “3sc3RLrpd17” is the default key that the RAT panel is supplied with from its author and\n\nseveral buyers have not changed it.\n2. The L0rdix samples that use this key are bots controlled by a single operator. Based on\n\nthe implementation of the encryption and decryption functions, each L0rdix panel\noperator must use the same key for every bot they control.\n\nThere is stronger evidence to indicate that the first possibility is true. For instance, the key is\n[referenced in a coding tutorial on how to encrypt and decrypt data using AES in C# and PHP.](https://odan.github.io/2017/08/10/aes-256-encryption-and-decryption-in-php-and-csharp.html)\nL0rdix’s server side encryption and decryption functions closely resemble those in the\ntutorial, sharing the method (AES-CBC 256), IV (16 null bytes), key (“3sc3RLrpd17”) and\nprogramming languages used (C# and PHP). L0rdix’s author may have copied the tutorial’s\nencryption implementation and decided not to change the key.\n\nFigure 2 – L0rdix panel’s PHP decryption function, including the suspected default operator\nkey.\n\n\n-----\n\nFigure 3 – Coding tutorial on AES-256 encryption and decryption in PHP.\n\n**Automating L0rdix C2 decryption with decrypt_l0rdix_c2.py**\n\nSince L0rdix uses symmetric key encryption it was possible to write a Python script\n(decrypt_l0rdix_c2.py) to parse a PCAP containing L0rdix C2 traffic and decrypt it. The script\nfirst identifies L0rdix traffic based on its expected structure by parsing a PCAP using the\n[Pyshark library. For example, since L0rdix has 10 fields in its configuration, there should be](https://kiminewt.github.io/pyshark/)\nat least 10 query strings in a L0rdix C2 URL. The query strings are identified and decoded\ninto a ciphertext before being run through an AES decryption function using the\n[Pycryptodome library.](https://www.pycryptodome.org/en/latest/src/introduction.html)\n\nThe script also extracts screenshots that L0rdix RAT periodically takes of infected systems.\nThe traffic is decrypted using the suspected default operator key (“3sc3RLrpd17”), or a user\nsupplied key using the optional -k argument. You can extract the operator key from a L0rdix\nbot using static analysis. If a L0rdix operator has not changed the operator key from the\ndefault one, any captured C2 traffic between their bots and the admin panel can be\n[decrypted using decrypt_l0rdix_c2.py. The script is available to download from GitHub.](https://github.com/cryptogramfan/Malware-Analysis-Scripts/blob/master/decrypt_l0rdix_c2.py)\n\nFigures 4 and 5 show the output from running the script against L0rdix C2 traffic:\n\n_decrypt_l0rdix_c2.py -p l0rdix_c2.pcap_\n\n\n-----\n\nFigure 4 – Output from decrypt_l0rdix_c2.py showing identified L0rdix traffic.\n\n\n-----\n\nFigure 5 – Output from decrypt_l0rdix_c2.py showing extracted screenshots and decrypted\ntraffic. You can see the decrypted values of L0rdix’s configuration.\n\nTags\n\n[decryption](https://www.bromium.com/blog/?post-tag=decryption) [l0rdix](https://www.bromium.com/blog/?post-tag=l0rdix) [python](https://www.bromium.com/blog/?post-tag=python)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-08-01 - Decrypting L0rdix RAT’s C2.pdf"
+    ],
+    "report_names": [
+        "2019-08-01 - Decrypting L0rdix RAT’s C2.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673535938,
+    "ts_updated_at": 1743041151,
+    "ts_creation_date": 1653705830,
+    "ts_modification_date": 1653705830,
+    "files": {
+        "pdf": "https://archive.orkl.eu/67bba07722f833507d2b4f2495a70384238bfd51.pdf",
+        "text": "https://archive.orkl.eu/67bba07722f833507d2b4f2495a70384238bfd51.txt",
+        "img": "https://archive.orkl.eu/67bba07722f833507d2b4f2495a70384238bfd51.jpg"
+    }
+}

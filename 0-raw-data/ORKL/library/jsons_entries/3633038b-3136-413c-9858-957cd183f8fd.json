@@ -1,0 +1,67 @@
+{
+    "id": "3633038b-3136-413c-9858-957cd183f8fd",
+    "created_at": "2023-02-02T02:07:52.281217Z",
+    "updated_at": "2025-03-27T02:08:40.728776Z",
+    "deleted_at": null,
+    "sha1_hash": "3104b3d19325a77c39c4d48ffec8eeabafe3af07",
+    "title": "2023-01-04 - Unpacking RedLine Stealer",
+    "authors": "",
+    "file_creation_date": "2023-02-01T07:45:05Z",
+    "file_modification_date": "2023-02-01T07:45:05Z",
+    "file_size": 188844,
+    "plain_text": "# Unpacking RedLine Stealer\n\n**dr4k0nia.github.io/posts/Unpacking-RedLine-Stealer/**\n\nPosted Jan 4, 2023\nBy _[dr4k0nia](https://twitter.com/dr4k0nia)_\n_7 min read_\n\n\nJanuary 4, 2023\n\n\nIn this post, we are going to take a look at Redline Stealer, a well-known .NET based credential\nstealer. I will focus on unpacking the managed payload and extracting it’s config, for a more\n[detailed analysis of the payload you can check out this post by c3rb3ru5d3d53c.](https://c3rb3ru5d3d53c.github.io/malware-blog/redline-stealer/)\n\n## Dealing with the native dropper\n\nMany of the in-the-wild samples of Redline are plain .NET applications with pretty basic custom\nobfuscation. Considering that many commonly used obfuscators lead to false positive AV\ndetections this is very likely intentional. Although primarily using .NET, many samples come\npacked in a native x86 wrapper that will load the managed payload at runtime. Unpacking this\nnative dropper is quite simple, it uses process hollowing on a legitimate process. We can use this\nto our advantage; since the injection requires the process to be started in suspended mode we\ncan simply use a debugger to pause the execution before the process is unsuspended and dump\nit. The injection target might vary between versions. In my case, they inject into AppLaunch.exe\nwhich is a utility binary of .NET Framework 4.0+, that is part of the standard Windows 10 install.\n\nThe dropper dynamically resolves the functions required for process hollowing. So we will not find\nthem in the imports but there are some artifacts from gcc’s error handling which give a hint as to\nwhich functions are used. Strings like “VirtualProtect failed…” make it easy to guess what is going\non even if the actual functions are dynamically resolved. The following functions are used:\n\n\n-----\n\n```\n  CreateProcessW\n\n  ReadProcessMemo\n  ry\n  VirtualProtect\n\n  NtWriteVirtualM\n  emory\n\n  NtSetContextThr\n  ead\n\n  NtResumeThread\n\n  NtUnmapViewOfSe\n  ction\n\n```\nIt then performs simple process hollowing. Which we can simply dump. For this, I use x32Dbg,\nand set a breakpoint on NtResumeThread then continue execuction. Once the breakpoint hits I\n[dump the AppLaunch.exe process, that was spawned by the dropper, using ExtremeDumper to](https://github.com/wwh1004/ExtremeDumper)\nget a perfectly working managed image from the process. Make sure to run ExtremeDumper as\nAdmin to find the AppLaunch process. Once we have the dumped image we can simply terminate\nAppLaunch.exe and our debuggee.\n\n## Dealing with the managed part\n\nMost of Redline’s obfuscation is focused on the strings. Not all strings are obfuscated but most of\nthe characteristic ones are, especially strings that can be used to detect the malware. These\nobfuscated strings are constructed at runtime from a char array and in some cases, they have\nrandom text inserted that will be removed from the string before it’s used.\n\nSince this was quite annoying to get rid of manually for the whole binary I decided to write a\ncustom tool. The tool is pretty simple, it consists of two clean-up stages. The first one is to\nremove the array to string assignments And the second one is to clean the inserted text and\nreplace operations. I also added a stage for config extraction which will be discussed later. As per\nusual I came up with a fun name for this tool: It’s called Greenline.\n\n### Deobfuscating the strings\n\n\n-----\n\nWe begin by searching for all string constructors that take a char array as it s parameter and are\npreceded by a call instruction. The constructor is called using a newobj instruction, with the\nconstructor as it’s operand. The constructor requires a char array to be pushed on the stack\nbefore its executed. Lets look at what the code we are dealing with looks in CIL:\n```\nIL_0000: nop\n\nIL_0001: ldc.i4.5\n\nIL_0002: newarr System.Char\n\nIL_0007: dup\n\nIL_0008: ldtoken\n<PrivateImplementationDetails>::DC0F42A41F058686A364AF5B6BD49175C5B2CF3C4D5AE95417448BE351\n7B4008\n\nIL_000d: call\nSystem.Runtime.CompilerServices.RuntimeHelpers::InitializeArray(System.Array,\nSystem.RuntimeFieldHandle)\n\nIL_0012: newobj System.String::.ctor(char[])\n\n\n```\nThe first thing that happens is the array initialization. At IL_0001 the size of the array is pushed\non to the stack as an integer, next a new array of type char is initialized. For the next part I need\nto explain how arrays in .NET are actually stored.\n\nFor value type arrays like char, byte etc. that are initialized inline and have more then three\nelements the compiler will generate a ![](new type named <PrivateImplementationDetails>.\nThe type contains fields that point to chunks of bytes within a data section of the PE. These fields\nare of a struct type with a hardcoded size, telling the runtime the size of the chunk. At runtime, the\n```\nSystem.Runtime.CompilerServices.RuntimeHelpers::InitializeArray method is called to\n\n```\nperform a memory copy of the data referenced by the field into the array’s memory location.\n\nAfter the array has been initialized it is consumed by the System.String constructor at IL_0012.\nSince this CIL pattern can in some cases be different or deliberately altered by an obfuscator I\ndecided to use Echo,1 a framework with data flow analysis capabilities for CIL. With Echo we can\nreliably resolve the dependencies of the call to InitializeArray.\n\nIn this snippet we can see that the string constructor call is preceded by a call to\n```\nInitializeArray. This call depends on a couple more instructions. First an array object, which is\n\n```\nmade up of the instructions from 0020 to 0022 the size of the array which is 19 then the type of\nthe array object char. The dup copies the top most stack item which is the array object and\npushes it on top of the stack again, which is later used by the string constructor. Next ldtoken\npushes the handle to the field in <PrivateImplementationDetails> onto the stack. So now we\nhave everything our call depends on. Echo can find these kind of dependeny relations\nautomatically, using a symbolic flow graph to obtain all instructions that are required by a\nconsumer like the call in the example.\n\n\n-----\n\nUsing the obtained dependencies we can manually construct the string and patch the old CIL with\njust a string assignment, replacing all no longer needed instructions with NOP’s.\n\nThe second stage follows the same logic, but this time we search for all calls to the Replace\nmethod using two string literals as arguments. We use Echo to obtain the dependencies and\npatch all no longer needed instructions with NOP’s leaving us with the final deobfuscated string.\n\n### Extracting the config\n\nThis part is probably the most interesting for the more threat intel focussed readers :D. Identifying\nthe config of Redline is pretty simple when we have easy access to the managed types and their\nmembers. I use an exclusion-based search, iterating through the types we abort processing for all\ntypes that don’t match our criteria. A few identifiers that I use to find the correct class:\n\nIs a public static class\nHas a static constructor and 5 fields (the constructor is hidden in the C# view, it initializes\n_the fields with the values seen in the decompilation)_\nHas the custom attribute System.Reflection.ObfuscationAttribute\n(Has a field named IP)\n\nAfter we find the correct class we obtain all field values by parsing the static constructor of the\nclass, which initializes the fields. The C2 IP and the ID are XOR encrypted and Base64 encoded\nso we need to decrypt and decode them for that, I simply copied and simplified the decryption\nroutine from Redline. After we decrypted the encrypted fields we have a fully readable config.\n\n\n-----\n\n## Conclusion\n\nI hope you found this little post helpful and can put it to use analyzing Redline Stealer. The tool\n[described in this post and it’s source code are available on my GitHub, feel free to check it out. If](https://github.com/dr4k0nia/Greenline)\nyou’re interested in .NET deobfuscation in general make sure to check out the code as it’s basic\napproach can be adapted for other obfuscation of this kind as well.\n\n## Samples\n\nx86 compiled binary: modest-menu.exe,\nSHA256:0d753431639b3d2b8ecb5fb1684018b2c216fec10cc43d0609123f6f48aa98b8\n\nUnpacked child => .NET binary: Bahut.exe SHA256:\n98d146faabd764f5ddd4a2088dfaf075dd382358026498344c91dcb46a7dff66\n.NET binary: file,\nSHA256:714AE901F55DB2580AC4AC9048C09EFDCD562F301640A6FD8343293F1EBB36FF\n.NET binary: PEInjection.exe,\nSHA256:465FBA168502ED66E373DB521F1C0DD93CE30E69D271528051390817977B4818\n\n[dotnet,](https://dr4k0nia.github.io/categories/dotnet/) [reverse-engineering,](https://dr4k0nia.github.io/categories/reverse-engineering/) [malware](https://dr4k0nia.github.io/categories/malware/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2023/2023-01-04 - Unpacking RedLine Stealer.pdf"
+    ],
+    "report_names": [
+        "2023-01-04 - Unpacking RedLine Stealer.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1675303672,
+    "ts_updated_at": 1743041320,
+    "ts_creation_date": 1675237505,
+    "ts_modification_date": 1675237505,
+    "files": {
+        "pdf": "https://archive.orkl.eu/3104b3d19325a77c39c4d48ffec8eeabafe3af07.pdf",
+        "text": "https://archive.orkl.eu/3104b3d19325a77c39c4d48ffec8eeabafe3af07.txt",
+        "img": "https://archive.orkl.eu/3104b3d19325a77c39c4d48ffec8eeabafe3af07.jpg"
+    }
+}

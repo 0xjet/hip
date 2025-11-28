@@ -1,0 +1,42 @@
+{
+    "id": "be2f99a8-dcc4-47b4-a8b5-82f9129c6312",
+    "created_at": "2023-01-12T15:08:28.75303Z",
+    "updated_at": "2025-03-27T02:06:01.505047Z",
+    "deleted_at": null,
+    "sha1_hash": "d062065d0feccc3a48415df29da4a56aa301b6e0",
+    "title": "2019-06-04 - Taking a look at Baldr stealer",
+    "authors": "",
+    "file_creation_date": "2022-05-28T04:06:11Z",
+    "file_modification_date": "2022-05-28T04:06:11Z",
+    "file_size": 644971,
+    "plain_text": "# Taking a look at Baldr stealer\n\n**[krabsonsecurity.com/2019/06/04/taking-a-look-at-baldr-stealer/](https://krabsonsecurity.com/2019/06/04/taking-a-look-at-baldr-stealer/)**\n\n[Posted on June 4, 2019](https://krabsonsecurity.com/2019/06/04/)\n\nMD5: a462c3b291b90b202c6d090881ba6134\n\nFile type: PE, Visual C++\n\n[https://app.any.run/tasks/0e429277-f2b6-4432-80ad-fed61a2bb33a/](https://app.any.run/tasks/0e429277-f2b6-4432-80ad-fed61a2bb33a/)\n\n## Background information\n\nBaldr is a relatively new stealer that became available on some forums early 2019. It was\npreviously analyzed by MalwareBytes (https://blog.malwarebytes.com/threatanalysis/2019/04/say-hello-baldr-new-stealer-market/ ). However since MB’s analysis did\nnot include deobfuscation I will be including a deobfuscated version of the malware as well\nas an analysis of that, which will make things a lot clearer.\n\n## The packer\n\nThe packer relies on a shellcode which’s decryption begins at around 0x42F8D1 with the\nVirtualProtect call. Interestingly, a giant array (which is most likely the encrypted shellcode)\nis assembled on stack, which IDA refuses to decompile as the function is too big, and\nGhidra freezes when decompilation is attempted.\n\nThe decryption call\nIt is regardless relatively simple to unpack, and is of the variant that uses a new section to\nstore it’s data (from this point on I shall refer to all such variants as section crypter for the\nsake of simplicity). By setting a memory breakpoint on the last section and running the\n\n\n-----\n\nsample, we easily are able to find the decryption function and obtain the decrypted payload\n(which can alternatively be reached directly by setting a hardware breakpoint at 0042CC2E\nsince the decryption function is inside a shellcode that is decrypted at runtime).\n\n## Baldr Stealer\n\nAfter that, we are rewarded with the Baldr payload that customers are given by the\ndeveloper: a PE file which loads the CLR runtime and then execute the final .NET payload.\nInstead of wasting time reverse engineering this, it was much more simple to use\nMegaDumper to obtain the payload. The MD5 of the CLR loader is\n183E0610403FB07B88B809A26354CB2E, and the final payload is\nCAB810FFA40EC642FBCED82E07B9D593 (both available on VirusBay and VirusTotal).\n\nThe .NET payload is obfuscated with a modded variant of ConfuserEx with extra mutations.\nA deobfuscated file is included at the end of the article, which was cleaned by Wadu. The\nconfiguration for the file is as follow:\n\npublic static string gate_address = “http://185.136.171.42/gate.php”;\n\npublic static string baldr_version = “v3.0”;\n\npublic static string baldr_name = “Baldr”;\n\npublic static 64b30ed2 features = new 64b30ed2\n\n{\n\ntelegram_steal = true,\n\nautofill_steal = true,\n\ncards_steal = true,\n\ncookies_steal = true,\n\nexecution_time = 0,\n\nftp_steal = true,\n\ngrabber_steal = true,\n\nhistory_steal = true,\n\njabber_steal = true,\n\npasswords_steal = true,\n\nscreenshot_grabber = true,\n\nself_delete = true,\n\nvpn_steal = true\n\n};\n\nThe functions operate as follow:\n\n**Telegram Stealer**\n\nThe telegram stealer operates by finding processes with the name “Telegram” and obtain\nthe directory it is running from. It attempts to find the D877F783D5D3EF8C directory (the\ndirectory where Telegram stores it’s data) and steals the files D877F783D5D3EF8C\\map0,\n\n\n-----\n\nD877F783D5D3EF8C\\map1, D877F783D5D3EF8C0 and D877F783D5D3EF8C1.\n\n**Browsers Handler**\n\nBaldr obtains autofill information by reading moz_formhistory from Firefox’s\nformhistory.sqlite. In addition to this, it also recovers history by reading moz_places from\nplaces.sqlite and cookies from the table moz_cookies in cookies.sqlite. Passwords are\nrecovered from logins.json. I’ll avoid going into the details of other browsers because\nanyone can google for 5 minutes and find out how browsers store data.\n\n**Screenshot grabber**\n\nThe screenshot grabber (as most .NET screenshot grabbers do) creates a bitmap the size\nof the screen and then use Graphics.CopyFromScreen, which uses BitBlt underneath. As\nsuch, this function can be monitored to detect screengrabbing attempts (although it is likely\nthat BitBlt is used by legitimate applications as well).\n\nThen, the file is uploaded as screen.jpeg. Strangely enough, the string “screen.jpeg” is\nbase64 encoded, seemingly for no reason.\n\n\n-----\n\n**FTP Stealer**\n\nThe FTP Stealer retrieves recentservers.xml and sitemanager.xml for FileZilla and\nwcx_ftp.ini for GHISLER/Total Commander.\n\n\n-----\n\n**Jabber Stealer**\n\n\n-----\n\nThe jabber steals the files \\\\.purple\\\\accounts.xml (Pidgin) and\n“\\\\Psi+\\\\profiles\\\\default\\\\accounts.xml” (Psi+) from the Application Data directory.\n\n**VPN Stealer**\n\nThe VPN stealer is capable of stealing from ProtonVPN and NordVPN.\n\n\n-----\n\n**Sleep delay**\n\nThe file sleeps for 1000 times the entry of this in milliseconds. Strangely enough, the author\ncalled this “ExectuionTime” [sic].\n\nThat’s about all that Baldr stealer has to offer, however if you notice something that I left out\ndo leave a comment and I will add it to the article. The deobfuscated file’s hash is\n22F1E14D938A1DBC8B501050D5CFAA55FF7B4FD9 and it can be found on VirusBay.\n\n## Comment ( 1 )\n\n\n-----\n\n1. SceptrePosted on 4:46 am October 6, 2019\n\nWhat a great post, keep it up!\n\nView Comment (1) ...\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-06-04 - Taking a look at Baldr stealer.pdf"
+    ],
+    "report_names": [
+        "2019-06-04 - Taking a look at Baldr stealer.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673536108,
+    "ts_updated_at": 1743041161,
+    "ts_creation_date": 1653710771,
+    "ts_modification_date": 1653710771,
+    "files": {
+        "pdf": "https://archive.orkl.eu/d062065d0feccc3a48415df29da4a56aa301b6e0.pdf",
+        "text": "https://archive.orkl.eu/d062065d0feccc3a48415df29da4a56aa301b6e0.txt",
+        "img": "https://archive.orkl.eu/d062065d0feccc3a48415df29da4a56aa301b6e0.jpg"
+    }
+}

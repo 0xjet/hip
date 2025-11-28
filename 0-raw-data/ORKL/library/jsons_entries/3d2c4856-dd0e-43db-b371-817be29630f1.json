@@ -1,0 +1,55 @@
+{
+    "id": "3d2c4856-dd0e-43db-b371-817be29630f1",
+    "created_at": "2023-04-05T02:10:13.935486Z",
+    "updated_at": "2025-03-27T02:11:51.838708Z",
+    "deleted_at": null,
+    "sha1_hash": "e5f6e0148d50858487e4d072f62fbccb03c787c2",
+    "title": "2023-03-20 - NAPLISTENER- more bad dreams from developers of SIESTAGRAPH",
+    "authors": "",
+    "file_creation_date": "2023-04-03T08:48:28Z",
+    "file_modification_date": "2023-04-03T08:48:28Z",
+    "file_size": 644419,
+    "plain_text": "# NAPLISTENER: more bad dreams from developers of SIESTAGRAPH\n\n**[elastic.co/de/security-labs/naplistener-more-bad-dreams-from-the-developers-of-siestagraph](https://www.elastic.co/de/security-labs/naplistener-more-bad-dreams-from-the-developers-of-siestagraph)**\n\nVon\n\nRemco Sprooten\n\n20. März 2023\nDeutsch\n\n## Introduction\n\n[While continuing to monitor the REF2924 activity group, Elastic Security Labs observed that](https://www.elastic.co/security-labs/siestagraph-new-implant-uncovered-in-asean-member-foreign-ministry)\nthe attacker shifted priorities from data theft to persistent access using several mechanisms.\nOn January 20, 2023, a new executable Wmdtc.exe was created and installed as a\nWindows Service using a naming convention similar to the legitimate binary used by the\nMicrosoft Distributed Transaction Coordinator service (Msdtc.exe).\n\n**Wmdtc.exe is an HTTP listener written in C#, which we refer to as NAPLISTENER.**\nConsistent with SIESTAGRAPH and other malware families developed or used by this threat,\nNAPLISTENER appears designed to evade network-based forms of detection. Notably,\n\n\n-----\n\n_network- and log-based detection methods are common in the regions where this threat is_\n_primarily active (southern and southeastern asia)._\n\n## Analysis\n\nThis unique malware sample contains a C# class called MsEXGHealthd that consists of\nthree methods: Main, SetRespHeader, and Listener. This class establishes an HTTP\nrequest listener that can process incoming requests from the Internet, and respond\naccordingly by filtering malware commands and transparently passing along legitimate web\ntraffic. This class is depicted in the following image:\n\n## Malware analysis\n\nThe Main method is invoked when the program runs and creates a thread object, which will\nbe used by the Listener method. The thread is then put to sleep for 0 milliseconds, and then\nstarted. Implementing a sleep capability is consistent with SIESTAGRAPH, NAPLISTENER,\nand other malware developed or used by this group.\n\nThe SetRespHeader method sets the response headers for the HTTP response. It takes an\n**HttpListenerResponse object as a parameter and defines headers such as Server,**\n**Content-Type, and X-Powered-By. In one aggressively-targeted victim environment, the IIS**\nweb server returns a 404 response with a Server header containing Microsoft-IIS/10.0 as\nseen below, unless specific parameters are present:\n\n\n-----\n\nHowever, the 404 error when requesting the listener URI adds Content-Type: text/html;\n**charset=utf-8 as an extra header. When NAPLISTENER is installed, the string Microsoft-**\n**HTTPAPI/2.0 is appended to the Server header. This behavior makes the listener detectable**\nand does not generate a 404 error. It is likely this filtering methodology was chosen to avoid\ndiscovery by web scanners and similar technologies.\n\nDefenders may instinctively search for these errors in IIS web server logs, but the\nNAPLISTENER implant functions inline and Windows will redirect these requests to the\nregistered application, allowing the malware to ensure those errors never reach the web\nserver logs where analysts may see them. Additionally, security tools that ingest web server\nlogs will not have an opportunity to identify these behaviors.\n\nThe Listener method is where most of the work happens for NAPLISTENER.\n\nFirst, this method creates an HttpListener object to handle incoming requests. If\n**HttpListener is supported on the platform being used (which it should be), it adds a prefix to**\nthe listener and starts it.\n\nOnce running, it waits for incoming requests. When a request comes in, it reads any data\nthat was submitted (stored in a Form field), decodes it from Base64 format, and creates a\nnew HttpRequest object with the decoded data. It creates an HttpResponse object and an\n**HttpContext object, using these two objects as parameters. If the submitted Form field**\ncontains sdafwe3rwe23, it will try to create an assembly object and execute it using the Run\nmethod.\n\nThis means that any web request to /ews/MsExgHealthCheckd/ that contains a base64encoded .NET assembly in the sdafwe3rwe23 parameter will be loaded and executed in\nmemory. It's worth noting that the binary runs in a separate process and it is not associated\n\n\n-----\n\nwith the running IIS server directly.\n\nIf that fails for some reason (e.g., invalid or missing data), then a \"404 Not Found\" response\nwill be sent with an empty body instead . After either response has been sent, the stream is\nflushed and the connection closed before looping back to wait for more incoming requests.\n\n## Proof-of-concept prerequisites\n\n_Attention: Please remember that this is meant as a proof-of-concept to illustrate how_\n_NAPLISTENER must be prepared for a target environment: it should not be deployed in_\n_production environments for any reason._\n\nIn order to properly run NAPLISTENER, an SSL certificate must be generated and the\napplication registered to use it on a target endpoint. A general example of generating a selfsigned certificate resembles the following commands:\n\nThe adversary needs to then Import the certificate.pfx object into the windows certificate\nstore, as depicted in the following image:\n\nEach certificate contains a thumbprint, and the following screen capture depicts an example\ncertificate:\n\n\n-----\n\nThe thumbprint value is necessary to register the application as seen in the following\ncommand:\n\nThe adversary needs to replace the certhash value with the thumbprint from their certificate.\nThe appid is the GUID of the sample application ID. Once the environment is properly\nconfigured, the sample can be run from any privileged terminal.\n\nThe following python script created by Elastic Security Labs demonstrates one method that\ncan then be used to trigger NAPLISTENER. The payload in this example is truncated for\nreadability, and may be released at a later time when the industry has better ability to detect\n\n\n-----\n\nthis methodology.\n\nIn our PoC, running the python script results in a harmless instance of calc.exe.\n\n## Resources\n\nElastic Security Labs has published a NAPLISTENER signature to the open protections\n[artifact repository here.](https://github.com/elastic/protections-artifacts/blob/main/yara/rules/Windows_Trojan_SomniRecord.yar)\n\n\n-----\n\n## Sources\n\nCode similarity analyses are an important part of our process. During our investigation of\n[NAPLISTENER, we identified a public GitHub repository that contains a similar project.](https://github.com/A-D-Team/SharpMemshell/blob/main/HttpListener/memshell.cs)\nSimilar logic and identical debugging strings are present in both pieces of code, and we\nassess that SharpMemshell may have inspired the threat responsible for NAPLISTENER.\n\n## Key takeaways\n\nThe attacker has shifted their focus from data theft to establishing persistent access\nusing new malware including NAPLISTENER, an HTTP listener written in C#\n\nNAPLISTENER creates an HTTP request listener that can process incoming requests\nfrom the internet, reads any data that was submitted, decodes it from Base64 format,\nand executes it in memory\n\nNAPLISTENER is designed to evade network-based detection methods by behaving\nsimilarly to web servers\n\nThe attacker relies on code present in public repositories for a variety of purposes, and\nmay be developing additional prototypes and production-quality code from open\nsources\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2023/2023-03-20 - NAPLISTENER- more bad dreams from developers of SIESTAGRAPH.pdf"
+    ],
+    "report_names": [
+        "2023-03-20 - NAPLISTENER- more bad dreams from developers of SIESTAGRAPH.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "dbee5a02-e2d6-49d2-9bb5-5a9e93fd1de9",
+            "created_at": "2023-11-07T02:00:07.108976Z",
+            "updated_at": "2025-03-27T02:00:03.178328Z",
+            "deleted_at": null,
+            "main_name": "REF2924",
+            "aliases": [],
+            "source_name": "MISPGALAXY:REF2924",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1680660613,
+    "ts_updated_at": 1743041511,
+    "ts_creation_date": 1680511708,
+    "ts_modification_date": 1680511708,
+    "files": {
+        "pdf": "https://archive.orkl.eu/e5f6e0148d50858487e4d072f62fbccb03c787c2.pdf",
+        "text": "https://archive.orkl.eu/e5f6e0148d50858487e4d072f62fbccb03c787c2.txt",
+        "img": "https://archive.orkl.eu/e5f6e0148d50858487e4d072f62fbccb03c787c2.jpg"
+    }
+}

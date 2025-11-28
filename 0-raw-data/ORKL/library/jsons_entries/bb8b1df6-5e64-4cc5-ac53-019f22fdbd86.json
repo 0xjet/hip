@@ -1,0 +1,198 @@
+{
+    "id": "bb8b1df6-5e64-4cc5-ac53-019f22fdbd86",
+    "created_at": "2022-10-25T16:48:23.917652Z",
+    "updated_at": "2025-03-27T02:15:41.781035Z",
+    "deleted_at": null,
+    "sha1_hash": "322a9344111331462baab10d055d78f7055b3c4f",
+    "title": "",
+    "authors": "",
+    "file_creation_date": "2019-12-11T07:19:48Z",
+    "file_modification_date": "2019-12-11T07:19:48Z",
+    "file_size": 244563,
+    "plain_text": "# Chrome 0-day exploit CVE-2019-13720 used in Operation WizardOpium\n\n**[securelist.com/chrome-0-day-exploit-cve-2019-13720-used-in-operation-wizardopium/94866](https://securelist.com/chrome-0-day-exploit-cve-2019-13720-used-in-operation-wizardopium/94866/)**\n\nAMR, GReAT\n\n## Executive summary\n\nKaspersky Exploit Prevention is a component part of Kaspersky products that has successfully\ndetected a number of zero-day attacks in the past. Recently, it caught a new unknown exploit for\nGoogle’s Chrome browser. We promptly reported this to the Google Chrome security team. After\nreviewing of the PoC we provided, Google confirmed there was a zero-day vulnerability and\nassigned it CVE-2019-13720. Google has released Chrome version 78.0.3904.87 for Windows,\nMac, and Linux and we recommend all Chrome users to update to this latest version as soon as\n[possible! You can read Google’s bulletin by clicking here.](https://chromereleases.googleblog.com/2019/10/stable-channel-update-for-desktop_31.html)\n\nKaspersky endpoint products detect the exploit with the help of the exploit prevention component.\nThe verdict for this attack is Exploit.Win32.Generic.\n\nWe are calling these attacks Operation WizardOpium. So far, we have been unable to establish a\ndefinitive link with any known threat actors. There are certain very weak code similarities with\nLazarus attacks, although these could very well be a false flag. The profile of the targeted website\n[is more in line with earlier DarkHotel attacks that have recently deployed similar false flag attacks.](https://securelist.com/the-darkhotel-apt/66779/)\n\nMore details about CVE-2019-13720 and recent DarkHotel false flag attacks are available to\ncustomers of Kaspersky Intelligence Reporting. For more information, contact:\n[intelreports@kaspersky.com.](mailto:intelreports@kaspersky.com)\n\n## Technical details\n\nThe attack leverages a waterhole-style injection on a Korean-language news portal. A malicious\nJavaScript code was inserted in the main page, which in turn, loads a profiling script from a\nremote site.\n\n_Redirect to the exploit landing page_\n\nThe main index page hosted a small JavaScript tag that loaded a remote script from\nhxxp://code.jquery.cdn.behindcorona[.]com/.\n\nThe script then loads another script named .charlie.XXXXXXXX.js. This JavaScript checks if the\nvictim’s system can be infected by performing a comparison with the browser’s user agent, which\nshould run on a 64-bit version of Windows and not be a WOW64 process; it also tries to get the\n\n\n-----\n\nbrowser’s name and version. The vulnerability tries to exploit the bug in Google Chrome browser\nand the script checks if the version is greater or equal to 65 (current Chrome version is 78):\n\n_Chrome version checks in the profiling script (.charlie.XXXXXXXX.js)_\n\nIf the browser version checks out, the script starts performing a number of AJAX requests to the\nattacker’s controlled server (behindcorona[.]com) where a path name points to the argument that\nis passed to the script (xxxxxxx.php). The first request is necessary to obtain some important\ninformation for further use. This information includes several hex-encoded strings that tell the\nscript how many chunks of the actual exploit code should be downloaded from the server, as well\nas a URL to the image file that embeds a key for the final payload and RC4 key to decrypt these\nchunks of the exploit’s code.\n\n_Exploitation chain – AJAX requests to xxxxxxx.php_\n\nAfter downloading all the chunks, the RC4 script decrypts and concatenates all the parts together,\nwhich gives the attacker a new JavaScript code containing the full browser exploit. To decrypt the\nparts, the previously retrieved RC4 key is used.\n\n_One more version check_\n\nThe browser exploit script is obfuscated; after de-obfuscation we observed a few peculiar things:\n\n\n-----\n\n1. Another check is made against the user agent’s string – this time it checks that the browser\n\nversion is 76 or 77. It could mean that the exploit authors have only worked on these\nversions (a previous exploitation stage checked for version number 65 or newer) or that\nother exploits have been used in the past for older Chrome versions.\n\n_Obfuscated exploit code_\n\n2. There are a few functions that operate on the browser’s built-in BigInt class, which is useful\n\nfor doing 64-bit arithmetic inside JavaScript code, for example, to work with native pointers\nin a 64-bit environment. Usually, exploit developers implements their own functions for\ndoing this by working with 32-bit numbers. However, in this case, BigInt is used, which\nshould be faster because it’s implemented natively in the browser’s code. The exploit\ndevelopers don’t use all 64 bits here, but instead operate on a smaller range of numbers.\nThis is why they implement a few functions to work with higher/lower parts of the number.\n\n_Snippet of code to work with 64-bit numbers_\n\n3. There are many functions and variables that are not used in the actual code. This usually\n\nmeans that they were used for debugging code and were then left behind when the code\nwas moved to production.\n\n\n-----\n\n4. The majority of the code uses several classes related to a certain vulnerable component of\n\nthe browser. As this bug has still not been fixed, we are not including details about the\nspecific vulnerable component here.\n5. There are a few big arrays with numbers that represent a shellcode block and an\n\nembedded PE image.\n\nThe analysis we have provided here is deliberately brief due to vulnerability disclosure principles.\nThe exploit used a race condition bug between two threads due to missing proper synchronization\nbetween them. It gives an attacker an a Use-After-Free (UaF) condition that is very dangerous\nbecause it can lead to code execution scenarios, which is exactly what happens in our case.\n\nThe exploit first tries to trigger UaF to perform an information leak about important 64-bit\naddresses (as a pointer). This results in a few things: 1) if an address is leaked successfully, it\nmeans the exploit is working correctly; 2) a leaked address is used to know where the heap/stack\nis located and that defeats the address space layout randomization (ASLR) technique; 3) a few\nother useful pointers for further exploitation could be located by searching near this address.\n\nAfter that it tries to create a bunch of large objects using a recursive function. This is done to\nmake some deterministic heap layout, which is important for a successful exploitation. At the\nsame time, it attempts to utilize a heap spraying technique that aims to reuse the same pointer\nthat was freed earlier in the UaF part. This trick could be used to cause confusion and give the\nattacker the ability to operate on two different objects (from a JavaScript code perspective),\nthough in reality they are located in the same memory region.\n\nThe exploit attempts to perform numerous operations to allocate/free memory along with other\ntechniques that eventually give the attackers an arbitrary read/write primitive. This is used to craft\na special object that can be used with WebAssembly and FileReader together to perform code\nexecution for the embedded shellcode payload.\n\n\n-----\n\n_First stage shellcode_\n\n## Payload description\n\nThe final payload is downloaded as an encrypted binary (worst.jpg) that is decrypted by the\nshellcode.\n\n_Encrypted payload – worst.jpg_\n\nAfter decryption, the malware module is dropped as updata.exe to disk and executed. For\npersistence the malware installs tasks in Windows Task Scheduler.\n\nThe payload ‘installer’ is a RAR SFX archive, with the following information:\n\nFile size: 293,403\nMD5: 8f3cd9299b2f241daf1f5057ba0b9054\nSHA256: 35373d07c2e408838812ff210aa28d90e97e38f2d0132a86085b0d54256cc1cd\n\nThe archive contains two files:\n\nFile name: iohelper.exe\nMD5: 27e941683d09a7405a9e806cc7d156c9\nSHA256: 8fb2558765cf648305493e1dfea7a2b26f4fc8f44ff72c95e9165a904a9a6a48\n\nFile name: msdisp64.exe\nMD5: f614909fbd57ece81d00b01958338ec2\nSHA256: cafe8f704095b1f5e0a885f75b1b41a7395a1c62fd893ef44348f9702b3a0deb\n\n\n-----\n\nBoth files were compiled at the same time, which if we are to believe the timestamp, was “Tue Oct\n8 01:49:31 2019”.\nThe main module (msdisp64.exe) tries to download the next stage from a hardcoded C2 server\nset. The next stages are located on the C2 server in folders with the victim computer names, so\nthe threat actors have information about which machines were infected and place the next stage\nmodules in specific folders on the C2 server.\n\nMore details about this attack are available to customers of Kaspersky Intelligence Reporting. For\n[more information, contact: intelreports@kaspersky.com.](mailto:intelreports@kaspersky.com)\n\n## IoCs\n\nbehindcorona[.]com\ncode.jquery.cdn.behindcorona[.]com\n8f3cd9299b2f241daf1f5057ba0b9054\n35373d07c2e408838812ff210aa28d90e97e38f2d0132a86085b0d54256cc1cd\n27e941683d09a7405a9e806cc7d156c9\n8fb2558765cf648305493e1dfea7a2b26f4fc8f44ff72c95e9165a904a9a6a48\nf614909fbd57ece81d00b01958338ec2\ncafe8f704095b1f5e0a885f75b1b41a7395a1c62fd893ef44348f9702b3a0deb\nkennethosborne@protonmail.com\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2019/2019.11.1.Operation_WizardOpium/Chrome%200-day%20exploit%20CVE-2019-13720%20used%20in%20Operation%20WizardOpium%20.pdf"
+    ],
+    "report_names": [
+        "Chrome 0-day exploit CVE-2019-13720 used in Operation WizardOpium "
+    ],
+    "threat_actors": [
+        {
+            "id": "1dadf04e-d725-426f-9f6c-08c5be7da159",
+            "created_at": "2022-10-25T15:50:23.624538Z",
+            "updated_at": "2025-03-27T02:00:55.508759Z",
+            "deleted_at": null,
+            "main_name": "Darkhotel",
+            "aliases": [
+                "Darkhotel",
+                "DUBNIUM",
+                "Zigzag Hail"
+            ],
+            "source_name": "MITRE:Darkhotel",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "2008a79d-2f3a-475f-abef-3bc119a1bf38",
+            "created_at": "2022-10-25T16:07:24.028651Z",
+            "updated_at": "2025-03-27T02:02:10.084983Z",
+            "deleted_at": null,
+            "main_name": "Operation WizardOpium",
+            "aliases": [],
+            "source_name": "ETDA:Operation WizardOpium",
+            "tools": [],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "5cd3fcb0-eb56-49ac-8125-47ebee93311d",
+            "created_at": "2023-01-06T13:46:39.065814Z",
+            "updated_at": "2025-03-27T02:00:02.988828Z",
+            "deleted_at": null,
+            "main_name": "Operation WizardOpium",
+            "aliases": [],
+            "source_name": "MISPGALAXY:Operation WizardOpium",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "b13c19d6-247d-47ba-86ba-15a94accc179",
+            "created_at": "2024-05-01T02:03:08.149923Z",
+            "updated_at": "2025-03-27T02:05:17.422065Z",
+            "deleted_at": null,
+            "main_name": "TUNGSTEN BRIDGE",
+            "aliases": [
+                "DUBNIUM ",
+                "DarkHotel ",
+                "CTG-1948 "
+            ],
+            "source_name": "Secureworks:TUNGSTEN BRIDGE",
+            "tools": [
+                "Nemim"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "2b4eec94-7672-4bee-acb2-b857d0d26d12",
+            "created_at": "2023-01-06T13:46:38.272109Z",
+            "updated_at": "2025-03-27T02:00:02.790029Z",
+            "deleted_at": null,
+            "main_name": "DarkHotel",
+            "aliases": [
+                "DUBNIUM",
+                "Fallout Team",
+                "Luder",
+                "Tapaoux",
+                "Shadow Crane",
+                "APT-C-06",
+                "SIG25",
+                "Karba",
+                "Nemim",
+                "Nemin",
+                "G0012",
+                "ATK52",
+                "T-APT-02",
+                "TUNGSTEN BRIDGE",
+                "Zigzag Hail"
+            ],
+            "source_name": "MISPGALAXY:DarkHotel",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c0cedde3-5a9b-430f-9b77-e6568307205e",
+            "created_at": "2022-10-25T16:07:23.528994Z",
+            "updated_at": "2025-03-27T02:02:09.847683Z",
+            "deleted_at": null,
+            "main_name": "DarkHotel",
+            "aliases": [
+                "APT-C-06",
+                "ATK 52",
+                "CTG-1948",
+                "Dubnium",
+                "Fallout Team",
+                "Higaisa",
+                "Luder",
+                "Operation DarkHotel",
+                "Operation Daybreak",
+                "Operation Inexsmar",
+                "Operation PowerFall",
+                "Operation The Gh0st Remains the Same",
+                "SIG25",
+                "Shadow Crane",
+                "T-APT-02",
+                "Tungsten Bridge",
+                "Zigzag Hail"
+            ],
+            "source_name": "ETDA:DarkHotel",
+            "tools": [
+                "Asruex",
+                "DarkHotel",
+                "DmaUp3.exe",
+                "GreezeBackdoor",
+                "Karba",
+                "Nemain",
+                "Nemim",
+                "Ramsay",
+                "Retro",
+                "Tapaoux",
+                "Trojan.Win32.Karba.e",
+                "Virus.Win32.Pioneer.dx",
+                "igfxext.exe",
+                "msieckc.exe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716503,
+    "ts_updated_at": 1743041741,
+    "ts_creation_date": 1576048788,
+    "ts_modification_date": 1576048788,
+    "files": {
+        "pdf": "https://archive.orkl.eu/322a9344111331462baab10d055d78f7055b3c4f.pdf",
+        "text": "https://archive.orkl.eu/322a9344111331462baab10d055d78f7055b3c4f.txt",
+        "img": "https://archive.orkl.eu/322a9344111331462baab10d055d78f7055b3c4f.jpg"
+    }
+}

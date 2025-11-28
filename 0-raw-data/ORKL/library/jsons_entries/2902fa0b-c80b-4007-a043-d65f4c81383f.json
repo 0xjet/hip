@@ -1,0 +1,158 @@
+{
+    "id": "2902fa0b-c80b-4007-a043-d65f4c81383f",
+    "created_at": "2023-01-12T15:08:11.240755Z",
+    "updated_at": "2025-03-27T02:17:01.031394Z",
+    "deleted_at": null,
+    "sha1_hash": "1c777a453a7ef492ed9c4de1c8ae14b32a62e5eb",
+    "title": "2020-07-22 - Connecting Kinsing malware to Citrix and SaltStack campaigns",
+    "authors": "",
+    "file_creation_date": "2022-05-28T05:06:22Z",
+    "file_modification_date": "2022-05-28T05:06:22Z",
+    "file_size": 347036,
+    "plain_text": "# See what it's like to have a partner in the fight.\n\n**redcanary.com/blog/kinsing-malware-citrix-saltstack/**\n\nKinsing, a malware family distributed by the H2Miner botnet, is known for targeting Linux-based infrastructure\nsystems including Docker container hosts, Redis instances, and (in recent weeks) Salt servers.\n\nUp to this point, the security firm [Intezer and an individual known as “Blackorbird” on Twitter have published](https://twitter.com/IntezerLabs/status/1257292472939577347)\nevidence linking Kinsing to a Salt exploitation campaign from early May 2020.\n\nRed Canary has uncovered additional evidence linking the Kinsing malware family to Salt server attack\ncampaigns, and, in turn, how these attacks seem to relate to the Citrix ADC/Netscaler exploits from earlier in the\nyear. This post includes a comparison of publicly available research from various sources, some manual analysis\nof binaries collected from VirusTotal, and additional research based on observations across the environments that\nRed Canary monitors.\n\n_[If you give a monkey a typewriter and infinite time, he’ll eventually](https://en.wikipedia.org/wiki/Infinite_monkey_theorem)_\n\n_produce some groundbreaking threat intelligence._\n\n## Establishing Kinsing\n\n### Docker & Redis host exploitation\n\nOne of the better-documented H2Miner/Kinsing campaigns occurred from December 2019 to March 2020 and was\n[documented by Aqua Security. In this campaign, the H2Miner botnet exploited misconfigured Docker Engine API](https://blog.aquasec.com/threat-alert-kinsing-malware-container-vulnerability)\nports to deploy a compromised Docker container. The [entry point for the compromised container would download](https://docs.docker.com/engine/reference/builder/#entrypoint)\nand execute a script, `d.sh .`\n\n\n-----\n\n[Consistent with other opportunistic miner threats documented here and elsewhere, the](https://redcanary.com/blog/frankenstein-was-a-hack-the-copy-paste-cryptominer/) `d.sh script attempted to`\nstop and remove other potential cryptocurrency miners from victim systems in addition to some security tools.\nFinally, the script downloaded a Golang-based remote administration tool (RAT) and established persistence via a\ncron job. This cron persistence would repeat the infection process and keep the RAT running.\n\nEventually, the malware would attempt to execute a script for lateral movement. To achieve this, a script would\nenumerate all SSH known hosts and potential keys from `known-hosts,` `authorized-keys,` `.bash-history,`\nand other files. Once a list of hosts and keys are gathered, the script issues `ssh commands to move laterally`\naround the environment and deploy itself.\n\n### Golang RAT\n\nThe primary malware deployed during Docker host exploitation was a Golang-based RAT named `kinsing . In`\nthe deployment scripts, the RAT was even named `kinsing during downloads for execution. It bears mentioning`\nthat while `kinsing is a tool used by the H2Miner cryptocurrency miner botnet, the RAT itself is separate from the`\nmining component. The RAT uses the [go-resty,](https://github.com/go-resty/resty) [gopsutil,](https://github.com/shirou/gopsutil) [osext, and](https://github.com/kardianos/osext) [diskv Go libraries for multiple tasks related to](https://github.com/peterbourgon/diskv)\ncommand and control (C2), process monitoring, and execution.\n\n[Researchers from Alibaba Cloud analyzed Kinsing in January 2020 as part of an investigation into the H2Miner](https://www.alibabacloud.com/blog/new-outbreak-of-h2miner-worms-exploiting-redis-rce-detected_595743)\nbotnet and tied it to the exploitation of vulnerable Redis servers. In their analysis, they identified multiple function\nsymbols, including some with the the following names:\n```\n   backconnect\n   checkHealth\n   connectForSocks\n   downloadAndExecute\n   getMinerPid\n   isMinerRunning\n   runTask\n   masscan\n\n```\nAnalysis by [Lacework revealed an additional point of interest: the Kinsing malware often contains the complete](https://www.lacework.com/h2miner-botnet/)\nplay of Hamlet by William Shakespeare as a measure to slow analysis.\n\n[Trend Micro’s analysis indicated that Kinsing supported several commands from C2 with data reported back in the](https://blog.trendmicro.com/trendlabs-security-intelligence/exposed-redis-instances-abused-for-remote-code-execution-cryptocurrency-mining)\nC2 URL with special formatting. In these cases, it appeared that these C2 URL fields included:\n```\n   /get\n   /h\n   /getT\n   /l\n   /o\n   /r\n   /s\n   /mg\n   /ms\n\n```\nIn each campaign where Kinsing is used, the RAT binary contains a hardcoded filename where it will deploy a\nXMRIG Monero miner binary.\n\nIn our analysis at Red Canary, we noticed an additional point of interest: Kinsing’s `masscan functionality is`\nimplemented by unpacking a `firewire.sh shell script containing code to install` `libpcap dependencies and`\n[execute masscan as the process name](https://github.com/robertdavidgraham/masscan) `firewire . The command line for this execution followed this pattern:`\n\n\n-----\n\n```\n          p p p p\n\n### Deployed XMRIG\n\n```\nIn both the Redis and Docker host exploitation campaigns the Kinsing RAT went on to deploy and execute an\nXMRIG Monero miner process. In the case of the Docker host campaign, it was named `kdevtmpfsi .`\n\nDuring our analysis, the binary contained all the properties we’d expect of an unprotected XMRIG executable.\nMultiple binary strings matched XMRIG usage options in plaintext as well as expected version numbers.\n```\n-o, --url=URL URL of mining server\n-a, --algo=ALGO mining algorithm https://xmrig.com/docs/algorithms\n--coin=COIN specify coin instead of algorithm\n-u, --user=USERNAME username for mining server\n-p, --pass=PASSWORD password for mining server\n-O, --userpass=U:P username:password pair for mining server\n-k, --keepalive send keepalived packet for prevent timeout (needs pool support)\n--nicehash enable nicehash.com support\n--rig-id=ID rig identifier for pool-side statistics (needs pool support)\n-r, --retries=N number of times to retry before switch to backup server (default: 5)\n-R, --retry-pause=N time to pause between retries (default: 5)\n--user-agent set custom user-agent string for pool\n--donate-level=N donate level, default 5%% (5 minutes in 100 minutes)\n--donate-over-proxy=N control donate over xmrig-proxy feature\n--no-cpu disable CPU mining backend\n-t, --threads=N number of CPU threads\n-v, --av=N algorithm variation, 0 auto select\n--cpu-affinity set process affinity to CPU core(s), mask 0x3 for cores 0 and 1\n--cpu-priority set process priority (0 idle, 2 normal to 5 highest)\n--cpu-max-threads-hint=N maximum CPU threads count (in percentage) hint for autoconfig\n--cpu-memory-pool=N number of 2 MB pages for persistent memory pool, -1 (auto), 0 (disable)\n--cpu-no-yield prefer maximum hashrate rather than system response/stability\n--no-huge-pages disable huge pages support\n--asm=ASM ASM optimizations, possible values: auto, none, intel, ryzen, bulldozer\n--randomx-init=N threads count to initialize RandomX dataset\n--randomx-no-numa disable NUMA support for RandomX\n--randomx-mode=MODE RandomX mode: auto, fast, light\n--randomx-1gb-pages use 1GB hugepages for dataset (Linux only)\n--randomx-wrmsr=N write value (0-15) to Intel MSR register 0x1a4 or do nothing (-1) (Linux only)\n-S, --syslog use system log for output messages\n-l, --log-file=FILE log all output to a file\n--print-time=N print hashrate report every N seconds\n--no-color disable colored output\n--verbose verbose output\n-c, --config=FILE load a JSON-format configuration file\n-B, --background run the miner in the background\n-V, --version output version information and exit\n-h, --help display this help and exit\n--dry-run test configuration and exit\n--export-topology export hwloc topology to a XML file and exit\nXMRig 5.4.0\nbuilt on Dec 22 2019 with GCC\nfailed to export hwloc topology.\nhwloc topology successfully exported to \"%s\"\nUsage: xmrig [OPTIONS]\n\n```\nIn addition to this confirmation of XMRIG’s presence, the adversary included plaintext configuration data\nembedded into the binary. Often when the official XMRIG releases are used, an operator supplies a\n```\nconfig.json file with all the information needed to make the miner work. In the case of this binary, the contents\n\n```\nof `config.json were embedded, disclosing details we can use for tracking the H2Miner campaigns. While the`\nconfiguration was fairly generic, one piece of information stood out: the Monero wallet address.\n\n\n-----\n\n```\n\"background\": true,\n\"donate-level\": 0,\n\"cpu\": true,\n\"colors\": false,\n\"opencl\": false,\n\"pools\": [\n\"coin\": \"monero\",\n\"algo\": null,\n\"url\": \"xmr-eu1.nanopool.org\",\n\"user\":\n\"46V5WXwS3gXfsgR7fgXeGP4KAXtQTXJfkicBoRSHXwGbhVzj1JXZRJRhbMrvhxvXvgbJuyV3GGWzD6JvVMuQwAXxLZmTWkb\",\n\"pass\": \"mine\",\n\"tls\": false,\n\"keepalive\": true,\n\"nicehash\": false\n\n## Linking Kinsing to SaltStack\n\n### Golang RAT + Monero miner\n\n```\nIn May 2020, security vendors linked Kinsing to an additional campaign: one exploiting SaltStack CVE-2020[11651 and CVE-2020-11652. Initial reports were posted via Twitter and were later followed by reporting from](https://twitter.com/blackorbird/status/1256944563668672513)\nvarious sources. Intezer took the lead on this documentation, demonstrating through an analysis of code\nsimilarities that the samples seen in SaltStack exploits were related to the Kinsing RAT. In this section, I want to\nwalk through some of the similarities between the Kinsing RAT used in the SaltStack campaign relative to malware\nused in previous campaigns because it will prove useful to further tie Kinsing to additional exploitation activity.\n\nFirst, in observing the TTPs involved for the SaltStack campaign, we can determine the affected SaltStack\nservices were exploited to download and execute scripts that are similar to the function and structure of previous\nKinsing campaigns. The actor shows the tendency to use single-letter names on their shell scripts, move laterally\nvia SSH, manipulate cron jobs for persistence, and perform `md5sum hash checking to verify malware integrity`\nbefore execution.\n\nIn the execution of the malware, two binaries showed up: a Golang-based RAT and a XMRIG miner. This matches\nprevious Kinsing campaigns.\n\n### Matching Monero wallet address\n\nOne of the strongest ties between the SaltStack campaign and the previous H2Miner/Kinsing campaigns is the\npresence of a shared Monero wallet address:\n```\n46V5WXwS3gXfsgR7fgXeGP4KAXtQTXJfkicBoRSHXwGbhVzj1JXZRJRhbMrvhxvXvgbJuyV3GGWzD6JvVMuQwAXxLZmTWkb\n\n```\nThis wallet address appeared in miner samples from the Docker host, Redis, and SaltStack compromises. As in\nprevious samples, the ones from the SaltStack campaign contained an embedded JSON-formatted configuration\nfile for XMRIG.\n\nThis does not necessarily indicate that all the campaigns were performed by the same actor, but it does suggest\nthat the funds from all the campaigns made a stop in the same account/wallet before distribution. After entering\nthis wallet, the funds could funnel through a laundering operation or the operators could convert it to different\ncurrencies for distribution.\n\n### The play’s the thing: Hamlet in the binary strings\n\n\n-----\n\nAnother piece of evidence tying the SaltStack campaign to previous H2Miner/Kinsing campaigns was the\npresence of the text of Hamlet by William Shakespeare, in its entirety, in the RAT’s binary strings. This additional\ntext bloated the RAT binary to 15MB in size and provided some entertainment during analysis of the malware. In\nall reality, the padding didn’t prove to slow down analysis greatly. Its inclusion could reflect the adversary’s desire\nto increase the malware’s file size, as antivirus configurations sometimes exclude files above a specified size.\n\n### Embedded “masscan” script in binary\n\nAnother piece of familiar evidence appeared in the `salt-store Golang RAT binary from the SaltStack`\ncampaign: an embedded shell script that incorporated `masscan functionality. As with the previous campaigns,`\nthe embedded shell script deployed dependencies, referred to the `masscan binary as “firewire,” and called`\n```\nmasscan with the exact same command-line arguments.\n\n## Linking Kinsing to Citrix ADC\n\n### Golang RAT + Monero miner\n\n```\nIn January 2020, the year started off with several malware families conducting campaigns against Citrix\nApplication Delivery Controller (ADC) devices via CVE-2019-19781. While Kinsing and H2Miner have not been\nformally tied to an ADC campaign, we’ve found enough evidence in both public research and our own analysis to\nassess with high confidence that Kinsing malware was used in the ADC campaign.\n\nDuring one campaign, a Golang RAT and Monero miner component appeared in Citrix ADCs. An awesome blog\npost from [IronNet discusses these findings in detail. First, IronNet dove into analysis of a malicious](https://www.ironnet.com/blog/malware-analysis-nspps-a-go-rat-backdoor) `nspps`\nGolang binary masquerading as a legitimate ADC process named `nsppe . This malware contained capabilities to`\nencrypt C2 traffic, use SOCKS proxies, execute commands, run a XMRIG miner, and run `masscan .`\n\n[When analyzing the C2 protocol used by nspps, IronNet noted these network POST requests:](https://www.virustotal.com/gui/file/5059d67cd24eb4b0b4a174a072ceac6a47e14c3302da2c6581f81c39d8a076c6/details)\n```\n   /h\n   /get\n   /getT\n   /l\n   /o\n   /r\n   /s\n\n```\nThe article includes a detailed summary of these calls, which when compared to C2 calls documented by Trend\nMicro show evidence that `nspps and Kinsing malware both use similar, if not the exact same, C2 protocols.`\n\nAnalysis also determined `nspps contained incredibly similar tasking capabilities:`\n```\n   backconnect\n   download_and_exec\n   exec\n   masscan\n   redis_brute\n   scan\n   socks\n   update\n\n```\nIn our own analysis, Red Canary found that numerous binary strings were shared across the `nspps binary and`\nprevious Kinsing malware samples. The entirety of Hamlet did not appear in this binary, but we did find other\nsimilarities.\n\n\n-----\n\nIn the Citrix ADC campaign, `nspps deployed a XMRIG miner named` `netscalerd . This binary was named to`\nagain masquerade as a system process as ADCs were once named Citrix Netscaler devices. As with former\nKinsing campaigns, numerous strings within the binary showed an embedded `config.json configuration file`\nand the expected usage instructions for an XMRIG binary.\n```\n\"background\": false,\n\"donate-level\": 0,\n\"cpu\": true,\n\"colors\": false,\n\"opencl\": false,\n\"pools\": [\n\"coin\": \"monero\",\n\"algo\": null,\n\"url\": \"xmr-eu1.nanopool.org\",\n\"user\":\n\"46V5WXwS3gXfsgR7fgXeGP4KAXtQTXJfkicBoRSHXwGbhVzj1JXZRJRhbMrvhxvXvgbJuyV3GGWzD6JvVMuQwAXxLZmTWkb\",\n\"pass\": \"mine\",\n\"tls\": false,\n\"keepalive\": true,\n\"nicehash\": false\n-o, --url=URL URL of mining server\n-a, --algo=ALGO mining algorithm https://xmrig.com/docs/algorithms\n--coin=COIN specify coin instead of algorithm\n-u, --user=USERNAME username for mining server\n-p, --pass=PASSWORD password for mining server\n-O, --userpass=U:P username:password pair for mining server\n-k, --keepalive send keepalived packet for prevent timeout (needs pool support)\n--nicehash enable nicehash.com support\n--rig-id=ID rig identifier for pool-side statistics (needs pool support)\n-r, --retries=N number of times to retry before switch to backup server (default: 5)\n-R, --retry-pause=N time to pause between retries (default: 5)\n--user-agent set custom user-agent string for pool\n--donate-level=N donate level, default 5%% (5 minutes in 100 minutes)\n--donate-over-proxy=N control donate over xmrig-proxy feature\n--no-cpu disable CPU mining backend\n-t, --threads=N number of CPU threads\n-v, --av=N algorithm variation, 0 auto select\n--cpu-affinity set process affinity to CPU core(s), mask 0x3 for cores 0 and 1\n--cpu-priority set process priority (0 idle, 2 normal to 5 highest)\n--cpu-max-threads-hint=N maximum CPU threads count (in percentage) hint for autoconfig\n--cpu-memory-pool=N number of 2 MB pages for persistent memory pool, -1 (auto), 0 (disable)\n--cpu-no-yield prefer maximum hashrate rather than system response/stability\n--no-huge-pages disable huge pages support\n--asm=ASM ASM optimizations, possible values: auto, none, intel, ryzen, bulldozer\n--randomx-init=N threads count to initialize RandomX dataset\n--randomx-no-numa disable NUMA support for RandomX\n--randomx-mode=MODE RandomX mode: auto, fast, light\n--randomx-1gb-pages use 1GB hugepages for dataset (Linux only)\n--randomx-wrmsr=N write custom value (0-15) to Intel MSR register 0x1a4 or disable MSR mod (-1)\n--randomx-no-rdmsr disable reverting initial MSR values on exit\n-S, --syslog use system log for output messages\n-l, --log-file=FILE log all output to a file\n--print-time=N print hashrate report every N seconds\n--no-color disable colored output\n--verbose verbose output\n-c, --config=FILE load a JSON-format configuration file\n-B, --background run the miner in the background\n-V, --version output version information and exit\n-h, --help display this help and exit\n--dry-run test configuration and exit\nXMRig 5.5.0\nbuilt on Jan 11 2020 with GCC\nUsage: xmrig [OPTIONS]\n\n```\n\n-----\n\n### Matching Monero wallet address\n\nWhile examining the XMRIG embedded `config.json file, you probably spotted what we did: the Monero wallet`\naddress\n```\n46V5WXwS3gXfsgR7fgXeGP4KAXtQTXJfkicBoRSHXwGbhVzj1JXZRJRhbMrvhxvXvgbJuyV3GGWzD6JvVMuQwAXxLZmTWkb\n\n```\nappeared in the Citrix ADC miner sample. This wallet address also featured prominently in the other Kinsing\ncampaigns. While this isn’t definitive evidence for attribution, it proved to be an excellent way to tie the campaigns\ntogether since searching VirusTotal Intelligence for this wallet address helped us map out the related samples.\n\n### Embedded “masscan” script in binary\n\nAs with other Kinsing samples, `nspps contained an embedded script to deploy dependencies and run`\n```\nmasscan . In this script, the binary was named “firewire” and also used the same command-line arguments found\n\n```\nin other samples.\n\n## Linking Kinsing to F5 BIG-IP exploitation\n\n[In June 2020, F5 issued guidance concerning a vulnerability discovered within their BIG-IP network appliances.](https://support.f5.com/csp/article/K52145254)\nCVE-2020-5902 for these devices allows remote code execution without authentication and has subsequently\nallowed adversaries to exploit F5 systems for an initial foothold into networks. While monitoring a VirusTotal\n[LiveHunt YARA rule for Kinsing, we found a new version uploaded under the name “bigip.” As of this writing, there](https://www.virustotal.com/gui/file/c44b63b1b53cbd9852c71de84ce8ad75f623935f235484547e9d94a7bdf8aa76/details)\nis no public documentation around Kinsing/H2Miner exploiting F5 appliances but this binary name could be an\nindication. This binary matched the previously mentioned function names for Kinsing malware and also contained\nthe complete text of Hamlet. In addition, around the same time another XMRIG sample with the Kinsing Monero\n[wallet address appeared on VirusTotal under the name “bigipdaemon.” This matches the same pattern we](https://www.virustotal.com/gui/file/517168df462fd33d5946f8cc6a09090d1dfdac19b10ac8ef8e15e4583557749d/details)\nobserved before: Golang RAT, then XMRIG miner.\n\n## Attribution implications and complications\n\n### The Monero wallet connection\n\nThe Monero wallet address shared across all samples mentioned is what originally drew our attention to further\nanalyze Kinsing campaigns. It was our first piece of evidence but it wasn’t strong enough to stand on its own. The\nlargest implication of this shared wallet address is that the campaigns may be related to the same actor or group.\nWhile we can’t assert that the same exact people used Kinsing during the campaigns, we feel there is enough\nevidence to indicate that the Kinsing RAT has been used across additional campaigns than previously\ndocumented.\n\nThreat intelligence should be always questioned, so let’s take a moment to examine this assumption: should a\nshared wallet address indicate the same actor? What other possible explanations exist? Cryptocurrencies have\nenabled the rapid movement of funds via the internet, and Monero in particular has introduced privacy features\nthat complicate the money trail. We know from the miner configurations that funds went into this wallet, but it\nremains an opaque structure to us and we cannot know where the funds go afterward. In the physical world, this\nwould be the equivalent to dropping money into an anonymous bank account. We generally assume that the\naccount belongs to someone, but there’s no way to know if the account belongs to a person, group, or a proxy\nholding the funds in escrow for later distribution.\n\nIn the ideal case, the same actors across these campaigns would be the owner of the account. In the worst case,\nthe account would be the first stop in a chain of transactions to hide the origin of the funds.\n\n## Conclusions about capabilities\n\n\n-----\n\nDuring our analysis of capabilities and campaigns, we made one large assumption: that the H2Miner botnet\noperating Kinsing has exclusive access to Kinsing source code. This is the simplest explanation, as we have not\nfound evidence suggesting the source code for Kinsing is available publicly on the internet, and it has not been\nused widely enough to indicate that Kinsing is a malware-as-a-service offering. Alternate explanations to challenge\nthis assumption include the possibility that Kinsing code is shared across multiple actors or groups, but this\npossibility would also need to take into account shared access for the Monero wallet address. Any shared code\naccess would also require access to the funds gained.\n\nThe first and most obvious conclusion we can draw about capabilities is the fact that one or more actors have\nused Kinsing across Linux and FreeBSD platforms. Previous to this assertion there was no evidence that Kinsing\nor its operator botnet H2Miner had targeted FreeBSD devices. This capability suggests that the Kinsing operators\nare familiar with the ability of Golang to cross-compile for multiple platforms and that they are either familiar with\nthe operating system components of enterprise network devices or can quickly learn them. This is an important\nconclusion to draw in 2020 and beyond because of the increasing number of remote code execution vulnerabilities\nfor enterprise network appliances, including those for Palo Alto and F5 Big-IP devices. In addition, Kinsing\noperators are familiar with the ability to rapidly weaponize emerging remote code execution exploits for\nopportunistic use.\n\nIt’s important to note that these threats are not going away and will seek opportunities to exploit any devices\nconnected to the public internet. The safest way to mitigate these threats is to patch and segment your network,\nprotecting the management interfaces of network devices from unauthorized access.\n\nRelated Articles\n\nDetection and response\n\n### ChromeLoader: a pushy malvertiser\n\n\n-----\n\nDetection and response\n\n### Intelligence Insights: May 2022\n\nDetection and response\n\n### The Goot cause: Detecting Gootloader and its follow-on activity\n\nDetection and response\n\n### Marshmallows & Kerberoasting\n\n**Subscribe to our blog**\n\nOur website uses cookies to provide you with a better browsing experience. More information can be found in our\n[Privacy Policy.](https://redcanary.com/privacy-policy)\n\nX\n\n**Privacy Overview**\n\nThis website uses cookies to improve your experience while you navigate through the website. Out of these\ncookies, the cookies that are categorized as necessary are stored on your browser as they are essential for the\nworking of basic functionalities of the website. We also use third-party cookies that help us analyze and understand\nhow you use this website. These cookies will be stored in your browser only with your consent. You also have the\noption to opt-out of these cookies. But opting out of some of these cookies may have an effect on your browsing\nexperience.\n\nNecessary cookies are absolutely essential for the website to function properly. This category only includes cookies\nthat ensures basic functionalities and security features of the website. These cookies do not store any personal\ninformation.\n\nAny cookies that may not be particularly necessary for the website to function and is used specifically to collect\nuser personal data via analytics, ads, other embedded contents are termed as non-necessary cookies. It is\nmandatory to procure user consent prior to running these cookies on your website.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-07-22 - Connecting Kinsing malware to Citrix and SaltStack campaigns.pdf"
+    ],
+    "report_names": [
+        "2020-07-22 - Connecting Kinsing malware to Citrix and SaltStack campaigns.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "a7d4fe31-d92f-425a-ba8c-c70219f52fb8",
+            "created_at": "2022-10-25T15:50:23.466009Z",
+            "updated_at": "2025-03-27T02:00:55.477162Z",
+            "deleted_at": null,
+            "main_name": "Frankenstein",
+            "aliases": [
+                "Frankenstein"
+            ],
+            "source_name": "MITRE:Frankenstein",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "eb3f4e4d-2573-494d-9739-1be5141cf7b2",
+            "created_at": "2022-10-25T16:07:24.471018Z",
+            "updated_at": "2025-03-27T02:02:10.24394Z",
+            "deleted_at": null,
+            "main_name": "Cron",
+            "aliases": [],
+            "source_name": "ETDA:Cron",
+            "tools": [
+                "Catelites",
+                "Catelites Bot",
+                "CronBot",
+                "TinyZBot"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "56b3eb1d-6baf-4ee4-a098-ec0081280315",
+            "created_at": "2024-09-28T02:05:36.599884Z",
+            "updated_at": "2025-03-27T02:05:17.250078Z",
+            "deleted_at": null,
+            "main_name": "ALUMINUM THORN",
+            "aliases": [
+                "WIRTE ",
+                "Frankenstein "
+            ],
+            "source_name": "Secureworks:ALUMINUM THORN",
+            "tools": [
+                " Powershell Empire",
+                "FruityC2"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "08c8f238-1df5-4e75-b4d8-276ebead502d",
+            "created_at": "2023-01-06T13:46:39.344081Z",
+            "updated_at": "2025-03-27T02:00:03.056208Z",
+            "deleted_at": null,
+            "main_name": "Copy-Paste",
+            "aliases": [],
+            "source_name": "MISPGALAXY:Copy-Paste",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "3fff98c9-ad02-401d-9d4b-f78b5b634f31",
+            "created_at": "2023-01-06T13:46:38.376868Z",
+            "updated_at": "2025-03-27T02:00:02.818071Z",
+            "deleted_at": null,
+            "main_name": "Cleaver",
+            "aliases": [
+                "Cobalt Gypsy",
+                "G0003",
+                "Operation Cleaver",
+                "Op Cleaver",
+                "Tarh Andishan",
+                "Alibaba",
+                "TG-2889"
+            ],
+            "source_name": "MISPGALAXY:Cleaver",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "a6c351ea-01f1-4c9b-af75-cfbb3b269ed3",
+            "created_at": "2023-01-06T13:46:39.390649Z",
+            "updated_at": "2025-03-27T02:00:03.072899Z",
+            "deleted_at": null,
+            "main_name": "Kinsing",
+            "aliases": [
+                "Money Libra"
+            ],
+            "source_name": "MISPGALAXY:Kinsing",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536091,
+    "ts_updated_at": 1743041821,
+    "ts_creation_date": 1653714382,
+    "ts_modification_date": 1653714382,
+    "files": {
+        "pdf": "https://archive.orkl.eu/1c777a453a7ef492ed9c4de1c8ae14b32a62e5eb.pdf",
+        "text": "https://archive.orkl.eu/1c777a453a7ef492ed9c4de1c8ae14b32a62e5eb.txt",
+        "img": "https://archive.orkl.eu/1c777a453a7ef492ed9c4de1c8ae14b32a62e5eb.jpg"
+    }
+}

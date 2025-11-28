@@ -1,0 +1,105 @@
+{
+    "id": "528a19e9-9fc4-4f93-8649-7ddb8e9bfa3e",
+    "created_at": "2023-01-12T15:08:07.897761Z",
+    "updated_at": "2025-03-27T02:10:04.291711Z",
+    "deleted_at": null,
+    "sha1_hash": "9246229c398f0130d6686366d04985fa84aac546",
+    "title": "2018-05-17 - Gozi V3 Technical Update",
+    "authors": "",
+    "file_creation_date": "2022-05-28T21:56:45Z",
+    "file_modification_date": "2022-05-28T21:56:45Z",
+    "file_size": 596496,
+    "plain_text": "# Gozi V3 Technical Update\n\n**[fidelissecurity.com/threatgeek/threat-intelligence/gozi-v3-technical-update/](https://www.fidelissecurity.com/threatgeek/threat-intelligence/gozi-v3-technical-update/)**\n\n**Author**\n\nThreat Research Team\n\n\nMay 17, 2018\n\n\nThe Fidelis Threat Research team is comprised of expert security researchers whose sole\nfocus is generating accurate and actionable intelligence to better secure customers.\nTogether, they represent over... [Read More](https://fidelissecurity.com/threatgeek/author/threat-research-team/)\n\nComments\n\nMay 17, 2018\n\nIn 2017 Gozi was updated[1] to include protections of the onboard configuration known as\nINI PARAMS[3]. That update was likely in response to an excellent article written by\n@maciekkotowicz[2], or possibly because infection rates had dropped due to increased\n\n\n-----\n\ncoverage through various IOC extraction programs[4,7,8]. This post aims to fill any technical\ngaps related to the changes in this new evolution as compared to previous versions to show\nthe similarities and differences between this new version and the previous one.\n\nPrevious major versions of Gozi include Dreambot[9] or the addition of P2P[9] mechanisms\nand IAP[2], which is an evolution of ISFB where serpent encryption was added and the panel\nwas changed. These distinctions are important because while older ISFB code versions were\nleaked, these other code bases are not so widely spread.\n\n**Key findings of this report:**\n\n1. Bot DLL changes in how it’s protected and stored in the loader\n2. Onboard configuration changes in how the Bott DLL is protected and stored\n3. Changes in joiner elements stored in the binary\n4. Bot DLL now can come chopped up with a missing DOS header\n\nHistorically Gozi can be broken down into two major components; the loader portion and the\nDLL. Some actors have reused the DLL part since it was leaked with the ISFB leak in order\nto add a banking trojan module for added functionality(GOZNYM)[10].\n\nSome of this usage as a module has caused quite a bit of confusion with naming, which in\nmy mind just makes me think we should name distinct parts of malware and not just the\nentire package. More in-depth naming doesn’t seem to happen until something is added,\nremoved, or spun off, and then researchers are left to perform historical analysis and time\nconsuming mapping of genealogies[2] and even then, sometimes get it wrong. For the\npurpose of this paper, however, we’ll be using naming based on recovered panel code and\nmajor version changes since the ISFB leak along with historical analysis already\nconducted[2].\n\n## Gozi Loader\n\nAs per the previous versions the loader still decodes it’s bss section where it keeps all the\nstrings that it will use.\n\n\n-----\n\nFigure 1 BSS decode\n\nMost of the important data is still stored using the same Joiner code from the ISFB code on\ngithub[3], however instead of having all the data with an ADDON_MAGIC stored in code\ncaves, the data is instead stored as a table with a single 2 byte ADDON_MAGIC value\nserving as a way to locate it.\n\nFigure 2 GetJoinerData\n\nThe addon descriptor table has changed slightly and the relevant flags are part of the XOR\nvalue in the table. The only relevant flag currently used is relating to whether or not the data\nis compressed. In the event the data is compressed, it is decompressed using APLIB – if the\ndata is not compressed, it is copied over.\n\n\n-----\n\nFigure 3 Xor Table and Compression Check\n\nThe loader is now based on an IAP variant and now comes with an onboard mangled DLL,\nthe DLL is reconstructed using tables of offsets tacked on top as you can see below:\n\nFigure 4 Reconstruct DLL Overview\n\nAfter being reconstructed and having its imports fixed, you are left with a memory mapped\nDLL at the magic bytes PE but with the PE already stripped out. Fixing the code for static\nanalysis involves either reconstructing the missing data – basically everything before the NT\nheaders, or letting the malware load everything into memory and then dumping it. A\nwalkthrough of the reconstruction process can be seen later in this write-up.\n\nMost of the functions for this version are resolved manually, you can let the malware resolve\nits own dependencies and then use a script to auto rename the functions in the malware, or\nuse any of a number of scripts available to rebuild the IAT from a dump[5].\n\n## Gozi DLL\n\nThe DLL is similar to previous versions. It has an onboard public key, a wordlist that it will\nuse to generate pseudo random strings and INI parameters. Also it comes with onboard\nalgorithms used by previous versions, APLib(ISFB), Serpent CBC(IAP) and custom RSA\nencrypt/decrypt(ISFB).\n\n\n-----\n\nFigure 5 Parse onboard word list\n\nThe INI parameters are now protected a little more as compared to previous versions, the\nbot takes the last 128 bytes of data and then uses the ISFB routine RSAPublicDecrypt[6] to\ndecrypt this block of data and parse out the encrypted data it wants to use.\n\nFigure 6 Get joiner section and decode\n\nFigure 7 RSAPublicDecrypt from ISFB\n\nIn this case, the data that is parsed out ends up being the Serpent key to decrypt the data\nitself.\n\n\n-----\n\nFigure 8 Rest of data Serpent decrypted\n\nTo do this in python we encrypt the data with the RSA public key which decrypts out the data\nwe need. After skipping 16 bytes the bot takes the next 16 bytes and uses this as a Serpent\nkey which is then used to decrypt the INI parameters in CBC mode with a NULLed IV –\nsimilar to how it would previously encode its URI string (python example code can be seen in\nthe appendix [A 1]). In order to utilize the RSA public key however we need to do a bit of\nconversion work and decompress it if the flag is set [A 2].\n\n## Reconstructing the mangled DLL\n\nWhen reconstructing the DLL, we find that it gets APLib decompressed with another magic\ntwo bytes on top ‘PX’.\n\nFigure 9 Mangled DLL\n\nTaking another look at the copy screenshots above we can see that the 5 dword in will beth\nthe total memory section to be allocated:\n\n\n-----\n\nFigure 10 DLL Reconstruction memory allocation\n\nFrom there execution is handed off to a routine that will be responsible for parsing the\nheaders of the mangled DLL data to properly map it into memory. This routine uses the word\nvalue at offset 0x62 to perform a loop involving a call to copy data into our newly allocated\nsection:\n\nFigure 11 DLL Reconstruct – Section Copy Loop\n\nThe word value at offset 0x62 then is our number of sections we will be mapping into\nmemory, from there the following code is given a pointer to offset 0x6c – where it begins\ncopying data based on what it reads at offset -4, 0, +4 and +8. So, a list of structures starts\nat 0x68 offset and the length of list is at offset 0x62. Since the data is immediately passed to\nmemcpy it makes it easier to parse the meaning of the values:\n```\nstruct section {\n      int to_offset;\n      int final_length;\n      int from_offset;\n      int length;\n}\n\n```\n\n-----\n\nFigure 12 DLL Reconstruct – section structure\n\nFigure 13 DLL Reconstruct – Next section\n\nTo get to the structure 0x14 is added to the pointer meaning that each structure in the list\ntakes up 20 bytes. Reconstruction can be seen a little easier through python pseudocode:\n```\n   (dc,dc,dc,dc,sz) = struct.unpack_from('<IIIII', data)\n   ret_out = 'x00'*sz\n   num_secs = struct.unpack_from('<H', data[0x62:])[0]\n   temp = data[0x6c-4:]\n   for i in range(num_secs):\n     (to_off,final_l,from_off,l) = struct.unpack_from('<IIII', temp)\n     ret_out =\n   ret_out[:to_off]+data[from_off:from_off+l]+ret_out[to_off+l:]\n     temp = temp[0x14:]\n     return ret_out\n\n```\nFigure 14 DLL Reconstruct – Python code example\n\nAfter being reconstructed you are left with a DLL that has been mapped into memory at the\nstart of the IMAGE_NT_HEADERS but with the “PE” wiped out.\n\nOddly enough the dreambot version for v3 does not come with a mangled DLL but instead is\nAPLib compressed -> structified -> serpent CBC encrypted. The serpent key is hidden at the\nend, similar to the INI parameters, as previously explained by using RSAPublicDecrypt.\n\n\n-----\n\nFigure 15 RSAPublicDecrypt followed by serpent decrypt\n\nWithin the DLL whether decompressed or reconstructed we can find the INI parameters that\nare most interesting to people as it’s where the C2 information is stored. From the previous\nversion just add an RSAPublicDecrypt, parse out the serpent key and then use serpent CBC\nto decrypt the data.\n\n## Conclusion\n\nThere have been a number of smaller and less talked about versions pop up aside from this\none, so what makes this one special? It’s very common for malware authors to reuse proven\ncode libraries and code bases to either enhance their own malware or to create a variant of\nan older version. So what makes this v3? The answer is that it’s code and obfuscation that\nappears to be expanding upon the last major version outlined within the community. Whether\nor not that is the case or if that code base was packaged up and sold off remains to be seen.\n\nA number of other versions of this malware family have popped up over the years where\npeople have performed slight modifications, for example changing the ADDON_MAGIC in\nthe ISFB code base. These sorts of one off versions have also popped up in the versions\nafter IAP – which, as you might recall from the introduction, has a code base that is not as\nreadily available as ISFB. So whatever version this one wants to be is fine but at the end of\nthe day it’s a new variant of Gozi and hopefully this paper has helped explain how it fits into\nthe family.\n\n**IOCs:**\n```\nV3:\n1d8a0f9c987bf0332fbb3d41b002c0d379c38564ceeaee402c0a0681ecb93be1\n92e0f1754394b5a19595c7c5ce03c0d29be1f0e28b5e9c9c61bde2918572f31a\n2d2e4985cc102109505c1a69d24ead1664adfe3ba382fc330ba73771d64cd924\n\n```\n**One offs:**\n\n\n-----\n\n63813e71ffad159f8d8a1e54fc1bc256a7592406ffd7fb4e11a538cfd7ae7932 – J1 magic val\n134463122c569995795bc0857f70f1dcaa572a599bb4fed6c22692df6c94e869 – “J1” magic\nval\n48e9227077ba672530c0c55867b8380b9155f026f65cc74bf4cfe5a7b1f539f7 – “JJ” magic val\nwith different order of section length/offset + custom loader DLL parsing with missing MZ and\nPE and an abnormal INI params parsing.\n\n**References:**\n\nAppendix A 1 Python RSADecrypt and SerpentDecrypt\n\nAppendix A 2 Python convert RSA public key\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2018/2018-05-17 - Gozi V3 Technical Update.pdf"
+    ],
+    "report_names": [
+        "2018-05-17 - Gozi V3 Technical Update.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "b753c6a8-a83d-47bc-829d-45e56136eb7d",
+            "created_at": "2023-01-06T13:46:38.97802Z",
+            "updated_at": "2025-03-27T02:00:02.967861Z",
+            "deleted_at": null,
+            "main_name": "GozNym",
+            "aliases": [],
+            "source_name": "MISPGALAXY:GozNym",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "3ce91297-e4c0-4957-8dd7-9047a3e23dc7",
+            "created_at": "2023-01-06T13:46:39.054248Z",
+            "updated_at": "2025-03-27T02:00:02.985963Z",
+            "deleted_at": null,
+            "main_name": "Tortoiseshell",
+            "aliases": [
+                "IMPERIAL KITTEN",
+                "Yellow Liderc",
+                "Imperial Kitten",
+                "TA456",
+                "DUSTYCAVE",
+                "Crimson Sandstorm"
+            ],
+            "source_name": "MISPGALAXY:Tortoiseshell",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "b5b24083-7ba6-44cc-9d11-a6274e2eee00",
+            "created_at": "2022-10-25T16:07:24.337332Z",
+            "updated_at": "2025-03-27T02:02:10.177597Z",
+            "deleted_at": null,
+            "main_name": "Tortoiseshell",
+            "aliases": [
+                "Crimson Sandstorm",
+                "Curium",
+                "Houseblend",
+                "Imperial Kitten",
+                "Marcella Flores",
+                "Operation Fata Morgana",
+                "TA456",
+                "Yellow Liderc"
+            ],
+            "source_name": "ETDA:Tortoiseshell",
+            "tools": [
+                "IMAPLoader",
+                "Infostealer",
+                "IvizTech",
+                "LEMPO",
+                "MANGOPUNCH",
+                "SysKit",
+                "get-logon-history.ps1",
+                "liderc",
+                "stereoversioncontrol"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536087,
+    "ts_updated_at": 1743041404,
+    "ts_creation_date": 1653775005,
+    "ts_modification_date": 1653775005,
+    "files": {
+        "pdf": "https://archive.orkl.eu/9246229c398f0130d6686366d04985fa84aac546.pdf",
+        "text": "https://archive.orkl.eu/9246229c398f0130d6686366d04985fa84aac546.txt",
+        "img": "https://archive.orkl.eu/9246229c398f0130d6686366d04985fa84aac546.jpg"
+    }
+}

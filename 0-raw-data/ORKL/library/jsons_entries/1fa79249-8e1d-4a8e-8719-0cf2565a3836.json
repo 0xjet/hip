@@ -1,0 +1,74 @@
+{
+    "id": "1fa79249-8e1d-4a8e-8719-0cf2565a3836",
+    "created_at": "2023-01-12T15:06:28.177104Z",
+    "updated_at": "2025-03-27T02:17:01.022884Z",
+    "deleted_at": null,
+    "sha1_hash": "90b8e4b988602558099b66a5ec8bfd4f4767f745",
+    "title": "2020-11-24 - Analysis of Kinsing Malware's Use of Rootkit",
+    "authors": "",
+    "file_creation_date": "2022-05-28T02:43:05Z",
+    "file_modification_date": "2022-05-28T02:43:05Z",
+    "file_size": 167616,
+    "plain_text": "# Analysis of Kinsing Malware's Use of Rootkit\n\n**[trendmicro.com/en_us/research/20/k/analysis-of-kinsing-malwares-use-of-rootkit.html](https://www.trendmicro.com/en_us/research/20/k/analysis-of-kinsing-malwares-use-of-rootkit.html)**\n\nNovember 24, 2020\n\nWe [last discussed the Kinsing malware in April 2020, when we analyzed the Golang-based Linux agent targeting misconfigured](https://www.trendmicro.com/vinfo/tmr/?/us/security/news/virtualization-and-cloud/misconfigured-docker-daemon-api-ports-attacked-for-kinsing-malware-campaign)\nDocker Daemon API ports to drop cryptocurrency miners.\n\nWith the constant evolution of shell scripts and Linux based malicious backdoors and agents, it’s not surprising that the creators of\nKinsing have kept in step. In this entry, we discuss the malware variant’s current capabilities, including the addition of features\n[intended to make it more difficult to detect in infected machines. Similar to how the Trident malware uses a rootkit to hide the](https://www.trendmicro.com/en_us/research/19/i/skidmap-linux-malware-uses-rootkit-capabilities-to-hide-cryptocurrency-mining-payload.html)\n[cryptocurrency mining payload, Kinsing also adapted the method integrating user-mode rootkits that use library preloading.](https://www.trendmicro.com/vinfo/tmr/?/us/security/definition/Rootkit)\n\nSeveral shell scripts accompany the malware itself. These shell scripts are responsible for downloading and installing the Kinsing\nbackdoor, miner, and rootkit, as well as removing and uninstalling various resource-intensive services and processes. These scripts\nare similar to those discussed in the entries mentioned above. This blog post will focus on the rootkit component.\n\n## Technology analysis\n\nThe first step of the process involves the deployment of the shell script trying to remove the immutable file flag from\n_[/etc/ld.so.preloadif it exists.](https://manpages.debian.org/testing/manpages/ld.so.8.en.html)_\n\nFigure 1. Removing the immutable file flag\n\nThe/etc/ld.so.preload file preloads a list of paths to shared objects or libraries that will be loaded into every user-mode process on\nstartup before any other shared library — including the C runtime library (libc.so). By default, this file is not present inside Linux\ndistributions; therefore, it has to be created on purpose.\n\nNext, the downloader downloads the rootkit into /etc/libsystem.so, after which a new /etc/ld.so.preload is created. The link to the\nrootkit is then added to the /etc/ld.so.preload file.\n\n\n-----\n\nFigure 2. Downloading the rootkit and\n\ncreating persistence\nNote that removing from or writing files into the /etc/ directory is a privileged operation; therefore, it is highly recommended to follow\n[the principle of least privilege and not run applications or containers under root permissions.](https://www.trendmicro.com/en_us/research/19/l/why-running-a-privileged-container-in-docker-is-a-bad-idea.html)\n\nThe Kinsing malware also works under lower privileges but without its advanced persistence and rootkit functions.\n\nFigure 3. Setting up the\n\npersistence function\nUser-level persistence of the downloaded Kinsing malware is achieved by registering it as the system service called “bot.”\n\nAnother level of persistence is achieved via cron, where the installation script is repeatedly downloaded and executed.\n\nFigure 4. The cron persistence\n\n## Rootkit analysis\n\nThe rootkit contains the list of hidden literals and the list of non-hooked symbols (native functions that will be hooked, but they need\ntheir original addresses to be resolved and saved for later use). These lists are encrypted by a single-byte XOR.\n\n\n-----\n\nFigure 5. The decryption algorithm used to obtain the names of hidden literals and\n\nhooked functions\nThe functions hooked by the rootkit are as follows:\n\naccess\nrmdir\nopen\nreaddir\nreaddir64\nstat\nstat64\n__xstat\n__xstat64\nlstat\nlstat64\n__lxstat\n__lxstat64\nfopen\nfopen64\nlink\nunlink\nunlinkat\n\nThe rootkit implements the following functions:\n\n## is_attacker\n\nThis is used to determine if the attacker calls the process by checking the presence of the environment variable called SKL.\n\n## is_hidden_file\n\nIf the file names are kinsing (backdoor & worm process), kdevtmpfsi (cryptomining process), or lib_system.so (rootkit), it returns the\ncode EPERM = Operation not permitted.\n\nWhile looking into the /proc/ directory, the rootkit searches for the environment file in the directory of the process and variable SKL to\ndecide if the said directory should be hidden or not.\n\n## hide_tcp_ports\n\nUsed to parse files in /proc/net/tcp or /proc/net/tcp6, which maintain the lists of the currently active TCP connections. It extracts\nremote IP addresses and compares them with hidden literals. If there is a match, information about the TCP connection is hidden\nfrom the listing.\n\n## readdir\n\nIf the attacker executes the process (SKL environment variable is set for the process calling readdir function), then readdir works with\nno restrictions.\n\nIf the current directory is /proc and the process name is kinsing or kdevtmpfsi, the directory item is omitted from the directory listing. If\nit is '.' or a hidden file (kinsing, kdevtmpfsi, lib_system.so), then it omits these files.\n\n\n-----\n\nFor other hooked functions, the process that the attacker runs is allowed to invoke all operations without limitation. For other\nprocesses (not run by attacker), it returns an ENOENT = No such file or directory error code if a hidden file is accessed.\n\n[Further searching revealed that the threat actor reuses the publicly available beurk rootkit, but with several custom modifications.](https://github.com/unix-thrust/beurk)\n\nFigure 6. The beurk rootkit repository\n\n## Conclusion\n\nKinsing is still highly active and continually evolving. Adding the rootkit component hides the presence of malicious components in the\ninfected system. Reusing publicly available source codes presents a popular option for malicious actors, giving them an easier way to\nadd new functions to their malware.\n\nIndicators of Compromise (IOCs)\n\n**Hash (SHA-256)** **Detection name**\n\n\n4CE4F3EA11D62518C3C6248FB827E72628A0750AD4C4BD7E69D62C444F5FDB04 Installation\nscript\n\nD5F089EA1B007AE0796D7D44B5A282C20195B074FEEBC113D7A1FD0D61C8C496 Installation\nscript\n\n000BEF7B8B56BDB86606A03C6EC3887EC0F1EB5DC507F60144656C8046D89B2E Installation\nscript\n\n7F44FE4766AEB78B65EE014864E49A76D2E61B2198A356F23060F48A5F057411 Installation\nscript\n\n1635095EA081FBF1B7C2CF3A88C610D0BCCBFD5B470F1E49AA093B086D21FFC8 Spreader\nscript\n\n\nTrojan.SH.KINSING.E\n\nTrojan.SH.KINSING.E\n\nTrojan.SH.KINSING.E\n\n\nC38C21120D8C17688F9AEB2AF5BDAFB6B75E1D2673B025B720E50232F888808A Rootkit Trojan.Linux.KINSING.AA\n\n\nCCFDA7239B2AC474E42AD324519F805171E7C69D37AD29265C0A8BA54096033D Kinsing\nmalware\n\n**C&C IP addresses:**\n\n45[.]129[.]2[.]107\n45[.]156[.]23[.]210\n45[.]142[.]214[.]48\n93[.]189[.]46[.]81\n95[.]213[.]224[.]21\n95[.]181[.]179[.]88\n176[.]96[.]238[.]176\n185[.]156[.]179[.]225\n185[.]221[.]154[.]208\n185[.]237[.]224[.]182\n185[.]154[.]53[.]140\n185[.]87[.]48[.]183\n\n\nCoinminer.Linux.MALBTC.AMX\n\n\n-----\n\n193[.]164[.]150[.]99\n194[.]87[.]102[.]77\n212[.]22[.]77[.]79\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-11-24 - Analysis of Kinsing Malware's Use of Rootkit.pdf"
+    ],
+    "report_names": [
+        "2020-11-24 - Analysis of Kinsing Malware's Use of Rootkit.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "eb3f4e4d-2573-494d-9739-1be5141cf7b2",
+            "created_at": "2022-10-25T16:07:24.471018Z",
+            "updated_at": "2025-03-27T02:02:10.24394Z",
+            "deleted_at": null,
+            "main_name": "Cron",
+            "aliases": [],
+            "source_name": "ETDA:Cron",
+            "tools": [
+                "Catelites",
+                "Catelites Bot",
+                "CronBot",
+                "TinyZBot"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "a6c351ea-01f1-4c9b-af75-cfbb3b269ed3",
+            "created_at": "2023-01-06T13:46:39.390649Z",
+            "updated_at": "2025-03-27T02:00:03.072899Z",
+            "deleted_at": null,
+            "main_name": "Kinsing",
+            "aliases": [
+                "Money Libra"
+            ],
+            "source_name": "MISPGALAXY:Kinsing",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535988,
+    "ts_updated_at": 1743041821,
+    "ts_creation_date": 1653705785,
+    "ts_modification_date": 1653705785,
+    "files": {
+        "pdf": "https://archive.orkl.eu/90b8e4b988602558099b66a5ec8bfd4f4767f745.pdf",
+        "text": "https://archive.orkl.eu/90b8e4b988602558099b66a5ec8bfd4f4767f745.txt",
+        "img": "https://archive.orkl.eu/90b8e4b988602558099b66a5ec8bfd4f4767f745.jpg"
+    }
+}

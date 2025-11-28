@@ -1,0 +1,42 @@
+{
+    "id": "c4f49fd9-6ca1-403d-9879-10f28a35e9c5",
+    "created_at": "2023-05-06T02:09:12.11593Z",
+    "updated_at": "2025-03-27T02:06:13.176672Z",
+    "deleted_at": null,
+    "sha1_hash": "50cf92421aa78c36c22f2cfb311e40d4b48541a4",
+    "title": "2017-12-17 - r77 Rootkit",
+    "authors": "",
+    "file_creation_date": "2023-05-05T02:08:18Z",
+    "file_modification_date": "2023-05-05T02:08:18Z",
+    "file_size": 342421,
+    "plain_text": "# bytecode77/r77-rootkit\n\n**github.com/bytecode77/r77-rootkit**\n\nbytecode77\n\n## r77 Rootkit\n\n Ring 3 rootkit\n\nr77 is a ring 3 rootkit that hides everything:\n\nFiles, directories\nProcesses & CPU usage\nRegistry keys & values\nServices\nTCP & UDP connections\nJunctions, named pipes, scheduled tasks\n\n## Hiding by prefix\n\nEverything that starts with \"$77\" is hidden.\n\n## Configuration System\n\n\n-----\n\nThe dynamic configuration system allows to hide processes by PID and by\n**name, file system items by full path, TCP & UDP connections of specific ports,**\netc.\n\nThe configuration is located in HKEY_LOCAL_MACHINE\\SOFTWARE\\$77config and\nis writable by any process without elevated privileges. The DACL of this key is\nset to grant full access to any user.\n\nIn addition, the $77config key is hidden by the rootkit.\n\n## Installer\n\nThe deployment of r77 requires only one file: Install.exe. Execution persists\nr77 on the system and injects all running processes.\n```\nUninstall.exe removes r77 from the system completely, and gracefully.\nInstall.shellcode is the shellcode equivalent of the installer. This way, the\n\n```\ninstallation can be integrated without dropping Install.exe. The shellcode can\nsimply be loaded into memory, casted to a function pointer, and executed:\n\n\n-----\n\n```\nint main()\n\n{\n\n     // 1. Load Install.shellcode from resources or from a BYTE[]\n\n     // Ideally, encrypt the file and decrypt it here to avoid\nscantime detection.\n\n     LPBYTE shellCode = ...\n\n     // 2. Make the shellcode RWX.\n\n     DWORD oldProtect;\n\n     VirtualProtect(shellCode, shellCodeSize, PAGE_EXECUTE_READWRITE,\n&oldProtect);\n\n     // 3. Cast the buffer to a function pointer and execute it.\n\n     ((void(*)())shellCode)();\n\n     // This is the fileless equivalent to executing Install.exe.\n\n     return 0;\n\n}\n\n## Fileless persistence\n\n```\nThe rootkit resides in the system memory and does not write any files to the\ndisk. This is achieved in multiple stages.\n\n**Stage 1: The installer creates two scheduled tasks for the 32-bit and the 64-bit**\nr77 service. The scheduled tasks start powershell.exe with following\ncommand line:\n```\n[Reflection.Assembly]::Load([Microsoft.Win32.Registry]::LocalMachine.Open\nSubkey('SOFTWARE').GetValue('$77stager')).EntryPoint.Invoke($Null,$Null)\n\n\n```\nThe command is inline and does not require a .ps1 script. Here, the .NET\nFramework capabilities of PowerShell are utilized in order to load a C#\nexecutable from the registry and execute it in memory. For this,\n```\nAssembly.Load().EntryPoint.Invoke() is used.\n\n```\n\n-----\n\n**Stage 2: The executed C# binary is the stager. It will create the r77 service**\nprocesses using process hollowing. The r77 service is a native executable\ncompiled in both 32-bit and 64-bit separately. The parent process is spoofed\nand set to winlogon.exe for additional obscurity. In addition, the two processes\nare hidden by ID and are not visible in the task manager.\n\n\n-----\n\nNo executables or DLL s are ever stored on the disk. The stager is stored in the\nregistry and loads the r77 service executable from its resources.\n\nThe PowerShell and .NET dependencies are present in a fresh installation of\n[Windows 7 and Windows 10. Please review the documentation for a complete](https://docs.bytecode77.com/r77-rootkit/Technical%20Documentation.pdf)\ndescription of the fileless initialization.\n\n## Child process hooking\n\nWhen a process creates a child process, the new process is injected before it\ncan run any of its own instructions. The function NtResumeThread is always\ncalled when a new process is created. Therefore, it's a suitable target to hook.\nBecause a 32-bit process can spawn a 64-bit child process and vice versa, the\nr77 service provides a named pipe to handle child process injection requests.\n\nIn addition, there is a periodic check every 100ms for new processes that might\nhave been missed by child process hooking. This is necessary because some\nprocesses are protected and cannot be injected, such as services.exe.\n\n## In-memory injection\n\nThe rootkit DLL (r77-x86.dll and r77-x64.dll) can be injected into a process\nfrom memory and doesn't need to be stored on the disk. Reflective DLL\n**injection is used to achieve this. The DLL provides an exported function that**\nwhen called, loads all sections of the DLL, handles dependency loading and\nrelocations, and finally calls DllMain.\n\n## Hooking\n\nDetours is used to hook several functions from ntdll.dll. These low-level\nsyscall wrappers are called by any WinAPI or framework implementation.\n\nNtQuerySystemInformation\nNtResumeThread\nNtQueryDirectoryFile\nNtQueryDirectoryFileEx\nNtEnumerateKey\nNtEnumerateValueKey\nEnumServiceGroupW\nEnumServicesStatusExW\nNtDeviceIoControlFile\n\n## AV/EDR evasion\n\n\n-----\n\nSeveral AV and EDR evasion techniques are in use:\n\n**AMSI bypass: The PowerShell inline script disables AMSI by patching**\n```\n   amsi.dll!AmsiScanBuffer to always return AMSI_RESULT_CLEAN.\n\n```\nPolymorphism is used to evade signature detection of the AMSI bypass.\n**DLL unhooking: Since EDR solutions monitor API calls by hooking**\n```\n   ntdll.dll, these hooks need to be removed by loading a fresh copy of\n   ntdll.dll from disk and restoring the original section. Otherwise,\n\n```\nprocess hollowing would be detected.\n\n## Test environment\n\nThe Test Console is a useful tool to inject r77 into individual processes and to\ntest drive the configuration system.\n\n## Technical Documentation\n\n[Please read the technical documentation to get a comprehensive and full](https://docs.bytecode77.com/r77-rootkit/Technical%20Documentation.pdf)\noverview of r77 and its internals, and how to deploy and integrate it.\n\n## Downloads\n\n\n-----\n\n[r77 Rootkit 1.4.2.zip\n(ZIP Password: bytecode77)](https://downloads.bytecode77.com/r77Rootkit%201.4.2.zip)\n[Technical Documentation](https://docs.bytecode77.com/r77-rootkit/Technical%20Documentation.pdf)\n\n## Project Page\n\n[bytecode77.com/r77-rootkit](https://bytecode77.com/r77-rootkit)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2017/2017-12-17 - r77 Rootkit.pdf"
+    ],
+    "report_names": [
+        "2017-12-17 - r77 Rootkit.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1683338952,
+    "ts_updated_at": 1743041173,
+    "ts_creation_date": 1683252498,
+    "ts_modification_date": 1683252498,
+    "files": {
+        "pdf": "https://archive.orkl.eu/50cf92421aa78c36c22f2cfb311e40d4b48541a4.pdf",
+        "text": "https://archive.orkl.eu/50cf92421aa78c36c22f2cfb311e40d4b48541a4.txt",
+        "img": "https://archive.orkl.eu/50cf92421aa78c36c22f2cfb311e40d4b48541a4.jpg"
+    }
+}

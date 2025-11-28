@@ -1,0 +1,100 @@
+{
+    "id": "bff65ce3-a7ae-4ce5-b379-14d82b1a9454",
+    "created_at": "2023-01-12T15:07:29.770992Z",
+    "updated_at": "2025-03-27T02:11:00.221357Z",
+    "deleted_at": null,
+    "sha1_hash": "cd41e9aed66e6eeb260e0e84808c041408d697e1",
+    "title": "2021-02-02 - Whitespace Steganography Conceals Web Shell in PHP Malware",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:33:21Z",
+    "file_modification_date": "2022-05-28T19:33:21Z",
+    "file_size": 492945,
+    "plain_text": "# Sucuri Blog\n\n**[blog.sucuri.net/2021/02/whitespace-steganography-conceals-web-shell-in-php-malware.html](https://blog.sucuri.net/2021/02/whitespace-steganography-conceals-web-shell-in-php-malware.html)**\n\nDenis Sinegubko February 2, 2021\n\nLast November, we wrote about how attackers are using JavaScript injections to load\nmalicious code from legitimate CSS files.\n\nAt first glance, these injections didn’t appear to contain anything except for some benign\nCSS rules. A more thorough analysis of the .CSS file revealed 56,964 seemingly empty lines\ncontaining combinations of invisible tab (0x09), space (0x20), and line feed (0x0A)\ncharacters, which were converted to binary representation of characters and then to the text\nof an executable JavaScript code.\n\nIt didn’t take long before we found the same approach used in PHP malware. Here’s what\n[our malware analyst Liam Smith discovered while recently working on a site containing](https://twitter.com/liamsmith86)\nmultiple backdoors and webshells uploaded by hackers.\n\n## Suspicious license.php file\n\nOne of the files Liam found looked a bit strange: system/license.php.\n\nAs the filename implies, it contains text for a license agreement — more specifically, text for\n[GNU General Public License version 3.](https://www.gnu.org/licenses/gpl-3.0.en.html)\n\nThe license text is placed inside a multi-line PHP comment. However, on line 134 we see a\ngap between two comments that contains executable PHP code.\n\n\n-----\n\nPHP code inside license.php\nHiding malicious code between comment blocks is a common obfuscation technique used by\nhackers.\n\nThe code is obviously malicious but, after first glance, it was not clear whether the malware\nwas complete or had any other parts in that file. It’s easy to notice that it tries to read itself\nand do something with its contents using\n**file_get_contents(basename($_SERVER[‘PHP_SELF’]))). A quick visual inspection of the**\nfile, however, didn’t reveal any other sections that can be converted into working PHP code.\n\n## Analysis of the Visible Malicious Code\n\nTo understand what exactly the malicious code does, we analyzed each statement piece by\npiece.\n\nThe first clause splits the file contents into sections divided by semicolon characters and\nassigns the last section to the $cache variable. In plain words, this code works with the part\nof the file found after the last “;”.\n\nIt turns out that the final semicolon in the file is also the last character of the license\nagreement: “But first, please read <http://www.gnu.org/philosophy/why-not**lgpl.html>;”. In the original license agreement the last character is a period, indicating that**\nthe file was intentionally modified by the attacker for this clause.\n\nThere is nothing clearly visible after this last semicolon. To understand what’s being done\nwith the trailing part of the file, we need to analyze the next section of malware clauses.\n\n## Whitespace Decoder\n\n\n-----\n\n```\nfor($i 0;$i<strlen($cache);$i++){\n$out.=chr(bindec(str_replace(array(chr(9),chr(32)),array('1','0'),substr($cache,$i,8))\n $i+= 7;\n}\n\n```\nHere we can see that the code reads the rest of the file in chunks of eight characters at a\ntime (substr($cache,$i,8)) and converts tabs (9) and spaces (32) into ones and zeroes. The\nresulting binary string is then converted to a decimal number (bindec) and then to a\ncharacter using the chr() function. This way, octet by octet, the rest of the file’s whitespaces\nare converted into a visible string.\n\nAt this point, the string is neither meaningful nor executable. To completely decode and\nexecute the payload, the following combination of functions are used :\n‘base64_decode(str_rot13(gzdecode(…‘.\n\nAs a backup way to execute the payload, the malware also tries to save the decoded\ncontents to a file named “ “ (just a space — to make it less visible in file listings) and includes\nit on the fly using include $cachepart;. Afterwards, this file is deleted in an attempt to evade\ndetection.\n\nThat being said, we have reports that for some reason some of these blank-named files can\nstill be found on compromised sites.\n\n## Revealing the Hidden Payload\n\nNow that we know that this malware is looking for any tabs and spaces after the last\nsemicolon, lets find and decode that hidden payload.\n\nAs it turns out, there are almost 300 Kilobytes of invisible tabs and spaces at the end of the\nlast line in license.php file — compared to only 30 Kb in the visible license text.\n\nThese invisible characters can be revealed if you check the hex code of the last line or select\ncontent after the last “;” in a text editor (with word wrapping on).\n\n\n-----\n\nHex view of the last line of license.php\n\nBeginning of the invisible content selected in a text editor\nWhile this picture resembles Morse code just like the similar obfuscation found in JavaScript\nmalware that [described last November, this sample doesn’t use line feed characters (0x0A).](https://blog.sucuri.net/2020/11/css-js-steganography-in-fake-flash-player-update-malware.html)\nThis means that the invisible content doesn’t create a ridiculous amount of suspicious empty\nlines at the bottom of the files.\n\n\n-----\n\nWhen we use the malware s algorithm to decode the whitespace, we get a 74Kb file of a\nweb shell that provides hackers with tools to work with files and databases on the server,\ncollect sensitive information, infect files, and conduct brute force attacks. It can also work as\na server console or anonymizer to hide the attackers real IP address.\n\nWeb shell\n\ndecoded from the whitespace\n\n## Origin of the Algorithm\n\nAs frequently revealed in our investigations, many of the tricks and algorithms found in\nmalware are not created by hackers. Much of the code is pre-existing and simply copied from\n[sites like StackOverflow.](https://stackoverflow.com/)\n\nA quick search for the code snippet of this particular whitespace decoder revealed a 2019\narticle on the popular Russian language IT community site Habr.ru. The article’s author\nshared their proof of concept for PHP whitespace obfuscation, which had been inspired by a\nprevious article on obfuscation published back in 2011 that discussed the concept of\nencoding using only tabs and spaces.\n\nThe malware author simply took the whitespace decoder part from that article without any\nmodifications or changes, then added some code to work with additional layers of\nobfuscation and to execute the decoded payload.\n\n## Malicious Uploader\n\n\n-----\n\nIt s quite rare to find only one type of a backdoor on a compromised server. There are usually\nseveral varieties responsible for specific tasks.\n\nFor example, the inconspicuously named license.php file is intended to stay under the radar\nfor a long time, providing access to the compromised site even when other malware is found\nand removed.\n\nThe files or code that attackers initially plant on a server in order to infect the site are another\ntype of backdoor. Usually found as a small file in the compromised environment, these\nbackdoors either allow attackers to execute arbitrary code or create specific files. They don’t\neven need to be very stealthy or heavily obfuscated — hackers often delete them after use to\ncover up their tracks.\n\nIn this particular case, we found malware uploaders which create fake license.php files and\ninject malware into .htaccess and index.php files.\n\n\n-----\n\nMalware uploader that creates fake license.php files\n\n## Conclusion\n\nWhile making malicious content invisible to a naked eye seems like a good idea, the\nwhitespace obfuscation used in this malware is far from ideal. It contains an easily detectable\nsection of PHP — and removing it renders the invisible payload unusable. Another downside\nof this approach is the bloated size of the file. The malware increased the size of the file 10\ntimes — making it significantly more suspicious.\n\n\n-----\n\nObfuscation techniques are commonly used by hackers to hide code and conceal malicious\nbehavior. There are hundreds of known types of obfuscations, and attackers are always\nlooking for new ways to avoid detection.\n\nThe good news for webmasters is you don’t have to be able to decode or understand exactly\nhow they work to find and remove malware. A simple integrity control solution is enough to\ndetect unwanted modifications in your files.\n\nWhenever you review changes and are not sure whether it’s malicious or not, the safest\n[approach is to revert the file to the known clean version — you have a backup, right?](https://sucuri.net/website-backups/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-02-02 - Whitespace Steganography Conceals Web Shell in PHP Malware.pdf"
+    ],
+    "report_names": [
+        "2021-02-02 - Whitespace Steganography Conceals Web Shell in PHP Malware.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "3fad11c6-4336-4b28-a606-f510eca5452e",
+            "created_at": "2022-10-25T16:07:24.346573Z",
+            "updated_at": "2025-03-27T02:02:10.183211Z",
+            "deleted_at": null,
+            "main_name": "Turbine Panda",
+            "aliases": [
+                "APT 26",
+                "Black Vine",
+                "Bronze Express",
+                "Group 13",
+                "JerseyMikes",
+                "KungFu Kittens",
+                "PinkPanther",
+                "Shell Crew",
+                "Turbine Panda",
+                "WebMasters"
+            ],
+            "source_name": "ETDA:Turbine Panda",
+            "tools": [
+                "Agent.dhwf",
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Derusbi",
+                "Destroy RAT",
+                "DestroyRAT",
+                "FF-RAT",
+                "FormerFirstRAT",
+                "Hurix",
+                "Kaba",
+                "Korplug",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "Mivast",
+                "PlugX",
+                "RbDoor",
+                "RedDelta",
+                "RibDoor",
+                "Sakula",
+                "Sakula RAT",
+                "Sakurel",
+                "Sogu",
+                "StreamEx",
+                "TIGERPLUG",
+                "TVT",
+                "Thoper",
+                "Winnti",
+                "Xamtrav",
+                "cobeacon",
+                "ffrat"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536049,
+    "ts_updated_at": 1743041460,
+    "ts_creation_date": 1653766401,
+    "ts_modification_date": 1653766401,
+    "files": {
+        "pdf": "https://archive.orkl.eu/cd41e9aed66e6eeb260e0e84808c041408d697e1.pdf",
+        "text": "https://archive.orkl.eu/cd41e9aed66e6eeb260e0e84808c041408d697e1.txt",
+        "img": "https://archive.orkl.eu/cd41e9aed66e6eeb260e0e84808c041408d697e1.jpg"
+    }
+}

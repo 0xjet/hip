@@ -1,0 +1,193 @@
+{
+    "id": "b51b5535-4ccb-43c2-8769-d284364c650c",
+    "created_at": "2023-01-12T15:01:44.995454Z",
+    "updated_at": "2025-03-27T02:09:52.080362Z",
+    "deleted_at": null,
+    "sha1_hash": "483fff9f87d5c6fdaf25c6b6550bb9f6a7911df9",
+    "title": "2021-01-25 - A detailed analysis of ELMER Backdoor used by APT16",
+    "authors": "",
+    "file_creation_date": "2022-05-27T23:03:54Z",
+    "file_modification_date": "2022-05-27T23:03:54Z",
+    "file_size": 8113345,
+    "plain_text": "# A detailed analysis of ELMER Backdoor used by APT16\n\n**[cybergeeks.tech/a-detailed-analysis-of-elmer-backdoor-used-by-apt16/](https://cybergeeks.tech/a-detailed-analysis-of-elmer-backdoor-used-by-apt16/)**\n\nSummary\n\nIn this blog post, we’re presenting a detailed analysis of a backdoor known as ELMER that\nwas used by the Chinese actor identified as APT16. This group targeted Japanese and\nTaiwanese organizations in industries such as high-tech, government services, media and\nfinancial services.\n\nThe malware is encrypted with a custom algorithm and it’s written in Delphi. This sample is\ncapable of detecting proxy settings on the local machine and exfiltrating information such as\nthe hostname and IP address of the machine to the Command and Control server. The\nprocess uses a custom decryption algorithm that consists of AND, XOR, and ADD operations\nin order to decrypt relevant strings during runtime. It implements 8 different commands\ndepending on the response from the C2 server, including: file uploads and downloads,\nprocess execution, exfiltration of file names/sizes and directory names, exfiltration of\nprocesses/process IDs. Data exfiltration is performed using an HTML document that contains\nthe information encoded using the NOT operator.\n\nThis sample is using a custom encryption algorithm, that we will describe below. For this\nanalysis, we have also created a python script that can be used to facilitate the decryption\nprocess, which can be found at\n[https://github.com/Rackedydig/string_decode_algorithm_apt16.](https://github.com/Rackedydig/string_decode_algorithm_apt16)\n\nTechnical analysis\n\nSHA256:\nBED00A7B59EF2BD703098DA6D523A498C8FDA05DCE931F028E8F16FF434DC89E\n\nIt’s important to mention that a part of the malicious code is encrypted, and we’ll explain\nusing a step-by-step approach how to decrypt it. The process is scanning the memory in\norder to find the magic number “MZ” which corresponds to EXEs (DLLs), and then it’s\nextracting the first word of the PE header and compares it with “PE” as follows:\n\n\n-----\n\nFigure 1\nThe following picture contains a part of the bytes that will be transformed as we’ll see in the\nnext paragraphs:\n\nFigure\n\n2\n\n\n-----\n\nThe first 16 bytes are reordered as follows: [byte1, byte5, byte9, byte13], [byte2, byte6,\nbyte10, byte14], [byte3, byte7, byte11, byte15], [byte4, byte8, byte12, byte16]:\n\nFigure 3\n\nNow there is a buffer of 16 bytes, which represents a “key” in the upcoming operations:\n\nFigure 4\n\nAn XOR operation is performed between the corresponding positions of the 2 buffers\nmentioned above:\n\nFigure 5\n\nThe first 4 bytes of the buffer remain in their current positions, however, the last 12 bytes are\nreordered, as shown in figure 6:\n\nFigure 6\n\nEach byte is replaced by a byte that can be found at the position 0x671911EC+current_byte,\nas explained in the next figure:\n\n\n-----\n\nFigure 7\nAfter this transformation, the buffer becomes the following one:\n\nThere is a second XOR decryption step, but this time the key is changing:\n\n\nFigure 8\n\nFigure 9\n\n\nAfter the XOR operation is complete, the current buffer has been changed, as shown below:\n\nFigure 10\n\n\n-----\n\nA few more operations will be performed, including shl cl, 1 (shift left by 1) and xor cl, 1B (xor\nwith 0x1B). Let’s take, for example, byte 0x90 from the buffer which is left shifted by 1 (0x20)\nand then XORed with 0x1B -> 0x3B. Byte 0x3B is left shifted by 1 and becomes 0x76 (no\nXOR is performed) and one more time, 0x76 is left shifted by 1 and becomes 0xEC. The\nconfirmation that all of these operations are accurate:\n\nFigure 11\n\nNow the values from this buffer are XORed together (0x90 XOR 0x76) XOR 0xEC and then\nthe result (0xa) is XORed with other results from similar operations. After all operations are\ndone, the buffer will be the following:\n\nFigure 12\n\nThe sample performs the steps presented above 10 times, and the buffer looks like in the\nnext figure:\n\nFigure 13\n\nThe buffer is reordered and copied in the location displayed in figure 2, as follows:\n\nFigure 14\n\nThe algorithm applied for the first 16 bytes is repeated 2078 times. The new buffer is the\ndecrypted version of the first one:\n\n\n-----\n\nFigure 15\n\nThe malicious process loads multiple DLLs and retrieves the address of export functions\nusing LoadLibraryA and GetProcAddress APIs:\n\n\n-----\n\nFigure 16\nThe list of DLLs to be loaded + the export functions:\n\nkernel32.dll\n\nDeleteCriticalSection, LeaveCriticalSection, EnterCriticalSection, InitializeCriticalSection,\nVirtualFree, VirtualAlloc, LocalFree, LocalAlloc, GetTickCount, QueryPerformanceCounter,\nGetVersion,, GetCurrentThreadId, GetThreadLocale, GetStartupInfoA, GetLocaleInfoA,\nGetLastError, GetCommandLineA, FreeLibrary, ExitProcess, WriteFile,\nUnhandledExceptionFilter, SetEndOfFile, RtlUnwind, RaiseException, GetStdHandle,\nGetFileSize, GetFileType, CreateFileA, CloseHandle, TlsSetValue, TlsGetValue,\nGetModuleHandleA, lstrcmpiA, WaitForSingleObject, Sleep, SetFilePointer, ReadFile,\n\n\n-----\n\nGetProcAddress, GetModuleFileNameA, GetFileAttributesA, GetCurrentDirectoryA,\nFindNextFileA, FindFirstFileA, FindClose, FileTimeToLocalFileTime, CreateThread,\nCreateProcessA\n\nuser32.dll\n\nGetKeyboardType, MessageBoxA\n\nadvapi32.dll\n\nRegQueryValueExA, RegOpenKeyExA, RegCloseKey\n\noleaut32.dll\n\nSysFreeString, SysReAllocStringLen\n\nws2_32.dll\n\nWSAGetLastError, gethostname, gethostbyname, socket, setsockopt, send, recv, inet_ntoa,\ninet_addr, htons, connect, closesocket, WSACleanup, WSAStartup\n\ndnsapi.dll\n\nDnsRecordListFree, DnsQuery_A\n\nThe process passes the execution flow to the unencrypted code as illustrated in the next\nfigure:\n\nFigure 17\n\nIn order to also perform static analysis on the binary, we have to dump the memory of this\nprocess using OllyDumpEx plugin of x32dbg debugger:\n\n\n-----\n\nFigure 18\nThe problem is that the IAT (Import address table) hasn’t been populated as expected and\ncontains only 2 functions that were also present in the original binary:\n\nFigure 19\nWe have to use another plugin of x32dbg called Scylla. This plugin is used to find the IAT\nentries in the process memory, and then it can fix our dropped binary:\n\n\n-----\n\nFigure 20\n\nWe’ve successfully fixed the IAT in our dropped binary, and this operation is useful because\nit reveals different API calls which have to be analyzed:\n\n\n-----\n\nFigure 21\nNow we will analyze the decrypted binary. It initiates the use of Winsock DLL by calling the\nWSAStartup function:\n\nFigure 22\nDuring the entire execution, the process decrypts relevant strings by using a custom\nalgorithm that can be described shortly: If m is the encrypted buffer and key is the decryption\nkey, the result of the algorithm is (m[i] AND 0xF) XOR (key[i] AND 0xF) + (m[i] AND 0xF0),\nas presented below:\n\n\n-----\n\nFigure 23\nAfter these operations are finished, the result represents the C2 server and the\ncorresponding port number:\n\nFigure 24\nThe malware opens the “Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings”\nregistry key by calling the RegOpenKeyExA API:\n\nFigure 25\n\n\n-----\n\nThe ProxyEnable value is extracted using the RegQueryValueExA function, and it s\ncompared with 1. This action has the purpose of verifying if the current machine is using a\nproxy for network communications:\n\nFigure 26\nIf “ProxyEnable” is equal to 1, the malware proceeds and extracts the value of “ProxyServer”\n(hostnames/IPs of the proxy server on the network), as displayed in the next figure:\n\nFigure 27\nThe gethostname function is used to retrieve the host name for the local machine:\n\nFigure 28\nThe function result from above is used as a parameter for the gethostbyname function, which\ncan be used to retrieve host information corresponding to the local machine, as shown in\nfigure 29:\n\n\n-----\n\nFigure 29\nThe inet_ntoa function is utilized to convert the IP address of the host into an ASCII string\n(dotted-decimal format):\n\nFigure 30\nThere is some sort of reverse operation done by the malware because it’s using the\ninet_addr function to convert the string representation of the IP address into a proper\naddress for the IN_ADDR structure:\n\nFigure 31\nThe hostname and the IP address of the machine represented as a decimal number are\ncombined into a string that will be used in the upcoming network communications with the C2\nserver:\n\nFigure 32\n\nThe malicious process uses the same decryption algorithm described before in order to\ndecrypt important strings. The function is highlighted in the next picture:\n\n\n-----\n\nFigure 33\n\nAn example of how the algorithm performs is displayed below, where EAX represents the\nencrypted string and the key is moved into the EDX register:\n\n\n-----\n\nFigure 34\nBy placing a breakpoint after the operation is supposed to end, we can observe that the\nstring was successfully decrypted:\n\nFigure 35\n\nAfter a few more operations are performed, we can distinguish other interesting strings, like\nthe User Agent that will be used in the communications with the Command and Control\nserver:\n\n\n-----\n\nFigure 36\n\nThe sample builds an HTML document that contains the infected hostname and the IP\naddress corresponding to the local machine. This form will be used in a POST request as\nwe’ll see later on:\n\nFigure 37\n\nThe socket function is used to create a socket, and the following parameters are passed to\nthe function call: 0x2 (AF_INET – IPv4 address family), 0x1 (SOCK_STREAM – provides\nsequenced, reliable, two-way streams with an OOB data transmission mechanism) and 0\n(the protocol is not specified). The function call is shown below:\n\nFigure 38\nThe setsockopt API is used to set a socket option. The following parameters can be\nhighlighted – 0xFFFF (SOL_SOCKET – socket layer), 0x8 (SO_KEEPALIVE – enable keepalive packets for a socket connection):\n\n\n-----\n\nFigure 39\nThe second setsockopt call has different parameters – 0xFFFF (SOL_SOCKET – socket\nlayer), 0x1006 (SO_RCVTIMEO – receive timeout), 0x15f90 = 90000ms = 90s (optval\nparameter):\n\nFigure 40\nThe third setsockopt call is different than the second one because it sets the send timeout to\n90 seconds:\n\nFigure 41\nThe port number 0x1BB is converted from TCP/IP network byte order to host byte order\n(little-endian on Intel processors) by using a ntohs function call:\n\n\n-----\n\nFigure 42\nThe malware is using the inet_addr function to transform the C2 IP address into a proper\naddress for the IN_ADDR structure:\n\nFigure 43\nThere is a network connection established to the C2 server using the connect function. The\nfollowing elements can be highlighted in the sockaddr structure: 0x2 (AF_INET – IPv4\naddress family), 0x1BB = 443 (port number), 0x797FF94A (the C2 server represented as a\nhex value). The function call is represented in the next figure:\n\nFigure 44\nThe sample performs a GET request to the C2 server with the user agent that was decrypted\nearlier: “User-Agent: Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 5.1; SV1)”. The data is\nsent using the send function:\n\n\n-----\n\nFigure 45\nThe malware reads the response from the server using the recv function, byte-by-byte (the\nlength parameter is 1). It stops when the result contains “\\x0d\\x0a\\x0d\\x0a” (2 new lines\ncharacters in Windows) and it checks to see if the response contains “200 OK”, which means\nthat the connection was successfully established:\n\nFigure 46\nThere is also a second comparison between the response and the “!!” string (if the result\ndoesn’t contain “!!”, then the process performs a closesocket API call):\n\n\n-----\n\nFigure 47\nThe hostname and the IP address of the local machine are exfiltrated to the C2 server using\na POST request. The SessionID parameter is randomly generated:\n\nFigure 48\nAs before, there are multiple recv function calls following the POST request, and the process\nexpects the response to contain “200 OK” and “Success”. If it doesn’t, then there is a Sleep\ncall for 90 seconds and it tries again. A new thread is created using the CreateThread\n\n\n-----\n\nfunction:\n\nFigure 49\nThread activity\n\nSome parameters used in the network communications like “id” and “SessionID” are\ngenerated by a function called “Randomize”:\n\nFigure 50\nIt’s important to mention that some HTTP headers are just decrypted before the network\ncommunication is performed using the algorithm described in the first paragraphs. The\nsample performs another GET request using the send function:\n\n\n-----\n\nFigure 51\nThe file reads the response from the server using the recv function, byte-by-byte. It expects\nagain a “200 OK” string and as opposed to before, it expects the response not to contain “!!”\n(if it does, the malware exits):\n\nFigure 52\nThe process parses the response from the C2 server for an integer corresponding to a\ncommand that has to be executed. It implements 8 different commands, as shown in figure\n53:\n\n\n-----\n\nFigure 53\n**Case 1 – EAX = 0**\n\nThe process sends a POST request to the server that contains a similar HTML document,\nhowever the exfiltrated information is different. The following bytes can be highlighted: CF 83\nCD 83 CF 83, on which we can apply a NOT operation and obtain 30 7C 32 7C 30 7C\n(0|2|0|):\n\n\n-----\n\nFigure 54\nThe reponse from the server is received using the recv function. If the connection was\nsuccessful, the process expects a “200 OK” string and also “Success”, as shown below:\n\nFigure 55\nThere is another GET request to the CnC server performed by the malicious process:\n\n\n-----\n\nFigure 56\nThe response from the server is expected to be larger this time (0x1000 = 4096 bytes):\n\nFigure 57\nThe response from the server is written to a file specified by a handle transmitted by the C2\nserver (in our case, this was 0 because we’re trying to emulate the C2 server\ncommunications). The WriteFile API call is presented below:\n\n\n-----\n\nFigure 58\nThe process announces the C2 server that the write operation was successful by issuing a\nPOST request (NOT (CF 83 CE 83 CF 83) = 30 7C 31 7C 30 7C = “0|1|0|”):\n\nFigure 59\n\n\n-----\n\nIf the write operation failed, the request is changing (NOT (CF 83 CF 83 CF 83) = 30 7C 30\n7C 30 7C = “0|0|0|”):\n\nFigure 60\nAn identical GET request, as presented before, is sent to the server and the malware jumps\nback to the switch statement (this applies to each case).\n\n**Case 2 – EAX = 1**\n\nIn this case, we have 2 subcases depending on the response from the server. In the first\none, the only thing that is exfiltrated to the CnC server is the current directory, which can be\nobtained by applying a NOT operation:\n\n\n-----\n\nFigure 61\nIn the second subcase, the malware scans the current directory using the FindFirstFileA and\nFindNextFileA functions:\n\nFigure 62\nEach file time is extracted and converted to a local file time by using the\nFileTimeToLocalFileTime API:\n\n\n-----\n\nFigure 63\nThe process constructs the next buffer for every file: 1|File name|dwHighDateTime (highorder 32 bits of the file time) in decimal|File size in decimal|. An example of such buffer is\npresented in the next picture:\n\nFigure 64\nAfter the process succeeds in applying the algorithm for every file in the current directory, the\nfinal buffer looks like the following:\n\nFigure 65\n\nThe buffer is encoded using the NOT operator and is exfiltrated to the C2 server via a POST\nrequest:\n\n\n-----\n\nFigure 66\n**Case 3 – EAX = 2**\n\nBy parsing the response from the server to obtain the command line to be executed, there is\na new process created using the CreateProcessA function:\n\n\n-----\n\nFigure 67\nIf the new process was successfully created, the following request is made to the CnC server\n(NOT (CD 83 CE 83 CF 83) = 32 7C 31 7C 30 7C = “2|1|0|”):\n\nFigure 68\n\n\n-----\n\nWhether any error occurred during the process creation, the POST request is different (NOT\n(CD 83 CF 83 CF 83) = 32 7C 30 7C 30 7C = “2|0|0|”):\n\nFigure 69\n**Case 4 – EAX = 3**\n\nWe have only observed a POST request performed by the malware (NOT (CC 83 CE 83 CF\n83) = 33 7C 31 7C 30 7C = “3|1|0|”):\n\n\n-----\n\nFigure 70\n**Case 5 – EAX = 4**\n\nThe server provides a file name to be opened by the malicious process. This action might\nindicate that the attacker tries to exfiltrate the content of targeted files:\n\nFigure 71\nA POST request is performed by the file, the user agent is the same as in every network\ncommunication:\n\n\n-----\n\nFigure 72\nThe process reads the content of the specified file by using a ReadFile function call:\n\nFigure 73\nThe content of the targeted file is exfiltrated to the CnC server using the send function:\n\nFigure 74\n**Case 6 – EAX = 5**\n\n\n-----\n\nWe believe that this command is responsible for downloading other malware payloads.\nThere is only a GET request to the same C2 server:\n\nFigure 75\n**Case 7 – EAX = 6**\n\nThe CreateToolhelp32Snapshot API is utilized to take a snapshot of the processes, the first\nparameter being 0x2 (TH32CS_SNAPPROCESS – all processes in the system):\n\nFigure 76\nAll running processes on the system are retrieved by using the Process32First and\nProcess32Next functions:\n\n\n-----\n\nFigure 77\nThe list of processes is exfiltrated to the CnC server. By decoding the encoded information,\nwe can observe the following string in the beginning “6|1|System Idle\nProcess|0|System|4|smss.exe|500|csrss.exe|604|” (note the process name and the process\nID in the buffer):\n\n\n-----\n\nFigure 78\n**Case 8 – EAX = 7**\n\nThe GetFileAttributesA API is used to retrieve file system attributes for the current directory,\nas shown in figure 79:\n\nFigure 79\nThe current directory name is sent to the CnC server in the following form “7|1|Directory\nname|”:\n\n\n-----\n\nFigure 80\nIf EAX > 7, the process performs a few recv function calls and jumps back to the switch\ninstruction.\n\nReferences\n\n[Decryption algorithm: https://github.com/Rackedydig/string_decode_algorithm_apt16](https://github.com/Rackedydig/string_decode_algorithm_apt16)\n\nFireEye APT groups: [https://www.fireeye.com/current-threats/apt-groups.html](https://www.fireeye.com/current-threats/apt-groups.html)\n\nFireEye report: https://www.fireeye.com/blog/threat-research/2015/12/the-eps-awakens-parttwo.html\n\n[MSDN: https://docs.microsoft.com/en-us/windows/win32/api/](https://docs.microsoft.com/en-us/windows/win32/api/)\n\nFakenet: [https://github.com/fireeye/flare-fakenet-ng](https://github.com/fireeye/flare-fakenet-ng)\n\nVirusTotal:\nhttps://www.virustotal.com/gui/file/bed00a7b59ef2bd703098da6d523a498c8fda05dce931f02\n8e8f16ff434dc89e/detection\n\nINDICATORS OF COMPROMISE\n\nC2 IP address: 121.127.249.74\n\n\n-----\n\nSHA256:\nBED00A7B59EF2BD703098DA6D523A498C8FDA05DCE931F028E8F16FF434DC89E\n\nSHA256:\n44DD6A777F50E22EC295FEAE2DDEFFFF1849F8307F50DA4435584200A2BA6AF0\n\nURLs: https[:]//121.127.249.74/cxpid/submit.php?SessionID=<decimal number>\n\nhttps[:]//121.127.249.74/send.php?id=<decimal number>\n\nhttps[:]//121.127.249.74/query.php?id=<decimal number>\n\nhttps[:]//121.127.249.74/cxgid/<Hostname>/<IP address in decimal>/<IP address in\ndecimal>0/index.php\n\nUser-Agent: Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; SV1)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-01-25 - A detailed analysis of ELMER Backdoor used by APT16.pdf"
+    ],
+    "report_names": [
+        "2021-01-25 - A detailed analysis of ELMER Backdoor used by APT16.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "2608db3e-7f7a-42c0-922b-4c9cb22c7ce9",
+            "created_at": "2023-01-06T13:46:38.278691Z",
+            "updated_at": "2025-03-27T02:00:02.791741Z",
+            "deleted_at": null,
+            "main_name": "APT16",
+            "aliases": [
+                "SVCMONDR",
+                "G0023"
+            ],
+            "source_name": "MISPGALAXY:APT16",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "fed3d66d-1721-43b0-b5e1-d35931dc6e71",
+            "created_at": "2022-10-25T15:50:23.72724Z",
+            "updated_at": "2025-03-27T02:00:55.534088Z",
+            "deleted_at": null,
+            "main_name": "APT16",
+            "aliases": [
+                "APT16"
+            ],
+            "source_name": "MITRE:APT16",
+            "tools": [
+                "ELMER"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535704,
+    "ts_updated_at": 1743041392,
+    "ts_creation_date": 1653692634,
+    "ts_modification_date": 1653692634,
+    "files": {
+        "pdf": "https://archive.orkl.eu/483fff9f87d5c6fdaf25c6b6550bb9f6a7911df9.pdf",
+        "text": "https://archive.orkl.eu/483fff9f87d5c6fdaf25c6b6550bb9f6a7911df9.txt",
+        "img": "https://archive.orkl.eu/483fff9f87d5c6fdaf25c6b6550bb9f6a7911df9.jpg"
+    }
+}

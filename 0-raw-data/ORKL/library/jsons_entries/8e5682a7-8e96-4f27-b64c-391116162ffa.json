@@ -1,0 +1,67 @@
+{
+    "id": "8e5682a7-8e96-4f27-b64c-391116162ffa",
+    "created_at": "2023-01-12T15:09:15.864928Z",
+    "updated_at": "2025-03-27T02:05:46.705327Z",
+    "deleted_at": null,
+    "sha1_hash": "92b97e6ebebf22a3956d800c991387bed56a61db",
+    "title": "2022-10-03 - Some Notes on VIRTUALGATE",
+    "authors": "",
+    "file_creation_date": "2022-10-23T12:56:11Z",
+    "file_modification_date": "2022-10-23T12:56:11Z",
+    "file_size": 625472,
+    "plain_text": "# Some Notes on VIRTUALGATE\n\n**norfolkinfosec.com/some-notes-on-virtualgate/**\n\nnorfolk October 3, 2022\n\n[Late last week, Mandiant researchers published findings from an incident response](https://www.mandiant.com/resources/blog/esxi-hypervisors-malware-persistence)\nengagement detailing an attacker workflow that took place in a VMWare ESXI environment.\nIn this workflow, the attackers placed malware or persistence mechanisms on each layer of\nthis environment:\n\n1. vSphere layer, which can manage multiple ESXI environments\n\n2. ESXI hypervisor layer, which can manage virtualized “guest” machines\n\n3. Virtualized guest machines\n\nA key function of several of the attacker tools placed at the ESXI and guest levels in this\nenvironment was reportedly the ability to exchange attacker commands and data between\nthe two layers.\n\nThis blog post examines a likely sample of VIRTUALGATE, a reported malware family that\nsits at the guest machine layer of this workflow. The post will provide additional technical\ndetails regarding its underlying mechanisms and provides context for how an attacker might\noperate in this environment.\n\n**vSphere, ESXI, and Attacker Malware**\n\nMandiant’s blog post detailed several layers of activity for the attackers. At the top level, the\nattackers gained access to – and likely created persistence mechanisms within – the\norganization’s vSphere infrastructure. This in turn gave the attackers access to Virtual\nMachine hypervisors, which manage virtualized guest machines for the environment.\n\nAlthough Mandiant provided hashes for some of these files, the files were not publicly\navailable at the time of this writing; however, Mandiant does provide a file name (avp.exe)\nand a description for one of these files, which the authors named VIRTUALGATE, a malware\n\n\n-----\n\nfamily designed to run on Windows operating systems:\n```\nThe memory only dropper... uses VMware's virtual machine communication interface\n(VMCI) sockets to run commands on a guest virtual machine from a hypervisor host\n\n```\nThese two datapoints are sufficient to find a possible candidate on VirusTotal:\n\nAs the remainder of this post will show, this file’s functions align well with Mandiant’s\ndescription. This post focuses more on how this file works rather than on further attribution\nefforts (although the technical relationships are implied), as the internal mechanisms would\nlikely apply to other malware families that use the same communication techniques.\n\n**Technical Information**\n\nMain Workflow\n\nFilename: avp.exe\n\nMD5: 3c7316012cba3bbfa8a95d7277cda873\n\nSHA1: d6a57b9aaa20fe4f3330f5979979081af09a4232\n\nSHA256: 1893523f2a4d4e7905f1b688c5a81b069f06b3c3d8c0ff9d16620468d117edbb\n\nAs Mandiant noted, the file consists of a loader and DLL. Once loaded in memory, the\npayload uses three main components:\n\n[– A function containing API calls typically seen in files that use Sockets (Winsock)](https://learn.microsoft.com/en-us/windows/win32/winsock/windows-sockets-start-page-2)\n\n– A function referencing cmd.exe\n\n– A reference to a log file, with format strings suggesting timestamped entries\n\nThe socket workflow is responsible for launching the other two components.\n\n\n-----\n\n**Socket API calls**\nImmediately following the “recv” API call, there is a series of function calls that eventually\nleads to the execution of cmd.exe with the “/c” option:\n\n**Recv followed by branch leading to cmd.exe**\nRunning the malware dynamically also creates a log entry in the user’s AppData\\Temp folder,\nthe contents of which conform to the format string mentioned above:\n\n\n-----\n\n**Log file generated during the malware’s execution**\n\nNotably, this log entry closely resembles the format of the logs produced by another file\n[described in the Mandiant report, lending additional weight to the likelihood that this file is](https://www.mandiant.com/resources/blog/esxi-hypervisors-malware-persistence)\npart of the same attacker toolset. The log entry implies that the malware is configured to\ninteract using port 25736.\n\nA reasonable hypothesis would be that the malware opens a listener (likely on port 25736)\nand executes data that it receives through this listener via cmd.exe, given the order of these\nobserved functions as well as the contents of the log file and the description of\nVIRTUALGATE in the Mandiant report.\n\nA Detour to VMCI Sockets\n\nAt this stage, we would want to test this hypothesis by sending data over this port.\n\nTypically, during dynamic analysis, researchers can use tools such as Process Hacker to\nhelp identify network connections and processes that are listening on unusual ports.\nUnfortunately, the port does not appear in Process Hacker’s capture:\n\n\n-----\n\nCommands such as “netstat” also yield no results. Revisiting Mandiant’s description offers a\nhint as to why this might be through its reference to VMCI sockets:\n```\nThe memory only dropper... uses VMware's virtual machine communication interface\n(VMCI) sockets to run commands on a guest virtual machine from a hypervisor host\n\n```\nThe following additional branch off of the “socket function” above also offers some clues:\n\n\n-----\n\nThese API calls and Mandiant’s description lead to two useful resources:\n\n– VMWare’s [documentation regarding “VMCI sockets”](https://www.vmware.com/pdf/ws65_s2_vmci_sockets.pdf)\n\n– A [snippet on Github that can help an analyst understand how these work at a](https://github.com/drothlis/open-vm-tools/blob/master/lib/include/vmci_sockets.h)\nprogramming-level\n\n\n-----\n\n– A [second page that includes a CreateFile call for vmci which provides another code](https://github.com/a0rtega/pafish/blob/master/pafish/vmware.c)\nexample\n\nLooking first at VMWare’s documentation, we learn that:\n```\nVMCI sockets are similar to other socket types... VMCI sockets work on an individual\nphysical machine, and like UNIX sockets, they can perform interprocess communication\non the local system. [They] allow different virtual machines to communicate with each\nother, provided they reside on the same VMware host.\n\n```\nThis documentation also provides an overview of the functions involved, including:\n\n– Bind() – “Associates the stream socket with the network settings in the sockaddr_vm\nstructure\n\n– Listen () – “Prepares to accept incoming client connections”\n\n– Accept() – “Waits indefinitely for an incoming connection to arrive”\n\n– Recv() – “Reads data from the client application”\n\n– Send() – “Writes data to the client application”\n\nThis helps explain why the we saw familiar function names, but did not observe the behavior\nwe expected. At this point, we have enough information to conclude that we are likely dealing\nwith a VMCI socket, and not a “normal” socket.\n\nTesting VMCI Connections\n\nThe final piece to this puzzle is finding a way to view a VMCI connection (also referred to as\nvsockets). Fortunately, there is outstanding research publicly available from Pedro Mendes\nda Silva. This whitepaper explains why the virtual sockets may not be visible using traditional\ntools:\n```\n“vsockets” can be used much the same way as TCP/IP sockets but using a different\naddress family. “vsockets” can also be called “vmci sockets” because they use a\n“virtual vmci device” in the lower level to communicate with the host.\n\n```\n[Fortunately, the author provides a set of tools available here to help work with these](https://bitbucket.org/tagido/vsockets-tools/downloads/)\nvsockets. Using one of these tools, we can:\n\n– Test a connection over port 25736 to see if it is open\n– Test sending a cmd.exe command (e.g. “notepad.exe”) over this port to validate the\nexecution workflow\n\n– Repeat the test over a port expected to be closed, to validate that this only works for this\nport\n\nThis test is relatively straightforward:\n\n\n-----\n\n**avp.exe spawning cmd.exe and notepad.exe following the vsocket connection**\n\nThe success of the test is evident both in the creation of notepad.exe and the process tree\nevidence showing avp.exe spawning the command shell. At this stage, the malware’s\nfunctionality is validated.\n\n**Concluding Thoughts**\n\nThe novelty and complexity of the malware examined in this post does not reside in its\nfunctionality; at face value, the malware receives data over a socket and executes a\ncommand. Instead, the complexity lies in the (somewhat) esoteric nature of the ecosystem it\nis installed in. As Mandiant notes in its blog post, ESXI environments are less likely to have\nEDR products present to detect the steps leading to the installation of this malware in the\nfirst place.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-10-03 - Some Notes on VIRTUALGATE.pdf"
+    ],
+    "report_names": [
+        "2022-10-03 - Some Notes on VIRTUALGATE.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536155,
+    "ts_updated_at": 1743041146,
+    "ts_creation_date": 1666529771,
+    "ts_modification_date": 1666529771,
+    "files": {
+        "pdf": "https://archive.orkl.eu/92b97e6ebebf22a3956d800c991387bed56a61db.pdf",
+        "text": "https://archive.orkl.eu/92b97e6ebebf22a3956d800c991387bed56a61db.txt",
+        "img": "https://archive.orkl.eu/92b97e6ebebf22a3956d800c991387bed56a61db.jpg"
+    }
+}

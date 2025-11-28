@@ -1,0 +1,103 @@
+{
+    "id": "1a75bb17-e810-45b7-85dc-6abe02c10af8",
+    "created_at": "2023-01-12T15:09:21.228383Z",
+    "updated_at": "2025-03-27T02:05:56.224645Z",
+    "deleted_at": null,
+    "sha1_hash": "b6ce06e948fb24821ba56991df67ed0bfb352f44",
+    "title": "2018-03-01 - Blast from the past- stowaway Virut delivered with Chinese DDoS bot",
+    "authors": "",
+    "file_creation_date": "2022-05-28T02:31:35Z",
+    "file_modification_date": "2022-05-28T02:31:35Z",
+    "file_size": 607856,
+    "plain_text": "# Blast from the past: stowaway Virut delivered with Chinese DDoS bot\n\n**[blog.malwarebytes.com/threat-analysis/2018/03/blast-from-the-past-stowaway-virut-delivered-with-chinese-ddos-bot/](https://blog.malwarebytes.com/threat-analysis/2018/03/blast-from-the-past-stowaway-virut-delivered-with-chinese-ddos-bot/)**\n\nhasherezade March 1, 2018\n\n[Recently, we described an unusual Chinese drive-by attack that was delivering a variant of](https://blog.malwarebytes.com/threat-analysis/2018/02/chinese-criminal-experiments-with-exploits-in-drive-by-download-campaign/)\nthe [Avzhan DDoS bot. The attack also contained multiple components that were not-so-new.](https://blog.malwarebytes.com/threat-analysis/2018/02/avzhan-ddos-bot-dropped-by-chinese-drive-by-attack/)\n[Among the exploits, the newest was from 2016. Avzhan is also not a recent malware—the](https://www.malwarebytes.com/exploits/)\n[compilation timestamp of the unpacked payload was from August 2015. But there was one](https://www.virustotal.com/en/file/acb086f25c082ee1e2cdc76dc40db97e1629a72b593abd16ab876b542d7c4f5c/analysis/)\nmore unusual thing that triggered our attention. The outer layer of Avzhan matched the\nsignatures of Virut, a malware that’s been dead in the water since 2013.\n\nAt first, it was hard to believe this detection. Who would want to distribute such an old piece\nof malware that is no longer developed, and whose CnC servers were sinkholed long ago by\nPolish CERT? Maybe it was the author of the packer by which the DDoS bot was wrapped\nincorporating some Virut-like obfuscation?\n\nAfter further research, it turned out the detection was not wrong. The Avzhan bot carried\nalong with it a legitimate Virut. But it is unlikely that the distributors added it intentionally.\nRather, the server from where the attack was deployed happened to be infected with Virut.\nThe [virus attached as a parasite to the distributed DDoS malware, and was dropped with the](https://www.malwarebytes.com/computer-virus/)\n\n\n-----\n\ndrive-by attack into new places. Interestingly, in 2016 Virut s code was also found in Chinese\ncameras. Similarly, the computers of developers were infected with Virut, and by this way its\ncode got passed further.\n\nSince Virut has made this unexpected reappearance, we will have a look at how it works in\nthis post.\n\n## Analyzed sample\n\n[05749f08ebd9762511c6da92481e87d8 – the main sample, dropped by the exploit](https://www.virustotal.com/en/file/65ABED6C77CC219A090EBEF73D6A526FCCEDAA391FBFDCB4B416D0845B3D0DBC/analysis/)\n\n## Behavioral analysis\n\nVirut behaves like a typical, old-fashioned infectious virus. As we observed, samples infected\nby Virut always crashed on 64-bit systems.\n\n\n-----\n\nHowever, when deployed in a 32-bit environment, Virut spread like fire, trying to infect all\nexecutables it could reach by attaching its own code. The code of Virut is polymorphic and\ndesigned with great care, so the infection patterns are not easy to grasp. Often (if there is\nenough space), Virut adds a new, empty section with a random name, for example:\n\nIf there is no space for a new header in the input file, this step is omitted. So, the absence of\nthe added section does not guarantee that the file is clean. Another suspicious indicator may\nbe that the last section is set to RWX (Read-Write-eXecute).\n\n\n-----\n\nVirut changes sizes of the sections and the entry point of the application in order to redirect\nto its own code. After the malicious code is deployed, the original entry point is executed. So,\nfrom the user’s point of view, the infected application works as before.\n\nIn addition to infecting files on the disk, Virut attacks running processes as well. So, even if\nthe first infected process was killed, the malicious code keeps running in the memory.\n\nThe malware uses some hardcoded CnC addresses, as well as a DGA (Domain Generation\nAlgorithm). Looking at the network traffic, we can see the queries to the domains follow the\npattern of using six letters before the dot com: `6{a-z}.com`\n\nDue to the fact that the full infrastructure of Virut was sinkholed, none of its CnC servers are\nactive.\n\n## Inside\n\nInfection patterns\n\nAs mentioned before, Virut’s code can mutate—each infection looks different. Some of the\nchosen patterns depend on the features of the input.\n\nIn PE files, each section must be aligned to the minimal unit that is indicated by a file\nalignment field in the PE header. This is why sometimes there is an empty space between\none PE section and the other, filled only with padding. This empty space is called the cave.\nOld infectors often used this space to implant their own code. This is what Virut also tries to\ndo.\n\nIn the example below, a cave after the .text section has been filled with malicious code:\n\n\n-----\n\nDepending on the input, there may not be sufficient caves between sections. Then, Virut\nadds its code just at the end of the last section:\n\nBut this is not the only thing that impacts the features of the infection. The code generated by\nVirut is polymorphic, so the same file will not be infected twice in the same way. Below is a\ncomparison of code from the same application, infected by Virut in two different runs:\n\n\n-----\n\nVirut’s shellcode\n\nThe code appended to the infected files makes an initial stub that unpacks in the memory of\nVirut’s shellcode. That is a heart of the malware. This is how the unpacked shellcode looks:\n\nThe same code is also injected into other processes. It is implanted in a new page in the\nmemory. Example:\n\n\n-----\n\nThe shellcode contains the functionality of a userland rootkit. It hooks NTDLL within every\ninfected process so that each time the specific function is called, the execution is redirected\nfirst to Virut’s implant. There are seven functions that are hooked:\n\n1. NtCreateFile\n2. NtCreateProcess\n3. NtCreateProcessEx\n4. NtCreateUserProcess\n5. NtDeviceIoControlFile\n6. NtOpenFile\n7. NtQueryInformationProcess\n\nBelow you can see an example of the hooked function `NtCreateFile . As you can see, the`\nfirst instruction is a call to the malicious memory page:\n\nAnd this is how the code looks that is being called:\n\nWe also find the lists of AV products, that Virut uses in order to check if it is running in the\ncontrolled environment:\n\n\n-----\n\nApart from the rootkit, it contains the code responsible for communication with the CnC. For\nexample, among the embedded strings we found IRC commands that suggest that IRC was\npart of Virut’s communication:\n\nList of command patterns:\n```\nPING\nNICK nrmbhoz\nPRIV\nJOIN #.%d\nDSTAMP %s%02d%02d\n\n```\n\n-----\n\nThere are also hardcoded addresses of the CnCs. Two servers are static and always occur\nin Virut samples (both of them are sinkholed by Polish CERT):\n```\nilo.brenz.pl\nant.trenz.pl\n\n```\nBut, we can also see the domains generated by the Virut’s DGA:\n\nWhile the code infecting the file mutates, the injected shellcode has a pretty consistent\nstructure. If we compare dumps from two different processes, we find that most of the code is\nthe same.\n\n\n-----\n\n## Conclusion\n\nNowadays, such old viruses are mostly forgotten, but it doesn’t mean that we are fully safe\nfrom them. Fortunately, most AV products can detect viruses like Virut by their signatures –\nbut the people who decided not to use AV may still become their victims.\n\nEven their command-and-controll infrastructure is dead, the old infectors can roam around.\nThere are old servers in the world that are left infected with old viruses, such as Virut or\nMyDoom. On our honeypots, we regularly get spam that is being sent from such abandoned\nbots.\n\n\n-----\n\nYet, it is unusual to encounter an old virus in wild sent by a modern-style drive-by attack. We\nnever know how an old threat can get blended with a new one. This time we were lucky and\nthe attack was simple, with a small reach.\n\nMalwarebytes detects this DDoS bot binary as Trojan.Bayrob.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2018/2018-03-01 - Blast from the past- stowaway Virut delivered with Chinese DDoS bot.pdf"
+    ],
+    "report_names": [
+        "2018-03-01 - Blast from the past- stowaway Virut delivered with Chinese DDoS bot.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "2150d1ac-edf0-46d4-a78a-a8899e45b2b5",
+            "created_at": "2022-10-25T15:50:23.269339Z",
+            "updated_at": "2025-03-27T02:00:55.416524Z",
+            "deleted_at": null,
+            "main_name": "APT17",
+            "aliases": [
+                "APT17",
+                "Deputy Dog"
+            ],
+            "source_name": "MITRE:APT17",
+            "tools": [
+                "BLACKCOFFEE"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "a7aefdda-98f1-4790-a32d-14cc99de2d60",
+            "created_at": "2023-01-06T13:46:38.281844Z",
+            "updated_at": "2025-03-27T02:00:02.792526Z",
+            "deleted_at": null,
+            "main_name": "APT17",
+            "aliases": [
+                "G0025",
+                "AURORA PANDA",
+                "Group 72",
+                "G0001",
+                "HELIUM",
+                "Group 8",
+                "Hidden Lynx",
+                "Tailgater Team",
+                "BRONZE KEYSTONE"
+            ],
+            "source_name": "MISPGALAXY:APT17",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536161,
+    "ts_updated_at": 1743041156,
+    "ts_creation_date": 1653705095,
+    "ts_modification_date": 1653705095,
+    "files": {
+        "pdf": "https://archive.orkl.eu/b6ce06e948fb24821ba56991df67ed0bfb352f44.pdf",
+        "text": "https://archive.orkl.eu/b6ce06e948fb24821ba56991df67ed0bfb352f44.txt",
+        "img": "https://archive.orkl.eu/b6ce06e948fb24821ba56991df67ed0bfb352f44.jpg"
+    }
+}

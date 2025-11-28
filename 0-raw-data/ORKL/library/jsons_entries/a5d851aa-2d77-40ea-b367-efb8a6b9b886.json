@@ -1,0 +1,64 @@
+{
+    "id": "a5d851aa-2d77-40ea-b367-efb8a6b9b886",
+    "created_at": "2023-01-12T15:04:37.049689Z",
+    "updated_at": "2025-03-27T02:09:29.367991Z",
+    "deleted_at": null,
+    "sha1_hash": "4085dc0bc70709977f24ddfa6f1d4ee551d83cd6",
+    "title": "2020-12-18 - A quirk in the SUNBURST DGA algorithm",
+    "authors": "",
+    "file_creation_date": "2022-05-27T21:38:05Z",
+    "file_modification_date": "2022-05-27T21:38:05Z",
+    "file_size": 1325085,
+    "plain_text": "# A quirk in the SUNBURST DGA algorithm\n\n**[blog.cloudflare.com/a-quirk-in-the-sunburst-dga-algorithm/](https://blog.cloudflare.com/a-quirk-in-the-sunburst-dga-algorithm/)**\n\nNick Blazier December 18, 2020\n\nLoading...\n\n[Nick Blazier](https://blog.cloudflare.com/author/nick-blazier)\n\n\n-----\n\n[Jesse Kipp](https://blog.cloudflare.com/author/jesse)\n\n\n-----\n\nOn Wednesday, December 16, the RedDrip Team from QiAnXin Technology released their\n[discoveries (tweet,](https://twitter.com/RedDrip7/status/1339168187619790848?s=20) [github) regarding the random subdomains associated with the](https://github.com/RedDrip7/SunBurst_DGA_Decode)\nSUNBURST malware which was present in the SolarWinds Orion compromise. In studying\nqueries performed by the malware, Cloudflare has uncovered additional details about how\nthe Domain Generation Algorithm (DGA) encodes data and exfiltrates the compromised\nhostname to the command and control servers.\n\n### Background\n\nThe RedDrip team discovered that the DNS queries are created by combining the previously\nreverse-engineered unique guid (based on hashing of hostname and MAC address) with a\npayload that is a custom base 32 encoding of the hostname. The article they published\nincludes screenshots of decompiled or reimplemented C# functions that are included in the\ncompromised DLL. This background primer summarizes their work so far (which is published\nin Chinese).\n\nRedDrip discovered that the DGA subdomain portion of the query is split into three parts:\n\n```\n<encoded_guid> + <byte> + <encoded_hostname>\n\n```\n\nAn example malicious domain is:\n\n```\n7cbtailjomqle1pjvr2d32i2voe60ce2.appsync-api.us-east-1.avsvmcloud.com\n\n```\n\nWhere the domain is split into the three parts as\n\n**Encoded guid (15 chars)** **byte** **Encoded hostname**\n\n\n-----\n\n**Encoded guid (15 chars)** **byte** **Encoded hostname**\n\n7cbtailjomqle1p j vr2d32i2voe60ce2\n\nThe work from the RedDrip Team focused on the encoded hostname portion of the string, we\nhave made additional insights related to the encoded hostname and encoded guid portions.\n\nAt a high level the encoded hostnames take one of two encoding schemes. If all of the\ncharacters in the hostname are contained in the set of domain name-safe characters\n```\n\"0123456789abcdefghijklmnopqrstuvwxyz-_.\" then the\nOrionImprovementBusinessLayer.CryptoHelper.Base64Decode algorithm, explained in\n\n```\nthe article, is used. If there are characters outside of that set in the hostname, then the\n```\nOrionImprovementBusinessLayer.CryptoHelper.Base64Encode is used instead and\n\n```\n‘00’ is prepended to the encoding. This allows us to simply check if the first two characters of\nthe encoded hostname are ‘00’ and know how the hostname is encoded.\n\nThese function names within the compromised DLL are meant to resemble the names of\nlegitimate functions, but in fact perform the message encoding for the malware. The DLL\nfunction Base64Decode is meant to resemble the legitimate function name base64decode,\nbut its purpose is actually to perform the encoding of the query (which is a variant of base32\nencoding).\n\nThe RedDrip Team has posted Python code for encoding and decoding the queries,\nincluding identifying random characters inserted into the queries at regular character\nintervals.\n\nOne potential issue we encountered with their implementation is the inclusion of a check\nclause looking for a ‘0’ character in the encoded hostname (line 138 of the decoding script).\nThis line causes the decoding algorithm to ignore any encoded hostnames that do not\ncontain a ‘0’. We believe this was included because ‘0’ is the encoded value of a ‘0’, ‘.’, ‘-’ or\n‘_’. Since fully qualified hostnames are comprised of multiple parts separated by ‘.’s, e.g.\n‘example.com’, it makes sense to be expecting a ‘.’ in the unencoded hostname and\ntherefore only consider encoded hostnames containing a ‘0’. However, this causes the\ndecoder to ignore many of the recorded DGA domains.\n\nAs we explain below, we believe that long domains are split across multiple queries where\nthe second half is much shorter and unlikely to include a ‘.’. For example ‘www2.example.c’\ntakes up one message, meaning that in order to transmit the entire domain\n‘www2.example.c’ a second message containing just ‘om’ would also need to be sent. This\nsecond message does not contain a ‘.’ so its encoded form does not contain a ‘0’ and it is\nignored in the RedDrip team’s implementation.\n\n### The quirk: hostnames are split across multiple queries\n\n\n-----\n\n[A list of observed queries performed by the malware was published publicly on GitHub.](https://github.com/bambenek/research/blob/main/sunburst/uniq-hostnames.txt)\nApplying the decoding script to this set of queries, we see some queries appear to be\ntruncated, such as `grupobazar.loca, but also some decoded hostnames are curiously`\nshort or incomplete, such as “com”, “.com”, or a single letter, such as “m”, or “l”.\n\nWhen the hostname does not fit into the available payload section of the encoded query, it is\nsplit up across multiple queries. Queries are matched up by matching the GUID section after\napplying a byte-by-byte exclusive-or (xor).\n\n### Analysis of first 15 characters\n\nNoticing that long domains are split across multiple requests led us to believe that the first 16\ncharacters encoded information to associate multipart messages. This would allow the\nreceiver on the other end to correctly re-assemble the messages and get the entire domain.\nThe RedDrip team identified the first 15 bytes as a GUID, we focused on those bytes and will\nrefer to them subsequently as the header.\n\nWe found the following queries that we believed to be matches without knowing yet the\ncorrect pairings between message 1 and message 2 (payload has been altered):\n\n**Part 1 - Both decode to “www2.example.c”**\n```\nr1q6arhpujcf6jb6qqqb0trmuhd1r0ee.appsync-api.us-west-2.avsvmcloud.com\nr8stkst71ebqgj66qqqb0trmuhd1r0ee.appsync-api.us-west-2.avsvmcloud.com\n\n```\n\n**Part 2 - Both decode to “om”**\n```\n0oni12r13ficnkqb2h.appsync-api.us-west-2.avsvmcloud.com\nulfmcf44qd58t9e82h.appsync-api.us-west-2.avsvmcloud.com\n\n```\n\nThis gives us a final combined payload of www2.example.com\n\nThis example gave us two sets of messages where we were confident the second part was\nassociated with the first part, and allowed us to find the following relationship where\nmessage1 is the header of the first message and message2 is the header of the second:\n\n```\nBase32Decode(message1) XOR KEY = Base32Decode(message2)\n\n```\n\nThe KEY is a single character. That character is xor’d with each byte of the Base32Decoded\nfirst header to produce the Base32Decoded second header. We do not currently know how\nto infer what character is used as the key, but we can still match messages together without\nthat information. Since A XOR B = C where we know A and C but not B, we can instead use\nA XOR C = B. This means that in order to pair messages together we simply need to look for\nmessages where XOR’ing them together results in a repeating character (the key).\n\n```\nBase32Decode(message1) XOR Base32Decode(message2) = KEY\n\n```\n\nLooking at the examples above this becomes\n\n\n-----\n\n**Message 1** **Message 2**\n\nHeader r1q6arhpujcf6jb 0oni12r13ficnkq\n\n\nBase32Decode\n(binary)\n\n\n101101000100110110111111011\n010010000000011001010111111\n01111000101001110100000101\n\n\n110110010010000011010010000\n001000110110110100111100100\n00100011111111000000000100\n\n\nWe’ve truncated the results slightly, but below shows the two binary representations and the\nthird line shows the result of the XOR.\n\n101101000100110110111111011010010000000011001010111111011110001010011101\n110110010010000011010010000001000110110110100111100100001000111111110000\n011011010110110101101101011011010110110101101101011011010110110101101101\n\nWe can see the XOR result is the repeating sequence ‘01101101’meaning the original key\nwas 0x6D or ‘m’.\n\nWe provide the following python code as an implementation for matching paired messages\n(Note: the decoding functions are those provided by the RedDrip team):\n```\n# string1 is the first 15 characters of the first message\n# string2 is the first 15 characters of the second message\ndef is_match(string1, string2):\n  encoded1 = Base32Decode(string1)\n  encoded2 = Base32Decode(string2)\n  xor_result = [chr(ord(a) ^ ord(b)) for a,b in zip(encoded1, encoded2)]\n  match_char = xor_result[0]\n  for character in xor_result[0:9]:\n    if character != match_char:\n      return False, None\n  return True, \"0x{:02X}\".format(ord(match_char))\n\n```\nThe following are additional headers which based on the payload content Cloudflare is\nconfident are pairs (the payload has been redacted because it contains hostname\ninformation that is not yet publicly available):\n\n**Example 1:**\n\n**vrffaikp47gnsd4a**\n\naob0ceh5l8cr6mco\n\nxorkey: 0x4E\n\n**Example 2:**\n\n**vrffaikp47gnsd4a**\n\n\n-----\n\n**vrffaikp47gnsd4a**\n\naob0ceh5l8cr6mco\n\nxorkey: 0x54\n\n**Example 3:**\n\n**vvu7884g0o86pr4a**\n\n6gpt7s654cfn4h6h\n\nxorkey: 0x2B\n\nWe hypothesize that the xorkey can be derived from the header bytes and/or padding byte of\nthe two messages, though we have not yet determined the relationship.\n\n## Update (12/18/2020):\n\n[Erik Hjelmvik posted a blog explaining where the xor key is located. Based on his code, we](https://www.netresec.com/?page=Blog&month=2020-12&post=Reassembling-Victim-Domain-Fragments-from-SUNBURST-DNS)\nprovide a python implementation for converting the header (first 16 bytes) into the decoded\nGUID as a string. Messages can then be paired by matching GUID’s to reconstruct the full\nhostname.\n```\ndef decrypt_secure_string(header):\n  decoded = Base32Decode(header[0:16])\n  xor_key = ord(decoded[0])\n  decrypted = [\"{0:02x}\".format(ord(b) ^ xor_key) for b in decoded]\n  return ''.join(decrypted[1:9])\n\n```\nUpdated example:\n\n**Message 1** **Message 2**\n\nHeader r1q6arhpujcf6jb 0oni12r13ficnkq\n\nBase32Decode Header (hex) b44dbf6900cafde29d05 d920d2046da7908ff004\n\nBase32Decode first byte (xor key) 0xb4 0xd9\n\nXOR result (hex) 00f90bddb47e495629 00f90bddb47e495629\n\n[Cloudflare Zero Trust](https://blog.cloudflare.com/tag/cloudflare-zero-trust/) [Cloudflare Gateway](https://blog.cloudflare.com/tag/gateway/) [Deep Dive](https://blog.cloudflare.com/tag/deep-dive/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-12-18 - A quirk in the SUNBURST DGA algorithm.pdf"
+    ],
+    "report_names": [
+        "2020-12-18 - A quirk in the SUNBURST DGA algorithm.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535877,
+    "ts_updated_at": 1743041369,
+    "ts_creation_date": 1653687485,
+    "ts_modification_date": 1653687485,
+    "files": {
+        "pdf": "https://archive.orkl.eu/4085dc0bc70709977f24ddfa6f1d4ee551d83cd6.pdf",
+        "text": "https://archive.orkl.eu/4085dc0bc70709977f24ddfa6f1d4ee551d83cd6.txt",
+        "img": "https://archive.orkl.eu/4085dc0bc70709977f24ddfa6f1d4ee551d83cd6.jpg"
+    }
+}

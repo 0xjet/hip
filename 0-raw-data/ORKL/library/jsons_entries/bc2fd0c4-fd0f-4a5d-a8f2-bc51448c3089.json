@@ -1,0 +1,126 @@
+{
+    "id": "bc2fd0c4-fd0f-4a5d-a8f2-bc51448c3089",
+    "created_at": "2023-01-12T15:03:45.426356Z",
+    "updated_at": "2025-03-27T02:12:11.110813Z",
+    "deleted_at": null,
+    "sha1_hash": "810a8dca80dddf840f64e4acb92e41e3aea42368",
+    "title": "2021-11-09 - Compromised Docker Hub Accounts Abused for Cryptomining Linked to TeamTNT",
+    "authors": "",
+    "file_creation_date": "2022-05-28T18:13:34Z",
+    "file_modification_date": "2022-05-28T18:13:34Z",
+    "file_size": 1665797,
+    "plain_text": "# Compromised Docker Hub Accounts Abused for Cryptomining Linked to TeamTNT\n\n**[trendmicro.com/en_us/research/21/k/compromised-docker-hub-accounts-abused-for-cryptomining-linked-t.html](https://www.trendmicro.com/en_us/research/21/k/compromised-docker-hub-accounts-abused-for-cryptomining-linked-t.html)**\n\nNovember 9, 2021\n\nCloud\n\nIn October 2021, we observed threat actors targeting poorly configured servers with exposed\nDocker REST APIs by spinning up containers from images that execute malicious scripts.\n\nBy: Trend Micro Research November 09, 2021 Read time: ( words)\n\nAs a part of our threat research, we closely monitor actively exploited vulnerabilities and\nmisconfigurations. One such frequently abused misconfiguration is that of exposed Docker\nREST APIs.\n\nIn October 2021, we observed threat actors targeting poorly configured servers with exposed\nDocker REST APIs by spinning up containers from images that execute malicious scripts\nthat do the following:\n\n1. Download or bundle Monero cryptocurrency coin miners\n2. Perform container-to-host escape using well-known techniques\n3. Perform internet-wide scans for exposed ports from compromised containers\n\n\n-----\n\nFigure 1. Behavior of attacks targeting vulnerable Docker servers\nWe identified Docker Hub registry accounts that were either compromised or belong to\nTeamTNT. These accounts were being used to host malicious images and were an active\npart of botnets and malware campaigns that abused the Docker REST API. We have\nreached out to Docker and the accounts in question have been removed.\n\nIn this blog, we discuss two such accounts that are being used to spread cryptocurrency\nminers by abusing the Docker REST API.\n\nMalicious script found in Docker images\n\n\n-----\n\nFigures 2 and 3. Contents of Docker images\nThe images contain a malicious script named “pause” which is run when a new container is\nspawned.\n\n\n-----\n\nFigures 4-6. Contents of source code\nINIT_MAIN calls the SETUP_APPS function, which updates and adds the tools that are used\nin the subsequent procedures in adversarial ways.\n\n\n-----\n\nINIT_MAIN creates an infinite loop and sends a GET request to\nhttp://teamtnt[.]red/RangeDA.php. It also receives a numeric response, which is later used in\nthe “pwn” function as a supplied argument. If the curl attempt fails, a random number\nbetween 1 and 255 is generated and assigned to $RANGE variable.\n\nFigure 7. Code of pwn function\n“pwn” is a wrapper around masscan and scans for ports 2375, 2376, 2377, 4243, 4244,\nsimilar to our previously reported distributed denial-of-service (DDoS) botnet artifacts in\n[2020. However, in this case another function (CHECK_INTER_SERVER) is called, supplying](https://www.trendmicro.com/vinfo/id/security/news/cybercrime-and-digital-threats/coinminer-ddos-bot-attack-docker-daemon-ports)\nthe IP addresses and port values.\n\nCHECK_INTER_SERVER first checks if the operating system of the remote IP address\ncontains “linux” by requesting the “info” of the exposed Docker REST API server. Using this\ncommand, one can find out various metadata about the server, such as the number of\npaused running and stopped containers, supported runtimes, server version, architecture,\nand others.\n\nFigure 8. CHECK_INTER_SERVER function\nWe observed that the code looks into the following properties to set flags and identify if the\nserver that is currently being scanned is a Docker swarm manager:\n\n1. OSType: Describes the operating system of server\n2. Repository: Container Registry that is set for use\n3. Architecture: Architecture of server\n4. Swarm: Current swarm participation status\n5. CPUs: Number of CPU cores of server\n\nTo gain more details about the misconfigured server such as uptime and total memory\navailable, the threat actors also spin up containers using docker-cli by doing the following:\n\n1. Setting the “--privileged” flag\n2. Using the network namespace of the underlying host “--net=host”\n3. Mounting the underlying hosts’ root file system at container path “/host”\n\n\n-----\n\nFigure 9. Code for spinning up containers\nImmediately after this, the script spawns a new container by using “--privileged” flag,\nmounting the host root file system, and sharing the hosts’ network namespace from the\nimage “alpineos/dockerapi,” which has over 10K+ pulls from Docker Hub as of November 09,\n2021.\n\nFigure 10. Spawning of new container\nAfter this is done, there is another attempt to spawn a new container on the same server but\nwith a different motive.\n\nFigure 11. Spawning a container, with base64-encoded string\nThis container is created from an official image of the “alpine” operating system and\nexecuted with flags that allow root-level permissions on the underlying host, except for the\nfact that a base64-encoded string is piped to “bash” after being decoded.\n\nHere is the encoded string after decoding:\n\nFigure 12. Decoded string\nA new Secure Shell (SSH) key pair is created and the attributes of the folders are changed\nwith the immutable bit. TeamTNT’s public key is appended to /root/.ssh/authorized_keys so\nthat the threat actors can now login using the generated public-private key pair. Later, the\npublic key is removed.\n\n\n-----\n\nFigure 13. TeamTNT\nrelated encryption key\nMonero miner scripts are downloaded from TeamTNT’s server and piped to “bash” using a\nSSH session on the underlying host as the “root” user by supplying the private key from\n“/tmp/TeamTNT.” Later, the private key “/tmp/TeamTNT” is removed as well.\n\nWe take a quick look at the history of the images {Redacted account} (left) and\n“alpineos/docker2api” (right). Here we can see the commands that will be executed when a\ncontainer is created from these images. It is also important to note the “pause” script.\n\nFigure 14. Docker image code\nUpon diffing the “pause” scripts from both the images, we see some incredible similarities in\nthe code, with a few differences:\n\n\n-----\n\nFigure 15. The “pause” scripts from images\nIn particular, there is a difference in the way masscan is being used. There are also a few\ncommented sections, indicating that the threat actors were moving ahead, testing their tools\nand arsenal.\n\nNotably, the IP address 45[.]9[.]148[.]182 has a history of being associated with TeamTNT’s\ninfrastructure, as it has been used by multiple domains:\n\ndl.chimaera[.]cc\ngithb[.]net (inactive)\ngithub-support[.]com (inactive)\nirc.borg[.]wtf\nirc.chimaera[.]cc\nirc.teamtnt[.]red\n\n\n-----\n\nOur [July 2021 research into TeamTNT showed that the group previously used credential](https://www.trendmicro.com/vinfo/tmr/?/us/security/news/cybercrime-and-digital-threats/teamtnt-activities-probed)\nstealers that would rake in credentials from configuration files. This could be how TeamTNT\ngained the information it used for the compromised sites in this attack.\n\nBased on the scripts being executed and the tooling being used to deliver coinminers, we\narrive at the following conclusions connecting this attack to TeamTNT:\n\n1. “alpineos” (with a total of more than 150,000 pulls with all images combined) is one of\n\nthe primary Docker Hub accounts being actively used by TeamTNT\n2. There are compromised Docker Hub accounts that are being controlled by TeamTNT to\n\nspread coinmining malware.\n\nWe have already reached out to Docker, and the accounts inolved in this attack have been\nremoved.. In an upcoming blog, we will take a look into the attack techniques being used by\nthe threat actor.\n\nConclusion\n\nExposed Docker APIs have become prevalent targets for attackers as these allow them to\nexecute their own malicious code with root privileges on a targeted host if security\nconsiderations are not accounted for. This recent attack only highlights the increasing\nsophistication with which exposed servers are targeted, especially by capable threat actors\nlike TeamTNT that use compromised user credentials to fulfill their malicious motives.\n\nIndicators of Compromise\n\n**Type** **Identifier/Hash**\n\n\nShell\nscript\n\nShell\nscript\n\nShell\nscript\n\n\n79ed63686c8c46ea8219d67924aa858344d8b9ea191bf821d26b5ae653e555d9\n\n497c5535cdc283079363b43b4a380aefea9deb1d0b372472499fcdcc58c53fef\n\na68cbfa56e04eaf75c9c8177e81a68282b0729f7c0babc826db7b46176bdf222\n\n\nDomain teamtnt[.]red\n\n\nIP\naddress\n\n\n45.9[.]148.182\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-11-09 - Compromised Docker Hub Accounts Abused for Cryptomining Linked to TeamTNT.pdf"
+    ],
+    "report_names": [
+        "2021-11-09 - Compromised Docker Hub Accounts Abused for Cryptomining Linked to TeamTNT.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "52d5d8b3-ab13-4fc4-8d5f-068f788e4f2b",
+            "created_at": "2022-10-25T16:07:24.503878Z",
+            "updated_at": "2025-03-27T02:02:10.261742Z",
+            "deleted_at": null,
+            "main_name": "Lapsus$",
+            "aliases": [
+                "DEV-0537",
+                "Strawberry Tempest"
+            ],
+            "source_name": "ETDA:Lapsus$",
+            "tools": [],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "be5097b2-a70f-490f-8c06-250773692fae",
+            "created_at": "2022-10-27T08:27:13.22631Z",
+            "updated_at": "2025-03-27T02:00:55.534879Z",
+            "deleted_at": null,
+            "main_name": "LAPSUS$",
+            "aliases": [
+                "LAPSUS$",
+                "DEV-0537",
+                "Strawberry Tempest"
+            ],
+            "source_name": "MITRE:LAPSUS$",
+            "tools": [
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d4b9608d-af69-43bc-a08a-38167ac6306a",
+            "created_at": "2023-01-06T13:46:39.335061Z",
+            "updated_at": "2025-03-27T02:00:03.053961Z",
+            "deleted_at": null,
+            "main_name": "LAPSUS",
+            "aliases": [
+                "LAPSUS$",
+                "DEV-0537",
+                "SLIPPY SPIDER",
+                "Strawberry Tempest"
+            ],
+            "source_name": "MISPGALAXY:LAPSUS",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f809bfcb-b200-4988-80a8-be78ef6a52ef",
+            "created_at": "2023-01-06T13:46:39.186988Z",
+            "updated_at": "2025-03-27T02:00:03.016358Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "Adept Libra"
+            ],
+            "source_name": "MISPGALAXY:TeamTNT",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c3ca592f-0669-49bd-ab5c-310007ab2fb4",
+            "created_at": "2022-10-25T15:50:23.334495Z",
+            "updated_at": "2025-03-27T02:00:55.445098Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "TeamTNT"
+            ],
+            "source_name": "MITRE:TeamTNT",
+            "tools": [
+                "Peirates",
+                "MimiPenguin",
+                "LaZagne",
+                "Hildegard"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535825,
+    "ts_updated_at": 1743041531,
+    "ts_creation_date": 1653761614,
+    "ts_modification_date": 1653761614,
+    "files": {
+        "pdf": "https://archive.orkl.eu/810a8dca80dddf840f64e4acb92e41e3aea42368.pdf",
+        "text": "https://archive.orkl.eu/810a8dca80dddf840f64e4acb92e41e3aea42368.txt",
+        "img": "https://archive.orkl.eu/810a8dca80dddf840f64e4acb92e41e3aea42368.jpg"
+    }
+}

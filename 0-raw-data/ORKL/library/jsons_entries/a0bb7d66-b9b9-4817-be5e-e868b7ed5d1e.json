@@ -1,0 +1,196 @@
+{
+    "id": "a0bb7d66-b9b9-4817-be5e-e868b7ed5d1e",
+    "created_at": "2023-01-12T15:02:58.114098Z",
+    "updated_at": "2025-03-27T02:15:35.570959Z",
+    "deleted_at": null,
+    "sha1_hash": "0561dea123979b0bc16e46dd2b7e6ca5993bb53b",
+    "title": "2020-06-10 - MassLogger - Frankenstein's Creation",
+    "authors": "",
+    "file_creation_date": "2022-05-28T00:45:53Z",
+    "file_modification_date": "2022-05-28T00:45:53Z",
+    "file_size": 2517936,
+    "plain_text": "# MassLogger - Frankenstein's Creation\n\n**fr3d.hk/blog/masslogger-frankenstein-s-creation**\n\nJune 10, 2020 - Reading time: 35 minutes\n\nAn in-depth look into a new piece of malware named MassLogger. We’ll look at what\nfunctions it has and how they’re achieved, while also describing its control flow and source\ncode.\n\n## Foreword\n\nI am back with another malware analysis post. I apologise for the time in between posts, I\n[have been busy working on my threat tracker (threatshare). This post took some time to put](http://threatshare.io/)\n[together, and I would like to say a huge shoutout to Casperinous for his time and effort](https://twitter.com/Casperinous)\nhelping me find the correct samples and aiding in the analysis of this piece of malware and a\n[huge thank you to Steve Ragan (twitter) who edited and reviewed this post!](https://twitter.com/SteveD3)\n\n## Overview\n\n\n-----\n\nIn the space of commercial malware we see a lot of names coming and going. One of the\nrecent pieces of malware that has popped up is MassLogger. MassLogger has been created\nby an actor named NYANxCAT who is very active in the underground community. This actor\nhas published a lot of malicious code under the guise of \"educational\" purposes to Github.\nBut now this veil of education has fallen away, and NYANxCAT is selling their malware on\n[some entry-level hacking forums. Here's the thread (link). Here are a few excerpts from their](https://i.imgur.com/2iIKVJV.png)\nmain thread.\n\nFunctionality\n\nWe see the actor advertising plenty of functionality along with the programs MassLogger can\nsteal from and how the malware will attempt to avoid various analysis methods.\n\n\n-----\n\nTOS\n\nThere is also the inclusion of a classic TOS that the author thinks will cover themself if they\nget into trouble (it won't). Along with making sure that no one can get refunds or \"trash\" their\n\"sales thread\". The beginning price of MassLogger is $30 for 3 months of use along with the\noption of $50 for lifetime use. When MassLogger is purchased, the author will provide a\nbuilder for use. They have posted a promotional video which I have re-uploaded so as to not\ngive the creator any potential advertisement.\n\nTake notes of the options available in the builder, as I will be referencing how this functions,\nand how the malware determines what functionality it should use.\n\n## MassLogger\n\nMassLogger is written in .NET, which uses managed code. I can reverse the sample with\nrelative ease, and get a close to source code representation of the binary. But like any\nmalware, the creator has used packers and other tools to try to obfuscate their code. So it\nhelps that the creator is a big fan of sharing his code on sites like GitHub. To achieve some\nof the functionality in MassLogger, the creator has copied and pasted his code from GitHub\nand frankensteined it together to create MassLogger. Because of this, we can use the code\nhe has publicly shared, to get an idea of what things looked like before compilation.\n\nThanks to [Casperinous I was also able to get a sample of MassLogger that didn't have as](https://twitter.com/Casperinous)\nmuch obfuscation as other samples. This sample is what I’ll be using for my analysis of the\nfinal MassLogger payload. Looking at the comparison, it was still somewhat obfuscated.\nHere is the before and after of the sample once de4dot was used on it.\n\n\n-----\n\nde4dot before & after\n\nOnce I had used de4dot on the binary I then began to go through the sample and rename\nmethods, functions, classes until the names painted a picture of what was going on within\nthe sample. Let's take a look at the main function, we can see that the creator has used\nsome techniques to make it harder to follow the control flow of the program. Here's what the\nfirst few lines of main looks like.\n\nMain\n\nThe sample makes use of goto statements to jump around the program making it harder to\ntrace. The developer also creates wrappers for function calls so that you have to take one\nextra step to get to the desired function. There are other techniques used to make the\nreversal harder, but I will cover them later in this article. In the image above, you’ll notice that\nonce we enter the for loop, the program will then call InitializeSettings. This function will\ndecrypt the malware's configuration. The configuration is used to determine what\n[functionality is used, along with other important information. Here is a list (link) of the](https://pastebin.com/CF8K058D)\nfunctionality I have discovered.\n\n\n-----\n\n## Config Decryption\n\nMassLogger determines its functionality through an internal config that returns values\naccording to the functionality selected in the building stage. Because the creator does not\nwant you to be able to easily extract the config, he has used some methods to encrypt the\nconfig and then decrypt it during runtime. Looking at the config section in dnspy, we see that\nthere are a lot of strings which appear to be base64 encoded.\n\nEncrypted config strings\n\n[Here is a full list of all the config variable names (link). MassLogger initializes a bunch of](https://pastebin.com/63qNbX5c)\nempty strings that will then be populated by the config decrypt function.\n\nEmpty config strings\n\nThe decryption function which I have named InitializeSettings, looks like this. We can see\nthat it initially gets the key and then uses it to create an AES object for decryption.\n\nInitialize settings\n\n\n-----\n\nHere we can see an important function named AESGetString. This function is used to\ndecrypt all config strings. After this function is used to decrypt the sample version another\nfunction named AESDecrypt is used. AESDecrypt is a wrapper to call AESGetString with the\nprovided AES object. Let's take a look at AESGetString as it seems to be what is handling\nthe decryption of the config strings.\n\nAESGetString\n\nOn the right hand side of the parameters provided to the GetString function, we can see that\ninitially, the config string is Base64 decoded and then passed into a decrypt function.\nBecause AES uses a key to be able to decrypt its config, I have set a breakpoint at the return\nof a string from the Decrypt function. This will allow me to inspect the AES object which will\ncontain the decryption key which was being created at the start of InitializeSettings.\n\nDecrypt key\n\nWithin the AES object the key is a byte variable named _key this variable contains what we\nare looking for. The IV is also generated each time the decrypt function is called and using\nthese two pieces of information I have then created a simple config decryption script in\n[CyberChef (link).](https://gchq.github.io/CyberChef/)\n\n\n-----\n\nCyberChef recipe\n\n[Here is a link to the recipe which can be used to decrypt the config of this version of](https://pastebin.com/eWwUnhpN)\nMassLogger. Now that I have a recipe to decrypt the MassLogger config strings, let's try and\nuse it to decrypt the version of this sample.\n\nDecrypted version\n\nAlong with the version, I can also determine other parts of the config. I can see what\nfunctionality the builder has enabled/disabled, along with credentials used for SMTP/FTP\nexfiltration. Luckily, checking some of the config strings, we can see that anti debug and antivm are disabled, which will reduce a lot of hassle trying to reverse and debug the sample.\n\n## Windows Defender Exclusion\n\nOnce the config has been decrypted the malware then grabs some information about the PC\nand runs mutex. After this, if the Windows Defender exclusion functionality is enabled in the\nconfig, and the malware is running as admin then the malware will attempt to add itself into\nWindows Defender's exclusions.\n\n\n-----\n\nWindows Defender Exclusion Checks\n\nMost of the functions in MassLogger will document if they're enabled within the log file, along\nwith any necessary environment options required for the functionality to succeed. If you look\nat the above image, on the second line you'll see that MassLogger has some dynamic\nsettings that are set during runtime. One of these is the MainDirectory variable that'll be set\nto the directory containing the running malware. If the checks fail, then it's logged and the\nfunction returns. If the checks succeed then MassLogger will add itself to exclusions.\n\nExclusion\n\nA new object is created named PSProcessStart. This is an object that will start a powershell\nprocess according to the provided variables. After this there's a call to CombineObjects to\ncombine the provided strings. To add an exclusion to Windows Defender through\nPowerShell, you must make use of the Add-MpPreference cmdlet. This cmdlet allows you to\nadd preferences to Windows Defender, one of these being ExclusionPath, which will exclude\nthe given path from Windows Defender scans. Once this exclusion has been successfully\nadded, then the success is logged and the function returns.\n\n## Antis\n\nMassLogger uses a few techniques to hide and interrupt analysis. These range from anti-VM\nto anti-debug and anti-sandboxie.\n\nLet's first take a look at the anti-debugger, this is the flow that will be used if the setting is\nenabled.\n\n\n-----\n\nAnti-Debugger\n\nWe will arrive at IL_94 if the anti-debugger setting is enabled. Then there is an if statement\nthat calls a function I have named DebuggerPresent. If this function returns true, then the\nprogram goes to IL_9C which as you can see above will make the malware exit and selfdestructs. Taking a look into DebuggerPresent we can see a simple call.\n\nCheck Remote Debugger Present\n\nMassLogger has imported the CheckRemoteDebuggerPresent from kernel32.dll and used it\nwith parameters of a handle to the current running process and a referall to an empty\nboolean. The flag is then returned and the result of the API call is used in the previously\nmentioned if statement. This check is going to exit the process if a debugger is present.\nAlthough in theory this may work for someone new to debugging and reversing malware, in\npractice this function can just be removed so that I didn't have to actually deal with it trying to\nhinder my analysis.\n\nAntiVM\n\nIn the image above you can see that AntiVM is called within an if statement. The result of the\nfunction will either cause us to go to IL_1D or IL_D6. _IL_D6 calls the ExitSelfDestruct_\nfunction to exit the program and IL_1D will continue with the flow of the program. Let's take a\nlook at some of the methodology of the AntiVM.\n\n\n-----\n\nDetect Virtual Machine\n\nThis is the original code from the creators' GitHub. It utilises the ManagementObjectSearcher\nclass to be able to query information about the PC through WMI. It selects everything\nfrom Win32_ComputerSystem, and then iterates through the retrieved items. In each item, it\nchecks the manufacturer and converts it to a lowercase string. This string is then compared\nto \"microsoft corporation\".\n\nModels are also queried if they contain \"VIRTUAL\". After these two checks there are two\nmore checks if the manufacturer contains the \"vmware\" string and if the model string is equal\nto \"VirtualBox\". These checks will determine whether the sample is running within either\nVMware or VirtualBox environments. If this function returns true within the malware then the\nprogram will exit and delete itself.\n\nDetect Sandboxie\n\nThis check is called and if the result is true then the program will self-destruct like it does with\nthe other VM checks. The chosen methodology of checking if Sandboxie is running is to try\nto get a module handle for a DLL that runs within Sanboxie. If this handle fails (returns 0)\nthen the function will return false indicating that the program is not running within Sandboxie.\n\n## USB Spread\n\n\n-----\n\nThe author of MassLogger has tried to pack in as much functionality as possible. One of\nthese functions is to spread via connected USB. This is an old technique, but may prove to\nbe quite effective given the right victim. This functionality is again enabled within the builder.\nThe malware will check whether the functionality has been enabled and if so it'll jump into the\nfirst method within the USB spreader class. Again looking at the creators GitHub page we\ncan get the original code. The first thing the function does is run the Initialize function. Within\nthe Initialize function it calls ExplorerOptions.\n\nExplorer Options\n\nThis function makes sure that explorer doesn't display extensions, hidden folders or files.\nOnce these settings are confirmed it'll go on to look through the attached drives, checking\nwhether they are a removable USB.\n\nUSB Spread\n\n\n-----\n\nOnce it finds a removable USB, it ll search its directory checking if the work directory exists, if\nnot then it'll create this directory with its display hidden. It will then check if within this work\ndirectory another directory exists that'll contain all of the icons used for spreading. If the\ndirectory doesn't exist it'll create it. Again it will check if the malware exists within this work\ndirectory, if not it will copy itself into the work directory. Lastly it then checks whether the\npayload is within the directory, if not it'll drop the payload into the directory. Let's take a look\nat the payload.\n\nUSB Spread Payload\n\nThis payload is what we commonly refer to in malware as a binder, it will run the original file\nand the malware. Making it seem as though the program runs what the user expects along\nwith the malware hidden in the background. Once this is done the spreader will begin to\ninfect all the files within the USB.\n\n\n-----\n\nInfect Files\n\nThe function recursively iterates through all of the files on the USB, checking whether they\nhave been infected. If not, then the file will have its icon extracted to the icons directory\nwithin the hidden work folder on the USB. The malware then moves the file into the hidden\nwork directory and compiles a replacement that uses the same icon as the original file, along\nwith commands to open the original file from within the work directory whilst also running the\npayload. This means that all the files will be replaced on the USB with infected versions that\nwill then be run if the infected user shares the USB with anyone.\n\n## Persistence\n\nMassLogger offers the user the ability to maintain persistence on the infected machine. This\nis achieved by making sure that the malware runs on boot. Looking in the malware for this,\nthere is a class dedicated to it that is only called if the functionality is enabled within the\nconfig. The first thing it does is get the folder that the malware is going to be copied to.\nStereotypically this is within AppData.\n\nInstall Folder\n\n\n-----\n\nIt ll then get the executable path and check whether the install path matches the current\nrunning program's path. If they do not match then we get all running processes. Iterating\nthrough each process checking if the processes' file name matches the current running\nprocess. If so then it'll kill the running process. After this the malware checks if the program is\nrunning as admin, if it isn't then it'll use the following to open a registry key.\n\nOpen Sub Key\n\nReversing the used string we get: \"Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run\\\\\".\nThis is the key used to determine what files are used for startup. MassLogger sets the\nregistry key to the location of the copied file in AppData.\n\nSet Registry Key\n\nOnce this has been done the MassLogger will read all bytes of the original file and then write\nthem to the install folder found within the config. A setting is then checked to see whether\nMassLogger should delete the zone identifier for the newly written binary in AppData, which\nwill cause forensics on the file to be slightly more difficult.\n\nMassLogger then creates a directory for a batch file within AppData, here is the directory it\ngenerated for me: \"C:\\Users\\admin\\AppData\\Local\\Temp\\tmpD8A7.tmp.bat\". A stream writer\nis then created for the generated file and the following is written to it.\n\nBatch Script\n\n_@echo off is just an indicator to not output the used commands, then the script waits 3_\nseconds by using the timeout command. Once this has been done we see the START\ncommand being used to run the new copied file in AppData. The batch script then CD's into\nthe directory containing the batch script and deletes itself.The batch script is then run by the\nmalware with a hidden window, once this has been done then the malware will exit.\n\n## Download & Execute\n\nMassLogger first initialises some settings for the function.\n\n\n-----\n\nDownloader Settings\n\nOnce these have been set MassLogger will go on to check if the downloader setting has\nbeen enabled along with if the DownloaderOnce setting is enabled. MassLogger doesn't use\na recurring call to a C2 to get the file to download, and instead will ask for a URL upon\nbuilding. The malware checks the location of where it would download a file to, if a file\ndoesn't exist, it'll create a HTTP GET request to the download link found in the config. If the\ndownload fails, then this'll be logged and the function will return. If not, then the malware will\nget the response from the request and copy it to a memory stream. This memory stream is\nthen written to a file stream which is located in the download path from the config.\n\nOnce this has been accomplished MassLogger proceeds to create a VB script within the\ntemp folder and begin writing to it.\n\nDownloader VB Script\n\nThis script will run the downloaded file and then delete itself. The malware creates a process\nto run this script and then logs that it has successfully ran the downloaded file.\n\n## Keylogger\n\nMassLogger's main feature is its keylogger. We begin with the usual check to see if the\nkeylogger has been enabled, and if it has, we then jump into an endless for loop. The\nkeylogger uses a string builder to log any key presses. Thanks to the very generous creator\nof this malware we can simply check his GitHub to find the full source of the keylogger. The\nfirst important thing the keylogger does is create a low level keyboard process. This is set to\n_HookCallback. This function will take key presses and translate them into strings that can be_\nwritten to the string builder.\n\n\n-----\n\nHook Callback\n\nWithin HookCallback we see a few checks and then some flags set to whether the caps lock\nor shift button are pressed on the keyboard. The current key is mapped from another\nfunction, and checked to see if it should be logged as a special key e.g the enter key, or if it\nshould be uppercase because of caps lock or the shift button being used. Before the key is\nwritten to the log the malware will get the current window title and log, it if it has changed.\n\nSet Hook\n\nThe author chooses to use a very common method of implementing a keylogger by calling\nthe windows API SetWindowsHookEx using the WHKEYBOARDLL, which will get low-level\nkeyboard events. The handle is then passed to the current process.\n\n## Bot Killer\n\n\n-----\n\nIf the infected user has managed to install malware once, then it is likely that they have\ninfected themselves multiple times. The author of MassLogger knows this, and doesn't want\nhis malware to be sharing an infected system with other malware. He has included a\n\"BotKiller\" which is a piece of code that will look for and remove malware. This functionality is\nusually uncommon due to most competing malware having reasonably good methods of\nhiding themselves. Again this functionality is optional and if enabled then the function will be\nrun. Let's take a look again at the creators GitHub where he has pasted the source code for\ntheir \"BotKiller\".\n\nRun Botkiller\n\nThe main function is RunBotkiller, which will go through all running processes and then call\nthe Inspection function on them.\n\nInspection\n\n\n-----\n\nFirst the inspection function checks whether the inspected file is itself. Then the file directory\nis compared to application data and user profile directories, if the file is within these\ndirectories then it is labeled as a threat. Next the filename is compared to wscript.exe which\nis used to run VB scripts. Lastly the location of the file is again compared with another folder\nand if the file's location begins with this directory then it is labeled a threat. This method of\ndetecting possible threats is very problematic and I'm sure will cause false positives. If the\nfile has been labeled a threat by Inspection it will be checked to see whether its window is\nvisible. If not then RemoveFile, will be called which will kill the process, remove it from\nstartup in the registry and then delete the file off disk.\n\n## Password Recovery\n\nMassLogger supports many programs that it can steal credentials from. I'll concentrate on\nthe more commonly used programs, as the author has implemented the same methodology\nof retrieving credentials for multiple programs. The first program MassLogger attempts to\nsteal from is Telegram. MassLogger starts by getting the following directory:\n\"C:\\Users\\admin\\AppData\\Roaming\\Telegram Desktop\\tdata\" and checking if it exists. If it\ndoes exist then the malware will begin to zip the files within this directory and write the\nfollowing to the log: \"Usage: Download 'Telegram Desktop' and unzip all files in 'Telegram.zip'\nto AppData\\\\Roaming\\\\Telegram Desktop\\\\tdata\"\n\nNext up is Pidgin, it begins by checking if the stealer setting is enabled. Like Telegram the\nmalware gets the following directory:\n\"C:\\Users\\admin\\AppData\\Roaming\\.purple\\accounts.xml\" and checks if it exists. If the file\ndoes exist, it is read using an XML node and the contents are written to the log.\n\nOnce Pidgin has been stolen from MassLogger will then go after FileZilla. Like the previous\nprograms malware will get the following directories:\n\"C:\\Users\\admin\\AppData\\Roaming\\FileZilla\\recentservers.xml\" and\n\"C:\\Users\\admin\\AppData\\Roaming\\FileZilla\\sitemanager.xml\". Once these have been\nchecked to exist then the function will once again use an XML node to iterate through them\nand write the credentials into the log.\n\nDiscord is the next target of the malware, the creator has the code for this function on his\nGitHub so I'll look there to reverse it.\n\n\n-----\n\nDiscord File Search\n\nWe first see the SearchForFile function being used to find a leveldb file that Discord uses to\nstore credentials. It does this by getting the directory location for the local storage of discord.\nIt checks if this directory exists and then will iterate through each of files that have an ldb file\nextension. Then reading these it will check if they contain the \"oken\" string to determine if it\nis the correct file. Once the correct file has been found then regex will be used to extract the\ntoken from the file and this will be logged.\n\nNordVPN is then attempted to be stolen from by MassLogger. This is done by getting the\nfollowing directory: \"C:\\Users\\admin\\AppData\\Roaming\\NordVPN\" and the user.config within\nit is read by XML and the credentials are written into the log.\n\nMassLogger will now proceed to attempt to extract credentials from Outlook, it does this by\nfirst initialising an array of registry locations.\n\nOutlook Array\n\nWe then see another array with the following.\n\n\n-----\n\nMassLogger will then go through the registry locations looking for keys. It will then proceed to\nuse the array of strings to then look through each key with regex. Searching for passwords\nwhich will then be logged.\n\n\n-----\n\nThe malware will also go after browsers, the first one it targets is Firefox. It will begin with\ngetting the following directory: \"C:\\Users\\admin\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles\",\nthen checking if it exists. Once this has been done the malware will use signons.sqlite and\ngrab any stored credentials. Decrypting them with DES. The same is done for all chromium\nbrowsers.\n\nChromium Browsers\n\nThe login data storage location is found and opened. MassLogger will then query credentials\nand other information from these databases and use Bcrypt to decrypt them.\n\n## Exfiltration\n\nMassLogger has many methods of getting the stolen information to the actor using the\nmalware. Currently MassLogger uses 3 methods: FTP, SMTP & HTTP. The first two are\nsomewhat simple where credentials for the chosen method will be stored in the config and\nthen used to send an email or upload the zip to the receiver. HTTP is more interesting\nbecause the author has created a PHP control panel to receive logs from the malware. Here\nis what the corresponding panel for this version looks like.\n\n\n-----\n\nLogin\n\nMain\n\nThe control panel will receive zips uploaded by the malware and allow you to view the log\nand download all the contents. Information about an infected machine is placed in the zip\nfilename in the following format: user_country_hwid_date_extra.zip\n\n## Epilogue\n\n\n-----\n\nIf you re reading this I d like to begin by thanking you for making it to the end. I hope you\nenjoyed this writeup, and got some useful information out of it. I am very proud of this post\nand hope to take more in depth looks into malware in the future. Since the writing of this post\nMassLogger has had some small updates along with a new control panel. The analysis in\nthis post still applies and I may update this post if there are any larger updates to cover. Until\nthe next one, thank you!\n\nIOC\n\n584491098F9A72F404DE3354290806BE\n\n[[email protected]](https://fr3d.hk/cdn-cgi/l/email-protection)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-06-10 - MassLogger - Frankenstein's Creation.pdf"
+    ],
+    "report_names": [
+        "2020-06-10 - MassLogger - Frankenstein's Creation.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "a7d4fe31-d92f-425a-ba8c-c70219f52fb8",
+            "created_at": "2022-10-25T15:50:23.466009Z",
+            "updated_at": "2025-03-27T02:00:55.477162Z",
+            "deleted_at": null,
+            "main_name": "Frankenstein",
+            "aliases": [
+                "Frankenstein"
+            ],
+            "source_name": "MITRE:Frankenstein",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "5d2bd376-fcdc-4c6a-bc2c-17ebbb5b81a4",
+            "created_at": "2022-10-25T16:07:23.667223Z",
+            "updated_at": "2025-03-27T02:02:09.916086Z",
+            "deleted_at": null,
+            "main_name": "GCHQ",
+            "aliases": [
+                "Government Communications Headquarters",
+                "Operation Socialist"
+            ],
+            "source_name": "ETDA:GCHQ",
+            "tools": [
+                "Prax",
+                "Regin",
+                "WarriorPride"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "9f101d9c-05ea-48b9-b6f1-168cd6d06d12",
+            "created_at": "2023-01-06T13:46:39.396409Z",
+            "updated_at": "2025-03-27T02:00:03.074969Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "CHROMIUM",
+                "ControlX",
+                "Red Dev 10",
+                "RedHotel",
+                "Red Scylla",
+                "TAG-22",
+                "BRONZE UNIVERSITY",
+                "AQUATIC PANDA",
+                "Charcoal Typhoon",
+                "BountyGlad"
+            ],
+            "source_name": "MISPGALAXY:Earth Lusca",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "6abcc917-035c-4e9b-a53f-eaee636749c3",
+            "created_at": "2022-10-25T16:07:23.565337Z",
+            "updated_at": "2025-03-27T02:02:09.868522Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Bronze University",
+                "Charcoal Typhoon",
+                "Chromium",
+                "Red Dev 10",
+                "Red Scylla"
+            ],
+            "source_name": "ETDA:Earth Lusca",
+            "tools": [
+                "Agentemis",
+                "AntSword",
+                "BIOPASS",
+                "BIOPASS RAT",
+                "BadPotato",
+                "Behinder",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Doraemon",
+                "FRP",
+                "Fast Reverse Proxy",
+                "FunnySwitch",
+                "HUC Port Banner Scanner",
+                "KTLVdoor",
+                "Mimikatz",
+                "NBTscan",
+                "POISONPLUG.SHADOW",
+                "PipeMon",
+                "RbDoor",
+                "RibDoor",
+                "RouterGod",
+                "SAMRID",
+                "ShadowPad Winnti",
+                "SprySOCKS",
+                "WinRAR",
+                "Winnti",
+                "XShellGhost",
+                "cobeacon",
+                "fscan",
+                "lcx",
+                "nbtscan"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "56b3eb1d-6baf-4ee4-a098-ec0081280315",
+            "created_at": "2024-09-28T02:05:36.599884Z",
+            "updated_at": "2025-03-27T02:05:17.250078Z",
+            "deleted_at": null,
+            "main_name": "ALUMINUM THORN",
+            "aliases": [
+                "WIRTE ",
+                "Frankenstein "
+            ],
+            "source_name": "Secureworks:ALUMINUM THORN",
+            "tools": [
+                " Powershell Empire",
+                "FruityC2"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "d53593c3-2819-4af3-bf16-0c39edc64920",
+            "created_at": "2022-10-27T08:27:13.212301Z",
+            "updated_at": "2025-03-27T02:00:55.529662Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Earth Lusca",
+                "TAG-22",
+                "Charcoal Typhoon",
+                "CHROMIUM",
+                "ControlX"
+            ],
+            "source_name": "MITRE:Earth Lusca",
+            "tools": [
+                "Mimikatz",
+                "PowerSploit",
+                "Tasklist",
+                "certutil",
+                "Cobalt Strike",
+                "Winnti for Linux",
+                "Nltest",
+                "NBTscan",
+                "ShadowPad"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535778,
+    "ts_updated_at": 1743041735,
+    "ts_creation_date": 1653698753,
+    "ts_modification_date": 1653698753,
+    "files": {
+        "pdf": "https://archive.orkl.eu/0561dea123979b0bc16e46dd2b7e6ca5993bb53b.pdf",
+        "text": "https://archive.orkl.eu/0561dea123979b0bc16e46dd2b7e6ca5993bb53b.txt",
+        "img": "https://archive.orkl.eu/0561dea123979b0bc16e46dd2b7e6ca5993bb53b.jpg"
+    }
+}

@@ -1,0 +1,81 @@
+{
+    "id": "3920fe36-98b8-4565-98bb-3c96ef58b125",
+    "created_at": "2023-01-12T15:04:26.738919Z",
+    "updated_at": "2025-03-27T02:09:33.376077Z",
+    "deleted_at": null,
+    "sha1_hash": "93a0558a821635f245b3030cfbfedeb8b4b7fd25",
+    "title": "2022-01-27 - Malware Analysis —Manual Unpacking of Redaman",
+    "authors": "",
+    "file_creation_date": "2022-05-28T03:37:24Z",
+    "file_modification_date": "2022-05-28T03:37:24Z",
+    "file_size": 1539167,
+    "plain_text": "# Malware Analysis —Manual Unpacking of Redaman\n\n**[jonahacks.medium.com/malware-analysis-manual-unpacking-of-redaman-ec1782352cfb](https://jonahacks.medium.com/malware-analysis-manual-unpacking-of-redaman-ec1782352cfb)**\n\nJon January 26, 2022\n\n[Jon](https://jonahacks.medium.com/?source=post_page-----ec1782352cfb--------------------------------)\n\nJan 26\n\n\n6 min read\n\nIn this post, we are looking to manually unpack the sample called Redaman, which is a\nbanking trojan. Some of its capabilities include:\n\nMonitor browser activity,\nDownloading files to the infected host\nKeylogging activity\nCapture screen shots and record video of the Windows desktop\nCollecting and exfiltrating financial data, specifically targeting Russian banks\nSmart card monitoring\nShutting down the infected host\nAltering DNS configuration through the Windows host file\nRetrieving clipboard data\nTerminating running processes\nAdding certificates to the Windows store\n\n[Info from Unit42 Analysis.](https://unit42.paloaltonetworks.com/russian-language-malspam-pushing-redaman-banking-malware/)\n\nWhat makes this sample unique and an excellent training sample to practice manual\nunpacking is because this sample performs a fairly simple packing process: PE overwrite\nand a secondary DLL Injection.\n\nSelf-Injection, or in this example the PE Overwrite occurs when the malware allocates a\n“stub” in itself, transfers to that stub address, allocates that stub area and write whatever\nmalicious content it needs to in there, and then changes the permissions, and then run from\nthat overwritten area.\n\n[A Better Explanation.](https://liveoverflow.com/unpacking-buhtrap-malware-basics-of-self-injection-packers-ft-oalabs-2/)\n\n## Packed Sample\n\n\n-----\n\nWe can identify this file as packed based on a number of info:\n\nHigh level entropy on the main file with PEStudio:\n\nChecking in IDA, we see that first there is some obfuscation, barely any functions, and only a\nsmall amount of analyzed code (blue bar at the top of screenshot)\n\n\n-----\n\n## PE Overwrite\n\nTo start we look for where virtual allocation of memory takes place which in this case it is the\nfunction VirtualAlloc. The return value for VirtualAlloc is the base address of the allocated\nregion. Which we can find in the EAX register. We put a breakpoint at the return of the\nfunction:\n\nThis will help us to see how many times and where memory is being virtually allocated.\n\nWe also want to add a breakpoint at the entry of VirtualProtect, this is where the protections\nand access is changed. The first argument to VirtualProtect will be the address to the\nmemory section which protections will be changed. It needs to change the protections to get\nthe permission to write\n\n\n-----\n\nNow we run the debugger until we hit our second breakpoint (First one is always on the entry\npoint of the file).\n\nFrom the screenshot we hit the breakpoint, we right click on the address in EAX and follow in\ndump. We can see that at address 0003000 there is a large amount of zeros where\nVirtualAlloc has allocated space.\n\nContinuing on we hit the return of VirtualAlloc again at address 021B0000. So we know that\nVirtualAlloc is used at address 0003000 and 021B0000. Our next hit is the entry of\nVirtualProtect:\n\n\n-----\n\nChecking the first argument passed to VirtualProtect in the EAX register we can\nautomatically see that instead of zeros we now have what looks to be an exe (the MZ or hex\n4D 5A gives it away). At this point we now have gotten to the point in the malware where not\nonly has the main payload been unpacked but now it is ready to have its permissions and\naccess changed, we now right click on the dump and choose the “Follow in Memory Map”\n\nIn memory map we can see that at the address where the exe is loaded, (021B0000) that\nlocation has read and write protections. We now dump out that location and examine it.\n\n## Unpacked File\n\nImmediately after opening the “unpacked” file we notice that is indeed packed again based\non IDA.\n\n\n-----\n\nThere are not enough functions and small amount of analyzed code by IDA. Looking at the\nfew functions that are available we can start to see some interesting actions taking place.\n\n\n-----\n\nloc_4011AA looks to be a loop. The key is moved to EDX and XORed with a byte from\nunk_403000 then rotated left. Then theres some decreasing and increasing happening and\nthen there is a conditional jnz which moves the code along only if not being equal to zero.\n\nThis is most likely the encryption or encoding algorithm used.\n\n\n-----\n\nFollowing along we can see that it is loading DLLs into a buffer. LoadLibraryA is called which\nprovides a return to a handle that can be used in GetProcAddress below:\n\n\n-----\n\nNext it pushes into a buffer RTLDecompressBuffer which decompresses the buffer which is\nin this case: NTDLL.DLL\n\n\n-----\n\nNext called up is DLLGetGlassObject of NTDLL.DLL and then a call to GetProcAddress.\n\nWe then see that EAX which holds RTLDecompressBuffer is moved to EDX and then called\n[again. Looking at the documentation for RTLDecompressBuffer, the parameters are:](https://docs.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-rtldecompressbuffer)\n\n[in] which is 102h\n\n[Out] Buffer which is [ebp+lpBuffer]\n\n[in] which is [ebp+dwSize]\n\n[in] buffer that contains the data in ECX which holds unk_403000 (encryption method)\n\n[in] which is the length 29CD6h\n\n[out] which is the return stored at EAX\n\nThis result is then cmp with itself and if it meets the conditional it continues on.\n\n\n-----\n\nsub_40102A loads KERNEL32.DLL and calls RTLDecompressBuffer in the same way\nNTDLL.DLL is loaded in. Then we start to see the formation of a temp file\n\n\n-----\n\nThe malware uses GetTempFileNameW, creates the file with CreateFileW, writes to the file\nusing WriteFile and then loads the file as a DLL using LoadLibraryA. (Partially Pictured)\n\nAn finally a buffer with the string “host 00000000000” before the code ends. The zeros are\nprobably changed to some unique ID that the malware uses to send back to a C&C server.\n\n\n-----\n\nThat’s all we can get out of IDA so now we move to the debugger and use the same\nmethods to find the payload DLL\n\n## Unpacking the “Unpacked” File\n\nSince we know the next step of this malware is to perform a DLL injection, we can put a\nbreakpoint at LoadLibraryW (not LoadLibraryA)…\n```\n   'A' stands for ASCII and 'W' stands for byte string and the 'A' calls are just the\n\n```\nwrappers around the `'W' ones so placing the breakpoint at the` `LoadLibraryW will`\nhit all the load DLL calls.\n\n[Source](https://liveoverflow.com/unpacking-buhtrap-malware-basics-of-self-injection-packers-ft-oalabs-2/)\n\nand from there we can see the path where the DLL will be dropped.\n\n\n-----\n\nChecking that location we can find the file and checking in PEStudio we can see that it is a\nDLL (file maybe hidden).\n\n## Conclusion\n\nSo to wrap things up, we successfully unpacked the inital Redaman file using VirtalAlloc and\nVirtualProtect, we then discovered the encryption algorithm it uses, and finally unpacked\nonce again with LoadLibraryW to find the payload DLL.\n\nThanks for reading.\n\n## Resources:\n\n[Russian Language Malspam Pushing Redaman Banking Malware](https://unit42.paloaltonetworks.com/russian-language-malspam-pushing-redaman-banking-malware/)\n\n\n-----\n\n[Unpacking Redaman Malware & Basics of Self-Injection Packers — ft. OALabs](https://liveoverflow.com/unpacking-buhtrap-malware-basics-of-self-injection-packers-ft-oalabs-2/)\n\n[Unpacking Redaman Malware & Basics of Self-Injection Packers — ft. OALabs (Video)](https://www.youtube.com/watch?v=YXnNO3TipvM)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-01-27 - Malware Analysis —Manual Unpacking of Redaman.pdf"
+    ],
+    "report_names": [
+        "2022-01-27 - Malware Analysis —Manual Unpacking of Redaman.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "3b046db2-f60e-49ae-8e16-0cf82a4be6fb",
+            "created_at": "2022-10-25T16:07:23.427162Z",
+            "updated_at": "2025-03-27T02:02:09.79482Z",
+            "deleted_at": null,
+            "main_name": "Buhtrap",
+            "aliases": [
+                "Buhtrap",
+                "Operation TwoBee",
+                "Ratopak Spider",
+                "UAC-0008"
+            ],
+            "source_name": "ETDA:Buhtrap",
+            "tools": [
+                "AmmyyRAT",
+                "Buhtrap",
+                "CottonCastle",
+                "FlawedAmmyy",
+                "NSIS",
+                "Niteris EK",
+                "Nullsoft Scriptable Install System",
+                "Ratopak"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "01d569b1-f089-4a8f-8396-85078b93da26",
+            "created_at": "2023-01-06T13:46:38.411615Z",
+            "updated_at": "2025-03-27T02:00:02.826863Z",
+            "deleted_at": null,
+            "main_name": "BuhTrap",
+            "aliases": [],
+            "source_name": "MISPGALAXY:BuhTrap",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535866,
+    "ts_updated_at": 1743041373,
+    "ts_creation_date": 1653709044,
+    "ts_modification_date": 1653709044,
+    "files": {
+        "pdf": "https://archive.orkl.eu/93a0558a821635f245b3030cfbfedeb8b4b7fd25.pdf",
+        "text": "https://archive.orkl.eu/93a0558a821635f245b3030cfbfedeb8b4b7fd25.txt",
+        "img": "https://archive.orkl.eu/93a0558a821635f245b3030cfbfedeb8b4b7fd25.jpg"
+    }
+}

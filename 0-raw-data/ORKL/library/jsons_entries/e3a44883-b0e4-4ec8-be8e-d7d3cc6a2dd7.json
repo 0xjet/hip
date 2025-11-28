@@ -1,0 +1,165 @@
+{
+    "id": "e3a44883-b0e4-4ec8-be8e-d7d3cc6a2dd7",
+    "created_at": "2023-01-12T15:00:40.606863Z",
+    "updated_at": "2025-03-27T02:13:11.668918Z",
+    "deleted_at": null,
+    "sha1_hash": "883f029818c765f82699541478354bad89911a86",
+    "title": "2019-05-24 - Uncovering new Activity by APT10",
+    "authors": "",
+    "file_creation_date": "2022-05-28T02:48:04Z",
+    "file_modification_date": "2022-05-28T02:48:04Z",
+    "file_size": 433151,
+    "plain_text": "# Uncovering New Activity By APT10\n\n**[fortinet.com/blog/threat-research/uncovering-new-activity-by-apt-](https://www.fortinet.com/blog/threat-research/uncovering-new-activity-by-apt-)**\n\nOctober 15, 2019\n\n**_[FortiGuard Labs Threat Analysis Report: This blog originally appeared on the enSilo](https://www.fortinet.com/fortiguard/labs.html?utm_source=blog&utm_medium=campaign&utm_campaign=FortiGuardLabs)_**\n_[website and is republished here for threat research purposes. enSilo was acquired by](https://www.fortinet.com/blog/business-and-technology/fortinet-acquires-endpoint-security-innovator-ensilo-.html)_\n_Fortinet in October 2019._\n\n## Summary\n\nIn April 2019, we detected what we believe to be new activity by the Chinese cyber\nespionage group APT10. The discovered variants are previously unknown and deploy\nmalware that is unique to the threat actor. These malware families have a rich history of\nbeing used in numerous targeted attacks against government and private organizations. The\nactivity surfaced in Southeast Asia, a region where APT10 frequently operates.\n\n## Overview\n\nTowards the end of April 2019, we tracked down what we believe to be new activity\nby [APT10, a Chinese cyber espionage group. Both of the loader’s variants, as well as the](https://web.archive.org/web/20191028183409/https:/attack.mitre.org/groups/G0045/)\nvarious payloads that we analyzed share similar Tactics, Techniques, and Procedures (TTPs)\nand code associated with APT10.\n\n\n-----\n\nAlthough they deliver different payloads to a victim s machine, both variants drop the\nfollowing files beforehand:\n\njjs.exe - legitimate executable\njli.dll - malicious DLL\nmsvcrt100.dll - legitimate Microsoft C Runtime DLL\nsvchost.bin - binary file\n\njjs.exe is a JVM-based implementation of a javascript engine that is part of the Java platform\ndeveloped by Oracle, but in this case it served as a loader for the malware.\n\nAmong the payloads we found were PlugX and Quasar RATs. The former is well known to be\ndeveloped in-house by the group with a rich history of being used in many targeted attacks\nagainst different government and private organizations. PlugX is a modular structured\nmalware that has many different operational plugins, such as communication compression\nand encryption, network enumeration, files interaction, remote shell operations, and more.\n\nThe samples we analyzed originated from the Philippines. APT10 frequently targets the\nSoutheast Asia region.\n\nIn this article we examine both versions of the loader along with their payloads, TTPs, and\nCommand and Control (C&C) server information.\n\n## Loader\n\n### Abusing a Legitimate Executable\n\nThe loader starts out by running a legitimate executable, which is abused to load a malicious\nDLL instead of a legitimate one on which it depends. The method is known as DLL SideLoading.\n\n[In both variants, the abused executable is jjs.exe, which loads jli.dll. The DLL exports the](https://web.archive.org/web/20191028183409/https:/docs.oracle.com/javase/8/docs/technotes/tools/windows/jjs.html)\nfollowing functions:\n\nJLI_CmdToArgs\nJLI_GetStdArgs\nJLI_GetStdArgc\nJLI_MemAlloc\nJLI_Launch\n\nThe first function called by jjs.exe is JLI_CmdToArgs, which is implemented by the malware\nauthor and behaves differently in each variant.\n\n### Running The Payload\n\n\n-----\n\nThe malicious DLL maps the data file, svchost.bin, to memory and decrypts it. The decrypted\ncontent is a shellcode that is injected into svchost.exe and contains the actual malicious\npayload.\n\nThe decryption process resembles previous versions used by the group in\nPlugX\\RedLeaves.\n\nFigure 1: Decryption of the binary file\n\nThe injection flow is rather simple and is done by creating a process in suspended state,\nallocating memory with VirtualAllocEx, writing the shellcode with WriteProcessMemory, and\nrunning it using CreateRemoteThread. The complete execution flow is visualized in Figure 2,\nbelow.\n\nFigure 2: Loader’s execution flow\n\n### Variant 1\n\nThe first variant uses a service as its persistence method. It installs itself (jjs.exe) as the\nservice and starts. When running in the context of the service, it performs the decryption and\ninjection described above.\n\nWe have observed the variant delivering both Quasar and PlugX, which we’ll discuss later\non.\n\nAmong the different samples we tested, we encountered the following service names being\nregistered:\n\nWxUpdateServiceInfo\nHxUpdateServiceInfo\nWinDefendSec\nWeb_Client\nclr_optimization_v4.0.30319_31\nclr_optimization_v4.0.30319_37\n\n### Variant 2\n\nUnlike the first variant, this variant uses the Run registry key for the current user under the\nname “Windows Updata” to ensure its persistence, rather than installing a service. This\nvariant delivered the same PlugX DLL as the first loader.\n\n## Payloads\n\n### Modified Quasar RAT\n\n\n-----\n\nThe injected shellcode reflective loads in-memory an executable it reconstructs from data\nthat it is bundled with it. The reflective load code is obfuscated, as function calls are made by\ndynamically resolving their addresses according to hashed values.\n\nThe executable tries to run conhost.exe from C:\\Users\\Public\\Documents, and in case it\ndoesn’t exist, it turns to ffca[.]caibi379[.]com to download it. The code that sends the HTTP\nrequest seems to be buggy. While wininet!InternetOpenW (the Unicode version of the\nfunction) is used, an ascii value is provided as the User-Agent, so instead of “RookIE/1.0”,\nthe request headers will include inconsistent and meaningless values, as can be seen in\nFigure 3.\n\nFigure 3: .NET downloader’s HTTP request\n\nIn our analysis, the conhost.exe that was downloaded is itself another downloader written in\n.NET and disguised as a legitimate system executable.\n\nThis extremely simplified downloader only has the ability to download and execute a base-64\nencoded executable from the hardcoded address using a simple System.Net.WebClient\nHTTP request: ffca[.]caibi379[.]com/rwjh/qtinfo.txt.\n\nThe downloaded payload is a modified Quasar RAT. This version contains the addition\nof [SharpSploit to extract passwords from a victim’s machine using the framework’s built-in](https://web.archive.org/web/20191028183409/https:/github.com/cobbr/SharpSploit)\nmimikatz capabilities.\n\nFigure 4: Quasar Assembly information\n\nFigure 5: Embedded SharpSploit code\n\nExamining the sample’s configuration, we found the following:\n\nC&C server: cahe.microsofts.org:443\nMutex name: “QSR_MUTEX_rSifQNOVTwHrsBs2nd”\nA self-signed certificate issued to “MSGQ Server CA” (as seen in Figure 6)\n\nFigure 6: Quasar's embedded certificate\n\n### PlugX\n\nFollowing the injection to svchost.exe by the loader, the shellcode decrypts another part of\nitself and use RtlDecompressBuffer API to further unpack the PlugX DLL. The DOS and NT\nheader’s magic values, MZ and PE respectively, were replaced with VX, a typical behavior\nfor PlugX payloads. This is meant to prevent security products and automated tools from\nidentifying the executable headers when performing memory scans.\n\nLike previous versions of PlugX, it collects information about the infected machine, such as\nthe computer name, username, OS version, RAM usage, network interfaces, and resources.\n\n\n-----\n\nIn an attempt to generate noise around allocation and release of memory by the malware,\nthe authors wrapped it with dummy calls to the GetForegroundWindow API function, as can\nbe seen in Figure 7.\n\nFigure 7: Dummy calls to GetForegroundWindow\n\n[This sample shares some similarities with the Paranoid PlugX variant. For example, it goes a](https://web.archive.org/web/20191028183409/https:/unit42.paloaltonetworks.com/unit42-paranoid-plugx/)\nlong way to completely remove any sign of McAfee’s email proxy service from the infected\nmachine. Besides killing the process, it also makes sure to delete any related keys in the\nregistry, and recursively deletes any related files and directories on the machine. The same\nbehavior was observed by in the paranoid variant as part of a VBScript that the dropper runs.\n\nTypically, APT10 tends to employ a namesquatting scheme in their domains that aims to\nconfuse the observer by posing as a legitimate domain. In the configuration bundled to the\nsamples we found the following:\n\nThe sample in the first loader communicates with update[.]microsofts[.]org with DNS\nover TCP.\nThe sample in the second loader communicates with update[.]kaspresksy[.]com over\nHTTPS.\n\n## Threat Intelligence\n\n[When examining the first loader variant’s domain (ffca[.]caibi379[.]com), we discovered that it](https://web.archive.org/web/20191028183409/https:/www.virustotal.com/#/domain/ffca.caibi379.com)\nresolved to the following IP addresses according to VirusTotal:\n\n**Date Resolved** **IP**\n\n2019-04-24 27.102.128.157\n\n2019-03-23 27.102.127.80\n\n2019-01-30 27.102.127.75\n\nWhile all the IP address ranges are listed under the name of an organization located in South\nKorea, the domain itself was registered in Hong Kong.\n\nReverse lookup on the IP addresses shows that some of them used to be resolved from\nanother domain - *[.]microsofts[.]org. As mentioned before, cahe.microsofts.org is the\ncommand and control server for the Quasar payload, and update.microsofts.org is used for\nthe PlugX payload delivered by the first loader variant.\n\nThe PlugX’s domains resolve to the following addresses:\n\n\n-----\n\n**Date Resolved** **IP**\n\n2019-04-27 27.102.66.67\n\n2019-02-19 27.102.115.249\n\n2019-03-15 27.102.127.80\n\nWhile looking at the other subdomains of kaspresksy[.]com we discovered that:\n\n[download[.]kaspresksy[.]com resolves to 27.102.113.118](https://web.archive.org/web/20191028183409/https:/www.virustotal.com/gui/ip-address/27.102.113.118)\n[api[.]kaspresksy[.]com resolves to 27.102.114.246](https://web.archive.org/web/20191028183409/https:/www.virustotal.com/gui/ip-address/27.102.114.246)\n\n27.102.114.246 used to previously resolve from the following domains:\n\nsmsapi[.]tencentchat[.]net\n\nonedrive[.]miscrosofts[.]com\n\nWe noticed a password-protected zip named “Chrome_Updata” being associated with\nthe download[.]kaspresksy[.]com domain. The zip contained a sample of the Poison Ivy\nmalware, which is also known to be used by APT10. The same executable was also seen\ncommunicating with 27.102.115.249, which also appeared to be mapped\nto update[.]kaspresksy[.]com.\n\nAll of the overlaps in the network infrastructure make it very reasonable to assume that\nthe same group is operating both variants.\n\n## Conclusion\n\nBoth variants of the loader implement the same decryption and injection mechanism.\n\nLooking at the history of APT10, one can notice major similarities in the details we\nhighlighted in this post:\n\nA bundle of legitimate executables are used to sideload a custom DLL, along with\nstoring the payload in a separate, encrypted file.\nUse of typosquatting domain names similar to real, legitimate tech companies.\nUnique malware families both developed by, and associated with, the group.\nUsing C&C servers located in South Korea.\n\n\n-----\n\nSome of the mentioned domain mappings were recently updated. Also, the certificate\nembedded in the Quasar sample was issued at 22.12.2018, which correlates with the file’s\ncompilation date. This may indicate that these samples are a part of a testing environment or\na short-lived attack that is already finished. Either way, it’s safe to say that the threat actor\nbehind APT10 is still active and that we have yet to see the last of the group.\n\n## IOCs\n\n### Loader v1:\n\n41542d11abf5bf4a18332e9c4f2c8d1eb5c7e5d4298749b610d86caaa1acb62c (conhost.exe\ndownloader jli.dll)\n\n29b0454db88b634656a3fc7c36f318b126a83ae8fb7f73fe9ff349a8f8536c7b (conhost.exe\ndownloader svchost.bin)\n\n02b95ef7a33a87cc2b3b6fd47db03e711045974e1ecf631d3ba9e076e1e374e9 (PlugX jli.dll)\n\ne0f91da52fdc61757f6a3f276ae77b01d2d1cc4b3743629c5acbd0341e5de80e (PlugX\nsvchost.bin)\n\n### Loader v2:\n\nf13536685206a94a8d3938266f100bb2dffa740a202283c7ea35c58e6dbbb839 (PlugX jli.dll)\n\nc8d86e9f486d23285b744279812ef9047a0908e39656c2ea4cdf3e182f80e11d (PlugX\nsvchost.bin)\n\n### .NET Downloader (conhost.exe):\n\n96649c5428c874f2228c77c96526ff3f472bc2425476ad1d882a8b55faa40bf5\n\n### Quasar RAT:\n\n0644e561225ab696a97ba9a77583dcaab4c26ef0379078c65f9ade684406eded\n\n### Domains:\n\nupdate[.]kaspresksy[.]com\n\ndownload[.]kaspresksy[.]com\n\napi[.]kaspresksy[.]com\n\nffca[.]caibi379[.]com\n\nupdate[.]microsofts[.]org\n\nppit[.]microsofts[.]org\n\ncahe[.]microsofts[.]org\n\n### IP Addresses:\n\n\n-----\n\n27.102.128.157\n27.102.127.80\n27.102.127.75\n27.102.66.67\n27.102.115.249\n\n## Solutions\n\nThe [FortiEDR platform is capable of detecting the this threat on both pre-execution and post-](https://www.fortinet.com/products/endpoint-security/fortiedr.html?utm_source=blog&utm_campaign=2020-q1-fortiedr)\nexecution.\n\nThe Webfiltering service categorized all the network IOCs as malicious.\n\n_[Learn more about FortiGuard Labs threat research and the FortiGuard Security](https://www.fortinet.com/fortiguard/labs.html?utm_source=blog&utm_medium=campaign&utm_campaign=FortiGuardLabs)_\n_[Subscriptions and Services portfolio.](https://www.fortinet.com/fortiguard/labs.html?utm_source=blog&utm_medium=campaign&utm_campaign=FortiGuardLabs)_ _[Sign up for the weekly Threat Brief from FortiGuard](https://www.fortinet.com/fortiguard/labs.html?utm_source=blog&utm_medium=campaign&utm_campaign=FortiGuardLabs)_\n_Labs._\n\n_Learn more about Fortinet’s_ _[free cybersecurity training initiative or about the Fortinet](https://www.fortinet.com/blog/business-and-technology/why-cybersecurity-training-is-more-important-than-ever.html)_ _Network_\n_Security Expert program,_ _[Network Security Academy program, and](https://training.fortinet.com/local/staticpage/view.php?page=fnsa&utm_source=blog&utm_campaign=2019-q3-fnsa)_ _[FortiVet program.](https://www.fortinet.com/corporate/careers/vets.html?utm_source=blog&utm_campaign=2018-q2-fortivet)_\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-05-24 - Uncovering new Activity by APT10.pdf"
+    ],
+    "report_names": [
+        "2019-05-24 - Uncovering new Activity by APT10.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "ec14074c-8517-40e1-b4d7-3897f1254487",
+            "created_at": "2023-01-06T13:46:38.300905Z",
+            "updated_at": "2025-03-27T02:00:02.799108Z",
+            "deleted_at": null,
+            "main_name": "APT10",
+            "aliases": [
+                "TA429",
+                "STONE PANDA",
+                "POTASSIUM",
+                "Red Apollo",
+                "HOGFISH",
+                "Cloud Hopper",
+                "BRONZE RIVERSIDE",
+                "ATK41",
+                "G0045",
+                "Menupass Team",
+                "happyyongzi",
+                "CVNX",
+                "Granite Taurus"
+            ],
+            "source_name": "MISPGALAXY:APT10",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "ba3fff0c-3ba0-4855-9eeb-1af9ee18136a",
+            "created_at": "2022-10-25T15:50:23.298889Z",
+            "updated_at": "2025-03-27T02:00:55.433541Z",
+            "deleted_at": null,
+            "main_name": "menuPass",
+            "aliases": [
+                "menuPass",
+                "POTASSIUM",
+                "Stone Panda",
+                "APT10",
+                "Red Apollo",
+                "CVNX",
+                "HOGFISH",
+                "BRONZE RIVERSIDE"
+            ],
+            "source_name": "MITRE:menuPass",
+            "tools": [
+                "certutil",
+                "FYAnti",
+                "UPPERCUT",
+                "SNUGRIDE",
+                "P8RAT",
+                "RedLeaves",
+                "SodaMaster",
+                "pwdump",
+                "Mimikatz",
+                "PlugX",
+                "PowerSploit",
+                "ChChes",
+                "cmd",
+                "QuasarRAT",
+                "AdFind",
+                "Cobalt Strike",
+                "PoisonIvy",
+                "EvilGrab",
+                "esentutl",
+                "Impacket",
+                "Ecipekac",
+                "PsExec",
+                "HUI Loader"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "ba9fa308-a29a-4928-9c06-73aafec7624c",
+            "created_at": "2024-05-01T02:03:07.981061Z",
+            "updated_at": "2025-03-27T02:05:17.28602Z",
+            "deleted_at": null,
+            "main_name": "BRONZE RIVERSIDE",
+            "aliases": [
+                "CTG-5938 ",
+                "CVNX ",
+                "Hogfish ",
+                "MenuPass ",
+                "POTASSIUM ",
+                "Red Apollo ",
+                "Stone Panda ",
+                "APT10 "
+            ],
+            "source_name": "Secureworks:BRONZE RIVERSIDE",
+            "tools": [
+                " ChChes",
+                " Cobalt Strike",
+                " PlugX",
+                " PoisonIvy",
+                " QuasarRAT",
+                " QuasarRAT Loader",
+                " RedLeaves",
+                "ANEL"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535640,
+    "ts_updated_at": 1743041591,
+    "ts_creation_date": 1653706084,
+    "ts_modification_date": 1653706084,
+    "files": {
+        "pdf": "https://archive.orkl.eu/883f029818c765f82699541478354bad89911a86.pdf",
+        "text": "https://archive.orkl.eu/883f029818c765f82699541478354bad89911a86.txt",
+        "img": "https://archive.orkl.eu/883f029818c765f82699541478354bad89911a86.jpg"
+    }
+}

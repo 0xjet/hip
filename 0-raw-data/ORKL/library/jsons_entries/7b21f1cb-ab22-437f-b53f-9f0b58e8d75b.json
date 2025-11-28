@@ -1,0 +1,76 @@
+{
+    "id": "7b21f1cb-ab22-437f-b53f-9f0b58e8d75b",
+    "created_at": "2023-01-12T15:04:17.429261Z",
+    "updated_at": "2025-03-27T02:12:11.057122Z",
+    "deleted_at": null,
+    "sha1_hash": "b725a848f76d9bef302b08f25c8052abb559ae40",
+    "title": "2021-10-07 - Team TNT Deploys Malicious Docker Image On Docker Hub",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:28:04Z",
+    "file_modification_date": "2022-05-28T19:28:04Z",
+    "file_size": 2797478,
+    "plain_text": "# Team TNT Deploys Malicious Docker Image On Docker Hub\n\n**[uptycs.com/blog/team-tnt-deploys-malicious-docker-image-on-docker-hub-with-pentesting-tools](https://www.uptycs.com/blog/team-tnt-deploys-malicious-docker-image-on-docker-hub-with-pentesting-tools)**\n\nThe Uptycs Threat Research Team recently identified a campaign in which the TeamTNT\nthreat actors deployed a malicious container image (hosted on Docker Hub) with an\n[embedded script to download Zgrab scanner and](https://github.com/zmap/zgrab2) [masscanner—penetration testing tools](https://github.com/robertdavidgraham/masscan)\nused for banner grabbing and port scanning respectively. Using the scanning tools inside the\nmalicious Docker image, the threat actor tries to scan for more targets in the victim’s subnet\nand perform further malicious activities.\n\nCriminal groups continue to target Docker Hub, GitHub, and other shared repositories with\ncontainer images and software components that include malicious scripts and tools. They\noften aim to spread coinminer malware, hijacking the computing resources of victims to mine\ncryptocurrency.\n\nIn this post, we will detail the technical analysis of the malicious components deployed by the\nTeamTNT threat actor.\n\n## Alpineos profile - Responsible Disclosure\n\nThe malicious Docker image was hosted in Docker Hub under the handle name alpineos, a\ncommunity user who joined Docker Hub on May 26, 2021. At the time of this writing, alpineos\nprofile was hosting 25 Docker images (See Figure 1).\n\n\n-----\n\nFigure 1: Alpineos Docker hub handle\n\nThe Dockerapi image which we analysed had 5,400 downloads within approximately two\nweeks of being added. Another Docker image from the repository, ‘basicxmr’ has been\ndownloaded more than 100,000 times. This clearly suggests that the profile is actively\ndeveloping malicious images.\n\nThe Uptycs Threat Research Team reported the Docker image hosted in the Docker Hub\nwebsite to the security team on September, 30 2021.\n\n## TeamTNT threat actor\n\nTeamTNT is a well known threat actor which targets *nix based systems and misconfigured\nDocker container environments. Threat actors associated with TeamTNT mostly use opensource tools in their campaigns, such as XMrig miner, Tsunami IRC bot (a.k.a kaiten) and the\ndiamorphine rootkit.\n\n## The Attack kill chain\n\nThe attack kill chain we observed TeamTNT using is shown below (see Figure 2).\n\n\n-----\n\nFigure 2: TeamTNT attack life cycle\n\nThe different stages of the attack kill chain depicted above are as follows:\n\nUsing the monero-ocean shell script, TeamTNT/Hilde deployed a new malicious Docker\nimage named Dockerapi which was hosted on Docker hub website.\nUsing Docker, the malicious image was run with the privilege flag, and was mounted\nwith the victim host and victim host’s network configuration.\nThe malicious Docker image had an embedded shell script named ‘pause’.\nThe ‘pause’ shell script inside the malicious Docker image had commands to install\nmasscanner and the zgrab tool.\nAfter setting up the scanning tools, the functions in the ‘pause’ script start scanning\nrigorously in the victim subnet on Docker related ports for more target virtual machines\n(nodes). A node is a part of Docker swarm. A Docker swarm is a group of physical or\nvirtual machines (nodes) operating in a cluster.\nOnce the target node is found as a result of the Docker-related port scan in the victim\nsubnet, the pause shell script runs the misconfigured alpine Docker image remotely\n(from the victim machine) in the target node, passing a base64 command as command\nline. The command:\n\n1. Generates the ssh keys and adds it to authorized_keys file.\n2. Logs into the target node’s host via ssh and downloads the monero-ocean shell script\n\nfrom the C2 (teamtnt[.]red) into the target node’s host.\n\n\n-----\n\nThe monero-ocean shell script in this campaign later deploys Xmrig miner and the\nTsunami IRC bot on the system it is being run on.\nThe monero-ocean shell script also downloads another shell script (diamorphine shell\n[script) which downloads and deploys the diamorphine rootkit to the victim’s system.](https://github.com/m0nad/Diamorphine)\n\nThe diamorphine rootkit consists of features like hiding the pid, syscall table hooking\nand giving root privilege to the pid.\n\n## Technical Analysis\n\nThe monero-ocean shell script\n(c21d1e12fea803793b39225aee33fe68b3184fff384b1914e0712e10630e523e) used as initial\nvector had the following command to deploy alpineos/Dockerapi Docker image onto the\nvictim system (see Figure 3)\n\nFigure 3: Command to deploy Dockerapi container image\n\nThe command shown above runs the Dockerapi image with the following:\n\n--privilege flag\n--net flag to have host’s network configuration inside container\n/host mounted inside container image\n\nUsing the command Docker ps, we can identify the malicious Docker image runs pause shell\nscript (see Figure 4).\n\nFigure 4: Dockerapi image runs pause shell script\n\nThe pause shell script inside Docker image installs basic utilities and the scanning tools\nZgrab and masscan (see Figure 5).\n\n\n-----\n\nFigure 5: Initial setup done by pause shell script\n\nUpon installation of these tools, commands inside the pause shell script start heavy scanning\non Docker related ports in an attempt to target more nodes (machines) in the victim subnet\n(see Figures 6,7).\n\nFigure 6: Docker related scanned ports in the victim subnet\n\nFigure 7: Masscan and Zgrab commands used for scanning\n\n## Masscan and zgrab\n\nMasscan and zgrab scanning commands are used in the Docker container image for\nscanning and banner grabbing. The functionality of these commands is listed below.\n\n### masscan 1.0.0.0/8 -p2377 --rate 50000\n\nThe masscan works much like nmap utility which is used for scanning target IPs. In this case\nmasscan scans with a rate of 50,000 pks/sec which is a huge rate against the port 2377.\n\n### zgrab --senders 200 --port 2377 --http=/v1.16/version --output-file=-2>dev/null\n\n\n-----\n\nThe zgrab tool is used for vulnerability scanning and part of the zmap project. In this case the\nattacker used zgrab with 200 send coroutines (threads) for banner grabbing and saving the\nIP addresses with target opened ports in an output file.\n\n## Alpine Docker image deployment\n\nAs a result of scanning, once the target node is found, the command inside pause shell script\nperforms the following:\n\n1. Remotely runs the alpine Docker image with full privilege and host mounted on the\n\ntarget node.\n2. Uses a base64 encoded command which adds newly generated ssh keys to\n\nauthorized_keys file.\n3. Using the same command, logs into the target node’s host with ssh and downloads the\n\nmonero-ocean shell script in the target host (see Figures 8,9).\n\nFigure 8: base64 encoded command passed with misconfigured alpine image\n\nFigure 9: Decoded base64 - Monero-ocean shell script getting downloaded and executed\n\n## Xmrig miner, IRC bot and DiaMorphine Rootkit\n\nThe monero-ocean shell script later deploys Xmrig miner and the Tsunami IRC bot on the\nsystem it is being run on (see Figures 10 and 11).\n\nFigure 10: command to download XMrig miner\n\n\n-----\n\nFigure 11: command to download IRC bot\n\nThe IRC bot in the victim machine communicates with attacker C2 over port 8080 (see\nFigure 12).\n\nFigure 12: IRC communication on port 8080\n\nAlongside this, the monero-ocean shell script also contained the command to download\ndiamorphine rootkit shell script (see Figure 13).\n\nFigure 13: command to download diamorphine shell script\n\nThe diamorphine shell script\n(418d1ea67110b176cd6200b6ec66048df6284c6f2a0c175e9109d8e576a6f7ab) deploys the\ndiamorphine rootkit in the victim system (see Figure 14).\n\n\n-----\n\nFigure 14: Diamorphine Rootkit getting compiled and deployed\n\n[The diamorphine rootkit consists of features like hiding the pid, syscall table hooking and](https://github.com/m0nad/Diamorphine)\ngiving root privilege to the pid (see Figures 15 and 16).\n\nFigure 15: cr0 WP bit modification for syscall table hooking\n\nFigure 16: Hooked syscalls (getdents and kill)\n\n## Uptycs EDR detections\n\nThe Uptycs EDR armed with YARA process scanning detected the malware components\ninvolved in this campaign with a threat score of 10/10 (see Figure 17,18,19). In addition,\nUptycs offers the following abilities to secure your container deployments:\n\n\n-----\n\nUptycs integrates with CI/CD tools so that developers can initiate image scans at build\ntime to detect malicious container images before they are deployed to production.\nUptycs continuously monitors and reports on compliance with the CIS Benchmark for\nDocker to identify misconfigurations that attackers can exploit, and offer remediation\nguidance so that your team can quickly fix those issues.\n\nFigure 17: Uptycs EDR detection\n\nFigure 18: masscan command captured by the Uptycs EDR\n\n\n-----\n\nFigure 19: zgrab command captured by the Uptycs EDR\n\n## Conclusion\n\nDocker containers have become an integral part of the organisations. A lot of services\nnowadays run in isolated Docker containers. The threat actors on the other side are also\ntrying to deploy malicious components to escape Docker containers and target host\nmachines and the other nodes connected in a subnet and its swarm. Hence, to maintain a\nrobust security stance, it is crucial to be able to detect malicious images early in the CI/CD\npipeline as well as monitor all the container activities in runtime.\n\nThe EDR capabilities of Uptycs empowers security teams to detect, investigate attacks in\ntheir Docker infrastructure.\n\n**Credits: Thanks to Uptycs Threat Research Team members for their inputs and research.**\n\n## IOCs\n\nc21d1e12fea803793b39225aee33fe68b3184fff384b1914e0712e10630e523e monero-ocean\nshell script\n\n418d1ea67110b176cd6200b6ec66048df6284c6f2a0c175e9109d8e576a6f7ab diamorphine\nshell script\n\n497c5535cdc283079363b43b4a380aefea9deb1d0b372472499fcdcc58c53fef pause shell\nscript\n\n0534c5a5cde1e7d36103b690152a1b426fa87d15b3c4ff59b5bc988b99c3aaaf Xmrig miner\n\n\n-----\n\nfe3c5c4f94b90619f7385606dfb86b6211b030efe19b49c12ead507c8156507a IRC bot\n\nteamtnt[.]red C2\n\n45.9[.]148[.]182 IP address hosting the IRC bot\n\n## Want to learn more about what threats you need to be on the look out for? Download your copy of the Threat Research Bulletin.\n\nTag(s): [threat intelligence,](https://www.uptycs.com/blog/tag/threat-intelligence) [threat management,](https://www.uptycs.com/blog/tag/threat-management) [threat research](https://www.uptycs.com/blog/tag/threat-research)\n\n## Siddharth Sharma\n\nSiddharth Sharma works as a Malware Researcher at Uptycs. He specializes in Malware\nAnalysis and Reverse Engineering on Linux and Windows platforms. He has worked as an\nIntern at CERT-In. His blogs have been published in well known security magazines.\n\nConnect with the author\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-10-07 - Team TNT Deploys Malicious Docker Image On Docker Hub.pdf"
+    ],
+    "report_names": [
+        "2021-10-07 - Team TNT Deploys Malicious Docker Image On Docker Hub.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f809bfcb-b200-4988-80a8-be78ef6a52ef",
+            "created_at": "2023-01-06T13:46:39.186988Z",
+            "updated_at": "2025-03-27T02:00:03.016358Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "Adept Libra"
+            ],
+            "source_name": "MISPGALAXY:TeamTNT",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c3ca592f-0669-49bd-ab5c-310007ab2fb4",
+            "created_at": "2022-10-25T15:50:23.334495Z",
+            "updated_at": "2025-03-27T02:00:55.445098Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "TeamTNT"
+            ],
+            "source_name": "MITRE:TeamTNT",
+            "tools": [
+                "Peirates",
+                "MimiPenguin",
+                "LaZagne",
+                "Hildegard"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535857,
+    "ts_updated_at": 1743041531,
+    "ts_creation_date": 1653766084,
+    "ts_modification_date": 1653766084,
+    "files": {
+        "pdf": "https://archive.orkl.eu/b725a848f76d9bef302b08f25c8052abb559ae40.pdf",
+        "text": "https://archive.orkl.eu/b725a848f76d9bef302b08f25c8052abb559ae40.txt",
+        "img": "https://archive.orkl.eu/b725a848f76d9bef302b08f25c8052abb559ae40.jpg"
+    }
+}

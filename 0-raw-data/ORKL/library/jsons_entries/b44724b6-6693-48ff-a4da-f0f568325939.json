@@ -1,0 +1,91 @@
+{
+    "id": "b44724b6-6693-48ff-a4da-f0f568325939",
+    "created_at": "2023-01-12T15:02:41.419803Z",
+    "updated_at": "2025-03-27T02:05:52.025763Z",
+    "deleted_at": null,
+    "sha1_hash": "bdc13ad8510bec8888cdb607ea5285c487939c53",
+    "title": "2019-10-24 - How TrickBot Malware Hooking Engine Targets Windows 10 Browsers",
+    "authors": "",
+    "file_creation_date": "2022-05-28T04:41:47Z",
+    "file_modification_date": "2022-05-28T04:41:47Z",
+    "file_size": 1242477,
+    "plain_text": "# How TrickBot Malware Hooking Engine Targets Windows 10 Browsers\n\n**[labs.sentinelone.com/how-trickbot-hooking-engine-targets-windows-10-browsers/](https://labs.sentinelone.com/how-trickbot-hooking-engine-targets-windows-10-browsers/)**\n\nVitali Kremez\n\n_Vitali Kremez revealing how TrickBot’s hooking engine targets Chrome, Firefox, Explorer and_\n_Edge in Windows 10._\n\n## What is TrickBot Malware? Background & Summary\n\n[TrickBot banking malware remains one of the more interesting and continually developing](https://www.sentinelone.com/blog/trickbot-technical-analysis-banking-trojan-malware/)\nmalware on the financial crimeware landscape. It employs multiple means and methods to\nexploit compromised machines of interest. The focus of this post is to cover in-depth some of\nits Windows 10 Microsoft Edge and other browser hooking engine functionality. We will focus\non the internals, and how TrickBot leverages these browsers to set up hooks for API calls of\ninterest. The ultimate goal of the malware browser hooking is predominantly to intercept\n[online banking credentials before they become SSL encrypted. The stolen credentials can](https://www.sentinelone.com/blog/7-ways-hackers-steal-your-passwords/)\nsubsequently be used for account takeover (ATO) fraud.\n\n\n-----\n\n-----\n\n[Since Windows 10 came with a new browser, “Microsoft Edge”,� TrickBot operators needed](https://www.sentinelone.com/blog/32-security-reasons-to-move-to-windows-10/)\ntheir banking malware to operate on that software. To implement form-grabbing and web\ninjections in the Windows 10 Edge browser, TrickBot’s rogue `rtlbroker hooks the`\n```\nmicrosoftedgecp.exe process. Normally, runtimebroker.exe is the parent process of\n\n```\nthe Microsoft Edge browser on Windows 10 machines.\n\n## TrickBot Browser Process Injection Technique “Reflective Loader”�\n\nIn order to hook browser functions, TrickBot malware injects the payload into the browser of\nchoice via the so-called “ReflectiveLoader”� methodology.\n\nThe TrickBot process injection function targets four browsers from Microsoft Edge to Google\nChrome and one Microsoft Edge related process.\n\n\n-----\n\nTrickBot injects the malware targeting the following processes:\n\nchrome.exe\niexplore.exe\nfirefox.exe\nmicrosoftedgecp.exe\nruntimebroker.exe\n\nThe malware also “relaxes”� browser security and write changes files locally before\ninjection occurs.\n\n\n-----\n\nTrickBot’s reflective injection works as follows:\n\nOpen target process and allocate memory address in remote process via\n```\n   VirtualAllocEx\n\n```\nCopy function `WriteProcessMemory into the allocated memory space`\nCopy shellcode `WriteProcessMemory into the allocated memory space`\nCall `FlushInstructionCache API to make sure our changes are written right away`\nCall inject `RemoteThread function call`\nCall `ResumeThread`\nElse, call undocumented API function `RtlCreateUserThread to start execution in the`\nremote process, using the offset address of the reflective loader function as the entry\npoint.\n\n\n-----\n\n## TrickBot Malware Hooking Engine\n\nWhen the TrickBot banker hooks the API function, it enters the new hooked one and checks\nto make sure the process is `microsoftedgecp.exe while passing control to the original`\none when the hooked function concludes.\n\nThe basic TrickBot banking API hooking template is as follows:\n```\n\"CreateHook_API\" Function Template ->\n{ int CreateHook_API(LPCSTR DLL_name, int original_function_name,\n     int myHook_function, int address_of_original_function) }\n\n```\nBy and large, TrickBot hooking engine works via overwriting the basic API with the redirect\nfunctions with the [0xe9 opcode, which is the call for a jump with 32-bit relative offset.](http://jbremer.org/x86-api-hooking-demystified/#ah-trampoline)\nTrickBot uses a trampoline function and the write hook call with the `VirtualProtectEx API`\n\n\n-----\n\nto make sure that the function has the 0x40 (PAGE_EXECUTE_READWRITE) property.\nAdditionally, it attempts to conceal detection of this hooking technique via prepending NOP\nand/or RETN.\n\nThe exact TrickBot hook pseudo-code is as follows:\n\n\n-----\n\n```\n////////////////////////////////////////////////////////////////////\n/////////////// TrickBot Hook Install Function ///////////////////////\n///////////////////////////////////////////////////////////////////\nsigned int __cdecl TrickBot_Hook_Install(int myHook_function, int *function_address)\n{\n     char *original_function;\n     char *current_func_id_thread;\n     int v5;\n     char jump_len;\n     signed int result;\n     SIZE_T v8;\n     void *trampoline_lpvoid;\n     int v10;\n     int v11;\n     unsigned __int8 jmp_32_bit_relative_offset_opcode;\n     int relative_offset;\n     DWORD flOldProtect;\n     original_function = func_name;\n     current_func_id_thread = func_name + 0x24;\n     iter_func(func_name + 0x24, 0x90, 0x23);\n     if ( function_address )  // Attempts to prepend \"0x90\" (nop) or \"0xC3\"\n(retn) to jump length to avoid basic hooking detect\n          jump_len = walker_byte_0(*(_BYTE **)(original_function + 1),\n(int)current_func_id_thread, v5);\n     else\n          jump_len = 5; // jump_length_trampoline -> 5\n     original_function[5] = jump_len;\n     if ( !jump_len )\n          goto LABEL_12;  // Setting up the trampoline buffer\n          write_hook_iter((int)(original_function + 6), *(_BYTE **)\n(original_function + 1), (unsigned __int8)jump_len);\n     if ( function_address )\n          *function_address = (int)current_func_id_thread;\n     relative_offset = myHook_function - *(_DWORD *)(original_function + 1) - 5;\n     v8 = (unsigned __int8)original_function[5];\n     trampoline_lpvoid = *(void **)(original_function + 1);\n     jmp_32_bit_relative_offset_opcode = 0xE9u; // \"0xE9\" -> opcode\nfor a jump with a 32bit relative offset\n     if ( VirtualProtectEx((HANDLE)0xFFFFFFFF, trampoline_lpvoid, v8, 0x40u,\n&flOldProtect) ) // Set up the function for \"PAGE_EXECUTE_READWRITE\" w/\nVirtualProtectEx\n     {\n          v10 = *(_DWORD *)(original_function + 1);\n          v11 = (unsigned __int8)original_function[5] (_DWORD)original_function - 0x47;\n          original_function[66] = 0xE9u;\n          *(_DWORD *)(original_function + 0x43) = v10 + v11;\n          write_hook_iter(v10, &jmp_32_bit_relative_offset_opcode, 5); // ->\nManually write the hook\n          VirtualProtectEx( // Return to original protect state\n\n```\n\n-----\n\n```\n              (HANDLE)0xFFFFFFFF,\n              *(LPVOID *)(original_function + 1),\n              (unsigned __int8)original_function[5],\n              flOldProtect,\n              &flOldProtect);\n     result = 1;\n\n```\nFor instance, TrickBot malware sets up its own custom `myCreateProcessA function`\nprototype after the hook on `CreateProcessA . The idea is to catch any instance of`\n```\nmicrosoftedgecp.exe execution to intercept it for subsequent injection. This function\n\n```\nultimately returns the flow back to `CreateProcessA after intercepting and collecting`\nnecessary process execution information.\n\nThe following four API calls being hooked are in the child Microsoft Edge via rogue\n```\nrtlbroker.dll, allowing TrickBot operators to intercept and manipulate Microsoft Edge\n\n```\ncalls:\n\nCreateProcess\nCreateProcessW\nCreateProcessAsUserA\nCreateProcessAsUserW\n\n\n-----\n\nTrickBot hooks Internet Explorer and Microsoft Edge in `wininet.dll library API calls:`\n\nHttpSendRequestA\nHttpSendRequestW\nHttpSendRequestExA\nHttpSendRequestExW\nInternetCloseHandle\nInternetReadFile\nInternetReadFileExA\nInternetQueryDataAvailable\nHttpQueryInfoA\nInternetWriteFile\nHttpEndRequestA\nHttpEndRequestW\nInternetQueryOptionA\nInternetQueryOptionW\nInternetSetOptionA\nInternetSetOptionW\nHttpOpenRequestA\nHttpOpenRequestW\nInternetConnectA\nInternetConnectW\n\nThe malware hooks Mozilla Firefox Browser in `nspr4.dll` library API calls:\n\nPR_OpenTCPSocket\nPR_Connect\nPR_Close\nPR_Write\nPR_Read\n\nIt hooks Chrome in `chrome.dll library API calls:`\n\nssl_read\nssl_write\n\n**Reference**\n\ninjectDll32.dll C546D40D411D0F0BB7A1C9986878F231342CDF8B\n\nrtlbrokerDll.dll 0785D0C5600D9C096B75CC4465BE79D456F60594\n\ntestnewinj32Dll.dll D5F98BFF5E33A86B213E05344BD402350FC5F7CD\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-10-24 - How TrickBot Malware Hooking Engine Targets Windows 10 Browsers.pdf"
+    ],
+    "report_names": [
+        "2019-10-24 - How TrickBot Malware Hooking Engine Targets Windows 10 Browsers.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "0d07b30c-4393-4071-82fb-22f51f7749e0",
+            "created_at": "2022-10-25T16:07:24.097096Z",
+            "updated_at": "2025-03-27T02:02:10.106625Z",
+            "deleted_at": null,
+            "main_name": "RATicate",
+            "aliases": [],
+            "source_name": "ETDA:RATicate",
+            "tools": [
+                "AgenTesla",
+                "Agent Tesla",
+                "AgentTesla",
+                "BetaBot",
+                "BlackRAT",
+                "BlackRemote",
+                "Bladabindi",
+                "CloudEyE",
+                "ForeIT",
+                "Formbook",
+                "GuLoader",
+                "Jorik",
+                "Loki",
+                "Loki.Rat",
+                "LokiBot",
+                "LokiPWS",
+                "NSIS",
+                "Negasteal",
+                "NetWeird",
+                "NetWire",
+                "NetWire RAT",
+                "NetWire RC",
+                "NetWired RC",
+                "Neurevt",
+                "Nullsoft Scriptable Install System",
+                "Origin Logger",
+                "Recam",
+                "Remcos",
+                "RemcosRAT",
+                "Remvio",
+                "Socmer",
+                "ZPAQ",
+                "njRAT",
+                "vbdropper",
+                "win.xloader"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535761,
+    "ts_updated_at": 1743041152,
+    "ts_creation_date": 1653712907,
+    "ts_modification_date": 1653712907,
+    "files": {
+        "pdf": "https://archive.orkl.eu/bdc13ad8510bec8888cdb607ea5285c487939c53.pdf",
+        "text": "https://archive.orkl.eu/bdc13ad8510bec8888cdb607ea5285c487939c53.txt",
+        "img": "https://archive.orkl.eu/bdc13ad8510bec8888cdb607ea5285c487939c53.jpg"
+    }
+}

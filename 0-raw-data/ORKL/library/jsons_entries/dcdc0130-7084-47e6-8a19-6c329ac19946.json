@@ -1,0 +1,86 @@
+{
+    "id": "dcdc0130-7084-47e6-8a19-6c329ac19946",
+    "created_at": "2023-01-12T15:06:44.998278Z",
+    "updated_at": "2025-03-27T02:13:12.21786Z",
+    "deleted_at": null,
+    "sha1_hash": "ce2e5d6fd211114dff41adedd1b52acd3ae27927",
+    "title": "2021-07-17 - HelloKitty Linux version malware analysis",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:45:52Z",
+    "file_modification_date": "2022-05-28T19:45:52Z",
+    "file_size": 1187191,
+    "plain_text": "# HelloKitty Linux version malware analysis\n\n**soolidsnake.github.io/2021/07/17/hellokitty_linux.html**\n\nHOME July 17, 2021\n\nJul 17, 2021\n\n## Please read the disclaimer\n\n Introduction\n\nThis report contains technical details of the new linux version of HelloKitty that targets\nVMware ESXi servers.\n\nThe encryption used by this variant is AES_CBC and Elliptic-curve Diffie–Hellman (ECDH)\nto protect the keys.\n\n## Encryption Overview\n\nThe malware generates an ECDH keypair, then using the hardcoded public key of the threat\nactor, it generates an ECDH secret key, then an AES KEY/IV are randomly generated at run\ntime, this key will be used to encrypt a file.\n\nNote: the AES KEY/IV are different for each file.\n\nThe AES KEY/IV is encrypted using a randomly generated IV and the previous ECDH secret\nkey with AES algorithm.\n\nFinally a structure is populated with the ECDH public key of the malware, the encrypted AES\n**KEY/IV used for file encryption and other stuff.**\n\nThe structure is appended with the ransom note and the encrypted file `.crypt`\n\nThe Threat actor can recover the ECDH secret to decrypt the encrypted AES KEY/IV used\nfor encrypting the file with his Private ECDH key and the malware Public ECDH key.\n\n### Ransom Note\n\n\n-----\n\nFigure: Ransom note\n\n## Technical Analysis\n\n### CommandLine arguments\n\nFigure: Parsing commandLine arguments\n\n**option** **Functionality**\n\n\n-----\n\n**option** **Functionality**\n\n**-k** Kill VM processes\n\n**-d** Run as daemon\n\n**-e** Encrypt VM files\n\n**-v** Enable verbose\n\n### Dynamically loading libcrypto API\n\nThe malware loads some OpenSSL API from libcrypto.so using dlopen/dlsym.\n\nFigure: Dynamically loading libcrypto API\n\nLooking at the array, we can see that each entry is a structure of 3 pointers:\n```\n       {\n           unsigned char*\n  new_function_name;\n           unsigned char*\n  old_function_name;\n           void* pointer_to_api;\n       }\n\n```\n\n-----\n\nFirst the ransomware tries to get the address of the function name stored in\n**new_function_name, if not found (which means the library is old) it uses**\n**old_function_name, if the API was found, it’s pointer will be stored in pointer_to_api**\n\nFigure: Array of libcrypto API names and addresses\n\nWe can rename the pointer_to_api with this pythonIDA script, it gets new_function_name\nstring and it then set the name for pointer_to_api\n```\n  start = get_name_ea(0, \"array_func_name\")\n  for i in xrange(0x39):\n       func_name =\n  get_strlit_contents(Qword(start))\n       set_name(start+0x10, func_name)  \n       start += 0x18\n\n### Ignores signals\n\n```\n\n-----\n\nThe malware will ignore the following signals, so that it won t be interrupted during\nencryption, this will prevent half encrypting files which leads to file corruption.\n\nSIGCHLD\nSIGTSTP\nSIGTTOU\nSIGTTIN\nSIGHUP\nSIGTERM\n\nFigure: Malware ignores some signals\n\n### List VM processes\n\nIt executes the command `esxcli vm process list to list every VirtualMachine processes`\ncurrently running on the infected machine. It then parses through the output to extract\n**Process ID and Config File which is basically the path to the VMX file of the VM This data**\nis saved in a array of stucture of type\n```\n{\n     uint64_t Process_ID;\n     unsigned char *Vmx_Path;\n}\n\n### kill VM porcesses\n\n```\nUsing the previous array, the malware first tries to kill the processes with a soft kill `esxcli`\n```\nvm process kill -t=soft -w=<Process_PID> if it fails it uses a hard kill option esxcli\nvm process kill -t=hard -w=<Process_PID> .\n\n### Recursive file search\n\n```\nIt uses the paths given as command line arguments and explore recursively the directories\nusing opendir **readdir.**\n\nFor each file read, it first checks if the file is not . or .. and does not contain the strings .crypt\nor .README_TO_RESTORE\n\n\n-----\n\n### Switch (file type)\n\n**case directory:**\n\nIt checks if it is not one of the following directories:\n\n/bin\n/boot\n/dev\n/etc\n/lib\n/lib32\n/lib64\n/lost+found\n/proc\n\n\n-----\n\n/run\n/sbin\n/usr/bin\n/usr/include\n/usr/lib\n/usr/lib32\n/usr/lib64\n/usr/sbin\n/sys\n/usr/libexec\n/usr/share\n/var/lib\n\nIn case the check pass, it calls recursively the same function with the new directory path as\nargument.\n\nFigure: Recursive directory search\n\n**case file:**\n\nIn case it was a file and the -e option was specified in command line arguments, it will check\nif the file does not contain the following strings .crypt, .tmp_, .README_TO_RESTORE,\nthen checks if it contains one of the following strings\n\n**.vmdk**\n**.vmx**\n**.vmsd**\n**.vmsn**\n\n\n-----\n\nif -e was not specified, it will check if the filename does not contain one of the following\nstrings\n\n.crypt\n.READ_ME_TO_RESTORE\n.tmp_\n.a\n.so\n.la\n\nFinally if the size of the file is bigger than 256 bytes, it saves the path to the file for later\nusage (encrypting it… of course)\n\n### switch to daemon process\n\nIf the -d option was specified in command line arguments the malware calls daemon to\ndetach itself from the controlling terminal and run in the background as system daemons.\n\n\n-----\n\nFigure: Detach and run as daemon\n\n### start thread\n\nit starts a thread at address 0x402AA2 then creates 2 strings, `filename + .crypt and`\n\n```\nfilename + .tmp_\n\n```\n\nA function is called that tries to set a lock on the file using `fcntl, if it fails it will get the PID`\nof the process that is currently locking the file\n\nFigure: Malware try to set a lock on the file\n\nIf the PID is greater than 10 (not a system process), it will kill it with the command `kill -9`\n```\n<PID>\n\n```\n\n-----\n\nThe malware then rename the file to `filename + .tmp_ then it will call a function`\n(0x405D64) to encrypt the file. In case of failure it will roll back to the original filename\n\nIn case of successful encryption it will rename the `.tmp_ to` `.crypt`\n\n### Encryption\n\n**Generation of keys**\n\nIt derives an AES_256_CBC **KEY and IV with libcrypto function EVP_BytesToKey with a**\nrandomly generated salt and data using RAND_bytes API that will be used for file content\nencryption.\n\nFigure: Generate AES KEY/IV\n\n\n-----\n\nFigure: Official documentation of OpenSSL API\nhttps://www.openssl.org/docs/man1.0.2/man3/EVP_BytesToKey.html\n\nAfterwards it generates the malware ECDH private/public keys.\n\nFigure: Generate client ECDH keypair\n\nNext it will call a function at address 0x4054F1 (I named it func_compute_secret) with the\nnewly generate EC_KEY and the public key of the author\n\n\n-----\n\nFigure: Author public key\n\nThen It calls libcrypto api ECDH_compute_key to generate an ECDH shared secret.\n\nFigure: Generate ECDH secret\n\nAfter that it populate a custom structure `(I named it custom_structure00) of the`\nfollowing type with the AES KEY, IV and the size of the file.\n```\n  {\n       unsigned char*\n  save_AES_IV[0x10];\n       unsigned char*\n  save_AES_KEY[0x20];\n       unsigned __int64 \n  size_of_file;\n       unsigned int \n  defined_constant;\n       unsigned int alignemnt; \n  } custom_structure00;\n\n```\n\n-----\n\nFigure: Populate the above structure with AES key data\n\nFigure: Example of the structure populated with data\n\nThen it encrypts the structure `custom_structure00 using the ECDH secret and a`\nrandomly generated IV of 16 bytes with AES algorithm.\n\nFigure: Encrypt the above structure with the ECDH secret\n\nAfter that, it populates yet another important structure `custom_structure01 of following`\ntype:\n\n\n-----\n\n```\n  {\n       // The IV used to encrypt the custom_structure00 structure. | offset 0   0x10\n       unsigned char secret_IV[0x10];\n       // The size of custom_structure00 | offset 0x10 - 0x14\n       unsigned int size_of_custom_structure00;\n       // Encrypted custom_structure00 | offset 0x14 - 0x34\n       custom_structure00 encrypted_custom_structure00;\n       // Size of the client public key | offset 0x58 - x5c\n       unsigned int size_of_public_key ;\n       // Client public key | offset 0x5c - 0xa0\n       unsigned char public_key[0x44];\n       // Size of the sig | offset 0xa0 - 0xa4\n       unsigned int size of sig;\n       // Sig | offset 0xa4 - 0xf0\n       unsigned char sig[0x47];\n  } custom_structure01;\n\n```\nFinally it writes to `filename + .README_TO_RESTORE the ransomware note, then it append`\nthe previous structure at the end of the file. It also append the SHA256 of the `<original`\n```\nfile content + appended data> (see next) Example:\n\n```\n\n-----\n\n```\n   .README_TO_RESTORE file tail, showcasing the above structure\n   (custom_structure01) and the SHA256 hash of the file\n\n```\nIt then appended the same structure `(custom_structure01) to the target file.`\n\nFigure: Original content of the file + `(custom_structure01)`\n\nFinally it reads the data of the target file and uses the file encryption AES key to encrypt it.\n\n\n-----\n\nFigure: Malware encrypt the content of the target file\n\nFigure: File encrypted\n\nFinally it append again the structure + the sha256 of the file.\n\n\n-----\n\nFigure: Encrypted file + custom_structure01 + sha256\n\n## Conclusion\n\nThis linux variant can target Virtual machines files, which can be crucial to companies without\nbackup and replication.\n\nThe encryption scheme used utilize ECDH (Elliptic-curve Diffie–Hellman) algorithm, which\nmeans without the private key owned by the threat actor, it will be near impossible to decrypt\nthe encrypted files.\n\n## YARA Rule\n\n\n-----\n\n```\nrule hellokitty_linux {\n  meta:\n    description = \"YARA rule HelloKitty linux variant ransomware\"\n    reference = \"https://soolidsnake.github.io/2021/07/17/hellokitty_linux.html\"\n    author = \"@soolidsnakee\"\n    date = \"2021-07-17\"\n  strings:\n    $str1 = \".crypt\"\n    $str2 = \".README_TO_RESTORE\"\n    $str5 = \"switch to daemon\"\n    $str6 = \"esxcli vm process kill -t=hard -w=%d\"\n    $str7 = \"work.log\"\n    $str8 = \"m:vdekc:\"\n  condition:\n    all of ($str*)\n}\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-07-17 - HelloKitty Linux version malware analysis.pdf"
+    ],
+    "report_names": [
+        "2021-07-17 - HelloKitty Linux version malware analysis.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "1f6ae238-765f-4495-9d54-6a7883d7a319",
+            "created_at": "2022-10-25T16:07:24.573456Z",
+            "updated_at": "2025-03-27T02:02:10.284644Z",
+            "deleted_at": null,
+            "main_name": "TA511",
+            "aliases": [
+                "MAN1",
+                "Moskalvzapoe"
+            ],
+            "source_name": "ETDA:TA511",
+            "tools": [
+                "Agentemis",
+                "Chanitor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Ficker Stealer",
+                "Hancitor",
+                "NetSupport",
+                "NetSupport Manager",
+                "NetSupport Manager RAT",
+                "NetSupport RAT",
+                "NetSupportManager RAT",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "542cf9d0-9c68-428c-aff8-81b6f59dc985",
+            "created_at": "2023-02-15T02:01:49.554105Z",
+            "updated_at": "2025-03-27T02:00:03.110991Z",
+            "deleted_at": null,
+            "main_name": "Moskalvzapoe",
+            "aliases": [
+                "MAN1",
+                "TA511"
+            ],
+            "source_name": "MISPGALAXY:Moskalvzapoe",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536004,
+    "ts_updated_at": 1743041592,
+    "ts_creation_date": 1653767152,
+    "ts_modification_date": 1653767152,
+    "files": {
+        "pdf": "https://archive.orkl.eu/ce2e5d6fd211114dff41adedd1b52acd3ae27927.pdf",
+        "text": "https://archive.orkl.eu/ce2e5d6fd211114dff41adedd1b52acd3ae27927.txt",
+        "img": "https://archive.orkl.eu/ce2e5d6fd211114dff41adedd1b52acd3ae27927.jpg"
+    }
+}

@@ -1,0 +1,147 @@
+{
+    "id": "b45c2404-c7e5-4473-9f0b-ae35aba904d0",
+    "created_at": "2023-01-12T15:01:38.78767Z",
+    "updated_at": "2025-03-27T02:05:20.686326Z",
+    "deleted_at": null,
+    "sha1_hash": "b58cbf44b56cc9711a67896e7a85988429ce6707",
+    "title": "2017-08-03 - Taking the FIRST look at Crypt0l0cker",
+    "authors": "",
+    "file_creation_date": "2022-05-28T16:12:07Z",
+    "file_modification_date": "2022-05-28T16:12:07Z",
+    "file_size": 924726,
+    "plain_text": "# Taking the FIRST look at Crypt0l0cker\n\n**[blog.talosintelligence.com/2017/08/first-look-crypt0l0cker.html](http://blog.talosintelligence.com/2017/08/first-look-crypt0l0cker.html)**\n\n_[This post is authored by Matthew Molyett.](https://blogs.cisco.com/author/matthewmolyett)_\n\n## Executive Summary\n\n[In March, Talos reported on the details of Crypt0l0cker based on an extensive analysis I](http://blog.talosintelligence.com/2017/03/crypt0l0cker-torrentlocker-old-dog-new.html)\ncarried out on the sample binaries. Binaries -- plural -- because, as noted in the original blog,\nthe Crypt0l0cker payload leveraged numerous executable files which shared the same\ncodebase. Those executables had nearly identical functions in each, but identifying all of\nthose functions repeatedly is tedious and draws time away from improving the analysis.\nEnter [FIRST, the Function Identification and Recovery Signature Tool released by Talos in](http://blog.talosintelligence.com/2016/12/project-first-share-knowledge-speed-up.html)\nDecember 2016.\n\n[FIRST allowed me to port my analysis from the unpacking dll to the payload file instantly.](http://first-plugin.us/)\nOnce I was satisfied my analysis across both files, I was then handed a suspected previous\n[version of the sample. FIRST was able to identify similar code across the versions and](https://github.com/vrtadmin/FIRST)\npartially port the analysis back to the older file. When the next version of Crypt0l0cker comes\nout, I will be able to get a jump on my analysis by using FIRST to port that work forward to\nthe similar code. You can use it to port my work to your sample as well. I will demonstrate\ndoing just that with a Crypt0l0cker sample which appeared on VirusTotal in April 2017, more\nthan a month after the Talos blog about it. There has been no targeted analysis of this file to\nprovide background for this post.\n\n\n-----\n\n## Locating the Sample\n\nProcuring a malware sample of a known family without analyzing it can feel like a heavy\nchallenge to overcome. Thankfully, Talos can leverage Threat Grid sandbox reports of\nsuspected malware samples that we receive. Such reports can be scanned for family IOCs.\nPer our previous analysis into Crypt0l0cker, the infection status of that version is stored in a\n[file named ewiwobiz. By searching Cisco Threat Grid telemetry for files which created](https://www.cisco.com/c/en/us/products/security/threat-grid/index.html)\newiwobiz, I identified a file which was probably a Crypt0l0cker executable.\n\nWith a report to investigate, I needed to procure the actual sample. My sandbox report\n[shows that the suspected Crypt0l0cker file is nearly 400 kb and likely a Nullsoft Installer file,](https://en.wikipedia.org/wiki/Nullsoft_Scriptable_Install_System)\nwhich is a common packager. Static file information gives me the file hash which arms me\nwith the ability to continue my investigation on VirusTotal.\n\nWhile the sample is clearly malicious, my VirusTotal inspection does not suggest that the\n\n\n-----\n\nsample belongs to any known family. No detections refer to Crypt0l0cker, TorrentLocker, a\n[listed alias in the original Talos blog, nor Teerac.](https://www.bleepingcomputer.com/news/security/crypt0l0cker-ransomware-is-back-with-campaigns-targeting-europe/)\n\nWith a file sample in hand, and no static indication that I have located Crypt0l0cker, I move\nonto FIRST to discover how similar it is to known files.\n\n## Exploring the Sample\n\nAs the FIRST client code is an IDA Pro plugin, my first step was opening the file in my local\nIDA copy and allow auto-analysis. Upon completion, the start function was displayed in front\nof me at the graph view. I opened up the graph view context menu and requested FIRST\nlookups for all of the discovered functions.\n\n\n-----\n\nAfter a minute, the FIRST display shows that 13 of the functions have been previously\nidentified and uploaded.\n\nExpanding the matched functions displays the metadata associated with that function,\nincluding a proposed name and function prototype. Notice that the files detected in this\ninstaller have been named to draw attention to the fact that these functions are known to be\n\n\n-----\n\nin NullSoft Installers. I had previously marked up a different NullSoft Installer before and\nuploaded significant functions from it to assure that I would not do so again. In general, a\nmalware analyst is wasting any time spent inspecting such a file. Identifying when a packer is\nin use and moving along to the true payload is a much better use of time.\n\nCheck the Select Highest Ranked checkbox and click Apply. The function names get applied\nacross the database and we can see clearly that the sandbox analysis was correct. This file\nis a packer and we need to extract the original.\n\n\n-----\n\n## Unpacking the Sample\n\nI admit that at this point I cheated to perform the unpack. From previous extraction of\nCrypt0l0cker files protected with NullSoft I already knew that the install script consisted of\nconsuming multiple encrypted blobs, internally decrypt the payload, and run it via Process\nHollowing. As such, allowing it to run debugged and breaking on WriteProcessMemory\nshould present the payload buffer to me.\n\nThere was a complication though, because the install script loaded and unloaded System.dll\nmany times. The ModLoad notification caused the debugger to consume the majority of the\nprocess cycles, effectively causing a denial of service against the debugger. I allowed this\nsystem to run for over an hour without getting beyond this delay.\n\n\n-----\n\n[By disabling the ModLoad notification via `sxi ld` I could get my debugger to allow the](http://blog.opensecurityresearch.com/2013/12/getting-started-with-windbg-part-2.html)\nSystem.dll file to be loaded without triggering the significant extra processing. Crypt0l0cker\nthen was able to spike up to 99% of the CPU use to, rather than the debugger holding on to\n80%.\n\nI dumped out the PE image file and prepared to continue with FIRST.\n\n## Exploring the Real File\n\n\n-----\n\nAgain, the first step of using FIRST was opening the extracted file in IDA Pro. This file was\nbuilt as a Windows GUI file on top of the Visual Studio C runtime. Thus, the runtime was\nidentified during auto-analysis and I was left with a graph view displaying the _WinMain@16\nfunction. Using the FIRST command from the context menu, I checked for the existence of\nmetadata for just that one function. It was discovered as Crytp0l0cker_WinMain@16.\nLooking pretty likely that this is, in fact, Crytp0l0cker.\n\n\n-----\n\nWith confidence that FIRST will be useful, since it had a result for _WinMain@16, I began\nthe search for the full file. At 436 functions this is not a quick lookup, so go get a fresh cup of\ncoffee and let FIRST work. Since this file uses a known runtime, the runtime files are also\nknown to FIRST. You can filter those functions with the Show only \"sub_\" functions\ncheckbox.\n\nAfter FIRST completes 78 new function markups are applied out of 295 total known\nfunctions. With 78 Crytp0l0cker_* functions identified, you can now dig in on the shoulder of\ndays of professional malware analysis.\n\n## Conclusion\n\n\n-----\n\nFIRST provides the ability to share your work from one file to a similar file, whether that other\nfile is a previous or future version or even an additional step in the module execution. When\nopening up a new file, FIRST can provide hints as to whether the file is interesting or just\nneeds to be unpacked. When finally extracting a new, embedded binary, FIRST can migrate\nyour notes from the current file to the shared code in the new file. Use FIRST to save your\nnotes, share your discoveries, and speed up your next analysis.\n\n## IOC\n\n### File Hash\n\nd845e4f2292ba78a993dbbf6f1317894ce1a795c096d7959f3d718e583f1cea3\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2017/2017-08-03 - Taking the FIRST look at Crypt0l0cker.pdf"
+    ],
+    "report_names": [
+        "2017-08-03 - Taking the FIRST look at Crypt0l0cker.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "81bd7107-6b2d-45c9-9eea-1843d4b9b308",
+            "created_at": "2022-10-25T15:50:23.320841Z",
+            "updated_at": "2025-03-27T02:00:55.441723Z",
+            "deleted_at": null,
+            "main_name": "Gamaredon Group",
+            "aliases": [
+                "Gamaredon Group",
+                "IRON TILDEN",
+                "Primitive Bear",
+                "ACTINIUM",
+                "Armageddon",
+                "Shuckworm",
+                "DEV-0157",
+                "Aqua Blizzard"
+            ],
+            "source_name": "MITRE:Gamaredon Group",
+            "tools": [
+                "QuietSieve",
+                "Pteranodon",
+                "PowerPunch"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d5156b55-5d7d-4fb2-836f-861d2e868147",
+            "created_at": "2023-01-06T13:46:38.557326Z",
+            "updated_at": "2025-03-27T02:00:02.861124Z",
+            "deleted_at": null,
+            "main_name": "Gamaredon Group",
+            "aliases": [
+                "Aqua Blizzard",
+                "Actinium",
+                "DEV-0157",
+                "Blue Otso",
+                "G0047",
+                "PRIMITIVE BEAR",
+                "Shuckworm",
+                "Trident Ursa",
+                "UAC-0010",
+                "Winterflounder",
+                "ACTINIUM",
+                "BlueAlpha",
+                "IRON TILDEN"
+            ],
+            "source_name": "MISPGALAXY:Gamaredon Group",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "61940e18-8f90-4ecc-bc06-416c54bc60f9",
+            "created_at": "2022-10-25T16:07:23.659529Z",
+            "updated_at": "2025-03-27T02:02:09.912404Z",
+            "deleted_at": null,
+            "main_name": "Gamaredon Group",
+            "aliases": [
+                "Actinium",
+                "Aqua Blizzard",
+                "Armageddon",
+                "Blue Otso",
+                "BlueAlpha",
+                "Callisto",
+                "DEV-0157",
+                "Iron Tilden",
+                "Operation STEADY#URSA",
+                "Primitive Bear",
+                "SectorC08",
+                "Shuckworm",
+                "Trident Ursa",
+                "UAC-0010",
+                "Winterflounder"
+            ],
+            "source_name": "ETDA:Gamaredon Group",
+            "tools": [
+                "Aversome infector",
+                "BoneSpy",
+                "DessertDown",
+                "DilongTrash",
+                "DinoTrain",
+                "EvilGnome",
+                "FRAUDROP",
+                "Gamaredon",
+                "GammaDrop",
+                "GammaLoad",
+                "GammaSteel",
+                "Gussdoor",
+                "ObfuBerry",
+                "ObfuMerry",
+                "PlainGnome",
+                "PowerPunch",
+                "Pteranodon",
+                "Pterodo",
+                "QuietSieve",
+                "Remote Manipulator System",
+                "Resetter",
+                "RuRAT",
+                "SUBTLE-PAWS",
+                "UltraVNC"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535698,
+    "ts_updated_at": 1743041120,
+    "ts_creation_date": 1653754327,
+    "ts_modification_date": 1653754327,
+    "files": {
+        "pdf": "https://archive.orkl.eu/b58cbf44b56cc9711a67896e7a85988429ce6707.pdf",
+        "text": "https://archive.orkl.eu/b58cbf44b56cc9711a67896e7a85988429ce6707.txt",
+        "img": "https://archive.orkl.eu/b58cbf44b56cc9711a67896e7a85988429ce6707.jpg"
+    }
+}

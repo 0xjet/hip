@@ -1,0 +1,83 @@
+{
+    "id": "67291d60-c8a7-46f5-8902-4c83672bbb00",
+    "created_at": "2023-01-12T14:58:54.960044Z",
+    "updated_at": "2025-03-27T02:09:29.231372Z",
+    "deleted_at": null,
+    "sha1_hash": "2819334fcbc8eb8bfaf83d93e1ed57be7a79aa8c",
+    "title": "2021-10-01 - SQUIRRELWAFFLE – Analysing the Custom Packer",
+    "authors": "",
+    "file_creation_date": "2022-05-27T23:24:11Z",
+    "file_modification_date": "2022-05-27T23:24:11Z",
+    "file_size": 688615,
+    "plain_text": "# SQUIRRELWAFFLE – Analysing the Custom Packer\n\n**[0ffset.net/reverse-engineering/malware-analysis/squirrelwaffle-custom-packer/](https://www.0ffset.net/reverse-engineering/malware-analysis/squirrelwaffle-custom-packer/)**\n\nOctober 1, 2021\n\n\n-----\n\n[Chuong Dong](https://www.0ffset.net/author/chuong-dong/)\n1st October 2021\nNo Comments\n\nIn the last month, I have heard and seen a lot about SQUIRRELWAFFLE on Twitter, a new\nloader that has been used in email-based campaigns to download Cobalt Strike or Qakbot to\nthe victim’s machine, so I figure it will be fun to take a look at this new actor!\n\nIn the initial stage of each campaign, a malicious Word document or Excel file containing\nmalicious macros is delivered to the victim through phishing malspam. The obfuscated\nmacros drop a VBS file, which downloads the SQUIRRELWAFFLE loader on the victim’s\nmachine and executes it.\n\nThe first stage of this loader comes in the form of a DLL packer. Despite being fairly simple,\nthe packer utilizes some interesting anti-analysis tricks, which makes it entertaining to patch\nand analyze statically!\n\nTo follow along, you can grab the sample on MalwareBazaar!\n\nSha256: [4545b601c6d8a636dce6597da6443dce45d11b48fcf668336bcdf12ffdc3e97e](https://bazaar.abuse.ch/sample/4545b601c6d8a636dce6597da6443dce45d11b48fcf668336bcdf12ffdc3e97e/)\n\n## Step 1: Rebasing\n\nUpon opening the packer file in IDA Pro, I immediately spot an anti-analysis method used to\nhide WinAPI calls as well as global variables’ access. Across the code, the malware\naccesses what seems to be addresses (e g 0x4197EC and 0x41BA34) at an offset stored in\n\n\n-----\n\n**ebx.**\n\nTypically, these addresses should get resolved by IDA if the executable’s image base is the\nstandard address 0x400000, but we can quickly check with PEBear to see that this is not the\ncase. The image base is set to 0x10000000 in the executable’s optional header, forcing IDA\nto load it at this particular address. To have it properly loaded in IDA, we can try to map the\nbase back to 0x400000 and see if those addresses actually make sense disregarding the\nvalue of ebx.\n\n\n-----\n\nAfter patching the optional header’s image base value, the same part of code is resolved to\nmeaningful API and variable addresses.\n\n\n-----\n\nAt this point, it’s safe to assume that sub_40211C writes the value of 0x10000000 –\n0x400000 (or 0xfc00000) into ebx and uses this value to rebase every address manually\nupon accessing them. This can quickly be checked using dynamic analysis as the function\ncode is fairly simple.\n\nAfter we have manually patched the image base to the correct value, this ebx offset is not\nneeded to rebase the addresses in our IDB anymore. Therefore, we can simply insert the\ninstruction “xor ebx, ebx” somewhere in the beginning of every function to fully clean it up.\n\n\n-----\n\nAfter doing so, the IDB is turned back into looking like a normal executable for us to\nexamine!\n\n## Step 2: Anti-Analysis Through Binary Padding\n\nThe core of this executable is relatively short and simple to understand. However, the author\nof this packer has utilized binary padding to include junk functions and global variables to\nmake static analysis a bit more complex. As you can see from the images of the code base\nso far, there are some strange functions getting called such as CoGetCurrentProcess. If we\nexamine the xrefs of the global variables that the result of these functions is being set to, we\ncan see that these variables are not used anywhere else.\n\n\n-----\n\nThe list of junk functions used for padding is ImageList_DrawEx, OleInitialize,\n**CoFreeUnusedLibraries, CoFileTimeNow, CoGetCurrentLogicalThreadId,**\n**OleUninitialize, CoGetCurrentProcess, CoCreateGuid, CoGetContextToken,**\n**CheckDlgButton, GetCaretBlinkTime, CheckRadioButton, GetCursorInfo, GetCapture,**\n**CheckMenuItem, CheckMenuRadioItem.The padding usually follows the form of checking**\nif a global variable is initialized or not, and if it is not, the malware calls the padding function\nand writes its result to this variable. The best way to get over this during static analysis is\nusing the Collapse item functionality in IDA to hide away these if blocks.\n\n## Step 3: Static Analysis\n\nThe first valuable WinAPI function that the packer calls is VirtualAlloc, which allocates a\nvirtual buffer of 0x401A000 bytes with read, write, and execute rights.\n\nNext, it uses the instructions “rep movsb” to copy the entire packer executable from the\nimage base to this newly allocated buffer. The malware then manually calculates the offset of\nthe function sub_402A1D to resolve its virtual address in the allocated buffer. Finally, it\ntransfers execution to that virtual address through a “jmp” instruction.\n\nNOTE: Because of this execution flow, you should not put breakpoints in sub_402A1D in the\nmain executable while analyzing dynamically in your debugger. The “int3” instruction (trap\nto debugger) will get copied into the virtual buffer and break your execution with this interrupt\nsince x32dbg or similar debuggers stops upon encountering any “int3” instruction that is not\nset by it. To smoothly use breakpoints, you should set it directly in the memory addresses in\nthe virtual buffer.\n\n\n-----\n\nIn the function sub_402A1D, the packer calls VirtualAlloc again to allocate for a buffer of\nsize 0x12F10 bytes with read and write access. Next, it calls VirtualProtect to change the\ncurrent executable’s protection from read only to execute, read, and write. At this point, we\ncan make the assumption that the malware needs the execute and write accesses to write\nthe next stage executable into memory and execute it. Finally, we see the virtual buffer and\nthe pointer off_419208 being passed into the function sub_401000 as parameters.\n\nBelow is a part of the buffer pointed to by off_419208, which seems to be some encrypted\nbytes. Here, another assumption can be made that the function sub_401000 might decrypt\nthis buffer and write the content, which might possibly be the executable for the next stage,\ninto the allocated virtual buffer. With that assumption, let’s save analyzing this function for\ndynamic analysis and moving on to see how the packer uses the virtual buffer afterward.\n\n\n-----\n\nAfterward, the packer calls the function sub_4021A2 below. Assuming the decrypted stage 2\nexecutable is written into the virtual buffer, the malware extracts its entry point by querying\nthe AddressOfEntryPoint field in its optional header structure. Next, it iterates through the\n**LDR_DATA_TABLE_ENTRY structures from the PEB and compares each loaded**\nlibrary’s/executable’s entry point with its own entry point. This is to manually find the\n**LDR_DATA_TABLE_ENTRY structures corresponding to its own executable. Once found,**\nthe EntryPoint field in this structure is set to the entry point of the stage 2 executable. This\nfurther confirms our previous assumption that the decryption happens during the call to\n**sub_401000.**\n\n\n-----\n\nThe packer then calls the sub_402E14, which takes in the address of the virtual buffer as a\nparameter. This function extracts the stage 2 executable’s size of the headers and copies the\nheaders to the current executable’s base. It sets the newly written headers to have read only\naccess using VirtualProtect.\n\nAt this point, it’s safe to say that our previous assumption is correct, and we can quickly\nextract the stage 2 executable using dynamic analysis. The rest of this function iterates the\nstage 2 executable’s section table to map the raw section to its virtual address in the current\nexecutable’s address space and transfer executions to it. Since we already know where the\nnext stage is decrypted already, static analysis can end here, and we can move to dynamic\nanalysis to quickly unpack the next executable.\n\n## Step 4: Unpacking Through Dynamic Analysis\n\nBecause we know that sub_401000 is the decrypting function, we can halt the execution\nright after this function gets called to unpack the next stage.\n\nFirst, we need to set a breakpoint at the “jmp” instruction at the end of DllEntryPoint to\nproperly transfer execution to the first virtual buffer and execute until we hit it.\n\n\n-----\n\nNext, to capture the address of the second virtual buffer that will eventually store the next\nstage, there are a few ways. We can either set a breakpoint at the VirtualAlloc call and\nexamine the result value ora breakpoint at the instruction “call **sub_401000” instruction and**\nretrieve it from the stack. After we execute the decrypting function, we see that a valid PE\nheader is written at the beginning of the virtual buffer, so we can dump it directly from\nmemory to retrieve the executable for the second stage.\n\nNOTE: Since we are setting breakpoints in the virtual buffer, we have to manually map the\nexecutable’s address to a virtual address based on the virtual buffer’s base. For example,\nthe address 0x10002C2D of the instruction “call **sub_401000” would become 0x3152C2D if**\nthe base is 0x3150000.\n\nFinally, we can check in PEBear to see that the executable is ready to be analyzed. Since all\nof the imports are resolved properly, we do not need to do further mapping of raw address to\nvirtual address!\n\n\n-----\n\nAt this point, we have fully unpacked the next stage from this custom packer and can now\nanalyze the main SQUIRRELWAFFLE executable! If you have any questions or issues while\n[analyzing this sample, feel free to reach out via Twitter.](https://twitter.com/cPeterr)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-10-01 - SQUIRRELWAFFLE – Analysing the Custom Packer.pdf"
+    ],
+    "report_names": [
+        "2021-10-01 - SQUIRRELWAFFLE – Analysing the Custom Packer.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535534,
+    "ts_updated_at": 1743041369,
+    "ts_creation_date": 1653693851,
+    "ts_modification_date": 1653693851,
+    "files": {
+        "pdf": "https://archive.orkl.eu/2819334fcbc8eb8bfaf83d93e1ed57be7a79aa8c.pdf",
+        "text": "https://archive.orkl.eu/2819334fcbc8eb8bfaf83d93e1ed57be7a79aa8c.txt",
+        "img": "https://archive.orkl.eu/2819334fcbc8eb8bfaf83d93e1ed57be7a79aa8c.jpg"
+    }
+}

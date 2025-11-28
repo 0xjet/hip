@@ -1,0 +1,62 @@
+{
+    "id": "e999ae1b-29cd-42f3-bf5f-a547b39a57b9",
+    "created_at": "2023-01-12T14:58:57.783338Z",
+    "updated_at": "2025-03-27T02:09:18.16213Z",
+    "deleted_at": null,
+    "sha1_hash": "0aa59e3404b4fb91065a87f1049eb9f0fb5ab6d3",
+    "title": "2021-02-01 - Relay Attacks via Cobalt Strike Beacons",
+    "authors": "",
+    "file_creation_date": "2022-05-28T04:05:18Z",
+    "file_modification_date": "2022-05-28T04:05:18Z",
+    "file_size": 149664,
+    "plain_text": "# Relay Attacks via Cobalt Strike Beacons\n\n**[pkb1s.github.io/Relay-attacks-via-Cobalt-Strike-beacons/](https://pkb1s.github.io/Relay-attacks-via-Cobalt-Strike-beacons/)**\n\n6 minute read\n\n## Introduction\n\n\nFebruary 1, 2020\n\n\nBack in 2018, [Will Shroeder,](https://twitter.com/harmj0y) [Lee Christensen and](https://twitter.com/tifkin_) [Matt Nelson shared their awesome](https://twitter.com/enigma0x3)\n[research around Active Directory trusts at DerbyCon. During the last part of their](https://www.slideshare.net/harmj0y/derbycon-the-unintended-risks-of-trusting-active-directory)\npresentation they showed how we can abuse the Print Spooler service in order to force a\ncomputer to authenticate against another computer. Lee also released a tool that allows us\n[to do this easily called SpoolSample. If you are not familiar with this attack I highly](https://github.com/leechristensen/SpoolSample)\nrecommend reading the following blog posts:\n\nMost of the abuses I have seen so far are using the SpoolSample tool along with\ncompromising a server with Unconstrained Delegation enabled. This allows the attacker to\nforce a computer authenticate back to the attacker using Kerberos and since Unconstrained\nDelegetation is enabled on the compromised server, the victim also sends their TGT within\nthe TGS. However, there is another way to compromise computers.\n\nIf we run the SpoolSample tool with IP addresses as arguments instead of domain names,\nthe target computer will initiate an authentication attempt using Net-NTLM and it is known for\nmany years that Net-NTLM authentication is vulnerable to relay attacks. This means that we\ncan use SpoolSample to make a computer object authenticate back to a computer we control\nand relay this authentication to another host.\n\nThe scenario where this is useful is the following:\n\nOK, lets put this attack aside for now and we will come back to it later.\n\nAnother scenario that we find very often when reviewing AD environments is when a user\nobject has rights such as `GenericAll or` `GenericWrite on another user object similar to`\nthe following:\n\n\n-----\n\nIf we have compromised Alice then we can do the following:\n\nUse a targeted Kerberoasting attack against Bob by setting an SPN and requesting a\nTGS\nForce a password change for Bob\n\nHowever, both of these attacks have limitations. For targeted kerberoasting the user must be\nconfigured with a weak password in order to crack it. As for changing Bob’s password it\nmight be something that you don’t want to do during a red team operation to avoid disruption\nor raising suspicion.\n\nSo I started looking at the different attributes a user has and another option is to modify one\nof the following use attributes:\n\nhomeDirectory - Specifies the home directory of the account and it can be a UNC path.\nprofilePath - Specifies a path to the user’s profile and it can also be a UNC path.\n\nBy modifying any of these attributes, we can point them to a UNC path of a computer under\nyour control and perform an SMB relay attack.\n\nSomething you might be wondering so far is this - You have been telling me these ways of\nexploiting AD objects based on ACL misconfigurations and SMB relay attacks but you\nhaven’t told me how to perform a relay attack if all I have is a Cobalt Strike beacon.\n\nKeep reading and your question will be answered ;)\n\n## Relay Attacks\n\nSo far I have mentioned relay attacks, and specifically SMB relays. This kind of attack has\nbeen known for many years. If you want to learn more about SMB relay you can read the\nfollowing posts:\n\nhttps://byt3bl33d3r.github.io/practical-guide-to-ntlm-relaying-in-2017-aka-getting-afoothold-in-under-5-minutes.html\n[https://www.sans.org/blog/smb-relay-demystified-and-ntlmv2-pwnage-with-python/](https://www.sans.org/blog/smb-relay-demystified-and-ntlmv2-pwnage-with-python/)\n\n\n-----\n\nThe rest of this post is based on the reader s basic understanding of relay attacks so make\nsure you have read the above posts.\n\n## OK, I understand how SMB relay attacks work. Now what?\n\nWhen I performed relay attacks in the past I was always doing an internal pentest and I had\nphysical access to the target network. But, why not use these powerful attacks while on a red\nteam operation and you have to do everything through a Cobalt Strike beacon?\n\nIt looks like there is a way to do this! Actually this is possible for a few years now thanks to\n[the very cool divertTCPconn and](https://github.com/Arno0x/DivertTCPconn) [hwfwbypass projects.](https://github.com/MRGEffitas/hwfwbypass)\n\nDivertTCPconn is based on hwfwbypass and both are written in C++. It is using the\namazingly complicated WinDivert project written by Basil:\n\n[https://github.com/basil00/Divert](https://github.com/basil00/Divert)\n\n**How does it work?**\n\nAccording to it’s description, WinDivert is a kernel driver that allows for user-mode packet\ninterception and modification. The user needs to specify a filter and any packets that match\nthis filter will be intercepted and can be modified.\n```\nThe WinDivert.sys driver is installed below the Windows network stack. The\nfollowing actions occur:\n(1) A new packet enters the network stack and is intercepted by WinDivert.sys\n(2a) If the packet matches the PROGRAM-defined filter, it is diverted. The\n  PROGRAM can then read the packet using a call to WinDivertRecv().\n(2b) If the packet does not match the filter, the packet continues as normal.\n(3) PROGRAM either drops, modifies, or re-injects the packet. PROGRAM can\n  re-inject the (modified) using a call to WinDivertSend().\n\n```\nThe most important thing that WinDivert allows us to do is to intercept traffic going to an open\nWindows port and redirect it to another port by modifying the TCP source and destination\nports of each packet, recalculating the TCP checksums and reinjecting the packets into the\nnetwork stack.\n\n**How does this help us?**\n\nOn Windows, port 445 is always running by default. I won’t go into detail about the process\nusing port 445 because this is already analysed in the following post, so please go ahead\nand read it:\n\nhttps://diablohorn.com/2018/08/25/remote-ntlm-relaying-through-meterpreter-onwindows-port-445/\n\n\n-----\n\nAs mentioned in the above post, it also contains another interesting idea. Using WinDivert to\nperform an SMB relay attack via Metasploit. You can upload a few DLLs and a driver file to\nthe target host along with the divertTCPconn.exe and execute them. I found this attack to be\nawesome, but what I didn’t like was that you had to upload multiple DLLs on the target host.\n\nSo my goal was to do the same attack by dropping the minimum amount of files on disk and\nalso executing the attack through Cobalt Strike.\n\n## SMB Relay through Cobalt Strike\n\nFirst of all, I wanted to make use of Cobalt Strike’s `execute-assembly function so I`\ndecided to write my code using the .NET framework. My initial thought would be to re-write\ndivertTCPconn in C# and then everything would work. It turns out that this was very\ncomplicated. Fortunately, I found the following NuGet package by TechnikEmpire:\n\n[https://github.com/TechnikEmpire/WinDivertSharp](https://github.com/TechnikEmpire/WinDivertSharp)\n\n[Using WinDivertSharp, I was able to write a tool called SharpRelay to communicate with the](https://github.com/pkb1s/SharpRelay)\nWinDivert driver and perform any packet modification I wanted. The only requirement for this\nattack to work is to have a beacon with local administrator privileges or with the ability to load\ndrivers. The attack using SharpRelay works as follows:\n\nUpload the signed WinDivert driver into any folder on the compromised host\nRun SharpRelay to modify the destination port of the incoming packets on port 445 and\nredirect them to another port (e.g. 8445)\nFrom our beacon run the Cobalt Strike’s `rportfwd command to forward port 8445 of`\nthe compromised host to our teamserver’s port 445.\nStart a socks server to forward the relayed traffic back to the victim network\nRun Impacket’s [ntlmrelayx with proxychains to do the SMB relay](https://github.com/SecureAuthCorp/impacket/blob/master/examples/ntlmrelayx.py)\nWhen a victim tries to access port 445 of the compromised host the NTLM\nauthentication will be forwarded to our teamserver and relayed to another machine\n\nThe code of SharpRelay can be found here:\n\n[https://github.com/pkb1s/SharpRelay](https://github.com/pkb1s/SharpRelay)\n\nAlso, a big part of the code I used for the packet interception was taken from this project by\nTechnikEmpire:\n\n[https://github.com/TechnikEmpire/CitadelCore](https://github.com/TechnikEmpire/CitadelCore)\n\n## Show me a video or it didn’t happen\n\nTo demonstrate the attacks I described in the beginning of the post, I made the following\nvideos.\n\n\n-----\n\n**SpoolSample to SMB Relay**\n\nAs mentioned earlier we have the following scenario:\n\nThe following video demonstrates how we can use the SpoolSample tool to compromise a\ncomputer object via an SMB relay attack:\n\n**Abusing weak ACLs on a User Object**\n\nAs shown earlier, the scenario we are going to abuse it the following:\n\nHaving a local administrator beacon running as Alice, we will modify Bob’s `homeDirectory`\nattribute and point it to the workstation where we have our beacon running (10.1.1.20). Next\ntime Bob logs in to his workstation he will try to authenticate against the compromised host\nand we will perform our SMB relay attack:\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-02-01 - Relay Attacks via Cobalt Strike Beacons.pdf"
+    ],
+    "report_names": [
+        "2021-02-01 - Relay Attacks via Cobalt Strike Beacons.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535537,
+    "ts_updated_at": 1743041358,
+    "ts_creation_date": 1653710718,
+    "ts_modification_date": 1653710718,
+    "files": {
+        "pdf": "https://archive.orkl.eu/0aa59e3404b4fb91065a87f1049eb9f0fb5ab6d3.pdf",
+        "text": "https://archive.orkl.eu/0aa59e3404b4fb91065a87f1049eb9f0fb5ab6d3.txt",
+        "img": "https://archive.orkl.eu/0aa59e3404b4fb91065a87f1049eb9f0fb5ab6d3.jpg"
+    }
+}

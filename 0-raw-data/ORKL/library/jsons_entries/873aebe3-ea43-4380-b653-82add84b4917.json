@@ -1,0 +1,42 @@
+{
+    "id": "873aebe3-ea43-4380-b653-82add84b4917",
+    "created_at": "2023-01-12T15:06:55.904602Z",
+    "updated_at": "2025-03-27T02:05:29.540602Z",
+    "deleted_at": null,
+    "sha1_hash": "be28263ca146a4df52703f4b42c9bdffa3641ee6",
+    "title": "2022-08-25 - BleachGap Revamped",
+    "authors": "",
+    "file_creation_date": "2022-09-01T10:23:49Z",
+    "file_modification_date": "2022-09-01T10:23:49Z",
+    "file_size": 3791046,
+    "plain_text": "# BleachGap Revamped\n\n**labs.k7computing.com/index.php/bleachgap-revamped/**\n\nBy Gaurav Yadav August 25, 2022\n\n[BleachGap ransomware was first reported in Feb 2021 by a researcher named Petrovic on](https://twitter.com/petrovic082)\n[Twitter. This ransomware variant that we have analysed was reported on Twitter in June](https://twitter.com/Finch39487976/status/1533126802159304705)\n2022. This variant got us curious to get into the nuances of it because it was tagged as a\n**stealer and all the code was compiled in a single executable thereby not needing**\n**any supporting .bat or PowerShell scripts to execute, most probably done for evasion**\nand to be less noisy in comparison to the variant found in 2021, which needed the\nsupporting .bat and .exe that it dropped for execution.Though there are not many cases\nreported in the wild, this blog has been written to let the cyber community know that\n**threat actors are modifying the attack techniques of this malware for a possible**\n**major attack that might be planned in the future. Lets now get into the details.**\n\n## Why a Stealer?\n\nWhen this ransomware executes, the first step is to get the username and generate a\n**Unique ID (UID) and Password for that particular victim. By the first look, it seems it is**\nstealing the password from the user but after multiple executions we identified that the\npassword is different every time and after reversing the sample we found that the\nransomware is using a function (shown in Figure 1) to randomly generate the UID and the\nsame function is being called again to generate the password which is always 32 byte\nlong.\n\n\n-----\n\nFigure 1: Function used to generate random ID and Pass\nAfter generating the UID and Password, it gets the Username of the current user using the\nenvironment variable. It first moves the encoded bytes to memory which are already\nhardcoded in the executable and then decodes those to the ‘username’ and then uses it\nas an argument to get environment variable data related to the username as shown in\nFigure 2.\n\n\n-----\n\nFigure 2: Getting username using environment variables\nInstead of hardcoding the useful strings into executables directly, so as to evade detection,\nthis ransomware has used a similar method of moving encoded strings into memory and\nthen decoding them at runtime for different purposes.We will see similar method being\nused later in this ransomware. After getting the Username, it forms a huge string using the\nsame method of decoding the encoded bytes which includes UID, Password, Username\nas shown in Figure 3.\n\nFigure 3: Large\n\ndecoded string\nAfter further analysis we learn that this ransomware sends the large decoded string shown\nin Figure 3 as a Post request to the Discord Webhook API which has been highlighted in\nFigure 4 and 5.\n\nFIgure 4: Post request to Discord API\n\n\n-----\n\nFigure 5: Fakenet output for DNS and SSL connection\n\n## Disabling Tools to Work\n\nAfter sending information to the Discord API, the ransomware tries to disable tools like\ncommand prompt (CMD), Task Manager and Registry Editor so that the user is not able to\nmake changes and stop the ransomware execution. Disabling the mentioned tools\nhappens with the help of the registry. Ransomware first copies the encoded registry key\ninto memory and then decodes the key using XOR loop and then does the same for key\nvalue and then calls the function RegCreateKey using the decoded key and value as\narguments. Figure 6 shows the encoded registry key.\n\n\n-----\n\nFigure 6: Encoded Registry key\n\nFigure 7: Decoding encoded registry key\n\n\n-----\n\nFigure 8: Tools getting disabled\nAfter disabling the tools, the ransomware decodes the different folder names which\nincludes Desktop, Documents, Downloads, Pictures, Music,Public and adds it to the string\n**C:\\Users\\%username% so that it can enumerate these folders first and encrypt the files**\nstored inside.\n\nFigure 9: Function adding folder names after decoding\nAfter getting all the folder names, the ransomware starts to enumerate them using\n**FindFirstFileExW and FindNextFileW and then uses ReadFile to read the existing file**\ninto a buffer for encryption.\n\nFigure 10: Using FindFirstFileExW\n\n\n-----\n\nFigure 11: Using FindNextFileW\n\nFigure 12: Using ReadFile to read ApkStudio.exe.lnk\n\n## Encrypting Files\n\nWhen analysing the sample after ReadFile we observed that the sample doesn’t use any\ncommon encryption related Windows APIs like CryptAcquireContextA,\n**CryptReleaseContext, CryptGenKey, CryptExportKey, etc. On further digging, we found**\nthat the whole encryption routine is implemented inside the ransomware. We identified\nthis when a hardware breakpoint on the randomly generated password (described at the\nstart of the blog) was hit after the ReadFile API. There were some calculations happening\nwith the password and some bytes were also present in the .rdata section.\n\n\n-----\n\nFigure 13: Using AES S-block for key expansion\nAfter checking those prestored bytes we identified that it is an S-Block used in the AES\nAlgorithm during the Key Expansion phase. So ransomware is using the AES algorithm to\nencrypt the files using the password (key) that was randomly generated and sent to\ndiscord webhook. On further analysis, we got the functions which were responsible for\nencrypting the file bytes and writing it to the memory 16 bytes at a time as in Figure 14 and\nFigure 15.\n\nFigure 14: ApkStudio.exe.lnk File getting encrypted\n\n\n-----\n\nFigure 15: Encrypted File ApkStudio.exe.lnk\nRansomware creates a new file with the same name and writes the encrypted bytes into\nthat file and then renames the file with the extension PAY2DECRYPT+UID. After\nencrypting the files, it puts 100 ransom notes on the Desktop. This ransomware encrypts\nexecutables as well. It changes its own name to encrypted file extension but the file\nremains as-is and not encrypted.\n\n\n-----\n\nFigure 16: 100 ransom notes on Desktop\n\nFigure 17: Ransom Note\nWe at K7 Labs provide detection for BleachGap ransomware and all the latest threats.\nUsers are advised to use a reliable security product such as “K7 Total Security” and\nkeep it up-to-date to safeguard their devices.\n\n## Indicators of Compromise (IOCs)\n\n**File Name** **Hash** **Detection Name**\n\nransomito.exe bfe289c6f91ffcda97c207f3c1c525a9 Riskware (00584baa1)\n\n## References\n\n[https://www.goggleheadedhacker.com/blog/post/reversing-crypto-functions-aes](https://www.goggleheadedhacker.com/blog/post/reversing-crypto-functions-aes)\n\n\n-----\n\n[https://twitter.com/Finch39487976/status/1533126802159304705](https://twitter.com/Finch39487976/status/1533126802159304705)\n\n[https://www.reversingsecurity.com/blog/pay2decrypt-bleachgap-analysis](https://www.reversingsecurity.com/blog/pay2decrypt-bleachgap-analysis)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-08-25 - BleachGap Revamped.pdf"
+    ],
+    "report_names": [
+        "2022-08-25 - BleachGap Revamped.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673536015,
+    "ts_updated_at": 1743041129,
+    "ts_creation_date": 1662027829,
+    "ts_modification_date": 1662027829,
+    "files": {
+        "pdf": "https://archive.orkl.eu/be28263ca146a4df52703f4b42c9bdffa3641ee6.pdf",
+        "text": "https://archive.orkl.eu/be28263ca146a4df52703f4b42c9bdffa3641ee6.txt",
+        "img": "https://archive.orkl.eu/be28263ca146a4df52703f4b42c9bdffa3641ee6.jpg"
+    }
+}

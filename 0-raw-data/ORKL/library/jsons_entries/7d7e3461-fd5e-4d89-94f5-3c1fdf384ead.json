@@ -1,0 +1,88 @@
+{
+    "id": "7d7e3461-fd5e-4d89-94f5-3c1fdf384ead",
+    "created_at": "2023-01-12T15:06:31.316884Z",
+    "updated_at": "2025-03-27T02:09:30.334359Z",
+    "deleted_at": null,
+    "sha1_hash": "214076b6f6f66fc3f76f57821204a08488aef279",
+    "title": "2022-03-24 - Threat Advisory- DoubleZero",
+    "authors": "",
+    "file_creation_date": "2022-05-28T21:44:18Z",
+    "file_modification_date": "2022-05-28T21:44:18Z",
+    "file_size": 411733,
+    "plain_text": "# Threat Advisory: DoubleZero\n\n**[blog.talosintelligence.com/2022/03/threat-advisory-doublezero.html](https://blog.talosintelligence.com/2022/03/threat-advisory-doublezero.html)**\n\n**This post is also available in:**\n\n[Українська (Ukrainian)](https://talosintelligence.com/resources/434)\n\n## Overview\n\n[The Computer Emergency Response Team of Ukraine released an advisory on March 22,](https://cert.gov.ua/article/38088)\n2022 disclosing another wiper dubbed \"DoubleZero\" targeting Ukrainian enterprises during\nRussia's invasion of the country. This wiper was detected as early as March 17, 2022.\nDoubleZero is yet another wiper discovered in addition to previously disclosed attacks we've\n[seen in Ukraine over the past two months, such as \"CaddyWiper\" \"HermeticWiper\" and](https://blog.talosintelligence.com/2022/03/threat-advisory-caddywiper.html)\n[\"WhisperGate.\"](https://blog.talosintelligence.com/2022/01/ukraine-campaign-delivers-defacement.html)\n\nDoubleZero is a .NET-based implant that destroys files, registry keys and trees on the\ninfected endpoint.\n\nCisco Talos is actively conducting analysis to confirm the details included in these reports.\n\n## Wiper analysis\n\n\n-----\n\nThe malware first checks if the current endpoint is one of the domain's controllers. If the\nendpoint's name is found, the wiper simply stops executing.\n\nThe wiper begins by obtaining the following privileges on the endpoint:\n\nSeTakeOwnershipPrivilege\nSeRestorePrivilege\nSeBackupPrivilege\nSeShutdownPrivilege\n\nIt aims to overwrite all files in all drives by destroying all files in all drives except for a specific\nlist of the locations hardcoded in the wiper. The malware intends to destroy non-system files\nfirst, then system-related files. Destroying system related files while the overwriting of other\nfiles is pending can create instability and may lead to bricking the system before the\ncomplete destruction of the user's files is completed. In such cases, it may be possible to\nrecover the files from the disk that haven't been overwritten yet.\n\nThe system folders reserved for destruction *after* all other files have been destroyed:\n\n<Root_drive>\\Windows\\Microsoft.NET\n<Root_drive>\\Windows\n<Root_drive>\\\\Users\\\\\\\\.*?\\\\\\\\Local Settings.*\n<Root_drive>\\\\Users\\\\\\\\.*?\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Application Data.*\n<Root_drive>\\\\Users\\\\\\\\.*?\\\\\\\\Start Menu.*\n<Root_drive>\\\\Users\\\\\\\\.*?\\\\\\\\Application Data.*\n<Root_drive>\\\\ProgramData\\\\\\\\Microsoft.*\n<Root_drive>\\\\Users\\\\\\\\.*?\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Microsoft.*\n<Root_drive>\\\\Users\\\\\\\\.*?\\\\\\\\AppData\\\\\\\\Roaming\\\\\\\\Microsoft.*\n<Root_drive>\\Documents and Settings\n<Root_drive>\\ProgramData\\Application Data\n<Root_drive>\\Users\\All Users\n<Root_drive>\\Users\\Default User\n<Root_drive>\\system\\drivers\n<Root_drive>\\Windows\\NTDS\n\nThe wiper will enumerate all file paths and decide if the file is \"safe\" to destroy immediately\ni.e., not a system file.\n\nFor each file that is deemed \"safe\" to destroy (i.e., not in the exclusions listed above), the\nwiper will:\n\nChange the access control of files by giving the Local System Account\n(WellKnownSidType.LocalSystemSid) full control of the file.\nUse one of the two wiper functions to destroy the files\n\n\n-----\n\n### Wiper function No. 1\n\nThis routine will use APIs such as NtfsControlFile with a control code of\n[FSCTL_SET_ZERO_DATA (0x980C8) to fill up the file with all zero bytes.](https://docs.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_set_zero_data)\n\nNtfsControlFile used against a file to zero it out.\n\n### Wiper function No. 2\n\nThe second routine used to overwrite the files is relatively simpler. It opens the target file as\na FileStream and simply overwrites it with an array containing all zeros.\n\nFile being overwritten by an array containing all zeros.\n\nThen the wiper moves on to the destruction of system files which is also carried out by the\ntwo wiper functions illustrated above. The order of destruction of the system files is:\n\nFirst:\n\n<Root_drive>\\system\\drivers\n\nSecond:\n\n<Root_drive>\\\\Users\\\\\\\\.*?\\\\\\\\Local Settings.*\n<Root_drive>\\\\Users\\\\\\\\.*?\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Application Data.*\n<Root_drive>\\Windows\\NTDS\n<Root_drive>\\\\Users\\\\\\\\.*?\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Microsoft.*\n<Root_drive>\\\\Users\\\\\\\\.*?\\\\\\\\AppData\\\\\\\\Roaming\\\\\\\\Microsoft.*\n\nThird:\n\n<Root_drive>\\Windows\n\nThe wiper then proceeds to destroy entries in the registry hives:\n\nHKLM\nHKCU\nHKU\n\n\n-----\n\nIt will first kill all processes on the system named lsass . Then, it will set the current user as\nthe owner of the registry keys under these hives, change the access rights to get full control\nof the reg keys and then overwrite the values. The wiper will also delete subkey trees\nrecursively.\n\nWiper creating a rule to obtain full access to registry keys\n\nWiper deleting subkey trees in registry.\n\nOnce all the destructive activity has been completed, the wiper will then shutdown the\n[system using the ExitWindowsEx API call.](https://docs.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-exitwindowsex)\n\n## Coverage\n\nWays our customers can detect and block this threat are listed below.\n\n\n-----\n\n[Cisco Secure Endpoint (formerly AMP for Endpoints) is ideally suited to prevent the](https://www.cisco.com/c/en/us/products/security/amp-for-endpoints/index.html)\n[execution of the malware detailed in this post. Try Secure Endpoint for free here.](https://www.cisco.com/c/en/us/products/security/amp-for-endpoints/free-trial.html?utm_medium%3Dweb-referral?utm_source%3Dcisco%26utm_campaign%3Damp-free-trial%26utm_term%3Dpgm-talos-trial%26utm_content%3Damp-free-trial)\n\n[Cisco Secure Web Appliance web scanning prevents access to malicious websites and](https://www.cisco.com/c/en/us/products/security/web-security-appliance/index.html)\ndetects malware used in these attacks.\n\n[Cisco Secure Email (formerly Cisco Email Security) can block malicious emails sent by](https://www.cisco.com/c/en/us/products/security/email-security/index.html)\nthreat actors as part of their campaign. You can try Secure Email for free [here.](https://www.cisco.com/c/en/us/products/security/cloud-mailbox-defense?utm_medium%3Dweb-referral%26utm_source%3Dcisco%26utm_campaign%3Dcmd-free-trial-request%26utm_term%3Dpgm-talos-trial)\n\n[Cisco Secure Firewall (formerly Next-Generation Firewall and Firepower NGFW) appliances](https://www.cisco.com/c/en/us/products/security/firewalls/index.html)\n[such as Firepower Threat Defense (FTD), Firepower Device Manager (FDM),](https://www.cisco.com/c/en/us/products/security/security-management/firepower-device-manager.html) Threat\nDefense Virtual, [Adaptive Security Appliance can detect malicious activity associated with](https://www.cisco.com/c/en/us/products/security/adaptive-security-appliance-asa-software/index.html)\nthis threat.\n\n\n-----\n\n[Cisco Secure Malware Analytics (formerly Threat Grid) identifies malicious binaries and](https://www.cisco.com/c/en/us/products/security/threat-grid/index.html)\nbuilds protection into all Cisco Secure products.\n\n[Cisco Secure Network/Cloud Analytics (Stealthwatch/Stealthwatch Cloud) analyzes network](https://www.cisco.com/c/en/us/products/security/stealthwatch/index.html)\ntraffic automatically and alerts users of potentially unwanted activity on every connected\ndevice.\n\n[For guidance on using Cisco Secure Analytics to respond to this threat, please click here.](https://blogs.cisco.com/security/how-to-respond-to-apache-log4j-using-cisco-secure-analytics)\n\n[Meraki MX appliances can detect malicious activity associated with this threat.](https://meraki.cisco.com/products/appliances)\n\n[Umbrella, Secure Internet Gateway (SIG), blocks users from connecting to malicious](https://umbrella.cisco.com/)\ndomains, IPs and URLs, whether users are on or off the corporate network. Sign up for a\n[free trial of Umbrella here.](https://signup.umbrella.com/?utm_medium%3Dweb-referral?utm_source%3Dcisco%26utm_campaign%3Dumbrella-free-trial%26utm_term%3Dpgm-talos-trial%26utm_content%3Dautomated-free-trial)\n\nAdditional protections with context to your specific environment and threat data are available\nfrom the [Firewall Management Center.](https://www.cisco.com/c/en/us/products/security/firepower-management-center/index.html)\n\n[Cisco Duo provides multi-factor authentication for users to ensure only those authorized are](https://signup.duo.com/?utm_source%3Dtalos%26utm_medium%3Dreferral%26utm_campaign%3Dduo-free-trial)\naccessing your network.\n\nOpen-source Snort Subscriber Rule Set customers can stay up to date by downloading the\n[latest rule pack available for purchase on Snort.org.](https://www.snort.org/products)\n\nThe following ClamAV signatures available for protection against this threat:\n\n**Win.Malware.DoubleZeroWiper-9942171-0**\n\n## IOCs\n\nd897f07ae6f42de8f35e2b05f5ef5733d7ec599d5e786d3225e66ca605a48f53\n\n8dd8b9bd94de1e72f0c400c5f32dcefc114cc0a5bf14b74ba6edc19fd4aeb2a5\n\n3b2e708eaa4744c76a633391cf2c983f4a098b46436525619e5ea44e105355fe\n\n30b3cbe8817ed75d8221059e4be35d5624bd6b5dc921d4991a7adc4c3eb5de4a\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-03-24 - Threat Advisory- DoubleZero.pdf"
+    ],
+    "report_names": [
+        "2022-03-24 - Threat Advisory- DoubleZero.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535991,
+    "ts_updated_at": 1743041370,
+    "ts_creation_date": 1653774258,
+    "ts_modification_date": 1653774258,
+    "files": {
+        "pdf": "https://archive.orkl.eu/214076b6f6f66fc3f76f57821204a08488aef279.pdf",
+        "text": "https://archive.orkl.eu/214076b6f6f66fc3f76f57821204a08488aef279.txt",
+        "img": "https://archive.orkl.eu/214076b6f6f66fc3f76f57821204a08488aef279.jpg"
+    }
+}

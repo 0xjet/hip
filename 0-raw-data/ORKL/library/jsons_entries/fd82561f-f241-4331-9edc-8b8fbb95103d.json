@@ -1,0 +1,100 @@
+{
+    "id": "fd82561f-f241-4331-9edc-8b8fbb95103d",
+    "created_at": "2023-01-12T15:07:57.959223Z",
+    "updated_at": "2025-03-27T02:08:41.035156Z",
+    "deleted_at": null,
+    "sha1_hash": "54d6a42f407dc3b6bf65e488d812d84ab047279d",
+    "title": "2018-09-14 - Wannamine cryptominer that uses EternalBlue still active",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:24:40Z",
+    "file_modification_date": "2022-05-28T19:24:40Z",
+    "file_size": 2024095,
+    "plain_text": "# WannaMine Cryptominer that uses EternalBlue still active\n\n**[cybereason.com/blog/wannamine-cryptominer-eternalblue-wannacry](https://www.cybereason.com/blog/wannamine-cryptominer-eternalblue-wannacry)**\n\nWritten By\nCybereason Nocturnus\n\nSeptember 14, 2018 | 5 minute read\n\n## Research by Amit Serper\n\n\n-----\n\nA few days ago the Nocturnus team investigated a new outbreak of Wannamine. Wannamine is\nan attack based on the EternalBlue exploits that were leaked from the NSA last year. You\nprobably remember those exploits since they were used in last year’s [WannaCry and](https://www.cybereason.com/blog/blog-what-is-the-wannacry-ransomware-attack-and-how-to-defend-against-it) [NotPetya](https://www.cybereason.com/blog/notpetya-costs-companies-1.2-billion-in-revenue)\nattacks.\n\nLearn about our most recent cutting-edge research:\n\nWannamine penetrates computer systems through an unpatched SMB service and gains code\nexecution with high privileges to then propagate across the network, gaining persistence and\narbitrary code execution abilities on as many machines possible.\n\n[First off, WannaMine isn’t a new attack. Other](https://news.google.com/search?q=wannamine&hl=en-US&gl=US&ceid=US%3Aen) [researchers have written about it and tech](https://www.pandasecurity.com/mediacenter/pandalabs/threat-hunting-fileless-attacks/)\n[reporters have news articles have covered it. And that’s part of the problem (and why I’m](https://threatpost.com/cryptomining-gold-rush-one-gang-rakes-in-7m-over-6-months/130232/)\npublishing this research): the EternalBlue exploits are well known. And how to prevent attacks\n[that use these exploits is also well known: apply a patch that Microsoft issued in March 2017.](https://docs.microsoft.com/en-us/security-updates/securitybulletins/2017/ms17-010)\nYet companies are still facing threats that use the EternalBlue exploits. And until organizations\npatch and update their computers, they’ll continue to see attackers use these exploits for a\nsimple reason: they lead to successful campaigns. Part of giving the defenders an advantage\nmeans making the attacker’s job more difficult by taking steps to boost an organization’s\nsecurity. Patching vulnerabilities, especially the ones associated with EternalBlue, falls into this\ncategory.\n\nNow that I’ve made the case for patching, let’s look into the technical details of this latest\nWannamine outbreak.\n\nThe initial attack vector was exploitation of EternalBlue via an unpatched SMB server, like we\nsaw with the WannaCry attack last May. Once code execution was gained, a PowerShell\ninstance was spawned:\n\n\n-----\n\nNotice the Get-WmiObject cmdlet: The attackers are using WMI to enumerate the bitness of the\nvictim machine - 32bit or 64bit. Once the bitness is enumerated, the correct payload will be\ndownloaded and executed - in3.ps1 for 32 bit machines and in6.ps1 for 64bit machines.\n\nThe downloaded payload is a very large text file. Most of it is base64 encoded along with some\nother text encoding and obfuscation tricks. In fact, the downloaded payload is so large (thanks\nto all of the obfuscation) that it makes most of the text editors hang and it’s quite impossible to\nload the entire base64’d string into an interactive ipython session.\n\nOnce deobfuscated we can see more PowerShell code. Reading through the PowerShell code,\nit is very easy to understand its purpose: WannaMine uses WMI and PowerShell extensively to\nmove laterally across a network. In addition to the PowerShell code, which is written in plain\nASCII strings, there are also other unidentified strings and some binary blobs inside that huge\nheap of text (since I simply de-base64’d everything in that file).\n\nThat binary blob, along with some more obfuscated text, is actually more code and a command\nto run the .NET compiler in order to compile a .NET DLL file.\n\n**Important note: the DLL will be compiled to a different, random, file name each time.**\n\n\n-----\n\nWhen we load that DLL into a .NET disassembler, we can clearly see that this is the PingCastle\n[scanner, which was also mentioned in past reports about WannaMine. PingCastle’s job is to](https://www.acalvio.com/wannmine-lateral-movement-techniques/)\nmap the network and find the shortest path to the next exploitable machine by grabbing SMB\ninformation through the response packets sent by the SMB servers.\n\nWhile PingCastle is running, there are other parts from the main PowerShell script still in\nmotion, including a PowerShell implementation of Mimikatz. The interesting thing is that this\nmade me realize that most of the code in that PowerShell script was copied verbatim from\nvarious GitHub repositories. For example, the PowerShell Mimikatz implementation is straight\nfrom the [invoke-mimikatz repository:](https://github.com/clymb3r/PowerShell/blob/master/Invoke-Mimikatz/Invoke-Mimikatz.ps1)\n\n\n-----\n\nPowerShell Mimikatz code from the dropped PowerShell script\n\nPowerShell Mimikatz code from the original GitHub repository\n\nPowerShell Mimikatz code from the dropped PowerShell script\n\nPowerShell Mimikatz code from the original GitHub repository\n\nThe PowerShell script will also change the power management settings on the infected\nmachine just before the miners are dropped to prevent the machine from going to sleep and\nmaximize mining power availability:\n\n\n-----\n\nAfter the power settings on the machine was reconfigured, we started seeing hundreds of\npowershell.exe processes using a lot of CPU cycles and connecting to mining pool servers:\n\nThat tells us that the cryptominers are actually running within PowerShell. However, when\nlooking at the command line in these PowerShell executions, we don’t really see anything\nindicative of that behavior.\n\n\n-----\n\n\"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoP -NonI -W Hidden\n\"$mon = ([WmiClass] 'root\\default:systemcore_Updater').Properties['mon'].Value;$funs =\n([WmiClass] 'root\\default:systemcore_Updater').Properties['funs'].Value ;iex\n([System.Text.Encoding]::ASCII.GetString([System.Convert]::FromBase64String($funs)));InvokeCommand -ScriptBlock $RemoteScriptBlock -ArgumentList @($mon, $mon, 'Void', 0, '', '')\"\n\nWhen examining the command line, we can see that a WMI class,\n_root\\default:systemcore_Updater, is being accessed. This class holds the version of the_\ncurrently installed version of the Wannamine malware.\n\nAs for persistence, we can see that the malware installed a WMI filter, consumer and binder to\ngain persistent execution through WMI intrinsic events.\n\n\n-----\n\nQuerying for WMI persistent objects across the entire organization\n\nWhen looking at WMI persistent objects across the entire organization, we can see that many\nmachines have a WMI autorun associated with them. When we look at the consumer action\n(which defines which action to take once the intrinsic WMI event is consumed and handled) we\nsee, yet again, a blob of base64 encoded data.\n\nWhen decoded, we get about 120 lines of PowerShell code. Here are some of its highlights:\n\nThis block extracts the functions from the root\\default:Office_Updater WMI class in their base64\nand then decodes them. Once decoded, the script will execute those commands by invoking\nthem (iex $defun).\n\nThe script then looks for other FilterToConsumerBinders and removes them.\n\n\n-----\n\n**Important note: The script will then try to list all the processes that are connecting to IP**\n**address ports 3333, 5555 and 7777 and, if there are any active processes, the script will**\n**terminate them. This Wannamine variant connects to mining pools on port 14444 while**\n**other variants of this attack are connecting to mining pools on more standardized ports**\n**like 3333, 5555 and 7777. If any other processes on this machine are connected to**\n**mining pools on the standard ports, they will be terminated.**\n\nOnce that process is finished, it’s time to extract more values from the data that is stored within\nthe WMI classes:\n\nThe long (and truncated since it’s too big to fit in that screenshot) command will execute the\ncryptominer by invoking all of the commands that are stored in the $funs variable. Then,\nadditional functionality will be extracted from other values in the Office_Updater class.\n\nThese are the most notable variables:\n\n\n-----\n\n_$mimi = PowerShell Mimikatz_\n_$NTLM = Extracted NTLM hashes for lateral movement_\n_$scba = Scheduled task information for persistence_\n_$i17 = A list of IP addresses to be targeted. The IP addresses in $i17 are vulnerable to_\nEternalBlue as gathered by the PingCastle scanner:\n\nAs I mentioned earlier, Wannamine isn’t a new attack. It leverages the EternalBlue\nvulnerabilities that were used to wreak havoc around the world almost a year and a half ago.\nBut more than a year later, we’re still seeing organizations severely impacted by attacks based\non these exploits. There’s no reason for security analysts to still be handling incidents that\ninvolve attackers leveraging EternalBlue. And there’s no reason why these exploits should\nremain unpatched. Organizations need to install security patches and update machines.\n\nBut that’s not all. Some of the IP addresses associated with Wannamine servers are still active\nalthough they were disclosed in security reports more than a year ago. We emailed the\nproviders hosting those servers and haven’t heard back yet. In the meantime, we strongly\nrecommend blocking these IPs:\n\n118.184.48.95\n\n104.148.42.153\n\n107.179.67.243\n\n172.247.116.8\n\n172.247.116.87\n\n45.199.154.141\n\nThe code and mechanisms behind the Wannamine attack aren’t sophisticated: they are the\nproduct of hacking third party code (like the PingCastle scanner) and copying and pasting\nmassive amounts of code, sometimes verbatim, from a Github repositories.\n\nProtect your team with a strong defense.\n\n\n-----\n\nAbout the Author\n\n**Cybereason Nocturnus**\n\nThe Cybereason Nocturnus Team has brought the world’s brightest minds from the military,\ngovernment intelligence, and enterprise security to uncover emerging threats across the globe.\nThey specialize in analyzing new attack methodologies, reverse-engineering malware, and\nexposing unknown system vulnerabilities. The Cybereason Nocturnus Team was the first to\nrelease a vaccination for the 2017 NotPetya and Bad Rabbit cyberattacks.\n\n[All Posts by Cybereason Nocturnus](https://www.cybereason.com/blog/authors/cybereason-nocturnus)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2018/2018-09-14 - Wannamine cryptominer that uses EternalBlue still active.pdf"
+    ],
+    "report_names": [
+        "2018-09-14 - Wannamine cryptominer that uses EternalBlue still active.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "1a76ed30-4daf-4817-98ae-87c667364464",
+            "created_at": "2022-10-25T16:47:55.891029Z",
+            "updated_at": "2025-03-27T02:05:17.408867Z",
+            "deleted_at": null,
+            "main_name": "IRON LIBERTY",
+            "aliases": [
+                "ATK6 ",
+                "BROMINE ",
+                "CASTLE ",
+                "Crouching Yeti ",
+                "DYMALLOY ",
+                "Dragonfly ",
+                "Energetic Bear / Berserk Bear ",
+                "Ghost Blizzard ",
+                "TEMP.Isotope ",
+                "TG-4192 ",
+                "ALLANITE "
+            ],
+            "source_name": "Secureworks:IRON LIBERTY",
+            "tools": [
+                " Ddex Loader",
+                " Havex",
+                " Karagany",
+                " Loek",
+                " MCMD",
+                " Sysmain",
+                " xfrost",
+                "ClientX"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536077,
+    "ts_updated_at": 1743041321,
+    "ts_creation_date": 1653765880,
+    "ts_modification_date": 1653765880,
+    "files": {
+        "pdf": "https://archive.orkl.eu/54d6a42f407dc3b6bf65e488d812d84ab047279d.pdf",
+        "text": "https://archive.orkl.eu/54d6a42f407dc3b6bf65e488d812d84ab047279d.txt",
+        "img": "https://archive.orkl.eu/54d6a42f407dc3b6bf65e488d812d84ab047279d.jpg"
+    }
+}

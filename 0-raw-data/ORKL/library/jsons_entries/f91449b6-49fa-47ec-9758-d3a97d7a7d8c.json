@@ -1,0 +1,67 @@
+{
+    "id": "f91449b6-49fa-47ec-9758-d3a97d7a7d8c",
+    "created_at": "2023-05-06T02:08:39.228138Z",
+    "updated_at": "2025-03-27T02:08:40.6383Z",
+    "deleted_at": null,
+    "sha1_hash": "514b3fe4aa3e56902fe3149422623a5cf0ab692c",
+    "title": "2015-07-19 - The Faulty Precursor of Pykspa's DGA",
+    "authors": "",
+    "file_creation_date": "2023-05-05T01:55:13Z",
+    "file_modification_date": "2023-05-05T01:55:13Z",
+    "file_size": 594057,
+    "plain_text": "# The Faulty Precursor of Pykspa's DGA\n\n**bin.re/blog/pykspas-inferior-dga-version/**\n\nPyskpa is a worm that spreads over Skype. The malware has been relying on a domain\n_generation algorithm (DGA) to contact its command and control targets since at least_\nOctober 2013. Even though the C2 infrastructure seems to be long abandoned, there are still\n[many infected clients. Virustracker, who has been tracking Pyskpa since March, shows that](https://virustracker.net/)\nthe DGA is still used by well over 50`000 infected clients. You can find a description of the\n[underlying DGA here.](https://bin.re/blog/the-dga-of-pykspa/)\n\nA few days ago, Daniel Plohmann at Fraunhofer FKIE discovered new Pyskpa domains\nwithin the ShadowServer feeds. He kindly provided me the sample, from which I reversed\nthe algorithm behind the newly found Pykspa domains. This short post first shows the\nalgorithm, then examines its properties in comparison with the other DGA version.\n\n\n-----\n\nThe characteristics and spread of the emerged DGA variant lead me to believe that it is the\npredecessor of the other version. As shown later, the algorithm behaves in strange ways that\nwere probably not intended by the malware authors. I therefore refer to the DGA in this post\n[as the Precursor DGA, and call the other DGA the Improved DGA.](https://bin.re/blog/the-dga-of-pykspa/)\n\n## The Precursor DGA\n\nThe precursor DGA generates sets of 5000 distinct hostnames. It is seeded with the current\nunix timestamp divided by 172800, which corresponds to a granularity of two days. Here’s an\nimplementation of the DGA in Python:\n\n\n-----\n\n```\nfrom datetime import datetime\n\nimport argparse\n\nfrom time import mktime\n\ndef get_sld(sld_len, r):\n\n  a = sld_len ** 2\n\n  sld = \"\"\n\n  for i in range(sld_len):\n\n    x = i*(r % 4567 + r % 19) & 0xFFFFFFFF\n\n    y = r % 123456\n\n    z = r % 5\n\n    p = (r*(z + y + x)) & 0xFFFFFFFF\n\n    ind = (a + p) & 0xFFFFFFFF\n\n    sld += chr(ord('a') + ind % 26)\n\n    r = (r + i) & 0xFFFFFFFF\n\n    r = r >> (((i**2) & 0xFF) & 31 )\n\n    a += sld_len\n\n    a &= 0xFFFFFFFF\n\n  return sld\n\ndef dga(seed, nr_domains = 5000):\n\n  tlds = [\"biz\", \"com\", \"net\", \"org\", \"info\", \"cc\"]\n\n  r = seed\n\n  for domain_nr in range(nr_domains):\n\n    r = int(r ** 2) & 0xFFFFFFFF\n\n    r += domain_nr\n\n    r &= 0xFFFFFFFF\n\n    domain_length = (r % 10) + 6\n\n    sld = get_sld(domain_length, r)\n\n    tld = tlds[r % 6]\n\n    domain = \"{}.{}\".format(sld, tld)\n\n    print(domain)\n\n\ndef generate_domains(date, nr):\n\n  unix_timestamp = mktime(date.timetuple())\n\n  seed = int(unix_timestamp // (2*24*3600) )\n\n  date_range = []\n\n  for i in range(2):\n\n    ts = (seed+i)*2*24*3600\n\n    date_range.append(datetime.fromtimestamp(ts).strftime(\"%Y-%m-%d %H:%M\"))\n  t = \"pykspa domains valid through {} - {}\".format(*date_range)\n\n  print(\"{}\\n{}\".format(t, \"*\"*len(t)))\n\n  dga(seed, nr)\n\nif __name__==\"__main__\":\n\n  parser = argparse.ArgumentParser()\n\n  parser.add_argument(\"-d\", \"--date\", help=\"date for which to generate domains\")\n\n  parser.add_argument(\"-n\", \"--nr\", help=\"nr of domains to generate\", type=int,\ndefault=5000)\n\n  args = parser.parse_args()\n\n  if args.date:\n\n```\n\n-----\n\n```\n    d datetime.strptime(args.date, %Y %m %d )\n\n  else:\n\n    d = datetime.now()\n\n  generate_domains(d, args.nr)\n\n```\nFor example, these are the 20 first domains active at 2015-07-19 00:00:\n```\n./dga.py -n 20 -d 2015-07-19\n\npykspa domains valid through 2015-07-18 02:00 - 2015-07-20 02:00\n\n****************************************************************\n\nkmambodsholapet.com\n\nsiaiheiq.biz\n\noagsesiugkeq.net\n\njshbzafox.org\n\nxfawpafox.cc\n\nkspongeoya.net\n\ncmvccqeoya.info\n\nsbtrssdsholapet.com\n\naumarenansnan.cc\n\nyeuwwiiugkeq.biz\n\naolmbo.info\n\ndxnydafox.cc\n\nqmzmtufqbex.org\n\nskxsiyeoya.net\n\nichnvyeoya.info\n\nlopevkn.com\n\nzjrckkn.com\n\noitykueoya.net\n\nmegsoeiq.net\n\nzfdthsn.cc\n\n\n## Properties and Comparison with the Improved DGA\n\n```\nThe following table compares some the properties of the precursor DGA to the improved\nDGA.\n\n**Precursor DGA** **Improved DGA**\n\n**seeding**\n\n\nGranularity is 2 days. Seed\ncorresponds to divided timestamp:\n```\nseed = int(unix_timestamp //\n(2*24*3600))\n\n```\n**noise domains**\n\n\nGranularity of 20 days. Seed corresponds to\ndivided timestamp, passed through a\ncryptographic function:\n```\nindex = int(unix_timestamp//(20*3600*24))\n\nseed = some_cryptographic_function(index)\n\n```\n\n-----\n\n**Precursor DGA** **Improved DGA**\n\n_no noise domains_ Interleaves the usable domains with noisy\ndomains that are generated by the same DGA,\nbut with an unpredictable seed.\n\n**nr domains per run**\n\n5000 200 usable domains + 800 noisy domains\n\n**next random number**\n\n\nUses repeated squaring, which lets\nrandom number converge to two\nvalues.\n```\nr = int(r ** 2) (mod 2^32)\n\nr += domain_nr (mod 2^32)\n\n```\n**next second level domain length**\n\nLength of second level domain is\nbetween 6 and 15 characters:\n```\ndomain_length = (r % 10) + 6\n\n```\n**second level domain algorithm (all**\ncalculations mod 2^32)\n\nRandom number is right shifted after\neach letter, leading to convergence at\nthe end of domain names.\n```\na = sld_len ** 2\n\nsld = \"\"\n\nfor i in range(sld_len):\n\n index = (a + (r*(r % 5 + r %\n123456 +\n\n  i*(r % 4567 + r % 19))) +\n\n  i*(r % 4567 + r % 19)))) % 26\n\n a += sld_len\n\n r = (r + i)\n\n r = r >> (((i**2) & 0xFF) & 31 )\n\n sld += chr(ord('a') + index)\n\n```\n**top level domain algorithm**\n\n\nUses increasingly larger increments. No\nconvergence.\n```\nr += (r % (domain_nr + 1) + 1) (mod 2^32)\n\n```\nLength of second level domain is between 6\nand 12 characters:\n```\ndomain_length = ((r + domain_nr) % 7) + 6\n\n```\nNo visible randomness decay for the later\nletters in domains, otherwise very similiar.\n```\na = sld_len ** 2\n\nsld = \"\"\n\nmodulo = 541 * sld_len + 4\n\nfor i in range(sld_len):\n\n index = (a + (r*((r % 5) + (r % 123456) +\n\n  i*((r & 1) + (r % 4567))) )) % 26\n\n a += sld_len;\n\n r += (((7837632 * r * sld_len) ) +\n\n  82344) % modulo;\n\n sld += chr(ord('a') + index)\n\n```\n\n-----\n\n**Precursor DGA** **Improved DGA**\n\n\nRandom pick from 6 top level domains:\n```\ntlds = [\"biz\", \"com\", \"net\", \"org\",\n\n  \"info\", \"cc\"]\n\ntld = tlds[r % 6]\n\n```\n\nRandom pick from 4 top level domains,\nalthough 5 domains are hardcoded.\n```\ntlds = ['com', 'net', 'org', 'info', 'cc']\n\ntld = tlds[r % 4]\n\n```\n\nBoth DGAs are very similar. The precursor DGA has a defective random number generators\nthough:\n\n1. Within the main loop: changing the random number for each domains; the problem lies\n\nwith r = int(r ** 2).\n2. Within the code to generate the second level domains: changing the random number\n\nfor each letter; the culprit here is r >> (i**2).\n\nThe defects cause a drastic loss of randomness the more random numbers are generated.\nFor example, here are some of the domains whose second level domain has 15 characters:\n```\nkmambodsholapet.com\n\nsbtrssdsholapet.com\n\nsrjukodsholapet.org\n\nizbqukdsholapet.com\n\nybdetodsholapet.com\n\nmgesbsdsholapet.org\n\nuafudkdsholapet.cc\n\nwrsxuodsholapet.com\n\nycokbodsholapet.org\n\nckocgkdsholapet.org\n\nyndccsdsholapet.cc\n\nslwcnodsholapet.cc\n\nanljvkdsholapet.cc\n\noznevadsholapet.org\n\newgxsodsholapet.cc\n\nwigiakdsholapet.com\n\nmvomnkdsholapet.com\n\nwvmqfodsholapet.cc\n\n\n```\nWhile the beginning of the domain is pretty divers, after the sixth letter always follows\n_“dsholapet”. This is true for all 15 letter domains, making for a pretty solid network detection_\nrule.\n\nThe other defect, i.e., repeatedly squaring the random number, is arguably even worse. It\ncauses the random number to converge to one of two values, depending on the sign of the\ninitial seed. Although the malware authors probably wanted to have a fresh set of 5000\n\n\n-----\n\ndomains every two days, the convergence causes all but the first 19 domains to be very\nconsistent, only ever alternating between the same two sets of domains. The following image\nillustrates this behavior:\n\nEvery saturated color represents a new, yet unseen domain. The desaturated colors stand\nfor revisited domains. As expected, every second day reuses the domains of the previous\nday, in accordance with the granularity of 2 days. The first 9 domains change after 48 hours,\nas desired. The later domains, however, increasingly revisit older domains, up to the point\nwhere no new domains are generated.\n\n\n-----\n\nThe next picture evaluates the domains over one year in increments of four days. A blue\nsquare represents a new domain, while a grey square represents a revisited domain. Clearly\nall domains after 19 stay the same. But already the second domain now and then reuses an\nolder domain:\n\n\n-----\n\n-----\n\n-----\n\n-----\n\n## Conclusion\n\nThe precursor DGA is very similiar to the improved version, yet suffers from bad random\nnumber generators. The DGA still got deployed in the wild, as the following screenshot of\nVirustracker shows:\n\nHowever, the number of hits is only about 600, compared to over 60'000 of the improved\nDGA:\n\n\n-----\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2015/2015-07-19 - The Faulty Precursor of Pykspa's DGA.pdf"
+    ],
+    "report_names": [
+        "2015-07-19 - The Faulty Precursor of Pykspa's DGA.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1683338919,
+    "ts_updated_at": 1743041320,
+    "ts_creation_date": 1683251713,
+    "ts_modification_date": 1683251713,
+    "files": {
+        "pdf": "https://archive.orkl.eu/514b3fe4aa3e56902fe3149422623a5cf0ab692c.pdf",
+        "text": "https://archive.orkl.eu/514b3fe4aa3e56902fe3149422623a5cf0ab692c.txt",
+        "img": "https://archive.orkl.eu/514b3fe4aa3e56902fe3149422623a5cf0ab692c.jpg"
+    }
+}

@@ -1,0 +1,88 @@
+{
+    "id": "a6840119-dbd9-4a5f-8a8b-177af700e5bb",
+    "created_at": "2023-01-12T15:02:06.703964Z",
+    "updated_at": "2025-03-27T02:09:29.280649Z",
+    "deleted_at": null,
+    "sha1_hash": "36c5c046192dc613392fdaae31f56be773a37ecb",
+    "title": "2020-08-04 - Part 1- analysing MedusaLocker ransomware",
+    "authors": "",
+    "file_creation_date": "2022-05-28T04:10:31Z",
+    "file_modification_date": "2022-05-28T04:10:31Z",
+    "file_size": 351047,
+    "plain_text": "# Part 1: analysing MedusaLocker ransomware\n\n**[theta.co.nz/news-blogs/cyber-security-blog/part-1-analysing-medusalocker-ransomware/](https://www.theta.co.nz/news-blogs/cyber-security-blog/part-1-analysing-medusalocker-ransomware/)**\n\n04/08/2020\n\nIn this 3-part post, we share the tradecraft from an RDP brute force linked ransomware event\n(MedusaLocker) we responded to in June 2020. We cover the business ramifications of the\nattack, technical analysis and some advice based on attacks such as these.\n\nRansomware is a sad fact of life in 2020. While the “big game hunting” actors (Maze, REvil et\nal) get the attention of the media and industry by claiming high profile scalps, far less\nattention is given to the victim and attacker from smaller origins. There are a host of actors\n(often under-researched or reported) engaged in ransomware operations. Most of them\ncould be classified as opportunistic rather than persistent.\n\nIn this post, we focus on pre-impact operations as a complete intrusion. These artefacts\nwould normally be heavily degraded or destroyed by the ransomware, or by the need for a\nbusiness to recover (often wiping evidence). You’ll see how we found and analysed a host\nthat failed to encrypt correctly – this host also turned out to be the initial entry point and\nstaging post for the operators. As we go through our analysis, we’ll point out which part of\nthe kill chain the attacker is up to and where this maps to the MITRE ATT&CK framework.\n\n\n-----\n\nIt s important to note that these adversaries weren t particularly stealthy or advanced. They\ndoubled up on a lot of tooling and functionality, yet they were able to completely overmatch\nthe defenses presented to them. They achieved their goals by having enough effectiveness.\n\n## The ramifications of the attack\n\nAs a result of this attack, the organisation experienced the following:\n\n**Encryption of:**\n\n75% of end-user compute devices (these devices wouldn’t boot at all – we’re\nunsure if this was deliberate).\n100%* of servers (however, the server that was the point of entry and staging\npost failed to encrypt completely, leaving parts of its system drive available for\nanalysis).\nMapped drives, shared drives, Dropbox, OneDrive (this organisation didn’t have\nenterprise licenses for its cloud file sharing solutions, making recovery more\ndifficult).\nERP System (over 500 hours to rebuild and move to a SaaS application). This\nresulted in all purchase/sales orders, inventories, ledgers, GST, shipping and\nfinancial records being lost.\nEDI services, which resulted in all automatic order placing and fulfilment being\nhalted.\nBackups – variously encrypted or degraded. USB + network-attached storage\nschemes were all hit, forcing the rebuild of critical ERP and EDI solutions from\nmuch older backups - which added additional time and complexity.\n**Time from initial access to domain-wide encryption ~25hrs (16/06/2020 3:38 am to**\n17/06/2020 ~5 am)\n**Time to be able to trade again: 8 working days (and hundreds of recovery and**\nrebuild hours behind the scenes plus manual trading with incremental improvements as\ndata structures were recovered).\n\nAs we go through each stage of the attack, it's worth role playing this scenario in your own\norganisation to see how you would recover the loss of such data types. You can use the\nMITRE ATT&CK mapping to overlay your organisation’s controls and your ability to detect\nand stop a similar attack.\n\nThis dataset comes from one intrusion without good instrumentation, and thus may not\nrepresent a total picture of the actor’s TTP’s. In the forensic analysis, bits were missing, and\nthe pieces we found often made little sense. Still, by piecing together a timeline, we could be\nreasonably confident about the adversary activity that had happened.\n\n## Intrusion Analysis\n\n\n-----\n\n**Background**\nWe received a phone call from the client on the morning of June 17 2020. We’d supportedth\ntheir ERP and EDI systems in the past, but were not currently their IT outsource partner.\nThey reported that all computers in their environment were not booting and that they thought\nthey’d been attacked.\n\nA search on Shodan showed one of their servers had RDP exposed, giving a possible\nsource of entry (we were sadly correct). When our team arrived on site, we found their\nenvironment was completely shutdown; all of their workstations wouldn’t boot, and all servers\nwere powered off.\n\nOn the particular server that this analysis is from, we found its RAID array reporting it was in\na degraded state (we’re not sure if the ransomware did this) leaving us with some difficult\nchoices when it came to triage and imaging. To our surprise, the ransomware failed to\ncompletely execute on this host. While all of the non-system drives (10+ TB of them) were\ncompletely encrypted, and its system drive was partially encrypted, we later saw that the task\nexecuting it had failed. Most of this analysis comes from imaging of the file system on that\nhost.\n\n**Initial Access:**\nInitial Access was via RDP brute-forcing (T1110) to a Domain Controller that had RDP open\nto the internet (T1133 – External Remote Services). This (obviously dangerous) configuration\nwas set up to enable remote access by the clients’ main IT provider.\n\nThe initial logon via an admin account was recorded at 16/06/2020 3:38 am NZT from\n185.202.1[.]19. Landing on an account with DA on a DC certainly made the job of the\nransomware operator’s life somewhat easier and shortened the kill chain. However, the\nassessment shows they would have been able to carry out their objectives given the lowsecurity posture of the environment regardless. Logons were also observed from\n213.7.208[.]69 & 5.2.224[.]56.\n\n**Execution:**\nFragments of several interesting tool chains were recovered from the Server.\n\nAs the vector of entry was RDP, graphical tools were used (T1061) and recovered shellbags\nsupport this.\n\nThe intruder staged their tooling in a pre-existing folder - C:\\SQLDB\\.\n\nEvent logs record large amounts of PowerShell (T1086) activity being executed, although the\nsystem had PowerShell 2.0 installed, so no useful information was logged as to what was\nrun specifically. Timestamps also show the Powershell_ise.exe binary was also accessed.\n\n\n-----\n\nRecovered Certutil Logs reference the PowerShell modules Connect-Mstsc.ps1,\n_PSnmap.psd1 (both of which are the names of pre-made modules widely available online)_\nand a more enigmatic 2sys.ps1 (“Command Line: CertUtil -decode file.b64 2sys.ps1”) which\n[shares a name to script referenced in a Carbon Black report on another ransomware group](https://www.carbonblack.com/2018/07/10/carbon-black-tau-threat-analysis-recent-dharma-ransomware-highlights-attackers-continued-use-open-source-tools/)\nfrom 2018 (Dharma).\n\nThis usage of CertUtil is evidence of Remote File Copies (T1105).\n\nMACB timestamps also suggest WMIC was used, although given the utility of this software\nits purpose cannot be confirmed. It may have been caused by some of the intruders tooling\nrather than directly invoked.\n\nIn addition to other precompiled binaries and tools (7za, via certutil: CertUtil -decode za\n_7za.exe),_\nthe Certutil.log file once again offers some evidence of staging tooling; with the following\ncommands executed (via script):\n\n< trimmed for brevity>\n\nWith a total of 48 numbered arch<$number>.b64 files decoded in sequence.\n\n\n-----\n\nBased on the prior collection of 7za.exe (a command-line version of 7zip) and the fact the\nfirst of these files ended was decoded to have a .zip extension, it’s a reasonably safe\nassertion that this was a multipart archive file.\n\nAdditional file structures beneath the C:\\SQLDB\\ folder were visible via shellbags, in\nparticular folders called `kamikadze new` (as [referenced here) `_local` and `77`.](https://dissectingmalwa.re/try-not-to-stare-medusalocker-at-a-glance.html)\n\nThe intruder installed a C++ Runtime library (Microsoft Visual C++ 2015 x86 Runtime\n14.0.23026) to the system. It appears as though this or some of other parts of the software\ndeployed prompted the system to collect a large number of Windows updates (such\nas [KB2999226). These artefacts are inconclusive but were not exhaustively searched, as are](https://support.microsoft.com/en-us/help/2999226/update-for-universal-c-runtime-in-windows)\nthe subsequent .msi’s the system installed (their names variously available as deleted\nregistry items) not long before executing the ransomware.\n\n[Read part 2](https://www.theta.co.nz/news-blogs/cyber-security-blog/part-2-analysing-medusalocker-ransomware/)\n\n**Lead author: Hamish Krebs, Lead Consultant**\n\nHamish has spent time across Australia and New Zealand responding to advanced threat\nactors; running large DFIR engagements in complex environments. He’s also designed and\ndeployed a variety of security solutions such as SIEMs and EDR suites across APAC.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-08-04 - Part 1- analysing MedusaLocker ransomware.pdf"
+    ],
+    "report_names": [
+        "2020-08-04 - Part 1- analysing MedusaLocker ransomware.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535726,
+    "ts_updated_at": 1743041369,
+    "ts_creation_date": 1653711031,
+    "ts_modification_date": 1653711031,
+    "files": {
+        "pdf": "https://archive.orkl.eu/36c5c046192dc613392fdaae31f56be773a37ecb.pdf",
+        "text": "https://archive.orkl.eu/36c5c046192dc613392fdaae31f56be773a37ecb.txt",
+        "img": "https://archive.orkl.eu/36c5c046192dc613392fdaae31f56be773a37ecb.jpg"
+    }
+}

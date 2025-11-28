@@ -1,0 +1,81 @@
+{
+    "id": "4a5a0e94-4657-4306-839b-ef00d7a24343",
+    "created_at": "2023-01-12T15:10:40.153883Z",
+    "updated_at": "2025-03-27T02:09:18.64031Z",
+    "deleted_at": null,
+    "sha1_hash": "a4de7d84ecbdd0756f19cd50a20818a2e660e52b",
+    "title": "2021-11-17 - Cobalt Strike- Decrypting Obfuscated Traffic – Part 4",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:54:22Z",
+    "file_modification_date": "2022-05-28T19:54:22Z",
+    "file_size": 2618564,
+    "plain_text": "# Cobalt Strike: Decrypting Obfuscated Traffic – Part 4\n\n**[blog.nviso.eu/2021/11/17/cobalt-strike-decrypting-obfuscated-traffic-part-4/](https://blog.nviso.eu/2021/11/17/cobalt-strike-decrypting-obfuscated-traffic-part-4/)**\n\nNovember 17, 2021\n\n[Blogpost series: Cobalt Strike: Decrypting Traffic](https://blog.nviso.eu/series/cobalt-strike-decrypting-traffic/)\n_Encrypted Cobalt Strike C2 traffic can be obfuscated with malleable C2 data transforms. We_\n_show how to deobfuscate such traffic._\n\nThis series of blog posts describes different methods to decrypt Cobalt Strike traffic. In part 1\nof this series, we revealed private encryption keys found in rogue Cobalt Strike packages. In\n[part 2, we decrypted Cobalt Strike traffic starting with a private RSA key. And in](https://blog.nviso.eu/2021/10/27/cobalt-strike-using-known-private-keys-to-decrypt-traffic-part-2/) [part 3, we](https://blog.nviso.eu/2021/11/03/cobalt-strike-using-process-memory-to-decrypt-traffic-part-3/)\nexplain how to decrypt Cobalt Strike traffic if you don’t know the private RSA key but do have\na process memory dump.\n\nIn the first 3 parts of this series, we have always looked at traffic that contains the unaltered,\nencrypted data: the data returned for a query and the data posted, was just the encrypted\ndata.\n\nThis encrypted data can be transformed into traffic that looks more benign, using malleable\nC2 data transforms. In the example we will look at in this blog post, the encrypted data is\nhidden inside JavaScript code.\n\nBut how do we know if a beacon is using such instructions to obfuscate traffic, or not? This\n[can be seen in the analysis results of the latest version of tool 1768.py. Let’s take a look at](https://blog.didierstevens.com/2021/11/04/update-1768-py-version-0-0-9/)\n[the configuration of the beacon we started with in part 1:](https://blog.nviso.eu/2021/10/21/cobalt-strike-using-known-private-keys-to-decrypt-traffic-part-1/)\n\n\n-----\n\nFigure 1: beacon with default malleable C2 instructions\nWe see for field 0x000b (malleable C2 instructions) that there is just one instruction: Print.\nThis is the default, and it means that the encrypted data is received as-is by the beacon: it\ndoes not need any transformation prior to decryption.\n\nAnd for field 0x000d (http post header), we see that the Build Output is also just one\ninstruction: Print. This is the default, and it means that the encrypted data is transmitted as-is\nby the beacon: it does not need any transformation after encryption.\n\nLet’s take a look at a sample with custom malleable C2 data transforms:\n\n\n-----\n\nFigure 2: beacon with custom malleable C2 instructions\nHere we see more than just a Print instruction: “Remove 1522 bytes from end”, “Remove 84\nbytes from begin”, …\n\nThese are instructions to transform (deobfuscate) the incoming traffic, so that it can then be\ndecrypted. To understand in detail how this works, we will do the transformation manually\nwith [CyberChef. However, do know that tool](https://gchq.github.io/CyberChef/) [cs-parse-http-traffic.py can do these](https://github.com/DidierStevens/Beta/blob/master/cs-parse-http-traffic.py)\ntransformations automatically.\n\nThis is the network capture for a single GET request by the beacon and reply from the team\nserver (C2):\n\n\n-----\n\nFigure 3: reply transformed with malleable C2 instructions to look like JavaScript code\n\n\n-----\n\nWhat we see here, is a GET request by the beacon to the C2 (notice the Cookie with the\nencrypted metadata) and the reply by the C2. This reply looks like JavaScript code, because\nof the malleable C2 data transforms that have been used to make it look like JavaScript\ncode.\n\nWe copy this reply over to CyberChef in its input field:\n\nFigure 4: CyberChef with obfuscated input\nThe instructions we need to follow, to deobfuscate this reply, are listed in tool 1768.py’s\noutput:\n\nFigure 5: decoding\n\ninstructions\nSo let’s get started. First we need to remove 1522 bytes from the end of the reply. This can\nbe done with a CyberChef drop bytes function and a negative length (negative length means\ndropping from the end):\n\n\n-----\n\nFigure 6: dropping 1522 bytes from the end\nThen, we need to remove 84 bytes from the beginning of the reply:\n\nFigure 7: dropping 84 bytes from the beginning\nAnd then also dropping 3931 bytes from the beginning:\n\n\n-----\n\nFigure 8: dropping 3931 bytes from the beginning\nAnd now we end up with output that looks like BASE64 encoded data. Indeed, the next\ninstruction is to apply a BASE64 decoding instructions (to be precise: BASE64 encoding for\nURLs):\n\nFigure 9: decoding BASE64/URL data\nThe next instruction is to XOR the data. To do that we need the XOR key. The malleable C2\ninstruction to XOR, uses a 4-byte long random key, that is prepended to the XORed data. So\nto recover this key, we convert the binary output to hexadecimal:\n\n\n-----\n\nFigure 10: hexadecimal representation of the transformed data\nThe first 4 bytes are the XOR key: b7 85 71 17\n\nWe use that with CyberChef’s XOR command:\n\nFigure 11: XORed data\nNotice that the first 4 bytes are NULL bytes now: that is as expected, XORing bytes with\nthemselves gives NULL bytes.\n\nAnd finally, we drop these 4 NULL bytes:\n\n\n-----\n\nFigure 12: fully transformed data\nWhat we end up with, is the encrypted data that contains the C2 commands to be executed\nby the beacon. This is the result of deobfuscating the data by following the malleable C2 data\ntransform. Now we can proceed with the decryption using a process memory dump, just like\n[we did in part 3.](https://blog.nviso.eu/2021/11/03/cobalt-strike-using-process-memory-to-decrypt-traffic-part-3/)\n\nFigure 13: extracting the cryptographic keys from process memory\n[Tool cs-extract-key.py is used to extract the AES and HMAC key from process memory: it](https://github.com/DidierStevens/Beta/blob/master/cs-extract-key.py)\nfails, it is not able to find the keys in process memory.\n\nOne possible explanation that the keys can not be found, is that process memory is\nencoded. Cobalt Strike supports a feature for beacons, called a sleep mask. When this\nfeature is enabled, the process memory with data of a beacon (including the keys) is XORencoded while a beacon sleeps. Thus only when a beacon is active (communicating or\nexecuting commands) will its data be in cleartext.\n\n[We can try to decode this process memory dump. Tool cs-analyze-processdump.py is a tool](https://github.com/DidierStevens/Beta/blob/master/cs-analyze-processdump.py)\nthat tries to decode a process memory dump of a beacon that has an active sleep mask\nfeature. Let’s run it on our process memory dump:\n\n\n-----\n\nFigure 14: analyzing the process memory dump (screenshot 1)\n\nFigure 15: analyzing the process memory dump (screenshot 2)\nThe tool has indeed found a 13-byte long XOR key, and written the decoded section to disk\nas a file with extension .bin.\n\nThis file can now be used with cs-extract-key.py, it’s exactly the same command as before,\nbut with the decoded section in stead of the encoded .dmp file:\n\n\n-----\n\nFigure 16: extracting keys from the decoded section\nAnd now we have recovered the cryptographic keys.\n\nNotice that in figure 16, the tool reports finding string sha256\\x00, while in the first command\n(figure 13), this string is not found. The absence of this string is often a good indicator that\nthe beacon uses a sleep mask, and that tool cs-analyze-processdump.py should be used\nprior to extracting the keys.\n\nNow that we have the keys, we can decrypt the network traffic with tool cs-parse-httptraffic.py:\n\nFigure 17: decrypting the traffic fails\nThis fails: the reason is the malleable C2 data transform. Tool cs-parse-http-traffic.py needs\nto know which instructions to apply to deobfuscate the traffic prior to decryption. Just like we\ndid manually with CyberChef, tool cs-parse-http-traffic.py needs to do this automatically. This\ncan be done with option -t.\n\nNotice that the output of tool 1768.py contains a short-hand notation of the instructions to\nexecute (between square brackets):\n\n\n-----\n\nFigure 18: short-hand notations of malleable C2 instructions\nFor the tasks to be executed (input), it is:\n\n7:Input,4,1:1522,2:84,2:3931,13,15\n\nAnd for the results to be posted (output), it is:\n\n7:Output,15,13,4\n\nThese instructions can be put together (using a semicolon as separator) and fed via option -t\nto tool cs-parse-http-traffic.py:\n\n\n-----\n\nFigure 19: decrypted traffic\nAnd now we finally obtain decrypted traffic. There are no actual commands here in this\ntraffic, just “data jitter”: that is random data of random length, designed to even more\nobfuscate traffic.\n\n**Conclusion**\n\nWe saw how malleable C2 data transforms are used to obfuscate network traffic, and how\nwe can deobfuscate this network traffic by following the instructions.\n\nWe did this manually with CyberChef, but that is of course not practical (we did this to\nillustrate the concept). To obtain the decoded, encrypted commands, we can also use cs[parse-http-traffic.py. Just like we did in part 3, where we started with an unknown key, we do](https://blog.nviso.eu/2021/11/03/cobalt-strike-using-process-memory-to-decrypt-traffic-part-3/)\nthis here too. The only difference, is that we also need to provide the decoding instructions:\n\n\n-----\n\nFigure 20: extracting and decoding the encrypted data\nAnd then we can take one of these 3 encrypted data, to recover the keys.\n\n[Thus the procedure is exactly the same as explained in part 3, except that option -t must be](https://blog.nviso.eu/2021/11/03/cobalt-strike-using-process-memory-to-decrypt-traffic-part-3/)\nused to include the malleable C2 data transforms.\n\n**About the authors**\n\nDidier Stevens is a malware expert working for NVISO. Didier is a SANS Internet Storm\nCenter senior handler and Microsoft MVP, and has developed numerous popular tools to\n[assist with malware analysis. You can find Didier on Twitter and](https://twitter.com/DidierStevens) [LinkedIn.](https://be.linkedin.com/in/didierstevens)\n\n[You can follow NVISO Labs on Twitter to stay up to date on all our future research and](https://twitter.com/NVISO_Labs)\npublications.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-11-17 - Cobalt Strike- Decrypting Obfuscated Traffic – Part 4.pdf"
+    ],
+    "report_names": [
+        "2021-11-17 - Cobalt Strike- Decrypting Obfuscated Traffic – Part 4.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "5d2bd376-fcdc-4c6a-bc2c-17ebbb5b81a4",
+            "created_at": "2022-10-25T16:07:23.667223Z",
+            "updated_at": "2025-03-27T02:02:09.916086Z",
+            "deleted_at": null,
+            "main_name": "GCHQ",
+            "aliases": [
+                "Government Communications Headquarters",
+                "Operation Socialist"
+            ],
+            "source_name": "ETDA:GCHQ",
+            "tools": [
+                "Prax",
+                "Regin",
+                "WarriorPride"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536240,
+    "ts_updated_at": 1743041358,
+    "ts_creation_date": 1653767662,
+    "ts_modification_date": 1653767662,
+    "files": {
+        "pdf": "https://archive.orkl.eu/a4de7d84ecbdd0756f19cd50a20818a2e660e52b.pdf",
+        "text": "https://archive.orkl.eu/a4de7d84ecbdd0756f19cd50a20818a2e660e52b.txt",
+        "img": "https://archive.orkl.eu/a4de7d84ecbdd0756f19cd50a20818a2e660e52b.jpg"
+    }
+}

@@ -1,0 +1,181 @@
+{
+    "id": "3df2b1e5-8267-477f-a63d-f6cac5abe262",
+    "created_at": "2023-01-12T15:02:21.830346Z",
+    "updated_at": "2025-03-27T02:09:18.085174Z",
+    "deleted_at": null,
+    "sha1_hash": "89c4e280e4f37bdedd6d6a5eb161aeba4de0e383",
+    "title": "2022-07-22 - Reverse Engineering a Cobalt Strike Dropper With Binary Ninja",
+    "authors": "",
+    "file_creation_date": "2022-08-18T03:27:56Z",
+    "file_modification_date": "2022-08-18T03:27:56Z",
+    "file_size": 2910140,
+    "plain_text": "# Reverse Engineering a Cobalt Strike Dropper With Binary Ninja\n\n**[binary.ninja/2022/07/22/reverse-engineering-cobalt-strike.html](https://binary.ninja/2022/07/22/reverse-engineering-cobalt-strike.html)**\n\nIn this blog post, I will explain how I reverse engineered a Cobalt Strike dropper and\nobtained its payload. The payload is a custom executable file format based on DLL. The\ndropper decrypts, loads, and executes the payload. Initially, I thought this must not be a PE\nexecutable at all, but I gradually realized it was. Much of the effort was spent on fixing the\nfile so it could be loaded by Binary Ninja for further analysis.\n\n## First Impressions\n\n[A friend of mine shared with me this sample (zip password: infected). It is an x86 PE binary](https://binary.ninja/blog/images/cobaltstrike/U7F16J72.zip)\nthat is 284kB in size. After loading it into Binary Ninja, I saw it was not packed or encrypted\nby any well-known packer or protector. However, there were only dozens of functions\nrecognized, which is quite a small number relative to its size. This suggested the sample\nwas packed by a custom packer/encryptor.\n\nAs is routine for malware analysis, I started by executing the sample in an online sandbox.\nIn this case, I used [Triage. The sample executed fine in the sandbox and was recognized](https://tria.ge/)\nas `cobaltstrike .`\n\n[Then, I uploaded the sample to UnpacMe to see if it could be unpacked automatically.](https://www.unpac.me/)\nUnpacMe also processed the sample and recognized it as Cobalt Strike, but the unpacked\nartifact did not make any sense.\n\nAt this point, I realized I wasn’t going to get much further without analyzing the sample with\nBinary Ninja to see how it worked.\n\n## Thread and Pipe\n\nThe sample seemed to be compiler-generated and not obfuscated, so I decided to mainly\nanalyze the sample in HLIL. Viewing code in HLIL can often speed up analysis. However,\nfor handwritten or obfuscated code, I prefer to look at the disassembly, which offers a closer\nview of what is happening. Binary Ninja now supports split views, so we can conveniently\nview HLIL and disassembly side-by-side:\n\n\n-----\n\nThe `main function is rather short. The first function call is part of the runtime and it is`\ndoing some initialization which we can ignore. The next function creates a new thread within\nit which we will analyze later. Then it enters into a loop that calls `Sleep(10000)`\nindefinitely.\n\nAs a note, the sample is stripped so it does not contain any function or variable names in it\n(except the Windows API imports). All names in the following screenshots were recovered\nor created during reverse engineering.\n\nThe `create_thread function is also not complex. It formats a string using values derived`\nfrom `GetTickCount, probably to make it random and avoid conflict. This string is later`\nused as a name for a pipe. Then it creates a new thread by calling `CreateThread .`\n\nThe `thread_proc pushes two arguments onto the stack, and then calls`\n```\nwrite_into_pipe .\n\n```\n\n-----\n\nThe `write_into_pipe creates a named pipe using the randomized string, connects to it,`\nand writes the buffer into it.\n\nI quickly noticed `size_of_data is huge –` `0x33400 bytes. Almost the entire sample is`\nmade up of this huge buffer. This suggested the buffer was encrypted or compressed, and\nthe dozens of functions that we see merely restore the code to its original content. Typically,\nat the end of it, execution will be handed to the decrypted/decompressed buffer.\n\nAt this point, we are only seeing the data being written into the named pipe. We cannot see\nhow it is being accessed.\n\n## Decrypting the Buffer\n\nAfter browsing the code, I realized that there was a function call at the end of\n```\ncreate_thead that I had originally ignored.\n\n```\nThis function first uses `malloc to allocate a buffer of the same size as the data written into`\nthe named pipe. It then loops and reads the content of the buffer. At the end of it, it decrypts\nthe code and executes it.\n\n\n-----\n\nThe decryption function first calls `VirtualAlloc to allocate a buffer and sets its`\npermission to `PAGE_READWRITE . Then, it XORs the content with a four-byte hard-coded`\nkey. The key is `72432a9c, in this case. Near the end of the function, it sets the permission`\nof the buffer to `PAGE_EXECUTE_READ . Finally, it creates another thread, which just jumps to`\nits first argument. The address of the buffer is passed as the first argument. This starts\nexecution from the beginning of the buffer. The code could, of course, have used the\naddress of the buffer as the entry point of the thread. However, that might cause anti-virus\nsoftware to detect it, so it used this small trick instead to disguise it.\n\nSo, in order to analyze the code of the payload, I needed to first decrypt the buffer by\nXORing with the four-byte key. There are two ways to do this. The first is to select the\nbuffer, right-click, and then click `Transform -> XOR . This is not super convenient in this`\ncase as the input buffer is huge and selecting it with a precise size is not easy. The second\nway is to use the Python API, which is what I did:\n```\ndata = bv.read(0x403014, 0x33400)\n\nxor = Transform['XOR']\n\noutput = xor.encode(data, {'key': b'\\x72\\x43\\x2a\\x9c'})\n\nbv.write(0x403014, output)\n\n\n```\nBefore I discuss analyzing the code in this buffer, there was a function that I initially did not\nquite understand. See the name I give it – `preparation ? I guessed it was doing some`\nfinal preparation before executing the buffer. The HLIL for the function was also not very\neasy to read. However, after switching to disassembly and reading the instructions one by\none, there came an “A-ha!” moment.\n\n\n-----\n\nThis function first tests whether two signed DWORDs are positive. If both of them are larger\nthan 0, they are treated as offsets into the buffer. The code takes the address of functions\n```\nGetModuleHandleA and GetProcessAddress and writes their addresses at the given\n\n```\noffsets. In other words, it does the following:\n```\n*(uint32_t)(buffer + 0x7c71) = GetModuleHandleA;\n\n*(uint32_t)(buffer + 0x7c78) = GetProcessAddress;\n\n\n```\nWhy would the code write the address of these two functions into the middle of the buffer?\nWell, it is passing the function pointer into the code so that it can be used by it. This is a\nclever trick because the author does not have to use other (more complex) techniques to\n\n\n-----\n\nobtain these values while maintaining a low footprint in AV s eye.\n\nViewing the original content at those offsets confirms my guess:\n\nThe original value at the two offsets is `0x41414141 and` `0x42424242, which are`\nobviously placeholder values. We can fix the values by writing the actual address of the two\nfunctions here. This can be done by hand, or using the following Python code:\n```\naddr = bv.get_symbols_by_name('GetModuleHandleA')[0].address\n\nbv.write(0x403014 + 0x7c71, struct.pack('<I', addr))\n\naddr = bv.get_symbols_by_name('GetProcAddress')[0].address\n\nbv.write(0x403014 + 0x7c78, struct.pack('<I', addr))\n\n\n```\nIf we redefine their types to `void*, we can see the effect:`\n\nAlright, with the two values fixed, we are ready to analyze the code in the buffer.\n\n## Finding Address of Windows APIs\n\nI noticed the buffer started with `PE as soon as it was decrypted. If this were actually a PE`\nbinary, we would simply need to dump it and load it with Binary Ninja. However, according\nto my analysis, this buffer is executed from the beginning. So, I quickly ruled out the\npossibility of this file being a PE. It must be a trick to confuse the analyst.\n\n\n-----\n\nDefining a function at the entry point also produces meaningful code:\n\nAs we can see, the byte `0x4d5a (PE) corresponds to` `dec ebp; pop edx and their`\neffects are immediately undone by the following two instructions: `push edx; inc ebp .`\nNow, I am even more confident that this is not a PE, and I did not fall into the trap of the\ndeveloper.\n\nThe next few instructions show a common way of getting the value of the `eip register and`\nthen calculate an address based on it:\n```\n00403018 e800000000     call  $+5 {data_40301d}\n\n0040301d 5b         pop   ebx\n\n......\n\n00403023 81c3497c0000    add   ebx, 0x7c49 {load_DLL_find_API}\n\n00403029 ffd3        call  ebx {load_DLL_find_API}\n\n\n```\nBinary Ninja understands this technique, so it calculates and annotates the value of `ebx at`\nthe call site. This is based on our dataflow analysis.\n\nMoving on to function `load_DLL_find_API, we can see the address of`\n```\nGetModuleHandleA and GetProcAddress are loaded into two stack variables, and their\n\n```\ncurrent values are checked against the placeholder values, i.e., `0x41414141 and`\n```\n0x42424242 .\n\n```\n\n-----\n\nIf their current values are different from the placeholder values, the following function is\nexecuted:\n\n\n-----\n\nThese are all DLL and Windows API names. The function first finds `LoadLibraryA, and`\nthen loads the needed DLLs. It also gets the addresses of the Windows API by\n```\nGetProcessAddress . The addresses of these API calls are put into a function pointer\n\n```\narray in the following order:\n```\nGetModuleHandleA\n\nGetProcAddress\n\nLoadLibraryA\n\nLoadLibraryExA\n\nVirtualAlloc\n\nVirualProtect\n\n\n```\nAn interesting behavior is the code zeros the strings of these API names, as seen below:\n\n\n-----\n\nThis is another anti-virus evasion technique.\n\n## Is this a PE?\n\nSince the code is quite long, I will summarize its behavior. After the above function returns,\nthe sample does the following:\n\nAllocates a buffer, whose size is read from a particular offset in the buffer\nReads section information from a section table, allocates a buffer for them, and copies\nthe content of each section into the buffer\nLoads some DLLs specified at certain offsets in the buffer and resolve API names\nSome other things that aren’t important to our analysis\n\nThese operations very similar to loading an executable/library. Since I have ruled out this is\na PE previously, I think this sample has a custom executable format. If that is the case, then\nI have to write a Binary View to load it. However, as I read the code more carefully, I started\nto realize this is a PE, though with some changes:\n\nThe section names are XOR-ed with byte 0xc3\nThe DLL names and function names are XOR-ed with 0xc3\n\n\n-----\n\nThe `.text section is XOR-ed with byte 0xc3`\n\nSo, it turns out I have indeed been fooled by the developer: I incorrectly thought it was not a\nPE, whereas it turns out this is a modified PE format. The good news is I realized this fairly\nquickly and did not waste any time on writing a unnecessary loader for it.\n\nI dumped the buffer to disk. Next, I needed to fix it so I could load it into Binary Ninja and\nanalyze it.\n\nThe section names and `.text section were easier to deal with. There are only a few`\nsections, so manually XOR-ing the names was fast enough. I XOR-ed the entire `.text`\nsection with the Transform API, as shown above.\n\nThe next problem was resolving DLL and API names. I tried to dump the file after the\nnames were decrypted. However, it did not work because the sample copied the encrypted\nnames into a buffer and then decrypted them. This buffer was also reused to decrypt\ndifferent names. So, dumping it did not help me.\n\nI decided to deal with this using Binary Ninja’s Python API.\n\n## Fixing the Payload DLL\n\nLet us first revisit the PE file format and see how we can find the addresses of the DLL and\nfunction names.\n\nThere are 16 `PE_Data_Directory_Entry at the end of the` `PE32_Optional_Header .`\nThe import table is the second entry in it. The `PE_Data_Directory_Entry contains the`\nRVA (relative virtual address) and size of the table.\n\nOnce we calculate the VA (virtual address) of the import table from its RVA, there are\nmultiple `Import_Directory_Table s there. The number of entries is not specified – its`\nend is marked by a structure whose values are NULL.\n\n\n-----\n\nIf we view the import table of the sample (the original one, not the one we have dumped),\nthere are two entries in it. Each of these represents a DLL import and multiple function\nimports. The `nameRva field is the RVA of the DLL name, so we can find the DLL names`\nbase on this.\n\nThe function names are slightly more complex. We need to follow the\n```\nimportLookupTableRva to get the INT (import name table).\n\n```\n\n-----\n\nThis is an array of RVAs, each describing an API function import. Again, the number of\nentries in this array is not specified – its end is marked by a value of NULL.\n\nIf we follow the VA of the first entry, we can see it comes with a two-byte ordinal of the API,\nfollowed by its name. This is how we find the names of the API.\n\n### Using BinaryReader\n\n[The entire processing script I wrote can be accessed here. Below is a walkthrough for it.](https://binary.ninja/blog/images/cobaltstrike/fix_dll.py)\n\nWe start with the following code to find the VA of the import table:\n\n\n-----\n\n```\nfrom binaryninja import BinaryViewType, BinaryReader\n\nbv = BinaryViewType.get_view_of_file('extracted_3.exe')\n\nprint(bv.start)\n\nimportTableEntry_offset = 0x100\n\nbr = BinaryReader(bv)\n\nbr.seek(bv.start + importTableEntry_offset)\n\nimport_table_va = bv.start + br.read32()\n\nbr.seek(import_table_va)\n\n```\nTwo things are worth noting. First, many of the offsets in the PE file format are in RVA form,\nwhich are offsets from the start of the module. Adding `bv.start to it converts the RVA to`\na VA.\n\nSecond, we are using the `BinaryReader to read the binary.` `BinaryReader internally`\ntracks the current offset, so it is very suitable for the case of consecutive reading. Of course,\nwe can simply use `bv.read() to do the job, but we would have to track the offset by`\nourselves, which is more effort (and more error-prone).\n\nStrings in the PE file format are NULL-terminated. We know they are XOR-ed with a magic\nbyte, so we need to look for it as the end of the string:\n```\ndef read_until_byte(br, offset, byte_val):\n\n  old_offset = br.offset\n\n  br.seek(offset)\n\n  result = b''\n\n  while True:\n\n    c = br.read(1)\n\n    result += c\n\n    if ord(c) == byte_val:\n\n      break\n\n  br.seek(old_offset)\n\n  return result\n\n\n```\nRecovering the original name is very simple:\n```\ndef xor(input, byte_val):\n\n  result = ''\n\n  for i in range(len(input)):\n\n    c = chr(input[i] ^ byte_val)\n\n    result += c\n\n  return result\n\n\n```\nThe main code is a loop that processes each DLL:\n\n\n-----\n\n```\nwhile True:\n\n  table_rva = br.read32()\n\n  if table_rva == 0:\n\n    break\n\n  br.seek(br.offset + 8)\n\n  name_rva = br.read32()\n\n  # print('name_rva: 0x%x' % name_rva)\n\n  name_va = bv.start + name_rva\n\n  name = read_until_byte(br, name_va, 0xc3)\n\n  restored_name = xor(name, 0xc3)\n\n  print(restored_name)\n\n  bv.write(name_va, restored_name)\n\n  table_va = bv.start + table_rva\n\n  # print(\"table_va\", hex(table_va))\n\n  process_table(br, bv.start, table_va)\n\n  br.seek(br.offset + 4)\n\n```\nThe code to process each table (DLL) is also a loop:\n```\ndef process_table(br, start, offset):\n\n  old_offset = br.offset\n\n  br.seek(offset)\n\n  while True:\n\n    int_rva = br.read32()\n\n    if (int_rva == 0):\n\n      break\n\n    if (int_rva & 0x80000000 != 0):\n\n      continue\n\n    else:\n\n      int_va = start + int_rva\n\n      # print('int_va', hex(int_va))\n\n      process_one_entry(br, start, int_va)\n\n  br.seek(old_offset)\n\n\n```\nNote that if the INT RVA has its highest bit set, then this API is not imported by name.\nInstead, it is imported by ordinal. In that case, we should skip it.\n\nFinally, we get to process an individual API name:\n\n\n-----\n\n```\ndef process_one_entry(br, start, address):\n\n  old_offset = br.offset\n\n  br.seek(address)\n\n  br.read16()\n\n  # print('br.offset', hex(br.offset))\n\n  name = read_until_byte(br, br.offset, 0xc3)\n\n  restored_name = xor(name, 0xc3)\n\n  print(restored_name)\n\n  bv.write(address + 2, restored_name)\n\n  br.seek(old_offset)\n\n```\nOnce we are done processing, we can export the DLL to disk:\n```\nbv.save('extracted.dll')\n\n\n```\n[The DLL can be downloaded from here (zip password: infected).](https://binary.ninja/blog/images/cobaltstrike/extracted.zip)\n\nThis sample has another trick to slow down the analyst: Its entry point offset is not read\nfrom the `PE32_Optional_Header.addressOfEntryPoint (offset 0x28). Instead, it is read`\nfrom the `PE32_Optional_Header.loaderFlags (offset 0x70). To fix this, we simply`\nchange the value of `addressOfEntryPoint accordingly.`\n\nNow, we can load the extracted DLL into Binary Ninja and analyze it. We can see all the\nWindows APIs it imports.\n\n\n-----\n\nThere is a giant `switch statement in it (with 0x65` `case s), which handles different`\ncommands. Analyzing each of them is beyond the scope of this blog post.\n\n\n-----\n\nHowever, since we have fixed the imports, a glance can already give us a good guess at\nwhat each might be doing. For example, the following function is likely searching for certain\nfiles:\n\n\n-----\n\nAlright, we have successfully reverse-engineered this Cobalt Strike sample and fixed its\npayload DLL!\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-07-22 - Reverse Engineering a Cobalt Strike Dropper With Binary Ninja.pdf"
+    ],
+    "report_names": [
+        "2022-07-22 - Reverse Engineering a Cobalt Strike Dropper With Binary Ninja.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535741,
+    "ts_updated_at": 1743041358,
+    "ts_creation_date": 1660793276,
+    "ts_modification_date": 1660793276,
+    "files": {
+        "pdf": "https://archive.orkl.eu/89c4e280e4f37bdedd6d6a5eb161aeba4de0e383.pdf",
+        "text": "https://archive.orkl.eu/89c4e280e4f37bdedd6d6a5eb161aeba4de0e383.txt",
+        "img": "https://archive.orkl.eu/89c4e280e4f37bdedd6d6a5eb161aeba4de0e383.jpg"
+    }
+}

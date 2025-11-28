@@ -1,0 +1,181 @@
+{
+    "id": "727a3faa-61fa-4c18-a7f1-48aa205b8483",
+    "created_at": "2023-01-12T15:10:24.342478Z",
+    "updated_at": "2025-03-27T02:15:35.625917Z",
+    "deleted_at": null,
+    "sha1_hash": "278093a48eed910fa6a7fdbd1864ca322e65b1ae",
+    "title": "2022-02-10 - Malicious Chrome Browser Extension Exposed- ChromeBack Leverages Silent Extension Loading",
+    "authors": "",
+    "file_creation_date": "2022-05-28T05:01:57Z",
+    "file_modification_date": "2022-05-28T05:01:57Z",
+    "file_size": 636457,
+    "plain_text": "# Malicious Chrome Browser Extension Exposed: ChromeBack Leverages Silent Extension Loading\n\n**gosecure.net/blog/2022/02/10/malicious-chrome-browser-extension-exposed-chromeback-leverages-silent-extension-**\nloading/\n\nGoSecure Titan Labs February 10, 2022\n\nGoSecure Titan Labs received a malicious Chrome extension sample that we are calling\nChromeBack (a4424f32a10770b7e486a38823f166ff ) from GoSecure’s Titan Managed\nDetection and Response (MDR) team. After creating a detection for GoSecure Titan\nEndpoint Detection & Response (EDR) to ensure that we can identify this threat for our\nclients, the GoSecure Titan Labs team is ready to spread the word and share how to address\nthis serious issue that some users are already experiencing. The potential impact of\nChromeBack is extensive, ranging from browser traffic hijacking and ad-redirection to\ndeactivation of other extensions and even the activation of developer mode without the\nuser’s knowledge.\n\n## Analysis\n\n\n-----\n\nThis browser extension was identified as it was being downloaded via a Base64-encoded\nPowerShell command as displayed in Figure 1 below.\n\n_Figure 1: Base64-Encoded Powershell Command_\n\nThe encoded script begins with hard-coded variables, including the domain hosting the\nmalware, ithconsukultin[.]com, and the location it will download its payload to,\n_%LOCALAPPDATA%\\chrome._\n\n_Figure 2: Hard-coded Values_\n\nNext, the script will use Test-Path to check for the %LOCALAPPDATA%\\chrome path. If it\ndoes not exist, the script will use wget to download the malicious Chrome extension from\nhxxp://ithconsukultin[.]com/archive[.]zip?iver=2 to %LOCALAPPDATA%\\chrome as\narchive.zip. Expand-Archive is used to unpack the archive to %LOCALAPPDATA%\\chrome\nbefore deleting the archive.zip file using Remove-Item.\n\n\n-----\n\n_Figure 3: Downloading Extension_\n\nIf the %LOCALAPPDATA%\\chrome path does exist, the script will check for a previously\ninstalled version of itself by using Get-Content for the file\n_%LOCALAPPDATA%\\chrome\\background.js, which is the main code of the malicious_\nbrowser extension. The content of background.js will be split into an array and a base64encoded tracking id, and the domain used to serve advertisements will be stored and\nchecked against the result of a wget to hxxp://ithconsukultin[.]com/un?iver=2&did=<addomain>&ver=<tracking-id>.\n\nIf the ad domain from background.js matches the result, Unregister-ScheduledTask will be\ncalled to remove a scheduled task named Chromeloader before recursively deleting the\n_%LOCALAPPDATA%\\chrome path and downloading the ChromeBack extension from the_\nalternate URL hxxp://ithconsukultin[.]com/archive.zip?iver=2&did=<ad-domain>&ver=\n<tracking-id>.\n\n\n-----\n\n_Figure 4: Removing Existing Version and Re-Downloading_\n\nThe final step of the script loads the downloaded ChromeBack extension into Chrome using\nthe `--load-extension argument. Get-Process will be invoked for Chrome and`\n_.CloseMainWindow() will be used to close any running instances of Chrome. Once all_\ninstances are closed, a new instance of Chrome is called using start or Start-Process and\nwith the `--load-extension argument and the path to ChromeBack, as well as` `--`\n```\nrestore-last-session, --noerrdialogs, and --disable-session-crashed-bubble .\n\n```\n\n-----\n\n_Figure 5: Loading Extension with_ `--load-extension`\n\nFurther investigation of the `--load-extension argument has shown it as a lucrative`\ninfection vector for many Chromium-based browsers. By using `--load-extension, an`\nunpacked Chrome extension can be loaded from local storage, providing a side-loading\nvector for malicious extensions. Additionally, loading of unpacked extensions usually requires\nthe enabling of Developer Mode, which typically includes a visible user agreement prompt.\nHowever, when `--load-extension is invoked, the user is not prompted or even notified`\nthat an unpacked extension has been loaded, and developer mode will appear as not\n_enabled if someone checks. Microsoft Edge is the only browser among those we tested that_\nprovides the user a notification of the loaded extension. Chrome, Chromium, Opera, and\neven security focused browsers such as Comodo Dragon and Avast Secure Browser leave\nthe user with no indication of any changes. Any JavaScript file with an accompanying\nmanifest file can be loaded as an extension in this way, allowing for a wide range of\nmalicious functionality to be added. A user’s shortcut to their browser could be modified with\nthe `--load-extension argument allowing malicious code to load each time the browser is`\nlaunched to achieve persistence.\n\n_Figure 6: Arbitrary JavaScript Loaded Without User Warning_\n\n\n-----\n\n_Figure 7: Developer Mode Appears Off_\n\n_Figure 8: Microsoft Edge Warning Message_\n\nThe extension in question for ChromeBack consists of a manifest file, icon image, and a\nheavily obfuscated JavaScript file, background.js (b02455ddbc78841c2e3087fab5a9f9b2).\nOnce installed, ChromeBack appears as Properties with ID\n_andnkmffoleapmidfgnnjjoepadbiika and permissions for contextMenus, tabs, storage,_\n_browsingData, webRequest, webRequestBlocking, privacy, alarms, management, ://*/*, and_\n_chrome://*/*. The last two permissions in this list allow for web request control for any URL,_\nallowing blocking or modification of any web request.\n\n\n-----\n\n_Figure 9: Installed Extension Information_\n\n\n-----\n\n_Figure 10: Permissions and Info from Manifest_\n\nThe main functionality of ChromeBack redirects search requests to Google, Yahoo, or Bing\nthrough its own domain, tobepartou[.]com, as well as periodically serving its own\nadvertisements via Chrome alarms. The extension’s first code is a listener using the\n_runtime.onInstalled event, which activates when the extension is first installed, seen below._\n\n\n-----\n\n_Figure 11: onInstalled Functionality_\n\nLocal data for lastQuery,, and is, which are local variables used by the extension, will be\nremoved. Two alarms, hb and are also created. hb will first trigger after a delay of 1.1\nminutes, then every 180 minutes after that. will first execute at 5 minutes, then every 30\nminutes. Next, the analytics function will be called with the argument install, and the sync\nfunction is called. The analytics function of ChromeBack uses the navigator.sendBeacon\nmethod of Chrome to send a small packet of data via an HTTP POST request. The POST\nrequest will be made to the URL hxxps://tobepartou[.]com/<arg-1>?\next=Properties&ver=4.4&dd=<id>, and if a second argument is provided, &info=<arg-2> will\nbe appended to the URL.\n\n_Figure 12: Analytics Function_\n\nThe sync function will send a GET request to hxxps://tobepartou[.]com/redsync, which\nredirects to hxxps://freychang[.]fun. Hosted at hxxps://freychang[.]fun is a 16-digit number\nwhich is then passed to the sync function as the second argument along with the string sync\nfor a call to analytics(). The result is a post to hxxps://tobepartou[.]com/sync?\next=Properties&ver=4.4&dd=<id>&info=<number>.\n\n\n-----\n\n_Figure 13: Sync Function_\n\n_Figure 14: hxxps://freychang[.]fun Data_\n\nNext, ChromeBack will use the management.getAll method to get information on all other\nrunning Chrome extensions and pass that info to the handleInstalledExtensions function.\n_handleInstalledExtensions will send a POST request to hxxps://com.tobepartou[.]com/ext?_\next=Properties&ver=4.4&dd=<id> with a JSON object of a stringified list of running\nextensions as the data. Then, the list will be parsed and the Chrome\n_management.setEnabled method will be called to set the value for each extension to !1,_\ndisabling all other extensions.\n\n_Figure 15: handleInstalledExtensions Function_\n\n_Figure 16: Disabling Extensions from handleInstalledExtensions_\n\nThere is a running listener for alarms.onAlarm events; When the hb alarm triggers,\nChromeBack executes its analytics function with the argument hb, and the sync function.\nWhen the alarm triggers, the getAd function is called.\n\n\n-----\n\n_Figure 17: onAlarm Listener_\n\nThe getAd function calls a second function, openAd. openAd executes a GET request to\nhxxps://tobepartou[.]com/ad?ext=Properties&ver=4.4&dd=<id>. The response contains a\nURL with the intended advertisement to serve, hxxps://a[.]nel[.]cloudflare[.]com/report/v3?s=\n_<id-for-ad>. The Chrome tabs.create method is then called to create a tab with the served_\nadvertisement.\n\n_Figure 18: openAd Function_\n\nThe listener is created with the intention to redirect search results using the\n_webRequest.onBeforeRequest method. When a request is made, it is checked against the_\nindexes of Google, search.yahoo, and Bing. Any requests to these domains will be blocked,\nand the search query stripped from the URL and appended to the end of a new target URL,\nhxxps://tobepartou[.]com/search?ext=Properties&ver=4.4&is=1&q=<query>. After the first\nredirection, the browser will be redirected again to a Bing search for the original query.\n\n\n-----\n\n_Figure 19: Redirection of Search Results_\n\nWithin Chrome, users are typically able to see and manage access for all of their extensions\nin one tab chrome://extensions. An additional interesting evasion method used by\nChromeBack is, upon a request to chrome://extensions, the tab will be removed and a new\ntab of chrome://settings will be created. This prevents a user from reaching the page to\nmanage extensions, adding a hurdle for more novice users.\n\n\n-----\n\n_Figure 20: Code for Preventing Access to Extensions_\n\n## Conclusion\n\nThe ChromeBack extension is a browser hijacker, redirecting traffic and serving\nadvertisements to users. Its utilization of the `--load-extension argument outlines an`\ninteresting vector for injection of malicious code into a browser without the knowledge of the\nuser. Users may not be aware that they have been compromised, especially since Developer\nMode can be enabled without notification. Identification is possible with tools like GoSecure\nTitan Endpoint Detection & Response (EDR) and through a review of the information\nprovided in this blog. To read more from GoSecure Titan Labs and our extensive security\n[investigations, be sure to check this blog regularly and follow us on Twitter and](https://twitter.com/GoSecure_Inc) [LinkedIn.](https://www.linkedin.com/company/gosecure/)\n\n**Malware Analyst:** [Matthew Hood](https://www.linkedin.com/in/matthew-hood-585b12192/)\n\n## Indicators of Compromise\n\n\n-----\n\n```\n+ + +\n| Type  | Indicator            | Description              \n|\n+========+==================================+=========================================\n| MD5  | a4424f32a10770b7e486a38823f166ff | ChromeBack Extension Zipped\n(Archive.zip) |\n+--------+----------------------------------+------------------------------------------+\n| MD5  | b02455ddbc78841c2e3087fab5a9f9b2 | ChromeBack Extension Code\n(Background.js) |\n+--------+----------------------------------+------------------------------------------+\n| DOMAIN | ithconsukultin[.]com       | ChromeBack Initial Download Domain   \n|\n+--------+----------------------------------+------------------------------------------+\n| DOMAIN | tobepartou[.]com         | ChromeBack Contact Domain       \n|\n+--------+----------------------------------+------------------------------------------+\n| DOMAIN | freychang[.]fun         | ChromeBack Contact Domain       \n|\n+--------+----------------------------------+------------------------------------------+\n| DOMAIN | a[.]nel[.]cloudflare[.]com    | ChromeBack Ad Hosting Domain      \n|\n+--------+----------------------------------+------------------------------------------+\n| ID   | andnkmffoleapmidfgnnjjoepadbiika | ChromeBack Extension ID        \n|\n+========+==================================+=========================================\n\n## Detection\n\n```\nGoSecure Titan Labs are providing the following signatures to help the community in\ndetecting and identifying the threats discussed in this report and have deployed additional\ndetection as part of our MDR service.\n\n\n-----\n\n```\nalert http any any > $EXTERNAL_NET any (msg: GS MALWARE ChromeBack Browser Hijacker\nQuery Redirection\";\ncontent:\"GET\"; http_method;\ncontent:\"/search?ext=\"; http_uri; fast_pattern;\ncontent:\"&ver=\"; http_uri; distance:0;\ncontent:\"&is=\"; http_uri; distance:0;\ncontent:\"&q=\"; http_uri; distance:0;\nflow:to_server, established;\nmetadata:created 2022-01-18, type malware.stealer, os any, tlp white;\nclasstype:trojan-activity; sid:300001853; rev:1;)\nalert http any any -> $EXTERNAL_NET any (msg:\"GS MALWARE ChromeBack Browser Hijacker\ngetAd\";\ncontent:\"GET\"; http_method;\ncontent:\"/ad?ext=\"; http_uri; fast_pattern;\ncontent:\"&ver=\"; http_uri; distance:0;\ncontent:\"&dd=\"; http_uri; distance:0;\nflow:to_server, established;\nmetadata:created 2022-02-08, type malware.stealer, os any, tlp white;\nclasstype:trojan-activity; sid:200000000; rev:1;)\nalert http any any -> $EXTERNAL_NET any (msg:\"GS MALWARE ChromeBack Browser Hijacker\nSync\";\ncontent:\"GET\"; http_method;\ncontent:\"/sync?ext=\"; http_uri; fast_pattern;\ncontent:\"&ver=\"; http_uri; distance:0;\ncontent:\"&dd=\"; http_uri; distance:0;\nflow:to_server, established;\nmetadata:created 2022-02-08, type malware.stealer, os any, tlp white;\nclasstype:trojan-activity; sid:200000001; rev:1;)\nalert http any any -> $EXTERNAL_NET any (msg:\"GS MALWARE ChromeBack Browser Hijacker\nHome Beacon\";\ncontent:\"POST\"; http_method;\ncontent:\"/hb?ext=\"; http_uri; fast_pattern;\ncontent:\"&ver=\"; http_uri; distance:0;\ncontent:\"&dd=\"; http_uri; distance:0;\nflow:to_server, established;\nmetadata:created 2022-02-08, type malware.stealer, os any, tlp white;\nclasstype:trojan-activity; sid:200000002; rev:1;)\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-02-10 - Malicious Chrome Browser Extension Exposed- ChromeBack Leverages Silent Extension Loading.pdf"
+    ],
+    "report_names": [
+        "2022-02-10 - Malicious Chrome Browser Extension Exposed- ChromeBack Leverages Silent Extension Loading.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "9f101d9c-05ea-48b9-b6f1-168cd6d06d12",
+            "created_at": "2023-01-06T13:46:39.396409Z",
+            "updated_at": "2025-03-27T02:00:03.074969Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "CHROMIUM",
+                "ControlX",
+                "Red Dev 10",
+                "RedHotel",
+                "Red Scylla",
+                "TAG-22",
+                "BRONZE UNIVERSITY",
+                "AQUATIC PANDA",
+                "Charcoal Typhoon",
+                "BountyGlad"
+            ],
+            "source_name": "MISPGALAXY:Earth Lusca",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "6abcc917-035c-4e9b-a53f-eaee636749c3",
+            "created_at": "2022-10-25T16:07:23.565337Z",
+            "updated_at": "2025-03-27T02:02:09.868522Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Bronze University",
+                "Charcoal Typhoon",
+                "Chromium",
+                "Red Dev 10",
+                "Red Scylla"
+            ],
+            "source_name": "ETDA:Earth Lusca",
+            "tools": [
+                "Agentemis",
+                "AntSword",
+                "BIOPASS",
+                "BIOPASS RAT",
+                "BadPotato",
+                "Behinder",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Doraemon",
+                "FRP",
+                "Fast Reverse Proxy",
+                "FunnySwitch",
+                "HUC Port Banner Scanner",
+                "KTLVdoor",
+                "Mimikatz",
+                "NBTscan",
+                "POISONPLUG.SHADOW",
+                "PipeMon",
+                "RbDoor",
+                "RibDoor",
+                "RouterGod",
+                "SAMRID",
+                "ShadowPad Winnti",
+                "SprySOCKS",
+                "WinRAR",
+                "Winnti",
+                "XShellGhost",
+                "cobeacon",
+                "fscan",
+                "lcx",
+                "nbtscan"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "f4f16213-7a22-4527-aecb-b964c64c2c46",
+            "created_at": "2024-06-19T02:03:08.090932Z",
+            "updated_at": "2025-03-27T02:05:17.387119Z",
+            "deleted_at": null,
+            "main_name": "GOLD NIAGARA",
+            "aliases": [
+                "Carbanak",
+                "Carbon Spider ",
+                "FIN7 ",
+                "Navigator ",
+                "Sangria Tempest ",
+                "TelePort Crew ",
+                "Calcium "
+            ],
+            "source_name": "Secureworks:GOLD NIAGARA",
+            "tools": [
+                " Carbanak",
+                " Cobalt Strike",
+                " DICELOADER",
+                " DRIFTPIN",
+                " GGLDR",
+                " GRIFFON",
+                " JSSLoader",
+                " Meterpreter",
+                " OFFTRACK",
+                " PILLOWMINT",
+                " POWERTRASH",
+                " SUPERSOFT",
+                " TAKEOUT",
+                " TinyMet",
+                "Bateleur"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "d53593c3-2819-4af3-bf16-0c39edc64920",
+            "created_at": "2022-10-27T08:27:13.212301Z",
+            "updated_at": "2025-03-27T02:00:55.529662Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Earth Lusca",
+                "TAG-22",
+                "Charcoal Typhoon",
+                "CHROMIUM",
+                "ControlX"
+            ],
+            "source_name": "MITRE:Earth Lusca",
+            "tools": [
+                "Mimikatz",
+                "PowerSploit",
+                "Tasklist",
+                "certutil",
+                "Cobalt Strike",
+                "Winnti for Linux",
+                "Nltest",
+                "NBTscan",
+                "ShadowPad"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536224,
+    "ts_updated_at": 1743041735,
+    "ts_creation_date": 1653714117,
+    "ts_modification_date": 1653714117,
+    "files": {
+        "pdf": "https://archive.orkl.eu/278093a48eed910fa6a7fdbd1864ca322e65b1ae.pdf",
+        "text": "https://archive.orkl.eu/278093a48eed910fa6a7fdbd1864ca322e65b1ae.txt",
+        "img": "https://archive.orkl.eu/278093a48eed910fa6a7fdbd1864ca322e65b1ae.jpg"
+    }
+}

@@ -1,0 +1,97 @@
+{
+    "id": "197bd3e4-a046-4568-82f2-6c5495117a5e",
+    "created_at": "2023-01-12T15:00:48.961209Z",
+    "updated_at": "2025-03-27T02:17:02.406045Z",
+    "deleted_at": null,
+    "sha1_hash": "41054a59f226b0c765af1826c95b1327a16d16f6",
+    "title": "2022-08-01 - Here’s a Simple Script to Detect the Stealthy Nation-State BPFDoor",
+    "authors": "",
+    "file_creation_date": "2022-08-18T03:52:03Z",
+    "file_modification_date": "2022-08-18T03:52:03Z",
+    "file_size": 956753,
+    "plain_text": "# Here’s a Simple Script to Detect the Stealthy Nation-State BPFDoor\n\n**blog.qualys.com/vulnerabilities-threat-research/2022/08/01/heres-a-simple-script-to-detect-the-stealthy-nation-state-**\nbpfdoor\n\nHarshal Tupsamudre August 1, 2022\n\n_In this blog, the Qualys Research Team explains the mechanics of a Linux malware variant_\n_named BPFdoor. We then demonstrate the efficacy of Qualys Custom Assessment and_\n_Remediation to detect it, and Qualys Multi-Vector EDR to protect against it._\n\nBPFDoor is a Linux/Unix backdoor that allows threat actors to remotely connect to a Linux\nshell to gain complete access to a compromised device. It supports multiple protocols for\ncommunicating with a command & control server (C2) including TCP, UDP, and ICMP. It\n[notably utilizes Berkeley Packet Filters (BPF) along with several other techniques to achieve](https://www.tcpdump.org/papers/bpf-usenix93.pdf)\nthese goals. BPF is a hooking function that allows a user-space program to attach a network\nfilter onto any socket, and then allows or disallows certain types of data to come through that\nsocket.\n\nBPFDoor has been attributed to a Chinese threat actor group named Red Menshen (aka\nDecisiveArchitect), where the attackers have used it to gain stealthy remote access to\ncompromised devices starting back in 2018 to the present day. Systems have been\ncompromised across the US, South Korea, Hong Kong, Turkey, India, Vietnam, and\nMyanmar. Targets have included telecommunications, government, education, and logistics\norganizations. The group has been seen sending commands to BPFDoor victims via Virtual\nPrivate Servers (VPS) hosted at a well-known provider. In turn, these VPSs are administered\nvia compromised routers based in Taiwan that the threat actor uses as VPN tunnels.\n\n**Target Geographies: Middle East, Asia**\n\n**Target Sectors: Logistics, Education, Government**\n\n**Malware Tools: Mangzamel, Gh0st, Gh0st, Metasploit, BPFDoor**\n\n\n-----\n\n## Technical Analysis of BPFDoor\n\n**Execution**\n\nThe threat actor leverages a custom implant tracked by the name “JustForFun”. When\nexecuted, the implant overwrites the process command line within the process environment\nby randomly selecting a new binary name from one of ten hard-coded options (shown in\nFigure 1). This masquerading technique is used to evade security solutions.\n\nFigure 1: List of process names for Masquerading\nThe attacker interacts with the implant through the bash process to establish an interactive\nshell on a system. The command indicates the usage of Postfix queue manager (shown in\nFig. 2).\n\n```\nqmgr -l -t fifo -u\n\n```\n\nFigure 2: Encoded shell and qmgr commands\n\n**Masquerading (Rename the process)**\n\n\n-----\n\nFigure 3: Code uses prctl to rename the malware process\nThe malware will rename itself using the prctl function with the argument PR_SET_NAME,\nand a random legitimate-looking name (Fig. 3). These names are hardcoded in the binary\nand vary between the samples.\n\n**Timestomping**\n\n\n-----\n\nFigure 4: Code for\n\nTimestomping\nThe implant sets a fake time to timestomp the binary before deletion. A function dubbed\nset_time was called to alter the access and modification timestamp of the binary using the\nutimes function (Fig. 4). The timestamp used was always set to Thursday, October 30, 2008\n7:17:16 PM (GMT).\n\n**PID File**\n\nThe implant creates a zero-byte PID file at /var/run/haldrund.pid (Fig. 5). The file has two\nconditions:\n\nThis file is deleted if the implant terminates normally,\nThe file is not deleted, if there is a problem like hard shutdown or crash.\n\nThe implant will not resume if this file is present as it describes the running state for the\nbackdoor.\n\nFigure 5: Encoded command for creating PID file\n\n## BPFDoor Detection using Qualys Custom Assessment & Remediation\n\nQualys Custom Assessment and Remediation can be leveraged to create and execute\ncustom detection logics for zero-day threats. This cloud service supports multiple scripting\nlanguages including Perl, Shell, Python, Lua, PowerShell, and VBScript with no vendor\n\n-----\n\nspecific syntax or restrictions. Select the language of your choice and start by leveraging outof-the-box scripts or creating your own scripts for custom detection, validation, and\nremediation.\n\nWe created the Shell script as part of our detection logic via the Qualys scripting service and\nexecuted it across the network.\n\nUsing this script, we are looking for packet sniffing processes under the entire process stack\nand checking if an existing process has opened a raw socket using the default Linux utility\nlsof. Refer the following screenshots of the script (Fig. 6) and its output (Fig. 7).\n\nFigure 6: Script to detect BPFdoor\n\n\n-----\n\nFigure 7: BPFdoor detection\n\n## BPFDoor Detection using Qualys Multi-Vector EDR\n\nQualys Multi-Vector EDR, armed with YARA scanning techniques, detects the BPFdoor RAT\nwith a threat score of 5/10 (Fig. 8).\n\nFigure 8: Qualys Multi-Vector EDR detection for BPFdoor\nAfter execution, the binary masquerades its name by selecting from one of 10 names\nrandomly:\n\n\n-----\n\n```\n/sbin/udevd d\n/sbin/mingetty /dev/tty7\n/usr/sbin/console-kit-daemon --no-daemon\nhald-addon-acpi: listening on acpi kernel interface /proc/acpi/event\ndbus-daemon --system\nhald-runner\npickup -l -t fifo -u\navahi-daemon: chroot helper\n/sbin/auditd -n\n/usr/lib/systemd/systemd-journald\n\n```\nThe highlighted name was used during the execution. The names are made to look like\ncommon Linux system daemons. The implant overwrites the argv[0] value which is used by\nthe Linux /proc filesystem to determine the command line and command name to show for\neach process. By doing this, when a run command like ps is executed, it shows the fake\nname.\n\nThe renamed binary is dropped to the /dev/shm directory and runs itself as\n/dev/shm/kdmtmpflush (Figs. 9 and 10). The masqueraded process with a “–init” flag tells\nitself to execute secondary clean-up operations and go resident.\n\nFigure 9: Qualys Multi-Vector EDR telemetry for detecting Masquerading\n\n\n-----\n\nFigure 10: BPFdoor Process Tree\nThe implant creates a zero-byte PID file at `/var/run/haldrund.pid\n(Fig. 11).`\n\nFigure 11: Creation of PID file by BPFdoor\nAs shown in figure 12, The original execution process deletes `/dev/shm/kdmtmpflush\nwith`\nthe following command:\n\n```\n/bin/rm -f /dev/sfm/kdmtmpflush\n\n```\n\n-----\n\nFigure 12: Deletion of /dev/shm/kdmtmpflush directory\n\n## Conclusion\n\nAs with most remote access tools, BPFDoor is visible during the post-exploitation phase of\nan attack. It is expected that the authors behind BPFdoor will be upgrading its functionality\nover time, including different commands, processes, or files. This malware has a vast arsenal\nat its disposal. Therefore, we recommend that organizations have a robust EDR solution to\nboth detect its signatures and adequately respond to the threat.\n\n## MITRE ATT&CK Techniques\n\nT1036.005- Masquerading: Match Legitimate Name or Location\n\nT1070.004- Indicator Removal on Host: File Deletion\n\nT1070.006- Indicator Removal on Host: Time Stomp\nT1059.004- Command and Scripting Interpreter: Unix Shell\n\nT1106- Native API\n\nT1548.001- Abuse Elevation Control Mechanism: Setuid and Setgid\n\nT1095- Non-Application Layer Protocol\n\n## IoC (Indicators of Compromise)\n\n**Hashes (SHA256)**\n\n07ecb1f2d9ffbd20a46cd36cd06b022db3cc8e45b1ecab62cd11f9ca7a26ab6d\n\n1925e3cd8a1b0bba0d297830636cdb9ebf002698c8fa71e0063581204f4e8345\n\n4c5cf8f977fc7c368a8e095700a44be36c8332462c0b1e41bff03238b2bf2a2d\n\n591198c234416c6ccbcea6967963ca2ca0f17050be7eed1602198308d9127c78\n\n599ae527f10ddb4625687748b7d3734ee51673b664f2e5d0346e64f85e185683\n\n5b2a079690efb5f4e0944353dd883303ffd6bab4aad1f0c88b49a76ddcb28ee9\n\n\n-----\n\n5faab159397964e630c4156f8852bcc6ee46df1cdd8be2a8d3f3d8e5980f3bb3\n76bf736b25d5c9aaf6a84edd4e615796fffc338a893b49c120c0b4941ce37925\n\n93f4262fce8c6b4f8e239c35a0679fbbbb722141b95a5f2af53a2bcafe4edd1c\n\n96e906128095dead57fdc9ce8688bb889166b67c9a1b8fdb93d7cff7f3836bb9\n97a546c7d08ad34dfab74c9c8a96986c54768c592a8dae521ddcf612a84fb8cc\n\nc796fc66b655f6107eacbe78a37f0e8a2926f01fecebd9e68a66f0e261f91276\n\nc80bd1c4a796b4d3944a097e96f384c85687daeedcdcf05cc885c8c9b279b09c\n\nf47de978da1dbfc5e0f195745e3368d3ceef034e964817c66ba01396a1953d72\n\nf8a5e735d6e79eb587954a371515a82a15883cf2eda9d7ddb8938b86e714ea27\n\nfa0defdabd9fd43fe2ef1ec33574ea1af1290bd3d763fdb2bed443f2bd996d73\n\nfd1b20ee5bd429046d3c04e9c675c41e9095bea70e0329bd32d7edd17ebaf68a\n\n144526d30ae747982079d5d340d1ff116a7963aba2e3ed589e7ebc297ba0c1b3\n\nfa0defdabd9fd43fe2ef1ec33574ea1af1290bd3d763fdb2bed443f2bd996d73\n\n76bf736b25d5c9aaf6a84edd4e615796fffc338a893b49c120c0b4941ce37925\n\n96e906128095dead57fdc9ce8688bb889166b67c9a1b8fdb93d7cff7f3836bb9\nc80bd1c4a796b4d3944a097e96f384c85687daeedcdcf05cc885c8c9b279b09c\n\nf47de978da1dbfc5e0f195745e3368d3ceef034e964817c66ba01396a1953d72\n\n07ecb1f2d9ffbd20a46cd36cd06b022db3cc8e45b1ecab62cd11f9ca7a26ab6d\n\n4c5cf8f977fc7c368a8e095700a44be36c8332462c0b1e41bff03238b2bf2a2d\n\n599ae527f10ddb4625687748b7d3734ee51673b664f2e5d0346e64f85e185683\n\n5b2a079690efb5f4e0944353dd883303ffd6bab4aad1f0c88b49a76ddcb28ee9\n\n5faab159397964e630c4156f8852bcc6ee46df1cdd8be2a8d3f3d8e5980f3bb3\n\n93f4262fce8c6b4f8e239c35a0679fbbbb722141b95a5f2af53a2bcafe4edd1c\n\n97a546c7d08ad34dfab74c9c8a96986c54768c592a8dae521ddcf612a84fb8cc\n\nc796fc66b655f6107eacbe78a37f0e8a2926f01fecebd9e68a66f0e261f91276\n\nf8a5e735d6e79eb587954a371515a82a15883cf2eda9d7ddb8938b86e714ea27\n\nfd1b20ee5bd429046d3c04e9c675c41e9095bea70e0329bd32d7edd17ebaf68a\n\n**Filenames**\n```\n/dev/shm/kdmtmpflush\n/dev/shm/kdumpflush\n/dev/shm/kdumpdb\n/var/run/xinetd.lock\n/var/run/kdevrund.pid\n/var/run/haldrund.pid\n/var/run/syslogd.reboot\n\n```\n**Process names**\n\n\n-----\n\n```\n/sbin/udevd d\n/sbin/mingetty /dev/tty7\n/usr/sbin/console-kit-daemon –no-daemon\nhald-addon-acpi: listening on acpi kernel interface /proc/acpi/event\ndbus-daemon –system\nhald-runner\npickup -l -t fifo -u\navahi-daemon: chroot helper\n/sbin/auditd -n\n/usr/lib/systemd/systemd-journald\n/usr/libexec/postfix/master\nqmgr -l -t fifo -u\n\n```\n**Contributors:**\n\nViren Chaudhary (Senior Engineer, Threat Research, Qualys)\n\nMukesh Choudhary (Compliance Research Analyst, Qualys)\n\nLavish Jhamb (Solutions Architect, Compliance Solutions, Qualys)\n\nMohd Anas Khan (Compliance Research Analyst, Qualys)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-08-01 - Here’s a Simple Script to Detect the Stealthy Nation-State BPFDoor.pdf"
+    ],
+    "report_names": [
+        "2022-08-01 - Here’s a Simple Script to Detect the Stealthy Nation-State BPFDoor.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "ece64b74-f887-4d58-9004-2d1406d37337",
+            "created_at": "2022-10-25T16:07:23.794442Z",
+            "updated_at": "2025-03-27T02:02:09.981874Z",
+            "deleted_at": null,
+            "main_name": "LightBasin",
+            "aliases": [
+                "DecisiveArchitect",
+                "Luminal Panda",
+                "TH-239",
+                "UNC1945"
+            ],
+            "source_name": "ETDA:LightBasin",
+            "tools": [
+                "CordScan",
+                "EVILSUN",
+                "FRP",
+                "Fast Reverse Proxy",
+                "Impacket",
+                "LEMONSTICK",
+                "LOGBLEACH",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "OKSOLO",
+                "OPENSHACKLE",
+                "ProxyChains",
+                "Pupy",
+                "PupyRAT",
+                "SIGTRANslator",
+                "SLAPSTICK",
+                "SMBExec",
+                "STEELCORGI",
+                "Tiny SHell",
+                "pupy",
+                "tsh"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "9c8a7541-1ce3-450a-9e41-494bc7af11a4",
+            "created_at": "2023-01-06T13:46:39.358343Z",
+            "updated_at": "2025-03-27T02:00:03.06082Z",
+            "deleted_at": null,
+            "main_name": "Red Menshen",
+            "aliases": [
+                "Red Dev 18"
+            ],
+            "source_name": "MISPGALAXY:Red Menshen",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535648,
+    "ts_updated_at": 1743041822,
+    "ts_creation_date": 1660794723,
+    "ts_modification_date": 1660794723,
+    "files": {
+        "pdf": "https://archive.orkl.eu/41054a59f226b0c765af1826c95b1327a16d16f6.pdf",
+        "text": "https://archive.orkl.eu/41054a59f226b0c765af1826c95b1327a16d16f6.txt",
+        "img": "https://archive.orkl.eu/41054a59f226b0c765af1826c95b1327a16d16f6.jpg"
+    }
+}

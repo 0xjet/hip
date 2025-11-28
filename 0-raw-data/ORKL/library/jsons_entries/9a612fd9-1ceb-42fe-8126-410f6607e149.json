@@ -1,0 +1,158 @@
+{
+    "id": "9a612fd9-1ceb-42fe-8126-410f6607e149",
+    "created_at": "2023-01-12T15:00:18.472532Z",
+    "updated_at": "2025-03-27T02:10:54.411603Z",
+    "deleted_at": null,
+    "sha1_hash": "f6705f1b02eae009c4bce78ab1f5fc85aae130be",
+    "title": "2021-10-04 - Malware Gh0stTimes Used by BlackTech",
+    "authors": "",
+    "file_creation_date": "2022-05-28T23:45:17Z",
+    "file_modification_date": "2022-05-28T23:45:17Z",
+    "file_size": 1170890,
+    "plain_text": "# JPCERT Coordination Center official Blog\n\n**blogs.jpcert.or.jp/en/2021/10/gh0sttimes.html**\n\n朝長 [秀誠 (Shusei Tomonaga)](https://blogs.jpcert.or.jp/en/shu_tom/)\n\nOctober 4, 2021\n\n## Malware Gh0stTimes Used by BlackTech\n\n[BlackTech](https://blogs.jpcert.or.jp/en/tags/blacktech/)\n\n[Email](http://10.10.0.46/mailto:?subject=Malware%20Gh0stTimes%20Used%20by%20BlackTech&body=https%3A%2F%2Fblogs.jpcert.or.jp%2Fen%2F2021%2F10%2Fgh0sttimes.html)\n\nAn attack group BlackTech has been actively conducting attacks against Japanese\norganisations since 2018. Although it is not as prominent as before, JPCERT/CC is still\nseeing some cases as of now. This article introduces the details of the malware Gh0stTimes,\nwhich is used by this group.\n\n### Gh0stTimes overview\n\n\n-----\n\nGh0stTimes is customised based on Gh0st RAT and has been used in some attack cases\nsince 2020. Figure 1 shows the comparison of Gh0stTimes and Gh0st RAT code.\n\nFigure 1: Comparison of Gh0stTimes and Gh0st RAT (CFileManager) code\n(Left: Gh0stTimes / Right: Gh0st RAT)\nBoth sets of code are functions for file operation, and they are almost identical. Many of the\nGh0st RAT functions are upgraded in Gh0stTimes, but some parts of the code are just kept\nas is. The next sections explain the features of Gh0stTimes.\n\nCommunication protocol\nCommands\nDummy code\nC2 server control panel\n\n### Communication protocol\n\nJust like Gh0st RAT, Gh0stTimes communicates with C2 servers with its custom protocol, but\nthe packet format is different. Figure 2 shows the flow of communication.\n\n\n-----\n\nFigure 2: Gh0stTimes communication flow\nAt the beginning of its communication with a C2 server, Gh0stTimes sends an authentication\nID and data (The \"Key\" in Figure 2) to generate an encryption key for the following\ncommunication. The C2 server checks the authentication ID and only accepts the\ncommunication with certain IDs. Figure 3 shows an example of the specific authentication\nIDs.\n\nFigure 3: Gh0stTimes authentication ID sample\nAfter the successful authentication, the communication that follows is encrypted with the key\nprovided at the beginning of the communication. The next round of communication includes\nthe information of infected hosts, such as hostname, username and processor name (Figure\n4).\n\n\n-----\n\nFigure 4: Information of infected hosts sent by Gh0stTimes\nAfter sending the information of infected hosts, commands are exchanged. See Appendix A\nfor the format of data exchanged. When exchanging commands, the data is RC4-encrypted\nand then zlib-compressed. Gh0stTimes uses its custom RC4 algorithm, which has XOR\n0xAC process over the encrypted data.\n\nFigure 5: Part of Gh0stTimes code to encrypt data with RC4\nThe following is Python code to decode data exchanged.\n\n\n-----\n\n```\nimport zlib\n# Load keydata for first packet\nwith open(args[1], \"rb\") as fb:\n  keydata = fb.read()\n# Load encoded packet data\nwith open(args[2], \"rb\") as fb:\n  data = fb.read()\ncomp_data = custom_rc4(data[12:], keydata[5:21])\ndec_data = zlib.decompress(comp_data)\ndef custom_rc4(data, keydata):\n  key = []\n  key_1 = [0x98, 0x19, 0x3C, 0x56, 0xD9, 0xBB, 0xC7, 0x86, 0xFF, 0x3E]\n  key_2 = [0] * 16\n  key_3 = [0xAC, 0xBB, 0x30, 0x5E, 0xCC, 0xDD, 0x19, 0x23, 0xFC, 0xBD] \n  keybox = [7, 0, 2, 3, 9, 10, 4, 13, 14, 8, 1, 11, 5, 6, 12, 15]\n  i = 0\n  for i in range(16):\n    key_2[i] = keydata[keybox[i]]\n  key = key_1 + key_2 + key_3\n  x = 0\n  box = list(range(256))\n  for i in range(256):\n    x = (x + box[i] + key[i % len(key)]) % 256\n    box[i], box[x] = box[x], box[i]\n  x = 0\n  y = 0\n  out = []\n  for char in data:\n    x = (x + 1) % 256\n    y = (y + box[x]) % 256\n    box[x], box[y] = box[y], box[x]\n    out.append((char ^ box[(box[x] + box[y]) % 256] ^ 0xAC).to_bytes(1,\nbyteorder='little'))\n  return b''.join(out)\n\n### Commands\n\n```\nGh0stTimes is equipped with the following 5 types of commands:\n\nFileManager (command number 0x1): File operation\nShellManager (command number 0x28): Remote shell execution\nPortmapManager (command number 0x32): C2 server redirect function\nUltraPortmapManager (command number 0x3F): Proxy function\nNo name (command number 0): End communication\n\n\n-----\n\nFigure 6: List of commands\nShellManager and FileManager are the same as Gh0st RAT's original functions. FileManager\nhas multiple functions to operate files on infected hosts. (See Appendix B for details.)\n\nPortmapManager and UltraPortmapManager are unique to Gh0stTimes, which indicates that\nits relay function has been enhanced compared to Gh0st RAT.\n\n### Dummy code\n\nSome types of malware that BlackTech use contains dummy code, which may make analysis\ndifficult. Gh0stTimes has such code (Figure 7), but it does not have much impact to the\nanalysis.\n\n\n-----\n\nFigure 7: Gh0stTimes dummy code sample\n\n### C2 server control panel\n\nIn the course of analysis, we found Gh0stTimes control panel. Figure 8 shows its GUI when\nthe control panel is running. This one was named as \"Times v1.2\".\n\n\n-----\n\nFigure 8: Gh0stTimes control panel\nFigure 9 shows the commands that can be executed on the control panel.\n\nFigure 9: List of commands on Gh0stTimes control panel\n\n### In closing\n\nAs BlackTech has been actively carrying out attacks, we will continue our analysis and\nmonitoring. A list of IoC is available in Appendix C. Please make sure that none of your\ndevices is communicating with them.\n\n\n-----\n\nWe have identified that servers infected with Gh0stTimes are also affected by other types of\nmalware (downloader, backdoor, ELF Bifrose) and attack tools listed below. Please be aware\nthat these tools are possibly used by BlackTech.\n\n[https://github.com/Yang0615777/PocList](https://github.com/Yang0615777/PocList)\n[https://github.com/liuxu54898/CVE-2021-3019](https://github.com/liuxu54898/CVE-2021-3019)\n[https://github.com/knownsec/pocsuite3](https://github.com/knownsec/pocsuite3)\nCitrix exploit tool\nMikroTik exploit tool\nExploit for CVE-2021-28482\nExploit for CVE-2021-1472/CVE-2021-1473\nExploit for CVE-2021-28149/CVE-2021-28152\nExploit for CVE-2021-21975/CVE-2021-21983\nExploit for CVE-2018-2628\nExploit for CVE-2021-2135\n\n### Acknowledgement\n\n[We would like to acknowledge the support and information shared by @r3dbU7z regarding](https://twitter.com/r3dbU7z)\nthis attack group.\n\nShusei Tomonaga\n\n(Translated by Yukako Uchida)\n\n**Appendix A: Data exchanged**\n\nTable A-1: Format of data sent\n\nOffset Length Contents\n\n0x00 4 ID\n\n0x04 4 Data length xor 0x3A4BFDCC\n\n0x08 4 Data length after 0x0C before compression xor 0x7C2E56D2\n\n0x0C - Encrypted data (zlib + RC4)\n\nTable A-2: Format of data received\n\nOffset Length Contents\n\n0x00 4 ID\n\n0x04 4 Data length xor 0xC3A2B5D2\n\n0x08 4 Data length after 0x0C before compression xor 0x68FC2AD3\n\n\n-----\n\n0x0C - Encrypted data (zlib + RC4)\n\n**Appendix B: Commands**\n\nTable B: FileManager commands\n\nValue Contents\n\n2 SendFilesList\n\n3 UploadToRemote\n\n4 CreateLocalRecvFile\n\n5 WriteLocalRecvFile\n\n7 SendFileData\n\n8 StopTransfer\n\n9 DeleteFile\n\n10 DeleteDirectory\n\n11 GetFileData\n\n12 CreateFolder\n\n13 MoveFile\n\n14 OpenFile（SW_SHOW）\n\n15 OpenFile（SW_HIDE）\n\n**Appendix C: C2 servers**\n\ntftpupdate.ftpserver.biz\n108.61.163.36\nupdate.centosupdates.com\n107.191.61.40\nosscach2023.hicloud.tw\n103.85.24.122\n106.186.121.154\n\n**Appendix D: Malware hash value**\n\n01581f0b1818db4f2cdd9542fd8d663896dc043efb6a80a92aadfac59ddb7684\n18a696b09d0b7e41ad8ab6a05b84a3022f427382290ce58f079dec7b07e86165\n15b8dddbfa37317ccdfbc340764cd0f43b1fb8915b1817b5666c4816ccb98e7c\n\n\n-----\n\n849ec6055f0c18eff76170912d8500d3da7be1435a9117d67f2134138c7e70c3\nf19ab3fcbc555a059d953196b6d1b04818a59e2dc5075cf1357cee84c9d6260b\n836b873ab9807fbdd8855d960250084c89af0c4a6ecb75991542a7deb60bd119\na69a2b2a6f5a68c466880f4c634bad137cb9ae39c2c3e30c0bc44c2f07a01e8a\nbd02ca03355e0ee423ba0e31384d21b4afbd8973dc888480bd4376310fe6af71\n\n[Email](http://10.10.0.46/mailto:?subject=Malware%20Gh0stTimes%20Used%20by%20BlackTech&body=https%3A%2F%2Fblogs.jpcert.or.jp%2Fen%2F2021%2F10%2Fgh0sttimes.html)\n\nAuthor\n\n朝長 [秀誠 (Shusei Tomonaga)](https://blogs.jpcert.or.jp/en/shu_tom/)\n\nSince December 2012, he has been engaged in malware analysis and forensics\ninvestigation, and is especially involved in analyzing incidents of targeted attacks. Prior to\njoining JPCERT/CC, he was engaged in security monitoring and analysis operations at a\nforeign-affiliated IT vendor. He presented at CODE BLUE, BsidesLV, BlackHat USA Arsenal,\nBotconf, PacSec and FIRST Conference. JSAC organizer.\n\nWas this page helpful?\n\n0 people found this content helpful.\n\nIf you wish to make comments or ask questions, please use this form.\n\nThis form is for comments and inquiries. For any questions regarding specific commercial\nproducts, please contact the vendor.\n\nplease change the setting of your browser to set JavaScript valid. Thank you!\n\n## Related articles\n\n[Back](https://blogs.jpcert.or.jp/en/2021/09/tsubame_overflow_2021-04-06.html)\n[Top](https://blogs.jpcert.or.jp/en/)\n[Next](https://blogs.jpcert.or.jp/en/2021/10/windealer.html)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-10-04 - Malware Gh0stTimes Used by BlackTech.pdf"
+    ],
+    "report_names": [
+        "2021-10-04 - Malware Gh0stTimes Used by BlackTech.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "2646f776-792a-4498-967b-ec0d3498fdf1",
+            "created_at": "2022-10-25T15:50:23.475784Z",
+            "updated_at": "2025-03-27T02:00:55.479958Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "BlackTech",
+                "Palmerworm"
+            ],
+            "source_name": "MITRE:BlackTech",
+            "tools": [
+                "Kivars",
+                "PsExec",
+                "TSCookie",
+                "Flagpro",
+                "Waterbear"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d3a7123c-f519-49a0-a234-de24a1ef052a",
+            "created_at": "2022-10-25T16:47:55.545211Z",
+            "updated_at": "2025-03-27T02:05:17.254744Z",
+            "deleted_at": null,
+            "main_name": "BRONZE CANAL",
+            "aliases": [
+                "CTG-6177 ",
+                "Circuit Panda ",
+                "Palmerworm ",
+                "Shrouded Crossbow ",
+                "BlackTech"
+            ],
+            "source_name": "Secureworks:BRONZE CANAL",
+            "tools": [
+                " DRIGO",
+                " Flagpro",
+                " Gh0stTimes",
+                " PLEAD",
+                " Spiderpig",
+                " Waterbear",
+                "Bifrose"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "75024aad-424b-449a-b286-352fe9226bcb",
+            "created_at": "2023-01-06T13:46:38.962724Z",
+            "updated_at": "2025-03-27T02:00:02.964002Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "CIRCUIT PANDA",
+                "Temp.Overboard",
+                "G0098",
+                "Red Djinn",
+                "HUAPI",
+                "Palmerworm",
+                "T-APT-03",
+                "Manga Taurus",
+                "Earth Hundun"
+            ],
+            "source_name": "MISPGALAXY:BlackTech",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "efa7c047-b61c-4598-96d5-e00d01dec96b",
+            "created_at": "2022-10-25T16:07:23.404442Z",
+            "updated_at": "2025-03-27T02:02:09.781478Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "BlackTech",
+                "Circuit Panda",
+                "Earth Hundun",
+                "Manga Taurus",
+                "Operation PLEAD",
+                "Operation Shrouded Crossbow",
+                "Operation Waterbear",
+                "Palmerworm",
+                "Radio Panda",
+                "Red Djinn",
+                "T-APT-03",
+                "TEMP.Overboard"
+            ],
+            "source_name": "ETDA:BlackTech",
+            "tools": [
+                "BIFROST",
+                "BUSYICE",
+                "BendyBear",
+                "Bluether",
+                "CAPGELD",
+                "DRIGO",
+                "Deuterbear",
+                "Flagpro",
+                "GOODTIMES",
+                "Gh0stTimes",
+                "IconDown",
+                "KIVARS",
+                "LOLBAS",
+                "LOLBins",
+                "Linopid",
+                "Living off the Land",
+                "TSCookie",
+                "Waterbear",
+                "XBOW",
+                "elf.bifrose"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535618,
+    "ts_updated_at": 1743041454,
+    "ts_creation_date": 1653781517,
+    "ts_modification_date": 1653781517,
+    "files": {
+        "pdf": "https://archive.orkl.eu/f6705f1b02eae009c4bce78ab1f5fc85aae130be.pdf",
+        "text": "https://archive.orkl.eu/f6705f1b02eae009c4bce78ab1f5fc85aae130be.txt",
+        "img": "https://archive.orkl.eu/f6705f1b02eae009c4bce78ab1f5fc85aae130be.jpg"
+    }
+}

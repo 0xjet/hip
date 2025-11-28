@@ -1,0 +1,199 @@
+{
+    "id": "ae286c68-6b86-4370-b4fa-742469d62d2f",
+    "created_at": "2022-11-23T12:04:43.54203Z",
+    "updated_at": "2025-03-27T02:16:05.859081Z",
+    "deleted_at": null,
+    "sha1_hash": "0b97538abf85f7f033e705cd20f4bc3be30760ad",
+    "title": "",
+    "authors": "",
+    "file_creation_date": "2015-03-06T23:31:10Z",
+    "file_modification_date": "2015-03-09T15:27:01Z",
+    "file_size": 815991,
+    "plain_text": "# NCC Group Malware Technical Note\n\n## Derusbi Server variant (November 2014)\n\n\n**Handling information**\n\n\nThis document was produced by the NCC Group Cyber Defence Operations team. The content of\nthis document should be considered proprietary information.\n\nNCC Group gives permission to copy this report for the purposes of disseminating information at TLP\n[WHITE. Please see the US CERT website for full details of the traffic light marking system.](https://www.us-cert.gov/tlp)\n\n### Contents\n\n**Derusbi Server variant (November 2014) ......................................................................................... 1**\n\nContents ............................................................................................................................................ 1\n\nIntroduction ........................................................................................................................................ 2\n\nInitial samples .................................................................................................................................... 2\n\nAnalysis of injection mechanism ....................................................................................................... 3\n\nStage 1: WMI.DLL ......................................................................................................................... 3\n\nStage 2: WMRKINS.TBL ............................................................................................................... 3\n\nStage 3: Embedded DLL ............................................................................................................... 4\n\nStage 4: OFFICEUT32.DLL ........................................................................................................... 4\n\nStage 5: dump_dumpfve.sys ......................................................................................................... 5\n\nStage 6: Update.dll ........................................................................................................................ 5\n\nIdentifying suspicious files ................................................................................................................. 6\n\nYara rules ...................................................................................................................................... 6\n\nSsdeep fuzzy hashes ..................................................................................................................... 7\n\nIdentifying infected machines ............................................................................................................ 7\n\nPersistence mechanism - DLL Hijacking ....................................................................................... 7\n\nIdentifying driver components - GMER .......................................................................................... 8\n\nIdentifying driver components – accesschk ................................................................................... 9\n\nIdentifying driver components – WinObj ...................................................................................... 10\n\nIdentifying over the network ......................................................................................................... 10\n\nIdentifying firewall hooks – Volatility ............................................................................................ 11\n\nSummary of files .............................................................................................................................. 12\n\nDocument history ............................................................................................................................ 13\n\n**NCC Group | Page 1** **TLP: WHITE**\n\n**V** **i** **1 1**\n\n\n-----\n\n### Introduction\n\nThis document provides brief technical details of one of the pieces of malware found during an\nincident response engagement conducted on behalf of a client in November 2014.\n\nDuring the overall incident the attackers made a number of attempts to remain persistent in the\nnetwork including:\n\n Elevating privileges with a technique similar to the Churrasco IIS6 token kidnapping exploit.\n Dropping ASPXSpy webshells on public facing servers.\n Using the Gh0st RAT.\n\nThe most sophisticated persistence attempt included the installation of the Derusbi Server backdoor\non a number of machines. This backdoor has previously been reported by both RSA[1] and Novetta[2].\n\nThis document outlines the key features of the persistence mechanism, which appears to be different\nfrom previously reported samples seen in prior attacks. A number of mechanisms for detecting\nwhether the Derusbi Server backdoor is installed on a computer are also provided.\n\n### Initial samples\n\nTwo files were obtained from a Windows 2003 Server which had been created by the attacker. Both\nwere owned by an administrative user due to the attackers using pass the hash techniques to\nimpersonate a domain administrator.\n\nNo specific changes to the operating system’s configuration for persistence were identified. Further\nanalysis showed that the execution of the code contained in the malicious wmi.dll relies on DLL load\norder hijacking. The legitimate `wmi.dll is located in` `%System32%, however the malicious one is`\nloaded first by wmiprvse.exe as both files are located in the same directory.\n\nDuring the execution of the malware a number of additional DLLs and device drivers are\ndeobfuscated and unpacked. However, although there are several layers to the malware, only two of\nthese files are written to disk.  An overview of all files, including those unpacked and executed in\nmemory, is provided in the section Summary of files.\n\n**Original file path** **MD5**\n```\nC:\\Windows\\system32\\wbem\\wmi.dll 81DF67FCA641A3EEA60072E81CEE039A\nC:\\Windows\\system32\\wmrkins.tbl 76D62E98AF4E9235DCC8AEDDF32840AC\n\n```\n1 http://www.emc.com/collateral/white-papers/h12756-wp-shell-crew.pdf\n2 http://www.novetta.com/wp-content/uploads/2014/11/Executive_Summary-Final_1.pdf\n\n**NCC Group | Page 2** **TLP: WHITE**\n\n**V** **i** **1 1**\n\n\n-----\n\n### Analysis of injection mechanism\n\n**Stage 1: WMI.DLL**\n\nWhen loaded the DLL `WMI.DLL reads` `wmrkins.tbl into heap memory. It then exclusive-ors (XORs)`\neach byte in the file with 0xB5 to decode its contents. Finally it calls a decompression routine using\nMiniLZO[3] and writes the decompressed data to an executable buffer on the heap. A new thread is\nthen created with code execution commencing at the start of the decompressed code. The usage of\nMiniLZO in this DLL is consistent with usage elsewhere in the Derusbi Server backdoor.\n\nThe code also tries to open C:\\windows\\temp\\WMI0I0ARK.AX for write access with the attribute set to\nhidden. However, it does nothing with this file at this time. The presence of this file can be used to\nidentify machines which have been infected. The code installs a Windows messaging hook using\n```\nSetWindowsHookExA, though this appears to do nothing and the callback function simply passes the\n\n```\nmessage using CallNextHookEx.\n\nThe DLL exports the same functions as the real wmi.dll and essentially proxies them. DllMain loads\nthe real `wmi.dll and stores its base address in a global variable. Each exported function calls a`\nfunction which uses GetProcAddress to find the real code and then jumps to it.\n\n**Stage 2: WMRKINS.TBL**\n\nThe unobfuscated and decompressed code extracted from `wmrkins.tbl runs directly from memory.`\nAt least some parts, if not the entire code stub, have been hand-coded in x86 assembly language.\nThe main purpose is to extract an embedded PE stored within the binary image.\n\nThe code contains a PE loader that extracts each section into virtual memory, resolves imports and\ncalls the entry point. It provides the equivalent of `LoadLibrary without the need to write the PE to`\ndisk.\n\nThe code is highly similar to a typical exploit payload in that it is position-independent binary with no\nexternal dependencies. All necessary APIs are found directly using native implementations of\n```\nGetModuleHandle and GetProcAddress using hashes rather than names. The following APIs are\n\n```\nresolved and stored in a table:\n\n**Library** **Function** **Offset**\n\n`ntdll` `memcpy` 0x0c\n\n`ntdll` `memset` 0x10\n\n`ntdll` `RtlAllocateHeap` 0x18\n\n`ntdll` `RtlReAllocateHeap` 0x14\n\n`kernel32` `GetProcAddress` 0x04\n\n`kernel32` `GetProcessHeap` 0x1c\n\n`kernel32` `IsBadReadPtr` 0x20\n\n`kernel32` `LoadLibraryA` 0x00\n\n`kernel32` `VirtualAlloc` 0x24\n\n`kernel32` `VirtualFree` 0x28\n\n`kernel32` `VirtualProtect` 0x2c\n\n3 [http://www.oberhumer.com/opensource/lzo/](http://www.oberhumer.com/opensource/lzo/)\n\n**NCC Group | Page 3** **TLP: WHITE**\n\n**V** **i** **1 1**\n\n\n-----\n\n**Stage 3: Embedded DLL**\n\nThe DLL extracted has no exports and all functionality is exposed via the entry point DllMain. When\nloaded it performs the following actions.\n\n1. Creates a mutex called symantec_srv002\n2. Decompresses an embedded DLL to memory\n3. Attempts to open services.exe or if that fails dllhost.exe\n4. Enables debugging privileges for itself\n5. Injects the uncompressed DLL into the remote process\n6. Injects a loader stub into the remote process\n7. Creates a remote thread to call the loader stub\n\nThe loader stub is functionally identical to the PE loader in the previous version. There are minor\nimplementation-level differences; functions are resolved by name rather than hash, for example. The\nembedded DLL is decompressed using the same MiniLZO code as in wmi.dll. From its export table\nwe can deduce that the embedded and injected DLL is called OfficeUt32.dll.\n\n**Stage 4: OFFICEUT32.DLL**\n\nThis library is the usermode portion of the Derusbi Server variant and has five exported functions:\n\n `DllRegisterServer`\n `Func`\n `ServiceMain`\n `SvchostPushServiceGlobals`\n `WUServiceMain`\n\nThe entry point resolves the module name and stores it in a global variable, creates a thread and\nexits. The thread created sleeps for 60 seconds then calls another function to spawn a worker thread\nand exits. The worker thread performs a number of tasks.\n\n1. Initializes a random number generator then enables various privileges: `SeDebugPrivilege,`\n```\n    SeLoadDriverPrivilege, SeShutdownPrivilege and SeTcbPrivilege.\n\n```\n2. Checks whether `\\Device\\{93144EB0-8E3E-4591-B307-8EEBFE7DB28F} exists and, if not,`\n\nextracts an embedded kernel driver and loads it. The kernel driver is obfuscated by\nexclusive-or with a constant 32-bit mask and compressed using LZO. The driver is written to\n```\n    dump_dumpfve.sys under the system’s drivers directory and loaded. This embedded driver\n\n```\nmatches previous reporting about the Derusbi Server backdoor.\n3. Creates another thread which contains the main command handler.\n4. The command handler extracts an embedded DLL and writes it to disk using the same\n\nobfuscation and compression as the driver. From its export table we can see the DLL is\ncalled Update.dll.\n\nThe code has a number of unusual features. There is extensive use of SSE assembly instructions.\nNormally this type of assembly code is only emitted by a compiler for highly optimized intrinsic\nfunctions such as memset and memcpy or computational routines that vectorize easily.\n\nThe code checks the capabilities of the CPU extensively and in some cases selects routines based\non those capabilities.\n\nSeveral analysed routines which would not appear to benefit from SSE implementation (such as\nexclusive-or unmasking of embedded files) use SSE assembly instructions. This suggests parts of\nthe program may have been hand-coded is assembly. However, there are features that suggest it is\ncompiled code (failure to reuse dead registers for example). The most likely explanation is that it was\ncompiled using the Intel Compiler which tends to use vectorization more aggressively.\n\n**NCC Group | Page 4** **TLP: WHITE**\n\n**V** **i** **1 1**\n\n\n-----\n\n**Stage 5: dump_dumpfve.sys**\n\nThis kernel driver is the Derusbi Server backdoor, which has been widely reported previously.\n\nThe PE timestamp is 3[rd] April 2014 04:24:28 and the driver is signed by \"Luzhoushi Huicheng\nTechnology Co.,Ltd.”, certificate serial `1F 28 51 FC 5D F4 5D A8 44 65 05 20 39 08 F4 22. This`\ncertificate expired on the 27[th] September 2014.\n\nThe driver installs custom firewall hooks which enable it to listen on any open port and coexist with\nother network services. A magic “handshake” value is used at the start of connections to enable the\nattackers to trigger the backdoor.\n\nDetection mechanisms are discussed later in this document.\n\n**Stage 6: Update.dll**\n\nThis library has a single exported function called `Func. All functionality is exposed through this`\nfunction.\n\nWhen called it starts a thread which creates a named pipe called \\\\.\\pipe\\usbpcgNNNN where NNNN is\na decimal number derived from taking the process identifier and calling ProcessIdToSessionId on it.\nIt then goes into an infinite loop reading from the pipe and taking appropriate action.\n\nCode to connect to the named pipe can found in OfficeUt32.dll.\n\n**NCC Group | Page 5** **TLP: WHITE**\n\n**V** **i** **1 1**\n\n\n-----\n\n### Identifying suspicious files\n\nInfected machines may be identified by:\n\n Searching for the MD5 hashes listed above.\n Using Yara rules (below) to search potentially compromised systems.\n Using ssdeep fuzzy hashes (below) to search potentially compromised systems.\n\n**Yara rules**\n\nThe following Yara[4] rules can be used to identify the main files reported in this document. Further\nrules are available as a separate file.\n\nAn entire system can be searched using a command similar to: yara –r rules.yar c:\\\n```\nrule wmi_dll {\n meta:\n  description = \"WMI shim / hook, used to load Derusbi\"\n  author = \"David Cannings, NCC Group\"\n  tlp = \"WHITE\"\n  md5 = \"81DF67FCA641A3EEA60072E81CEE039A\"\n strings:\n  $str01 = \"Function can not be found %hs,Program can not run properly\"\n  $str02 = \"Unable to load %s,Program can not run properly\"\n  $str03 = \"\\\\temp\\\\WMI0I0ARK.AX\"\n  $str04 = \"\\\\wmrkins.tbl\"\n  $str05 = \"RK_Wmi.dll\"\n  // Legitimate Windows APIs which are hooked by this DLL\n  $str06 = \"WmiQueryAllDataA\"\n  $str07 = \"QueryAllTracesA\"\n condition:\n  3 of them\n}\nrule derusbi_server_kernel_driver {\n meta:\n  description = \"Strings from a Derusbi Server variant kernel driver\"\n  author = \"David Cannings, NCC Group\" \n  tlp = \"WHITE\"\n  md5 = \"728A72B076EFF5E1A8887F3FF7D5F3BC\"\n strings:\n  $str01 = \"%x:%d->%x:%d, Flag %s%s%s%s%s, seq %u, ackseq %u, datalen %u\"\n  $str02 = \"%x->%x, icmp type %d, code %d\"\n  $str03 = \", id %d, seq %d\"\n  $str04 = \"%x->%x\" fullword\n  $str05 = \"\\\\BaseNamedObjects\\\\EKV0000000000\" wide\n  $str06 = \"\\\\Registry\\\\Machine\\\\System\\\\CurrentControlSet\\\\Control\\\\Class\\\\{4D36E972E325-11CE-BFC1-08002BE10318}\" wide\n  $str07 = \"{93144EB0-8E3E-4591-B307-8EEBFE7DB28F}\" wide\n condition:\n  4 of them\n}\n\n```\n4 http://plusvic.github.io/yara/\n\n**NCC Group | Page 6** **TLP: WHITE**\n\n**V** **i** **1 1**\n\n\n-----\n\n**Ssdeep fuzzy hashes**\n\nFuzzy hashes generated using ssdeep are provided below. These have been generated from the\ntwo suspicious kernel drivers identified during the investigation.\n\nThese may be checked against suspicious files or a whole system using:\n```\nssdeep -r -m rules.ssdeep c:\\\nssdeep,1.1--blocksize:hash:hash,filename\n384:q8999PUoojRezchW6x3iW4ndpkEYPLqK9y2g1eMb:1TlzcNMIE,\"fake_wmi_dll\"\n768:s9dPsukYL9HhWTT3Lv3jf0M41Lhg3KeSa+Eu5Vz:5NI9HQnfsM41Lhg3LVg,\"kernel_driver\"\n\n### Identifying infected machines\n\n```\nThis section provides a number of techniques which can be used to identify an infected machine. A\nnumber are specific to the persistence mechanism and should not be relied upon as complete\nassurance that a machine is not infected.\n\nOne simple mechanism is to look for the presence of the file C:\\windows\\temp\\WMI0I0ARK.AX, which\nwas always empty during our testing. However, it is possible this file will be used or deleted if the\nattackers successfully establish communication with the backdoor.\n\n**Persistence mechanism - DLL Hijacking**\n\nThe specific persistence mechanism used in this example can be identified using Process Explorer,\nwhen wmiprvse.exe is running. However, note that many other persistence mechanisms could be\nused to load the Derusbi Server malware.\n\nBelow is an example of Sysinternals Process Explorer showing the malicious proxy wmi.dll loaded\nin wmiprvse.exe (from %System32%\\wbem\\) and the legitimate wmi.dll (in %System32%).\n\n**NCC Group | Page 7** **TLP: WHITE**\n\n**V** **i** **1 1**\n\n\n-----\n\n**Identifying driver components - GMER**\n\nThe GMER tool shows a number of the kernel devices, most likely because the original driver does\nnot exist on disk after it has been loaded.\n\n**NCC Group | Page 8** **TLP: WHITE**\n\n**V** **i** **1 1**\n\n\n-----\n\n**Identifying driver components – accesschk**\n\nThe Sysinternals tool accesschk can be used to search for GUIDs associated with the driver. The\nGUID values used here match previous reporting from Novetta, suggesting that they have not been\nchanged between driver versions.\n\nThe relevant objects are:\n\n Device: \\Device\\{93144EB0-8E3E-4591-B307-8EEBFE7DB28F}\n Driver: \\Driver\\{D9D5B985-05A5-4696-9E52-670DF856BE83}\n Object: \\BaseNamedObjects\\{93144EB0-8E3E-4591-B307-8EEBFE7DB28F}\n Object: \\BaseNamedObjects\\{93144EB0-8E3E-4591-B307-8EEBFE7DB28E}\n\nOn an infected machine, the output looks similar to the below:\n```\nC:\\Documents and Settings\\Administrator\\Desktop\\Bundle>accesschk -o -q -u -accep\nteula \\BaseNamedObjects\\{93144EB0-8E3E-4591-B307-8EEBFE7DB28E}\n\\BaseNamedObjects\\{93144EB0-8E3E-4591-B307-8EEBFE7DB28E}\n Type: Event\n RW Everyone\nC:\\Documents and Settings\\Administrator\\Desktop\\Bundle>accesschk -o -q -u -accep\nteula \\BaseNamedObjects\\{93144EB0-8E3E-4591-B307-8EEBFE7DB28F}\n\\BaseNamedObjects\\{93144EB0-8E3E-4591-B307-8EEBFE7DB28F}\n Type: Event\n RW Everyone\nC:\\Documents and Settings\\Administrator\\Desktop\\Bundle>accesschk -o -q -u -accep\nteula \\Driver\\{D9D5B985-05A5-4696-9E52-670DF856BE83}\nNo matching objects found.\nC:\\Documents and Settings\\Administrator\\Desktop\\Bundle>accesschk -o -q -u -accep\nteula \\Device\\{93144EB0-8E3E-4591-B307-8EEBFE7DB28F}\n\\Device\\{93144EB0-8E3E-4591-B307-8EEBFE7DB28F}\n Type: Device\n RW Everyone\n RW NT AUTHORITY\\SYSTEM\n RW BUILTIN\\Administrators\n R NT AUTHORITY\\RESTRICTED\n\n```\n**NCC Group | Page 9** **TLP: WHITE**\n\n**V** **i** **1 1**\n\n\n-----\n\n**Identifying driver components – WinObj**\n\nThe same GUIDs can also be looked for manually using WinObj. Below is an example of one kernel\nobject in \\Device:\n\n**Identifying over the network**\n\nNCC Group have written a Python script that will trigger known variants of the Derusbi Server\nbackdoor using the correct “magic” values. This script is available separately.\n\nBelow the script is shown when run against an infected machine. Note that the port(s) used for\ntesting need to be open, if Windows Firewall is blocking connections then the packets do not appear\nto reach the kernel driver.\n```\n-> % python derusbi-server-trigger.py 192.168.99.50\n[+] Sending 64 byte handshake to 192.168.99.50:80\n[E] Port not open or timed out reading from socket!\n[+] Sending 64 byte handshake to 192.168.99.50:139\n[D] Received:\n3b12751cc4ed8ae324ea38767854736d4d08d067be548258be66db43c257461241582b5d8c63fa03306f7f5270\n5af00aa7465479860732239512aa7d5b4f6825\n[D] Values: 1c75123b e38aedc4 7638ea24\n[!] Got a valid reply from 192.168.99.50, this machine is potentially infected!\n[+] Sending 64 byte handshake to 192.168.99.50:445\n[D] Received:\ne658fc1b19a703e4b1f837cc9f0d89738a38410a1b64fd15b87c4f63686ff61a723a7b001460990ecd33d3270d\n7ff00444203a18b41fa613664f537133780b19\n[D] Values: 1bfc58e6 e403a719 cc37f8b1\n[!] Got a valid reply from 192.168.99.50, this machine is potentially infected!\n\n```\n**NCC Group | Page 10** **TLP: WHITE**\n\n**V** **i** **1 1**\n\n\n-----\n\n**Identifying firewall hooks – Volatility**\n\nNCC Group have produced a Volatility plugin which can be obtained from our Github repository[5].\n\nWhen run against a memory dump of an infected machine, the output should look similar to the\nbelow. Please note that there are legitimate reasons to use the firewall hooking API on Windows\n(such as the usage in ipnat.sys, below) but this is one way of identifying suspicious behaviour.\n```\n[FWHook] Found tcpip.sys at offset 0x17b7098 with DllBase 0xf117d000\n[FWHook] PE Header Offset: 0x0000d8\n[FWHook] Image Base Address: 0x010000\n[FWHook] FQ Block Address: 0xf11be860\n[FWHook] FQ Counter Address: 0xf11be880\n[FWHook] FQ Counter Value: 16 0x000010\n[FWHook] Final FQ Block Address: 0xf11be870\n[FWHook] Total hooks registered 3\n[FWHook] --------------------------------------------------------------------------------[FWHook] Call Out Address: 0xf0582246\n[FWHook] Module Base Address: 0xf0580000\n[FWHook] Module DLL Name dump_dumpfve.sys\n[FWHook] Module Binary Path \\??\\C:\\WINDOWS\\system32\\drivers\\dump_dumpfve.sys\n[FWHook] --------------------------------------------------------------------------------[FWHook] Call Out Address: 0xf103c6dc\n[FWHook] Module Base Address: 0xf1027000\n[FWHook] Module DLL Name ipnat.sys\n[FWHook] Module Binary Path \\SystemRoot\\system32\\DRIVERS\\ipnat.sys\n[FWHook] --------------------------------------------------------------------------------[FWHook] Call Out Address: 0xf0582270\n[FWHook] Module Base Address: 0xf0580000\n[FWHook] Module DLL Name dump_dumpfve.sys\n[FWHook] Module Binary Path \\??\\C:\\WINDOWS\\system32\\drivers\\dump_dumpfve.sys\n\n```\n5 https://github.com/nccgroup/WindowsFirewallHookDriverEnumeration\n\n**NCC Group | Page 11** **TLP: WHITE**\n\n**V** **i** **1 1**\n\n\n-----\n\n### Summary of files\n\nPlease note that because some files are never saved to disk they have been recovered through a\ncombination of memory forensics and reverse engineering. Therefore the MD5 values below\nrepresent the files which are provided with this report.\n\n**Name** `wmi.dll`\n\n**MD5** `81DF67FCA641A3EEA60072E81CEE039A`\n\n**Linker timestamp** 15th August 2014, 08:37:21\n\n**Description** DLL hijack for legitimate `wmi.dll, proxies requests to the real functionality`\nand loads additional code.\n\n**Name** `wmrkins.tbl`\n\n**MD5** `76D62E98AF4E9235DCC8AEDDF32840AC`\n\n**Description** Compressed and XOR obfuscated data, loaded by wmi.dll. Contains all\nother components. Decompresses to B4845947A31A7A1C4A271D91A369E975.\n\n**Name** _Unnamed (not saved to disk, discussed in Stage 3: Embedded DLL)_\n\n**MD5** `15444857488C9C93C672A246F41AE313`\n\n**Linker timestamp** 7[th] August 2014, 14:13:51\n\n**Description** First DLL, unpacked by wmi.dll from WMRKINS.TBL.\n\n**Name** `dump_dumpfve.sys`\n\n**MD5** `C2780885305FCB20D2B76D23AA124D51`\n\n**Linker timestamp** 3rd April 2014, 04:24:28\n\n**Description** Derusbi Server variant, kernel driver.\n\n**Name** `officeut32.dll`\n\n**MD5** `728A72B076EFF5E1A8887F3FF7D5F3BC`\n\n**Linker timestamp** 3rd April 2014, 04:25:53\n\n**Description** Derusbi Server variant, usermode portion.\n\n**Name** `Update.dll`\n\n**MD5** `70470DFBD248D8A85843B552D3392156`\n\n**Linker timestamp** 3rd April 2014, 04:25:38\n\n**Description** Unpacked and saved to disk by officeut32.dll\n\n**NCC Group | Page 12** **TLP: WHITE**\n\n**V** **i** **1 1**\n\n\n-----\n\n### Document history\n\n**Document History**\n**Issue No.** **Issue Date** **Issued By** **Change Description**\n0.1 28/11/2014 Pete Beck Draft for NCC Group internal use\n0.2 08/01/2015 David Cannings Added Yara rules, ssdeep and network\nscanning script, added detail ready for public\nrelease.\n0.3 08/01/2015 David Cannings Changes from QA process integrated\n1.0 12/01/2015 David Cannings Initial release to industry partners, TLP:\nAMBER.\n1.1 06/03/2015 David Cannings Public release at TLP: WHITE.\n\n**NCC Group | Page 13** **TLP: WHITE**\n\n**V** **i** **1 1**\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "99593a68-7f6e-400e-9a9f-a707f66d2e72",
+            "created_at": "2022-11-23T11:07:14.353321Z",
+            "updated_at": "2022-11-23T11:07:14.353321Z",
+            "deleted_at": null,
+            "name": "AGRO",
+            "url": "https://apt.threattracking.com",
+            "description": "APT Groups and Operations Spreadsheet",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://www.nccgroup.trust/globalassets/our-research/uk/technical-advisories/2015/derusbi-server-technical-note-1-1-tlp-white.pdf"
+    ],
+    "report_names": [
+        "derusbi-server-technical-note-1-1-tlp-white.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "67bf0462-41a3-4da5-b876-187e9ef7c375",
+            "created_at": "2022-10-25T16:07:23.44832Z",
+            "updated_at": "2025-03-27T02:02:09.806007Z",
+            "deleted_at": null,
+            "main_name": "Careto",
+            "aliases": [
+                "Careto",
+                "The Mask",
+                "Ugly Face"
+            ],
+            "source_name": "ETDA:Careto",
+            "tools": [
+                "Careto"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "3fad11c6-4336-4b28-a606-f510eca5452e",
+            "created_at": "2022-10-25T16:07:24.346573Z",
+            "updated_at": "2025-03-27T02:02:10.183211Z",
+            "deleted_at": null,
+            "main_name": "Turbine Panda",
+            "aliases": [
+                "APT 26",
+                "Black Vine",
+                "Bronze Express",
+                "Group 13",
+                "JerseyMikes",
+                "KungFu Kittens",
+                "PinkPanther",
+                "Shell Crew",
+                "Turbine Panda",
+                "WebMasters"
+            ],
+            "source_name": "ETDA:Turbine Panda",
+            "tools": [
+                "Agent.dhwf",
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Derusbi",
+                "Destroy RAT",
+                "DestroyRAT",
+                "FF-RAT",
+                "FormerFirstRAT",
+                "Hurix",
+                "Kaba",
+                "Korplug",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "Mivast",
+                "PlugX",
+                "RbDoor",
+                "RedDelta",
+                "RibDoor",
+                "Sakula",
+                "Sakula RAT",
+                "Sakurel",
+                "Sogu",
+                "StreamEx",
+                "TIGERPLUG",
+                "TVT",
+                "Thoper",
+                "Winnti",
+                "Xamtrav",
+                "cobeacon",
+                "ffrat"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "64ca1755-3883-4173-8e0a-6e5cf92faafd",
+            "created_at": "2022-10-25T15:50:23.636456Z",
+            "updated_at": "2025-03-27T02:00:55.51077Z",
+            "deleted_at": null,
+            "main_name": "Deep Panda",
+            "aliases": [
+                "Deep Panda",
+                "Shell Crew",
+                "KungFu Kittens",
+                "PinkPanther",
+                "Black Vine"
+            ],
+            "source_name": "MITRE:Deep Panda",
+            "tools": [
+                "Mivast",
+                "StreamEx",
+                "Sakula",
+                "Tasklist",
+                "Derusbi"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "46a151bd-e4c2-46f9-aee9-ee6942b01098",
+            "created_at": "2023-01-06T13:46:38.288168Z",
+            "updated_at": "2025-03-27T02:00:02.794118Z",
+            "deleted_at": null,
+            "main_name": "APT19",
+            "aliases": [
+                "Black Vine",
+                "TEMP.Avengers",
+                "PinkPanther",
+                "G0073",
+                "KungFu Kittens",
+                "Group 13",
+                "Shell Crew",
+                "BRONZE FIRESTONE",
+                "G0009",
+                "Sunshop Group",
+                "DEEP PANDA",
+                "Codoso"
+            ],
+            "source_name": "MISPGALAXY:APT19",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "1edcac0b-efd9-47b1-9aca-33827d5bd085",
+            "created_at": "2024-05-01T02:03:07.964773Z",
+            "updated_at": "2025-03-27T02:05:17.273595Z",
+            "deleted_at": null,
+            "main_name": "BRONZE KEYSTONE",
+            "aliases": [
+                "Aurora Panda ",
+                "DeputyDog ",
+                "Group 72 ",
+                "Hidden Lynx ",
+                "Shell Crew",
+                "TG-8153 ",
+                "Tailgater Team",
+                "APT17 "
+            ],
+            "source_name": "Secureworks:BRONZE KEYSTONE",
+            "tools": [
+                " BlackCoffee",
+                " DeputyDog",
+                " Derusbi",
+                " Gh0stHTTPSDropper",
+                " HiKit",
+                " InternalCMD",
+                " PlugX",
+                " PoisonIvy",
+                " ZxShell",
+                "9002"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1669205083,
+    "ts_updated_at": 1743041765,
+    "ts_creation_date": 1425684670,
+    "ts_modification_date": 1425914821,
+    "files": {
+        "pdf": "https://archive.orkl.eu/0b97538abf85f7f033e705cd20f4bc3be30760ad.pdf",
+        "text": "https://archive.orkl.eu/0b97538abf85f7f033e705cd20f4bc3be30760ad.txt",
+        "img": "https://archive.orkl.eu/0b97538abf85f7f033e705cd20f4bc3be30760ad.jpg"
+    }
+}

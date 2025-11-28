@@ -1,0 +1,42 @@
+{
+    "id": "c82142db-053b-41e6-a6f8-355908bc55d3",
+    "created_at": "2023-05-06T02:09:01.100179Z",
+    "updated_at": "2025-03-27T02:05:37.151874Z",
+    "deleted_at": null,
+    "sha1_hash": "956f6b4508aa7cfdb14f4097ba4505b307ddd247",
+    "title": "2023-03-30 - Forensic Triage of a Windows System running the Backdoored 3CX Desktop App",
+    "authors": "",
+    "file_creation_date": "2023-05-05T01:44:50Z",
+    "file_modification_date": "2023-05-05T01:44:50Z",
+    "file_size": 2719507,
+    "plain_text": "# Forensic Triage of a Windows System running the Backdoored 3CX Desktop App\n\n**[cadosecurity.com/forensic-triage-of-a-windows-system-running-the-backdoored-3cx-desktop-app/](https://www.cadosecurity.com/forensic-triage-of-a-windows-system-running-the-backdoored-3cx-desktop-app/)**\n\nBlog\n\nMarch 30, 2023\n\n\nMarch 30, 2023\n\n\n[As you’ve seen there have been a number of reports (Crowdstrike,](https://www.crowdstrike.com/blog/crowdstrike-detects-and-prevents-active-intrusion-campaign-targeting-3cxdesktopapp-customers/) [SentinelOne,](https://www.sentinelone.com/blog/smoothoperator-ongoing-campaign-trojanizes-3cx-software-in-software-supply-chain-attack/) Trend\nMicro, [Symantec,](https://symantec-enterprise-blogs.security.com/blogs/threat-intelligence/3cx-supply-chain-attack) [Volexity,](https://www.volexity.com/blog/2023/03/30/3cx-supply-chain-compromise-leads-to-iconic-incident/) [Huntress) of a supply chain compromise of 3CX, which produces](https://www.huntress.com/blog/3cx-voip-software-compromise-supply-chain-threats)\nVOIP phone software.\n\nBelow we have performed a quick triage forensic investigation of a system we have installed\nthe backdoored installer on. We have also supplied Yara rules for the components under a\nfriendly Apache License (at the bottom) to help you hunt for compromised systems.\n\nNote that our data-set will be missing data you will find on a real compromised system, as\n[the download chain (from Github) is now broken due to a successful taken down request. We](https://github.com/IconStorages)\n[deployed the final stage credential theft tool (d3dcompiler_47.dll) manually via rundll32](https://www.virustotal.com/gui/file/11be1803e2e307b647a8a7e02d128335c448ff741bf06bf52b332e0bbf423b03)\n[calling each available exported module. There is also a sleep function to delay the secondary](https://twitter.com/Kostastsale/status/1641314315457413123)\npayload. So results may vary a bit from what you will find on a real system!\n\n[We have performed the analysis of the system using Cado Response but the results and](https://www.cadosecurity.com/free-investigation/)\napproach should be transferable.\n\n**Installing 3CX**\n\n[We installed a known-compromised version of 3CX (3CXDesktopApp-18.12.416.msi). After](https://www.virustotal.com/gui/file/59e1edf4d82fae4978e97512b0331b7eb21dd4b838b850ba46794d9c7a2c0983)\nthe installation completed successfully, Windows defender detected a malicious component\n[(ffmpeg.dll) as](https://www.virustotal.com/gui/file/7986bbaee8940da11ce089383521ab420c443ab7b15ed42aed91fd31ce833896/details) [Win64/SamScissors:](https://www.microsoft.com/en-us/wdsi/threats/malware-encyclopedia-description?Name=Trojan:Win64/SamScissors&threatId=-2147123553)\n\n\n-----\n\nWhich you can see in the Windows Defender event logs as expected:\n\n\n-----\n\nLooking down in the timeline, we see a suspicious file being created on disk (dcwfzkme.sys)\n\nWhich we can see on disk:\n\n\n-----\n\n[However, looking up the hash shows that this is actually a part of Windows Defender s](https://www.virustotal.com/gui/file/41989526b4eb8d60a5e158f835ee90eea5fe4e499705109317cd6f72114c852f/details)\n[legitimate execution – this is just part of how Microsoft’s Boot Time Removal Tool (btr.sys)](https://superuser.com/questions/418138/what-is-microsoft-boot-time-removal-tool)\noperates and is a random name. So – let’s ignore that one!\n\nSo – let’s disable Defender and reinstall…\n\n**Post Installation**\n\nOne obvious thing is ffmpeg.dll as discussed and identified already, now viewable on disk:\n\n\n-----\n\nBrowsing to the folder level of ffmpeg.dll, we see a few other key files:\n\nFfmpeg.dll we have spoken about and is used to side-load encoded data from the other file\nin the folder – d3dcompiler_47.dll.\n\n\n-----\n\n[Update.exe is used to update the application, and has been seen pulling down the](https://news.sophos.com/en-us/2023/03/29/3cx-dll-sideloading-attack/)\ncompromised version.\n\nWhilst the analysis above has been performed on a dead disk (in this case for speed an\nisolated EC2 system) we can also perform a live collection which shows the open files for the\n3CX application at the time of collection:\n\nFor now that’s it – I was hoping to show the forensic artefacts showing the credential stealing\nbut it hasn’t been executed in this environment.\n\n**If you’d like to follow along…**\n\n[If you’d like to try out Cado Response, you can get a free trial here.](https://www.cadosecurity.com/free-investigation/)\n\n**Indicators of Compromise and Yara Rules**\n\n\n-----\n\n```\nrule APT_Trojan_Win_3CX {\n\n  meta:\n\n    description = \"Detects malicious ffmpeg dll used in 3CX supply chain attack\"\n\n    author = \"[email protected]\"\n\n    date = \"2023-03-30\"\n\n    license = \"Apache License 2.0\"\n\n    hash1 = \"7986bbaee8940da11ce089383521ab420c443ab7b15ed42aed91fd31ce833896\"\n\n    hash2 = \"c485674ee63ec8d4e8fde9800788175a8b02d3f9416d0e763360fff7f8eb4e02\"\n\n  strings:\n\n    $rout1 = { 4C 8D 4C 24 48 4C 89 F1 4C 89 EA 41 B8 40 00 00 00 FF 15 9C 3E 24\n00 85 C0 74 22 4C 89 F0 FF 15 27 8E 3B 00 4C 8D 4C 24 48 45 8B 01 4C 89 F1 4C 89 EA\nFF 15 7B 3E 24 00 EB 03 45 31 F6 }\n\n    $rout2 = { 48 8B 05 E2 EA 24 00 48 31 E0 48 89 44 24 28 48 C7 44 24 20 00 00\n00 00 81 FA BE FF FF 7F 0F 87 A2 00 00 00 89 D6 48 89 CF 8D 56 40 48 8D 4C 24 20 E8\nB3 94 01 00 }\n\n    $rout3 = { 44 0F B6 CD 46 8A 8C 0C 50 03 00 00 45 30 0C 0E 48 FF C1 48 39 C8\n}\n\n    $xor = { 33 6A 42 28 32 62 73 47 23 40 63 37 00 }\n\n  condition:\n\n    pe.characteristics & pe.DLL\n\n    and all of them\n\n    and filesize < 3MB\n\n}\n\n```\n**About Cado Security**\n\nCado Security is the cloud investigation and response automation company. The Cado\nplatform leverages the scale, speed and automation of the cloud to effortlessly deliver\nforensic-level detail into cloud, container and serverless environments. Only Cado empowers\nsecurity teams to investigate and respond at cloud speed.\n\n[Prev Post](https://www.cadosecurity.com/introducing-masked-ai-an-open-source-library-that-enables-the-usage-of-llm-apis-more-securely/) [Next Post](https://www.cadosecurity.com/cado-security-now-supports-importing-data-from-aws-infinidash/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2023/2023-03-30 - Forensic Triage of a Windows System running the Backdoored 3CX Desktop App.pdf"
+    ],
+    "report_names": [
+        "2023-03-30 - Forensic Triage of a Windows System running the Backdoored 3CX Desktop App.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1683338941,
+    "ts_updated_at": 1743041137,
+    "ts_creation_date": 1683251090,
+    "ts_modification_date": 1683251090,
+    "files": {
+        "pdf": "https://archive.orkl.eu/956f6b4508aa7cfdb14f4097ba4505b307ddd247.pdf",
+        "text": "https://archive.orkl.eu/956f6b4508aa7cfdb14f4097ba4505b307ddd247.txt",
+        "img": "https://archive.orkl.eu/956f6b4508aa7cfdb14f4097ba4505b307ddd247.jpg"
+    }
+}

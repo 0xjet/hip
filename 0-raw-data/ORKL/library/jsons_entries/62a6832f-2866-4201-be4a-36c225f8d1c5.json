@@ -1,0 +1,172 @@
+{
+    "id": "62a6832f-2866-4201-be4a-36c225f8d1c5",
+    "created_at": "2023-01-12T15:03:40.526298Z",
+    "updated_at": "2025-03-27T02:17:02.276927Z",
+    "deleted_at": null,
+    "sha1_hash": "29a0bad6676430041bd249212668d047068fc7a2",
+    "title": "2021-02-18 - Further Updates in LODEINFO Malware",
+    "authors": "",
+    "file_creation_date": "2022-05-28T03:56:19Z",
+    "file_modification_date": "2022-05-28T03:56:19Z",
+    "file_size": 978860,
+    "plain_text": "# JPCERT Coordination Center official Blog\n\n**blogs.jpcert.or.jp/en/2021/02/LODEINFO-3.html**\n\n喜野 [孝太(Kota Kino)](https://blogs.jpcert.or.jp/en/kino/)\n\nFebruary 18, 2021\n\n## Further Updates in LODEINFO Malware\n\n[LODEINFO](https://blogs.jpcert.or.jp/en/tags/lodeinfo/)\n\n[Email](http://10.10.0.46/mailto:?subject=Further%20Updates%20in%20LODEINFO%20Malware&body=https%3A%2F%2Fblogs.jpcert.or.jp%2Fen%2F2021%2F02%2FLODEINFO-3.html)\n\nThe functions and evolution of malware LODEINFO have been described in our past articles\nin [February 2020 and](https://blogs.jpcert.or.jp/en/2020/02/malware-lodeinfo-targeting-japan.html) [June 2020. Yet in 2021, JPCERT/CC continues to observe activities](https://blogs.jpcert.or.jp/en/2020/06/evolution-of-malware-lodeinfo.html)\nrelated to this malware. Its functions have been expanding with some new commands\nimplemented or actually used in attacks. This article introduces the details of the updated\nfunctions and recent attack trends.\n\n### LODEINFO versions\n\nAt the time of the last blog update, the latest version of LODEINFO was v.0.3.6, and currently\nv0.4.8 is being used. Figure 1 shows the transition of LODEINFO versions based on\nJPCERT/CC’s observation.\n\n\n-----\n\nFigure 1：LODEINFO versions\n\n### Decoy document\n\nAs we previously explained, LODEINFO infection spreads once a user enables the macro in\na Word or Excel file attached to a spear phishing email. In some recent cases, these\ndocument files are protected with a password, which is specified in the email body. The Word\ndocument convinces the user to enable the macro as in Figure 2. (The statement in the\nyellow box is roughly translated as follows: In case Word application cannot open the\ndocument properly, you may be able to open it with Word premium mode. To proceed, please\nclick the button in the yellow message bar above.)\n\n\n-----\n\nFigure 2： Word document content sample\nThe document appears to be empty, however, there are hidden letters in small and white\nfonts, containing macro configuration values and BASE64-encoded strings of a zip file which\nstores LODEINFO.\n\n\n-----\n\nFigure 3： Word document contents sample (after changing the font)\n\nThe macro uses a method called LOLBAS to execute LODEINFO. Below is the command for\nexecuting a file created.\n```\nrundll32.exe advpack.dll,RegisterOCX\n\n```\nFigure 4： Process after enabling macro\nThe code of the macro contained in the documents shows sentences in public articles\nrelated to the diplomatic relations between South Korea and Japan or North Korea in the\ncomments.\n\nFigure 5： Comments in the macro\n\n\n-----\n\n### New commands\n\nThe latest LODEINFO v0.4.8 has the following additional commands compared to v.0.3.6.\n(See Appendix A for details.)\n\nransom (implemented)\nkeylog (implemented)\nmv\ncp\nmkdir\nps\npkill\n\nThe following sections describe some of the new features that are available in the newer\nversions.\n\n**Ransomware function**\n\n“ransom” command has been implemented in v.0.3.8 and after. The encryption algorithm is a\ncombination of AES and RSA. The files are first encrypted with an AES key generated for\neach fille. The key is then encrypted with the RSA public key embedded in the malware.\nAfter that, the message `“WOW! THIS FILE HAS BEEN ENCRYPTED...” is inserted in the`\nbeginning of the file.\n\nFigure 6： Structure of the encrypted file\n\n\n-----\n\nThis process makes it difficult to decrypt the files. Files and folders to encrypt can be\nspecified with the ransom command, however, those with file extensions and paths in Figure\n7 are excluded.\n\nFigure 7： Files excluded from encryption\n\nIn case a folder is selected, its path name is checked against the list, but not the individual\nfiles inside the folder. Therefore, files including these names listed above are encrypted in\nthis case. Unlike other types of common ransomware, alteration of file extension, creation of\nransom notes and/or change of background image do not occur. JPCERT/CC has not yet\nobserved these features in actual attack cases, but they may be used for the purpose of\ndeleting evidence or exfiltrating data.\n\n**Keylog function**\n\n“keylog” command has been implemented in v.0.4.6 and after. This command checks the\nfollowing registry value to see if the option is enabled.\n\nFigure 8： Keylog checks if it is enabled\nIf it is enabled, a file named `“<NetBIOS name>.tmp” is created in %TEMP% folder, and`\nstolen key strings are encoded and stored there. An XOR key is used for encoding, which\ncontains the first 1 byte of the SHA512 value of the device’s NetBIOS name. The following is\nan example of code to decode the keylog file.\n\n\n-----\n\n```\nimport os\nimport hashlib\nname = os.getenv(\"COMPUTERNAME\")\nkeylog_file = os.getenv(\"TEMP\") + \"//\" + name + \".tmp\"\nhash_of_name = hashlib.sha512(name.encode(\"UTF-8\")).hexdigest()\nxor_key = int(hash_of_name[0:2], 16)\ndecode_data = bytes()\nwith open(keylog_file, \"rb\") as f:\n  for ch in f.read():\n    decode_data += (ch ^ xor_key).to_bytes(1, byteorder=\"big\", signed=False)\nprint(decode_data.decode('shift_jis'))\n\n```\nOne of the distinctive features of this function is that it checks if the device’s keyboard layout\nis set to Japanese according to the following criteria:\n\n“OverrideKeyboardIdentifier” value in\nHKLM\\SYSTEM\\CurrentControlSet\\Service\\i8042prt\\Parameters is set to\n“PCAT_106KEY”\n“GetKeyboardLayout” function returns “1041”\n\nIf the device uses the Japanese keyboard layout, the key strings are converted accordingly.\nThis fact implies that the attackers using LODEINFO malware target Japanese language\nusers.\n\nFigure 9： Checking keyboard layout\n\n### In closing\n\nAttacks using LODEINFO has been continuously observed, and it is considered as a severe\nthreat. We will keep an eye on this activity as it is yet likely to continue.\n\nThe hash value of the sample described in the article is listed in Appendix B, together with\nsome newly confirmed C&C servers in Appendix C. Please make sure that none of your\ndevices is communicating with such hosts.\n\n- Kota Kino\n\n(Translated by Yukako Uchida)\n\n**Reference**\n\n\n-----\n\n**Appendix A New commands**\n\n**Value** **Contents**\n\nransom Encrypt files\n\nkeylog Control keylogger\n\nmv Move files\n\ncp Copy files\n\nmkdir Create directory\n\nps List process\n\npkill Kill process\n\n**Appendix B SHA-256 has value of a sample**\n\n3fda6fd600b4892bda1d28c1835811a139615db41c99a37747954dcccaebff6e\n（v0.4.6）\n\n**Appendix C C&C servers**\n\nwww.evonzae.com\n45.76.216.40\n103.140.45.71\n139.180.192.19\n167.179.84.162\n167.179.65.11\n\n[Email](http://10.10.0.46/mailto:?subject=Further%20Updates%20in%20LODEINFO%20Malware&body=https%3A%2F%2Fblogs.jpcert.or.jp%2Fen%2F2021%2F02%2FLODEINFO-3.html)\n\nAuthor\n\n喜野 [孝太(Kota Kino)](https://blogs.jpcert.or.jp/en/kino/)\n\nKota Kino is Malware/Forensic Analyst at Incident Response Group, JPCERT/CC since\nAugust 2019.\n\nWas this page helpful?\n\n\n-----\n\n0 people found this content helpful.\n\nIf you wish to make comments or ask questions, please use this form.\n\nThis form is for comments and inquiries. For any questions regarding specific commercial\nproducts, please contact the vendor.\n\nplease change the setting of your browser to set JavaScript valid. Thank you!\n\n## Related articles\n\nAnalysis of HUI Loader\n\nAnti-UPX Unpacking Technique\n\nFAQ: Malware that Targets Mobile Devices and How to Protect Them\n\n\n-----\n\nMalware WinDealer used by LuoYu Attack Group\n\nMalware Gh0stTimes Used by BlackTech\n\n\n[Back](https://blogs.jpcert.or.jp/en/2021/01/Lazarus_malware2.html)\n[Top](https://blogs.jpcert.or.jp/en/)\n[Next](https://blogs.jpcert.or.jp/en/2021/02/jsac2021report1.html)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-02-18 - Further Updates in LODEINFO Malware.pdf"
+    ],
+    "report_names": [
+        "2021-02-18 - Further Updates in LODEINFO Malware.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "2646f776-792a-4498-967b-ec0d3498fdf1",
+            "created_at": "2022-10-25T15:50:23.475784Z",
+            "updated_at": "2025-03-27T02:00:55.479958Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "BlackTech",
+                "Palmerworm"
+            ],
+            "source_name": "MITRE:BlackTech",
+            "tools": [
+                "Kivars",
+                "PsExec",
+                "TSCookie",
+                "Flagpro",
+                "Waterbear"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d3a7123c-f519-49a0-a234-de24a1ef052a",
+            "created_at": "2022-10-25T16:47:55.545211Z",
+            "updated_at": "2025-03-27T02:05:17.254744Z",
+            "deleted_at": null,
+            "main_name": "BRONZE CANAL",
+            "aliases": [
+                "CTG-6177 ",
+                "Circuit Panda ",
+                "Palmerworm ",
+                "Shrouded Crossbow ",
+                "BlackTech"
+            ],
+            "source_name": "Secureworks:BRONZE CANAL",
+            "tools": [
+                " DRIGO",
+                " Flagpro",
+                " Gh0stTimes",
+                " PLEAD",
+                " Spiderpig",
+                " Waterbear",
+                "Bifrose"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "75024aad-424b-449a-b286-352fe9226bcb",
+            "created_at": "2023-01-06T13:46:38.962724Z",
+            "updated_at": "2025-03-27T02:00:02.964002Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "CIRCUIT PANDA",
+                "Temp.Overboard",
+                "G0098",
+                "Red Djinn",
+                "HUAPI",
+                "Palmerworm",
+                "T-APT-03",
+                "Manga Taurus",
+                "Earth Hundun"
+            ],
+            "source_name": "MISPGALAXY:BlackTech",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "efa7c047-b61c-4598-96d5-e00d01dec96b",
+            "created_at": "2022-10-25T16:07:23.404442Z",
+            "updated_at": "2025-03-27T02:02:09.781478Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "BlackTech",
+                "Circuit Panda",
+                "Earth Hundun",
+                "Manga Taurus",
+                "Operation PLEAD",
+                "Operation Shrouded Crossbow",
+                "Operation Waterbear",
+                "Palmerworm",
+                "Radio Panda",
+                "Red Djinn",
+                "T-APT-03",
+                "TEMP.Overboard"
+            ],
+            "source_name": "ETDA:BlackTech",
+            "tools": [
+                "BIFROST",
+                "BUSYICE",
+                "BendyBear",
+                "Bluether",
+                "CAPGELD",
+                "DRIGO",
+                "Deuterbear",
+                "Flagpro",
+                "GOODTIMES",
+                "Gh0stTimes",
+                "IconDown",
+                "KIVARS",
+                "LOLBAS",
+                "LOLBins",
+                "Linopid",
+                "Living off the Land",
+                "TSCookie",
+                "Waterbear",
+                "XBOW",
+                "elf.bifrose"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "b72c2616-cc7c-4c47-a83d-6b7866b94746",
+            "created_at": "2023-01-06T13:46:39.425297Z",
+            "updated_at": "2025-03-27T02:00:03.08718Z",
+            "deleted_at": null,
+            "main_name": "Red Nue",
+            "aliases": [
+                "LuoYu"
+            ],
+            "source_name": "MISPGALAXY:Red Nue",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535820,
+    "ts_updated_at": 1743041822,
+    "ts_creation_date": 1653710179,
+    "ts_modification_date": 1653710179,
+    "files": {
+        "pdf": "https://archive.orkl.eu/29a0bad6676430041bd249212668d047068fc7a2.pdf",
+        "text": "https://archive.orkl.eu/29a0bad6676430041bd249212668d047068fc7a2.txt",
+        "img": "https://archive.orkl.eu/29a0bad6676430041bd249212668d047068fc7a2.jpg"
+    }
+}

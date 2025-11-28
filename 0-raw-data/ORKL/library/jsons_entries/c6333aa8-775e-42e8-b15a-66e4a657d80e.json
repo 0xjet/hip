@@ -1,0 +1,42 @@
+{
+    "id": "c6333aa8-775e-42e8-b15a-66e4a657d80e",
+    "created_at": "2023-01-12T15:06:55.291945Z",
+    "updated_at": "2025-03-27T02:05:26.472495Z",
+    "deleted_at": null,
+    "sha1_hash": "181016fd6f0b761715e3392b3d26434c43bc2dd7",
+    "title": "2020-04-02 - GuLoader- The RAT Downloader",
+    "authors": "",
+    "file_creation_date": "2022-05-28T17:09:28Z",
+    "file_modification_date": "2022-05-28T17:09:28Z",
+    "file_size": 503360,
+    "plain_text": "# GuLoader: The RAT Downloader\n\n**blog.morphisec.com/guloader-the-rat-downloader**\n\n[Tweet](https://twitter.com/share)\n\nGuloader is a downloader that has been widely used from December 2019. Several security\nresearchers have identified the downloader in the wild, signifying that it has quickly gained\npopularity among threat actors. When it first appeared, GuLoader was used to download\n[Parallax RAT, but has been applied to other remote access trojans and info-stealers such as](https://blog.morphisec.com/parallax-rat-active-status)\nNetwire, FormBook, and Tesla.\n\n\n-----\n\nRecently, the Morphisec Labs team noticed the downloader spreading in a targeted phishing\nemail against a major bank. Although Parallax RAT was among the first malwares used with\nGuLoader, we noticed this particular campaign had Remcos RAT as the final payload.\nGuLoader is considered one of the most advanced downloaders, written in Visual Basic, and\nthis often makes it difficult to scan for static analysis.\n\nIn this blog post, we are going to cover GuLoader’s internals. This includes its shellcode,\nevasion techniques, and its delivery mechanism.\n\n## Technical Analysis: (2d6720ae866875b42601951eb3c9421fa2d5b7f0)\n\nThe first stage in this campaign is an email that claims it’s a payment invoice. This email\ncontains a ZIP file attachment; as with other phishing emails, the goal is to get the target to\ndownload the attachment and open the file. The email appears as part of a chain, which\nmakes it more likely for the target to open the attachment when it’s received.\n\n_Figure 1: The email pretends to be a payment request._\n\nThe ZIP file attachment contains a VB6 executable that stores an encrypted shellcode. The\n[shellcode is XORed with a 4 byte key and then executed. Jason Reaves (@sysopfb) wrote](https://github.com/sysopfb/Malware_Scripts/blob/master/guloader/unpacker.py)\nan unpacker for this stage, allowing us to see the URLs for GuLoader.\n\n_Figure 2: Decrypting and executing the shellcode._\n\n## GuLoader Shellcode\n\n**GuLoader has some strong evasive characteristics in its shellcode, with several anti-**\ndebugging tricks in order to make it harder for defensive solutions to analyze it. These\ninclude:\n\n\n-----\n\n**Anti Attach: In order to prevent a debugger from attaching to the process, the**\nmalware’s authors hook DbgBreakPoint and DbgUiRemoteBreakin. Attackers usually\nhook those functions with a jump to the “ExitProcess” function. In this case though, it is\njust nop’s or it jumps to an invalid address to crash the program.\n\n_Figure 3: Ntdll function hook._\n\nThe shellcode wraps several API calls that researchers put breakpoints on with a\nfunction that detects if soft breakpoints or hardware breakpoints have been set. It does\nthat by checking if the DR* registers are set to a value other than 0, and checks\nwhether bytes of the called API is 0xCC, 0x3CD or 0xB0F. If it detects hardware\nbreakpoints or soft breakpoints it will jump to an invalid address to crash the program.\n\n_Figure 4: Check hardware breakpoints and soft breakpoints_\n\n_before running an API call._\n\nCalls the NtSetInformationThread with the ThreadHideFromDebugger (0x11)\ninformation class.\n**Anti static and dynamic analysis -- Mixed x86\\x64 code. The same shellcode can be**\nread as x64 bit and x86 bit code. Though the shellcode only works as x86 bit, this is\nused to hamper static and dynamic analysis by pushing junk instruction that doesn’t\naffect the original flow of the shellcode.\n\n\n-----\n\n_Figure 5: Same shellcode read as x64 bit and x86 bit._\n\n## GuLoader Functionality\n\nGuloader uses the djb2 hash function in order to resolve API calls by hash. It does that to\nresolve GetProcAddress. Then, it will be using the same djb2 hash function to retrieve other\nAPI calls.\n\n_Figure 6: djb2 hash algorithm._\n\nGuLoader uses a variation of a process hollowing injection in order to run its next stage. It\nspawns a new suspended process of itself (CreateProcessInternalW), and will then map\n“msvbvm60.dll” over the child process at 0x400000. Other variations of Guloader malware\ncreates “RegAsm.exe” as a child process and map “mstsc.exe.” Next, it will inject the\nshellcode into the child process, changing the entry point to the shellcode’s entry point. The\n\n\n-----\n\nprocess is then resumed and the child process downloads the encrypted payload and\noverwrites the image at 0x400000 with the decrypted one. The decrypted payload, in our\nexample, is Remcos RAT.\n\n_Figure 7: Function that downloads, decrypts, and runs the payload._\n\nThe loader then iterates through the URLs; there are two URLs in this sample but, at the\ntime, one of them wasn’t active. Then, it will download the final payload in its encrypted form\nand will decrypt it using the XOR key (0x239 length in this sample), which is stored within the\nshellcode.\n\nNext, the loader will overwrite the content loaded at 0x400000 with the decrypted code and\njump to the entry point.\n\n## Conclusion\n\nGuLoader is appearing more frequently as a malware loader in the wild. It’s one of the most\nadvanced downloaders currently in use, and often downloads its payload from cloud hosting\nplatforms. This campaign was a regular URL, however.\n\nMorphisec blocks GuLoader execution, protecting its customers from this and other evasive\nmalware to ensure that their critical infrastructure is secure. This protection extends to\n[remote employees as well, and we encourage everyone to take advantage of our free trial to](https://engage.morphisec.com/get-morphisec-free-prevention)\nsee how we protect critical systems against cyberattack.\n\nIOCs:\n\nSamples:\n\n907b9784966bdbfc5447943747d3aed7445727d0\n2d6720ae866875b42601951eb3c9421fa2d5b7f0\nfa601abbdeb159eccbcee527ebc6019619a9e442\n12dd8f1cf43b51ec779363de98636c6e35fc1b4b\n\n\n-----\n\n117d9701b22abb5530de2063698bcf75f2a90577\n\nURLs:\n\nhxxp://arabianbrother[.]com/a/6.bin\nhxxp://arabianbrother[.]com/a/3.bin\nhxxp://ntaryan[.]com/a/6.bin\nhxxp://ntaryan[.]com/a/3.bin\nhxxps://drive.google[.]com/uc?export=download&id=12dwX7CxidMNeST2IlWkZAaJAha5TUFG\nhxxps://drive.google[.]com/uc?\nexport=download&id=1xz02BCj0obD4UPgs0CMtu_6GXxCEYXz\nhxxps://drive.google[.]com/uc?\nexport=download&id=1xm_RKeKAUaH1QnWB_RZw4nMtdq7jK_PX\n\n[Contact SalesInquire via Azure](http://10.10.0.46/mailto:sales@morphisec.com)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-04-02 - GuLoader- The RAT Downloader.pdf"
+    ],
+    "report_names": [
+        "2020-04-02 - GuLoader- The RAT Downloader.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673536015,
+    "ts_updated_at": 1743041126,
+    "ts_creation_date": 1653757768,
+    "ts_modification_date": 1653757768,
+    "files": {
+        "pdf": "https://archive.orkl.eu/181016fd6f0b761715e3392b3d26434c43bc2dd7.pdf",
+        "text": "https://archive.orkl.eu/181016fd6f0b761715e3392b3d26434c43bc2dd7.txt",
+        "img": "https://archive.orkl.eu/181016fd6f0b761715e3392b3d26434c43bc2dd7.jpg"
+    }
+}

@@ -1,0 +1,179 @@
+{
+    "id": "17e341ea-9c89-4f37-88e1-d0af365de688",
+    "created_at": "2023-01-12T15:00:47.532656Z",
+    "updated_at": "2025-03-27T02:13:04.371125Z",
+    "deleted_at": null,
+    "sha1_hash": "33ad8b260f704fa4eafce4b11d306baca45ba7bc",
+    "title": "2016-12-01 - CNACOM - Open Source Exploitation via Strategic Web Compromise",
+    "authors": "",
+    "file_creation_date": "2022-05-28T16:05:43Z",
+    "file_modification_date": "2022-05-28T16:05:43Z",
+    "file_size": 3585765,
+    "plain_text": "# CNACOM - Open Source Exploitation via Strategic Web Compromise\n\n**[zscaler.com/blogs/research/cnacom-open-source-exploitation-strategic-web-compromise](https://www.zscaler.com/blogs/research/cnacom-open-source-exploitation-strategic-web-compromise)**\n\n## Introduction\n\nSince a full proof of concept for CVE-2016-0189 vulnerability was published on GitHub,\nZscaler ThreatLabZ has been closely tracking its proliferation. The first copying of the\nexploit code we spotted was from the Sundown exploit kit (EK), followed closely by\nMagnitude and a resurgent KaiXin EK. In addition to the commoditized EKs, this exploit\ncode has been leveraged in numerous one-shot and gated web-exploitation campaigns,\ndelivered through a mix of the usual malvertising networks and compromised websites.\n\nThis blog details CNACOM, a web-based campaign that appears to be related to a wellknown nation-state actor more commonly associated with spear-phishing attacks.\n\n## Infection Cycle\n\n\n-----\n\nFigure 1 - An overview of the campaign's infection flow, highlighting the targeted organizations\n\nOn November 7, we spotted a malicious injection on the registration page of a major\nTaiwanese public service website. An iframe was injected into the footer of the page, which\nthen loaded a unique landing page containing the CVE-2016-0189 exploit code.\n\nFigure 2 - An injected iframe with the name \"abc\" redirects visitors to the attack code\n\nThe landing page, hosted on an RHCloud virtual private server (VPS), begins with a nearly\nidentical copy of the GitHub-published code, though the payload invocation appears to use\n[a sandbox escape via CVE-2015-0116.](http://blog.trendmicro.com/trendlabs-security-intelligence/cve-2015-0016-escaping-the-internet-explorer-sandbox/)\n\n\n-----\n\nFigure 3 - A VBScript function named \"abc\" uses a combination of CVE-2016-0189 as well as what appears to be CVE-2015-0116 to gain code execution outside of the Internet Explorer (IE) sandbox\n\nFollowing the exploit code, things get a lot more interesting. The user's external IP address\nis stored as a string and an ipToInt() function is defined, followed by a set of subroutines to\ncollect details from the user machine. The code gathers the OS version, browser name,\nversion, and language setting, Flash and Java versions, installed Office version, and finally\nthe raw User-Agent string from the browser. This is all sent to the RHCloud host via a GET\nrequest.\n\n\n-----\n\nFigure 4 - The landing page collects many aspects of the user's platform, including MS Office version information\n\nAfter the fingerprinting code, the user's IP address is checked against Taiwanese\ngovernment network ranges. If the user is coming from one of the targeted networks and is\nusing a version of Internet Explorer, exploitation will be attempted.\n\n\n-----\n\nFigure 5 - The exploitation routine will be triggered for any Internet Explorer version, as long as the user's IP address is inone of the nine target networks\n\nThreatLabZ was able to follow the infection cycle and download a sample that appears to\nbe a variant of the IXESHE AES malware. IXESHE is a family of backdoor malware known\nto be utilized by an attack group identified by various names including the IXESHE label,\nAPT12, Numbered Panda, and DynCalc.\n\n\n-----\n\nFigure 6 - variants do it byte-by-byteUpper: among other changes seen, the new variant builds stack strings up to 4 bytes at a time. Lower: old\n\nUpon execution, the malware gathers the Windows username, hostname, local IP address,\n[and Windows version. The hostname is fed to a PJW hash, or ElfHash function to generate](http://en.wikipedia.org/wiki/PJW_hash_function)\na machine ID used in callbacks. The last step before initiating the C&C check-in is to\nachieve persistence by installing a run key in\nHKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\Messenger.\n\nFigure 7 - Simplified decompiled code for the persistence mechanism shows the Run key utilized\n\nThis sample uses almost similar communication techniques as previous variants, with the\naddition of SSL. In our observations, we saw the server present a self-signed certificate with\nshort, random-looking strings in the informational fields.\n\n\n-----\n\nFigure 8 - A self signed certificate is used for the C&C server\n\n## Callback URLs\n\n/CEL%d=%d.cgi?%s - check-in at startup (and after certain C&C reset/error\nconditions)\n\n/DES%d=%d.cgi?%s - standard beacon, check for command\n\n/RES%d=%d.cgi?%s - response to rsh command\n\n/SDU%d=%d.cgi?%s - error response\n\n/SUS%d=%d.cgi?%s - check-out after receiving shutdown message\n\nAs can be seen above, the callback URLs utilize the same general format: three capital\nletters denoting the response function or condition, an integer representing the\n_PJW/ElfHash based host ID, an equal sign (\"=\"), a random integer, the string \".cgi?\", and a_\nbase64 response blob (which in some cases simply encodes another random integer). The\nfollowing regular expression matches this variant's URL path/query components: [CDRS]\n\n[EDU][LSU]\\d+=\\d+\\.cgi\\?[a-zA-Z0-9=\\+\\/]+.\n\n\n-----\n\nFigure 9 - A collapsed view of the decompiled C&C command processing code shows handling for multiple inputcommands and several response types\n\nUnlike many historical IXESHE samples, it appears that this variant doesn't utilize campaign\ncodes embedded in the malware itself. This may be due to a more centralized tracking\nsystem that only relies on the malware reporting a machine ID.\n\n## Conclusion\n\nThis analysis represents a snapshot of recent activity related to the CNACOM campaign.\nAdditionally, we have identified an exploitation campaign active in August 2015 that appears\nto have utilized the HackingTeam Flash exploit for CVE-2015-5122, though the landing\npage at that time targeted a different set of Taiwanese government networks. Whether or\nnot the threat actor behind this campaign is actually the group named APT12, the targeting\nof Taiwanese government networks and the similarity of this strain to historic IXESHE\nsamples provide strong reasons for suspicion.\n\n\n-----\n\nZscaler ThreatlabZ will continue to monitor activity from this group ensuring protection\nagainst this threat.\n\n## Indicators of Compromise\n```\nFilename: cnacom.exe\nSource: cnacom-organied.rhcloud\\.com/cnacom.exe\nMD5: ACFA9C664016BFE5DB92557E923744F0\nCompile Time: 11/04/2016 11:56:27\nHardcoded User-Agent: Mozilla/5.0 (Windows NT 6.1; rv:43.0) Gecko/20100101\nFirefox/43.0\nC&C: 74.200.214.226\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2016/2016-12-01 - CNACOM - Open Source Exploitation via Strategic Web Compromise.pdf"
+    ],
+    "report_names": [
+        "2016-12-01 - CNACOM - Open Source Exploitation via Strategic Web Compromise.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "a3687241-9876-477b-aa13-a7c368ffda58",
+            "created_at": "2022-10-25T16:07:24.496902Z",
+            "updated_at": "2025-03-27T02:02:10.256629Z",
+            "deleted_at": null,
+            "main_name": "Hacking Team",
+            "aliases": [],
+            "source_name": "ETDA:Hacking Team",
+            "tools": [],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d18fe42c-8407-4f96-aee0-a04e6dce219a",
+            "created_at": "2023-01-06T13:46:38.275292Z",
+            "updated_at": "2025-03-27T02:00:02.79092Z",
+            "deleted_at": null,
+            "main_name": "APT12",
+            "aliases": [
+                "Calc Team",
+                "IXESHE",
+                "BRONZE GLOBE",
+                "BeeBus",
+                "DynCalc",
+                "DNSCalc",
+                "Crimson Iron",
+                "NUMBERED PANDA",
+                "TG-2754",
+                "Group 22"
+            ],
+            "source_name": "MISPGALAXY:APT12",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "e90c06e4-e3e0-4f46-a3b5-17b84b31da62",
+            "created_at": "2023-01-06T13:46:39.018236Z",
+            "updated_at": "2025-03-27T02:00:02.978356Z",
+            "deleted_at": null,
+            "main_name": "Hacking Team",
+            "aliases": [],
+            "source_name": "MISPGALAXY:Hacking Team",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "6a660ea2-1118-404a-9f8f-f0d6a1e9f184",
+            "created_at": "2022-10-25T15:50:23.685924Z",
+            "updated_at": "2025-03-27T02:00:55.52357Z",
+            "deleted_at": null,
+            "main_name": "APT12",
+            "aliases": [
+                "APT12",
+                "IXESHE",
+                "DynCalc",
+                "Numbered Panda",
+                "DNSCALC"
+            ],
+            "source_name": "MITRE:APT12",
+            "tools": [
+                "Ixeshe",
+                "RIPTIDE",
+                "HTRAN"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "c5f79f58-db78-4cd7-88cf-c029a2199360",
+            "created_at": "2022-10-25T16:07:23.325227Z",
+            "updated_at": "2025-03-27T02:02:09.738383Z",
+            "deleted_at": null,
+            "main_name": "APT 12",
+            "aliases": [
+                "APT 12",
+                "BeeBus",
+                "Bronze Globe",
+                "CTG-8223",
+                "Calc Team",
+                "Crimson Iron",
+                "DNSCalc",
+                "DynCALC",
+                "Group 22",
+                "Numbered Panda"
+            ],
+            "source_name": "ETDA:APT 12",
+            "tools": [
+                "AUMLIB",
+                "ETUMBOT",
+                "Exploz",
+                "Graftor",
+                "HIGHTIDE",
+                "IHEATE",
+                "IXESHE",
+                "RIPTIDE",
+                "RapidStealer",
+                "Specfix",
+                "THREEBYTE",
+                "bbsinfo",
+                "mswab",
+                "yayih"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "e6e26922-3f4f-4243-9af5-cf9bea8b93bd",
+            "created_at": "2022-10-25T16:47:55.577163Z",
+            "updated_at": "2025-03-27T02:05:17.26824Z",
+            "deleted_at": null,
+            "main_name": "BRONZE GLOBE",
+            "aliases": [
+                "CTG-8223 ",
+                "DNSCalc",
+                "DyncCalc",
+                "Numbered Panda ",
+                "APT12 "
+            ],
+            "source_name": "Secureworks:BRONZE GLOBE",
+            "tools": [
+                " BeepService",
+                " Etumbot",
+                " Gh0st RAT",
+                " Ixeshe",
+                " Mswab",
+                " RAdmin",
+                " Seatran",
+                " SvcInstaller",
+                " Ziyang",
+                "Badpuck"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535647,
+    "ts_updated_at": 1743041584,
+    "ts_creation_date": 1653753943,
+    "ts_modification_date": 1653753943,
+    "files": {
+        "pdf": "https://archive.orkl.eu/33ad8b260f704fa4eafce4b11d306baca45ba7bc.pdf",
+        "text": "https://archive.orkl.eu/33ad8b260f704fa4eafce4b11d306baca45ba7bc.txt",
+        "img": "https://archive.orkl.eu/33ad8b260f704fa4eafce4b11d306baca45ba7bc.jpg"
+    }
+}

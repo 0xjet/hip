@@ -1,0 +1,69 @@
+{
+    "id": "d10fced4-8b7a-4d0a-b53e-05658158099d",
+    "created_at": "2023-01-12T15:05:29.675684Z",
+    "updated_at": "2025-03-27T02:08:44.023755Z",
+    "deleted_at": null,
+    "sha1_hash": "82ed92dc6734c0c34f8af6b07fa4bcb194998b61",
+    "title": "2022-01-03 - Malicious Telegram Installer Drops Purple Fox Rootkit",
+    "authors": "",
+    "file_creation_date": "2022-05-29T10:38:10Z",
+    "file_modification_date": "2022-05-29T10:38:10Z",
+    "file_size": 804774,
+    "plain_text": "# Malicious Telegram Installer Drops Purple Fox Rootkit\n\n**[blog.minerva-labs.com/malicious-telegram-installer-drops-purple-fox-rootkit](https://blog.minerva-labs.com/malicious-telegram-installer-drops-purple-fox-rootkit)**\n\n[Tweet](https://twitter.com/share)\n\nWe have often observed threat actors using legitimate software for dropping malicious files. This time\nhowever is different. This threat actor was able to leave most parts of the attack under the radar by\nseparating the attack into several small files, most of which had very low detection rates by AV engines,\nwith the final stage leading to Purple Fox rootkit infection.\n\nThanks to the [MalwareHunterTeam, we were able to dig deeper into the malicious Telegram Installer. This](https://twitter.com/malwrhunterteam/status/1474846690674937860)\ninstaller is a compiled AutoIt (a freeware BASIC-like scripting language designed for automating Windows\nGUI and general scripting) script called “Telegram Desktop.exe”:\n\n\n-----\n\n_Figure 1 - Malicious Installer's Icon_\n\nThis AutoIt script is the first stage of the attack which creates a new folder named “TextInputh” under\nC:\\Users\\Username\\AppData\\Local\\Temp\\ and drops a legitimate Telegram installer (which is not even\nexecuted) and a malicious downloader (TextInputh.exe).\n\n_Figure 2 - File dropped by compiled AutoIT_\n\nTextInputh.exe\n\nWhen executed, TextInputh.exe creates a new folder named “1640618495” under the\nC:\\Users\\Public\\Videos\\ directory. TextInputh.exe file is used as a downloader for the next stage of the\nattack. It contacts a C&C server and downloads two files to the newly created folder:\n\n1. 1.rar – which contains the files for the next stage. 7zz.exe – a legitimate 7z archiver.\n2. The 7zz.exe is used to unarchive 1.rar, which contains the following files:\n\n_Figure 3 - The content of 1.rar_\n\nNext, TextInputh.exe performs the following actions:\n\nCopies 360.tct with “360.dll” name, rundll3222.exe and svchost.txt to the ProgramData folder\nExecutes ojbk.exe with the “ojbk.exe -a” command line\nDeletes 1.rar and 7zz.exe and exits the process\n\nojbk.exe\n\nWhen executed with the “-a” argument, this file is only used to reflectively load the malicious 360.dll file:\n\n\n-----\n\n_Figure 4 - Load of \"360.tct\" aka 360.dll by ojbk.exe_\n\nThis DLL is responsible for reading the dropped svchost.txt file. After which, a new\nHKEY_LOCAL_MACHINE\\SYSTEM\\Select\\MarkTime registry key is created, whose value equals the\ncurrent time of svchost.exe and then, the svchost.txt payload is executed.\n\nsvchost.txt\n\nAs the attack flow continues, this file appears to contain the byte code of the next stage of the malicious\npayload executed by the 360.dll. As the first action of svchost.txt, it checks for the existence of the\nHKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\360safe.exe\\Path registry key. If the\nregistry key is found, the attack flow will perform an additional step before moving on to the next stage:\n\nThe attack drops five more files into the ProgramData folder:\n\nCalldriver.exe – this file is used to shut down and block initiation of 360 AV\nDriver.sys – after this file is dropped, a new system driver service named “Driver” is created and\nstarted on the infected PC and bmd.txt is created in the ProgramData folder\n\n\n-----\n\n_Figure 5 - System Driver Service_\n\ndll.dll – executed after UAC bypass. The UAC bypass technique used by svchost.txt is a “UAC\n[bypass using CMSTPLUA COM interface” and is well described here. This technique is commonly](https://chuongdong.com/reverse%20engineering/2021/09/05/BlackMatterRansomware/)\n[used by the LockBit and BlackMatter ransomware authors. The dll.dll is executed with the](https://minerva-labs.com/ransomware)\n“C:\\ProgramData\\dll.dll, luohua” command line.\nkill.bat – a batch script which is executed after the file drop ends. The script is:\n\n_Figure 6 - The content of Kill.bat_\n\nspeedmem2.hg - SQLite file\n\nAll these files work together to shut down and block the initiation of 360 AV processes from the kernel\nspace, thus allowing the next stage attack tools (Purple Fox Rootkit, in our case) to run without being\ndetected.\n\nAfter the file drop and execution, the payload moves to the next step, which is the C&C communication.\nAs mentioned above, if the HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App\nPaths\\360safe.exe\\Path registry key is not found, the flow just skips to this step.\n\nFirst, the hardcoded C&C address is added as a mutex. Next, the following victim’s information is\ngathered:\n\n1. Hostname\n2. CPU – by retrieving a value of HKLM\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0\\\n\n~MHz registry key\n\n\n-----\n\n3. Memory status\n4. Drive Type\n5. Processor Type – by calling GetNativeSystemInfo and checking the value of\n\nwProcessorArchitecture.\n\n_Figure 7 - Part of information gathering function_\n\nNext, the malware checks if any of the following processes are running on the victim’s PC:\n\n360tray.exe – 360 Total Security\n360sd.exe - 360 Total Security\nkxetray.exe - Kingsoft Internet Security\nKSafeTray.exe - Kingsoft Internet Security\n\nQQPCRTP.exe - Tencent\nHipsTray.exe - HeroBravo System Diagnostics\nBaiduSd.exe - Baidu Anti-Virus\nbaiduSafeTray.exe - Baidu Anti-Virus\nKvMonXP.exe - Jiangmin Anti-Virus\n\nRavMonD.exe - Rising Anti-Virus\nQUHLPSVC.EXE - Quick Heal Anti-Virus\nmssecess.exe – Microsoft MSE\ncfp.exe – COMODO Internet Security\nSPIDer.exe\n\nacs.exe\nV3Svc.exe - AhnLab V3 Internet Security\nAYAgent.aye – ALYac Software\navgwdsvc.exe - AVG Internet Security\nf-secure.exe - F‑Secure Anti‑Virus\n\navp.exe - Kaspersky Anti-Virus\nMcshield.exe – McAfee Anti-Virus\negui.exe - ESET Smart Security\nknsdtray.exe\nTMBMSRV.exe - Trend Micro Internet Security\n\navcenter.exe - Avira Anti-Virus\nashDisp.exe – Avast Anti-Virus\nrtvscan.exe - Symantec Anti-Virus\nremupd.exe - Panda software\nvsserv.exe - Bitdefender Total Security\n\n\n-----\n\nPSafeSysTray.exe - PSafe System Tray\nad-watch.exe\nK7TSecurity.exe - K7Security Suite\nUnThreat.exe - UnThreat Anti-Virus\n\nIt seems that after this check is complete, all the collected information, including which security products\nare running, is sent to the C&C server.\n\nAt the time of the investigation, the C&C server was already down, but a quick check of the IP address\nand other related files all indicate that the last stage of this attack is the download and execution of the\nPurple Fox Rootkit. Purple Fox uses the msi.dll function, 'MsiInstallProductA', to download and execute its\npayload. The payload is a .msi file that contains encrypted shellcode including 32-bit and 64-bit versions.\nOnce executed, the system will be restarted with the 'PendingFileRenameOperations' registry to rename\nits components. In our case the Purple Fox Rootkit is downloaded from\nhxxp://144.48.243[.]79:17674/C558B828.Png.\n\nDll.dll\n\nThis DLL is only used for disabling UAC by setting the three following registry keys to 0:\n\nHKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\ConsentPromptBehaviorAdmin\nHKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\EnableLUA\nHKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\PromptOnSecureDesktop\n\n_Figure 8 - UAC disabling_\n\nCalldriver.exe\n\nUsed to shut down and block initiation of 360 AV processes from the kernel space. The technique used is\n[described here under “The ProcessKiller rootkit vs. security products” paragraph.](https://securelist.com/operation-tunnelsnake-and-moriya-rootkit/101831/)\n\n\n-----\n\nWe found a large number of malicious installers delivering the same Purple Fox rootkit version using the\nsame attack chain. It seems like some were delivered via email, while others we assume were\ndownloaded from phishing websites. The beauty of this attack is that every stage is separated to a\ndifferent file which are useless without the entire file set. This helps the attacker protect his files from AV\ndetection.\n\n_Figure 9 - Purple Fox Rootkit File Creation Flow_\n\n## Mitigation\n\nMinerva Labs detects malicious process relationships and prevents the malware from writing and\nexecuting malicious payloads:\n\n\n-----\n\n_Figure 10 - Additional payload download into Videos folder prevented by Minerva Armor_\n\n[Learn more about Minerva's Ransomware Protection.](https://minerva-labs.com/ransomware)\n\nIOC’s:\n\nHashes:\n\n41769d751fa735f253e96a02d0cccadfec8c7298666a4caa5c9f90aaa826ecd1 - Telegram\nDesktop.exe\nBAE1270981C0A2D595677A7A1FEFE8087B07FFEA061571D97B5CD4C0E3EDB6E0 TextInputh.exe\naf8eef9df6c1f5645c95d0e991d8f526fbfb9a368eee9ba0b931c0c3df247e41 – legitimate telegram\ninstaller\n797a8063ff952a6445c7a32b72bd7cd6837a3a942bbef01fc81ff955e32e7d0c - 1.rar\n07ad4b984f288304003b080dd013784685181de4353a0b70a0247f96e535bd56 – 7zz.exe\n\n26487eff7cb8858d1b76308e76dfe4f5d250724bbc7e18e69a524375cee11fe4 - 360.tct\nb5128b709e21c2a4197fcd80b072e7341ccb335a5decbb52ef4cee2b63ad0b3e - ojbk.exe\n405f03534be8b45185695f68deb47d4daf04dcd6df9d351ca6831d3721b1efc4 - rundll3222.exe –\nlegitimate rundll32.exe\n0937955FD23589B0E2124AFEEC54E916 - svchost.txt\ne2c463ac2d147e52b5a53c9c4dea35060783c85260eaac98d0aaeed2d5f5c838 - Calldriver.exe\n\n638fa26aea7fe6ebefe398818b09277d01c4521a966ff39b77035b04c058df60 - Driver.sys\n4bdfa7aa1142deba5c6be1d71c3bc91da10c24e4a50296ee87bf2b96c731b7fa – dll.dll\n24BCBB228662B91C6A7BBBCB7D959E56 – kill.bat\n599DBAFA6ABFAF0D51E15AEB79E93336 - speedmem2.hg\n\nIP’s:\n\n193.164.223[.]77 – second stage C&C server.\n144.48.243[.]79 – last stage C&C server.\n\nUrl’s\n\nhxxp://193.164.223[.]77:7456/h?=1640618495 – contains 1.rar file\n\nhxxp://193.164.223[.]77:7456/77 – contain 7zz.exe file\n\n\n-----\n\nhxxp://144.48.243[.]79:17674/C558B828.Png – Purple Fox Rootkit\n\nResources:\n\n[https://malpedia.caad.fkie.fraunhofer.de/details/win.purplefox](https://malpedia.caad.fkie.fraunhofer.de/details/win.purplefox)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-01-03 - Malicious Telegram Installer Drops Purple Fox Rootkit.pdf"
+    ],
+    "report_names": [
+        "2022-01-03 - Malicious Telegram Installer Drops Purple Fox Rootkit.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "7c390b96-8206-4194-81d8-ebbabb9910ff",
+            "created_at": "2023-12-03T02:00:05.147496Z",
+            "updated_at": "2025-03-27T02:00:03.259538Z",
+            "deleted_at": null,
+            "main_name": "TunnelSnake",
+            "aliases": [],
+            "source_name": "MISPGALAXY:TunnelSnake",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "4b48e4b6-09b0-4f4d-a78c-6b455d122e67",
+            "created_at": "2022-10-25T16:07:24.020115Z",
+            "updated_at": "2025-03-27T02:02:10.08247Z",
+            "deleted_at": null,
+            "main_name": "Operation TunnelSnake",
+            "aliases": [],
+            "source_name": "ETDA:Operation TunnelSnake",
+            "tools": [
+                "Moriya"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535929,
+    "ts_updated_at": 1743041324,
+    "ts_creation_date": 1653820690,
+    "ts_modification_date": 1653820690,
+    "files": {
+        "pdf": "https://archive.orkl.eu/82ed92dc6734c0c34f8af6b07fa4bcb194998b61.pdf",
+        "text": "https://archive.orkl.eu/82ed92dc6734c0c34f8af6b07fa4bcb194998b61.txt",
+        "img": "https://archive.orkl.eu/82ed92dc6734c0c34f8af6b07fa4bcb194998b61.jpg"
+    }
+}

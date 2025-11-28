@@ -1,0 +1,63 @@
+{
+    "id": "22e04104-ffbc-492b-8487-9f5ac7849eea",
+    "created_at": "2023-01-12T15:07:04.86675Z",
+    "updated_at": "2025-03-27T02:16:25.838517Z",
+    "deleted_at": null,
+    "sha1_hash": "931ca8e2106328a8ed6cb18bbec94e8340a0ebec",
+    "title": "2018-07-26 - ‘Hidden Bee’ miner delivered via improved drive-by download toolkit",
+    "authors": "",
+    "file_creation_date": "2022-05-28T02:32:07Z",
+    "file_modification_date": "2022-05-28T02:32:07Z",
+    "file_size": 1045361,
+    "plain_text": "# ‘Hidden Bee’ miner delivered via improved drive-by download toolkit\n\n**[blog.malwarebytes.com/threat-analysis/2018/07/hidden-bee-miner-delivered-via-improved-drive-by-download-toolkit/](https://blog.malwarebytes.com/threat-analysis/2018/07/hidden-bee-miner-delivered-via-improved-drive-by-download-toolkit/)**\n\nMalwarebytes Labs July 26, 2018\n\n_[This blog post was authored by @hasherezade and](https://twitter.com/hasherezade)_ _[Jérôme Segura.](https://blog.malwarebytes.com/author/jeromesegura/)_\n\n[We recently detected a drive-by download attack trying to exploit CVE-2018-4878, a](https://blog.malwarebytes.com/cybercrime/2018/02/new-flash-player-zero-day-comes-inside-office-document/)\nvulnerability in Flash Player, in a sequence that was not matching any of the exploit kit\npatterns that we currently track. Upon investigation, we discovered something that was new\nto us, but is part of an [existing exploitation framework referenced in late 2017 by Chinese](http://bobao.360.cn/interref/detail/248.html)\nsecurity firm Qihoo360. At the time, the payload appeared to be a Trojan pushing adware.\n[(Note: On July 26, our colleagues from TrendMicro published a blog post calling it the](https://blog.trendmicro.com/trendlabs-security-intelligence/new-underminer-exploit-kit-delivers-bootkit-and-cryptocurrency-mining-malware-with-encrypted-tcp-tunnel/)\n_Underminer exploit kit)._\n\nSince it was last documented, there have been changes to the exploits being used, although\nthe distribution method is similar. One interesting aspect that we don’t see much of these\ndays is the use of encryption to package exploits on-the-fly, which requires a key from the\nbackend server to decrypt and execute them.\n\nThe payload served in this campaign is also out of the ordinary because it is not a standard\nPE file. Instead, it is a multiple-stage custom executable format, acting also as a downloader\n[to retrieve LUA scripts used by the threat actors behind the Hidden Bee miner botnet. This](http://www.cnhongke.org/article/46057)\nwas perhaps the first case of a bootkit being used to enslave machines mining\ncryptocurrencies.\n\n\n-----\n\n## Campaign overview\n\nThe attackers are leveraging malvertising via adult sites to redirect their victims to the exploit\nkit landing page. We believe this campaign is primarily targeting Asian countries based on\nthe ads that are served and our own telemetry data. A server purporting to be an online\ndating service contains a malicious iframe responsible for the exploitation and infection\nphases.\n\n## Traffic play-by-play\n\n\n-----\n\n**IE exploit**\n\nWith a few exceptions, exploit kits typically obfuscate their landing page and exploits. But\nhere the threat actors go beyond by using encryption and requiring a key exchange with the\n[backend server in order to decrypt and execute the exploit. In the past, Angler,](https://securelist.com/attacking-diffie-hellman-protocol-implementation-in-the-angler-exploit-kit/72097/) [Nuclear and](https://blog.trendmicro.com/trendlabs-security-intelligence/how-exploit-kit-operators-are-misusing-diffie-hellman-key-exchange/)\n[Astrum exploit kits have abused the Diffie-Hellman key exchange protocol in similar ways to](https://blog.trendmicro.com/trendlabs-security-intelligence/astrum-exploit-kit-abuses-diffie-hellman-key-exchange/)\nprevents analysts from replaying malicious traffic.\n\nThe execution of the malicious code starts from a webpage with an embedded encrypted\n[block. This block is Base64 encoded and encrypted with one of two algorithms: RC4 or](https://en.wikipedia.org/wiki/RC4)\n[Rabbit.](https://en.wikipedia.org/wiki/Rabbit_(cipher))\n\n\n-----\n\nAfter being decrypted, the block is executed. You can find the decoded version of the Java\n[Script that is being run here. As you can see in the script, it generates a random session key,](https://pastebin.com/h7J8geXF)\nthen encrypts it with the attacker’s public RSA key:\n\n\n-----\n\nThe encrypted key is being passed onto the next function and converted into JSON format to\nperform a POST request to the hardcoded URL:\n\nThis is what we can see if we look at the traffic between the client and the server (the client\nsends the encrypted “key” and the server responds with the “value”):\n\n\n-----\n\n**Server-side**\n\nWith the attackers’ private RSA key, the server decrypts the passed session key.\nIt uses it to encrypt the exploit content with a chosen symmetric algorithm (Rabbit or\nRC4).\nIt returns the encrypted content back to the client.\n\nThanks to the fact that the client still has an unencrypted version of the key in memory, it is\nable to decrypt and execute the exploit. However, researchers who just have the traffic\ncaptured cannot retrieve the original session key, and replaying the exploit is impossible.\nThankfully, we managed to capture the exploit during dynamic analysis.\n\n[We believe that the decrypted exploit is CVE-2018-8174, as one of our test machines](https://blog.malwarebytes.com/threat-analysis/2018/05/internet-explorer-zero-day-browser-attack/)\npatched against CVE-2016-0189 got exploited successfully.\n\n**Flash exploit**\n\n\n-----\n\n[This newer Flash exploit (CVE-2018-4878) was not part of the exploit toolkit at the time](https://blog.malwarebytes.com/cybercrime/2018/02/new-flash-player-zero-day-comes-inside-office-document/)\nQihoo documented it, and seems to be a more recent addition to boost its capabilities. The\nshellcode embedded in the exploit is a downloader for the next stage.\n\nUpon successful exploitation, it will retrieve its payload at the following URL:\n\nThis file, given the extension .wasm, pretends to be a Web Assembler module. But in fact, it\nis something entirely different, appearing to be a custom executable format, or a modified,\nheader-less PE file.\n\nIt starts from the names of the DLLs that are going to be needed during the execution:\n\n\n-----\n\nAs you can see, it loads Cabinet.dll that is used for unpacking cabinet files. In later sections,\nwe saw the APIs and strings that are used for the communication over HTTP protocol. We\nalso found references to “dllhost.exe” and “bin/i386/core.sdb”.\n\nIt is easy to guess that this module will be downloading something and running via\ndllhost.exe.\n\nAnother interesting string is a Base64-encoded content:\n\n\n-----\n\nThe decoded content points to more URLs:\n```\nhttp://103.35.72.223/git/wiki.asp?id=530475f52527a9ae1813d529653e9501\nhttp://103.35.72.223/git/glfw.wasm\nhttp://103.35.72.223/rt/lsv3i06rrmcu491c3tv82uf228.wasm\n\n```\nLooking at the traffic captured by Fiddler, we found that, indeed, those URLs are being\nqueried:\n\nThe requests are coming from dllhost.exe, so that means the above executable was injected\nthere.\n\nThe file glfw.wasm has nothing in common with Web Assembly. It is, in fact, a Cabinet file,\ncontaining packed content under the internal path: bin/i386/core.sdb. Looking inside, we\nfound the same custom executable format, starting from DLL names:\n\n\n-----\n\nThen, HTTP traffic stops. This was another interesting aspect of this threa,t because the\nthreat actors are perhaps trying to hide the traffic by pretending to use the SLTP protocol to\nretrieve the actual payload, which can be seen in the strings extracted from the Cabinet file\ninside of core.sdb:\n```\nINSTALL_SOURCE\n&sid=%u\nINSTALL_SID\nINSTALL_CID\nsltp://setup.gohub[.]online:1108/setup.bin?id=128\nntdll.dll\nZwQueryInformationProcess\nVolumeNumber\nSCSIDISK\nos=%d&ar=%d\nkernel32.dll\nIsWow64Process\nRtlGetNtVersionNumbers\n%02x\n&sz=\nsltp\n\n```\nThat hostname resolves to 67.198.208[.]110:\n```\nPinging setup.gohub.online [67.198.208.110] with 32 bytes of data:\nReply from 67.198.208.110: bytes=32 time=76ms TTL=51\n\n```\nEncrypted TCP network traffic from our sandboxed machine shows how the binary payload is\nretrieved:\n\n\n-----\n\nThis whole exploitation and payload retrieval process is rather complex, especially in light of\nthe intended purpose behind this drive-by campaign. Infected hosts are instructed to mine for\ncryptocurrencies:\n\n\n-----\n\nWhat is unique about this miner is that it achieves persistence by using a bootkit, as\n[described here. Infected hosts will have their Master Boot Record altered to start the miner](http://www.cnhongke.org/article/46057)\nevery time the operating system boots.\n\n## A sophisticated attack for a simple payload\n\nThis attack is interesting on many levels for its use of different technologies both in the\nexploit delivery part as well as how the payload is packaged. According to our telemetry, we\nbelieve it is also focused on a select few Asian countries, which makes sense when taking its\npayload into consideration.\n\nIt also shows that threat actors haven’t completely given up on exploit kits, despite a noted\ndownward trend over the last couple of years.\n\n## Protection\n\n[Malwarebytes detects both the IE and Flash exploits, resulting in the infection chain being](https://www.malwarebytes.com/)\nstopped early on.\n\n\n-----\n\n## Indicators of compromise\n\nInjected dating site\n```\n144.202.87[.]106\n\n```\nExploit toolkit\n```\n103.35.72[.]223\n\n```\n52he3kf2g2rr6l5s1as2u0198k.wasm\n```\n087FD1F1932CDC1949B6BBBD56C7689636DD47043C2F0B6002C9AFB979D0C1DD\n\n```\nglfw.wasm\n```\nCCD77AC6FE0C49B4F71552274764CCDDCBA9994DF33CC1240174BCAB11B52313\n\n```\n\n-----\n\nPayload URL and IP\n```\nsetup.gohub[.]online:1108/setup.bin?id=128\n67.198.208[.]110\n\n```\nMiner Proxy\n```\n133.130.101[.]254\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2018/2018-07-26 - ‘Hidden Bee’ miner delivered via improved drive-by download toolkit.pdf"
+    ],
+    "report_names": [
+        "2018-07-26 - ‘Hidden Bee’ miner delivered via improved drive-by download toolkit.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536024,
+    "ts_updated_at": 1743041785,
+    "ts_creation_date": 1653705127,
+    "ts_modification_date": 1653705127,
+    "files": {
+        "pdf": "https://archive.orkl.eu/931ca8e2106328a8ed6cb18bbec94e8340a0ebec.pdf",
+        "text": "https://archive.orkl.eu/931ca8e2106328a8ed6cb18bbec94e8340a0ebec.txt",
+        "img": "https://archive.orkl.eu/931ca8e2106328a8ed6cb18bbec94e8340a0ebec.jpg"
+    }
+}

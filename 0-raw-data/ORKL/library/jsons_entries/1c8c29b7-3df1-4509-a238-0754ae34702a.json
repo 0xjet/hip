@@ -1,0 +1,64 @@
+{
+    "id": "1c8c29b7-3df1-4509-a238-0754ae34702a",
+    "created_at": "2023-01-12T15:06:36.498203Z",
+    "updated_at": "2025-03-27T02:09:29.538309Z",
+    "deleted_at": null,
+    "sha1_hash": "31a260e7c831e2b0d7366bb3b9989edf09a5fa6b",
+    "title": "2020-11-12 - Splunking with Sysmon Part 4- Detecting Trickbot",
+    "authors": "",
+    "file_creation_date": "2022-05-28T16:06:41Z",
+    "file_modification_date": "2022-05-28T16:06:41Z",
+    "file_size": 3136242,
+    "plain_text": "# Splunking with Sysmon Part 4: Detecting Trickbot\n\n**[hurricanelabs.com/splunk-tutorials/splunking-with-sysmon-part-4-detecting-trickbot/](https://hurricanelabs.com/splunk-tutorials/splunking-with-sysmon-part-4-detecting-trickbot/)**\n\nNovember 12, 2020\n\nBy [Dusty Miller|Published On: November 12th, 2020|](https://hurricanelabs.com/author/dusty-miller/)\n\n## Trickbot and Ryuk\n\nWith the [recent outbreak of Ryuk in hospitals, detecting the precursors to the ransomware](https://us-cert.cisa.gov/ncas/alerts/aa20-302a)\nhas become a more visible priority. Ryuk has a history of being deployed after an enterprise\nhas been compromised by Trickbot. The problems with detecting Ryuk is that once it is\ndetected, it is often too late to save anything. The key is to detect Trickbot or any other\nmalware attackers use before your data starts being encrypted.\n\nThis Splunk tutorial will cover the methodology I used to develop and test the detections as\nwell as how to implement and tune them. Also, in case you missed the previous parts of my\n[Splunking with Sysmon tutorial series, make sure to check out parts 1,](https://hurricanelabs.com/splunk-tutorials/splunking-with-sysmon-series-part-1-the-setup/) [2, and](https://hurricanelabs.com/splunk-tutorials/splunking-with-sysmon-series-part-2-tuning/) [3 too!](https://hurricanelabs.com/splunk-tutorials/splunking-with-sysmon-part-3-detecting-psexec-in-your-environment/)\n\n## Trickbot Hunting\n\nFinding Trickbot samples is not hard to do; there are many sources and samples available. I\ntested 7 different .exe samples that all had been submitted within 3 days of my testing. I ran\neach sample on my home lab with access to the internet enabled and Sysinternal Process\n\n\n-----\n\nMonitor (procmon) running to monitor what the executable was doing. I segregated my home\nlab from my personal network to reduce the risk of any malware spreading; please be safe if\nyou want to recreate my testing.\n\nTo determine how I’d approach a detection, I divided the analysis of the Trickbot samples\nthat I tested into two different categories. The first category included the samples that fully\nexecuted and established a persistence mechanism. The second category’s samples were\nmore evasive, but they did not establish any form of persistence.\n\n### Persistent Trickbot\n\nThe Trickbot samples I analyzed that established persistence had a few different ways that\nthey executed, but they always used Registry Run Keys to establish a persistent hold on the\ninfected system. The simplest sample wrote a file to the users Local Appdata folder and\ncreated a run registry key to execute that file on boot. It also did a time stomp to change the\nfile creation time on the executable.\n\n\n-----\n\nThe keys I took away from the procmon evaluation was that the initial process creates a file,\npossibly timestomped, sets a registry run key on it, and works from the child process–not the\ninitial execution. These keys can be seen when tracking the process in Splunk logs as well.\n\n### Evasive Trickbot\n\nIt was much harder to detect what the evasive trickbot was doing. The process would start,\nand then each one quickly moved into wermgr.exe and wrote to a file while making outbound\nconnections. The wermgr.exe process never created any child processes or moved into\nanother process; it would create an outward network connection every 5 or so minutes, but\nappeared to be waiting for more instructions.\n\n## Detecting Initial Execution\n\nDetecting the Initial Execution of Trickbot was more reliable than the persistence, but it also\nrequired a little more work. All of the Trickbot samples I tested had an OriginalFilename in\nthe PE Header that did not match the file that was executed. Since these processes are\ncreated from executables in the User folders, I started looking at Process Creation events\nwhere the file_name did not match the OriginalFilename, which fits the Mitre Technique\n[T1036 (Masquerading). Evaluating those files does result in a decent number of False](https://attack.mitre.org/techniques/T1036/)\nPositives, but with a little bit of time to exclude them via a lookup, you can detect the\nprograms that should not be running in your environment. This can be somewhat noisy, but it\nalso detected every sample I encountered.\n\n\n-----\n\nCopy to Clipboard\nTuning the renamed_tools.csv lookup is most easily done by running the search, deduped by\nOriginalFileName and process_name, over a week to add all processes to the lookup table.\nAfter that take some time to go through the lookup and ensure that all entries are expected\nand clean. If you are unsure you can run the hash through a OSINT tool to determine more\ninformation about the process. Then remove all columns from the lookup table but the fields\nyou intend to exclude by.\n\n## Detecting Persistence\n\nOnly 3 of the 7 samples I tested were able to establish persistence on my lab machine. Each\none that did, did so via the same method. They added a Registry run key, Mitre Technique\n[T1547.001 (Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder), which](https://attack.mitre.org/techniques/T1547/001/)\nwould cause the executable to run when the user logs on to the machine. This detection is\nsimilar to the initial execution detection, where it looks for Processes that originate from the\nUser folder that modifies Registry Run Keys. This also needs a little tuning to reduce the\nnumber of False Positives, but not as much as above.\n\nCopy to Clipboard\n\n\n-----\n\nTuning the registry_run.csv lookup is similar to the renamed_tools lookup. Deduping will not\nwork as well, and you may need to add wildcards to the lookup table as the TargetObject will\ncontain the user SID and Details and Image may contain the user name. You could also add\nthe process_name field to the lookup and dedup via it, but there will be more risk to\ncommonly named processes. Make sure to remove all columns except Image and\nTargetObject (and possibly Details if you intend to exclude by it) from the lookup table when\ntuning is finished.\n\n## Conclusion\n\nThis was honestly a lot of fun and interesting to watch the execution of a variety of Trickbot\nsamples and see how they initially run. While there is a little work needed to get the\ndetections to an alertable state, it is well worth it if you can catch Trickbot or other malicious\nprocesses before they have a chance to cause more damage.\n\n## About Hurricane Labs\n\nHurricane Labs is a dynamic Managed Services Provider that unlocks the potential of Splunk\nand security for diverse enterprises across the United States. With a dedicated, Splunkfocused team and an emphasis on humanity and collaboration, we provide the skills,\nresources, and results to help make our customers’ lives easier.\n\nFor more information, visit [www.hurricanelabs.com and follow us on Twitter](http://www.hurricanelabs.com/) [@hurricanelabs.](https://twitter.com/hurricanelabs)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-11-12 - Splunking with Sysmon Part 4- Detecting Trickbot.pdf"
+    ],
+    "report_names": [
+        "2020-11-12 - Splunking with Sysmon Part 4- Detecting Trickbot.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535996,
+    "ts_updated_at": 1743041369,
+    "ts_creation_date": 1653754001,
+    "ts_modification_date": 1653754001,
+    "files": {
+        "pdf": "https://archive.orkl.eu/31a260e7c831e2b0d7366bb3b9989edf09a5fa6b.pdf",
+        "text": "https://archive.orkl.eu/31a260e7c831e2b0d7366bb3b9989edf09a5fa6b.txt",
+        "img": "https://archive.orkl.eu/31a260e7c831e2b0d7366bb3b9989edf09a5fa6b.jpg"
+    }
+}

@@ -1,0 +1,42 @@
+{
+    "id": "0cc29d14-c529-449f-abfe-4fe3ac0611f1",
+    "created_at": "2023-01-12T14:59:09.762134Z",
+    "updated_at": "2025-03-27T02:06:04.988741Z",
+    "deleted_at": null,
+    "sha1_hash": "06189257d86ee68b9c3e530d64e081c9f8fc6be2",
+    "title": "2022-06-06 - Hunting PrivateLoader- Pay-Per-Install Service",
+    "authors": "",
+    "file_creation_date": "2022-06-13T04:02:21Z",
+    "file_modification_date": "2022-06-13T04:02:21Z",
+    "file_size": 35585762,
+    "plain_text": "# Hunting PrivateLoader: Pay-Per-Install Service\n\n**[tavares.re/blog/2022/06/06/hunting-privateloader-pay-per-install-service/](https://tavares.re/blog/2022/06/06/hunting-privateloader-pay-per-install-service/)**\n\n### Jun 6 2022\n\n PrivateLoader is a downloader, first seen on early 2021. It’s part of a pay-per-install malware distribution service available on underground forums and so it’s used by multiple threat actors to distribute ransomware, information stealers, banking trojans, downloaders, and other commodity malware on windows machines. The malware payloads are selectively delivered to victims based on certain criteria such as location, financial activity, environment and specific software installed. It’s delivered through websites that claim to provide cracked software.\n\n Let’s have a look at the malware and try to find a way to detect and hunt it.\n\n## Encrypted Stack Strings#\n\n### Here’s a sample analyzed by Zscaler on April 2022:\n```\naa2c0a9e34f9fa4cbf1780d757cc84f32a8bd005142012e91a6888167f80f4d5\n\n```\n\n-----\n\n### Let s open it on Ghidra. Going into the entry point, following the code, looking for interesting functions, I quickly spot the function at 0x406360 . It’s calling LoadLibraryA but the\n```\nlpLibFileName parameter is built dynamically at runtime using the stack. Its seems that\n\n we found a string encryption technique. Both the string and the xor key are loaded into the stack. Looking a bit more through the function, its seems that this is the way most of the strings are loaded:\n\n After XOR the encrypted string with the key, we get kernel32.dll .\n\n## Detecting The Malware#\n\n### This uncommon string decryption technique can be leveraged to build a Yara rule for detection and hunting purposes. To reduce the number of false positives and increase the rule performance, we can add a plaintext unicode string used on the C2 communication and a few minor conditions. Here’s the rule:\n\n After running this rule on VirusTotal retro hunting, I got over 1.5k samples on a 1 year timeframe. By manually analyzing some of the matches, I couldn’t find any false positives. As a first attempt of hunting and detecting PrivateLoader, this rule seems to yield good results.\n\n## Decrypting The Strings#\n\n### Now, to faster analyze the malware and better understand its behavior, we should build a string decryptor to help us on our reversing efforts and better document the code. With the help of Capstone disassembly framework, and some trial and error, here’s the script:\n\n```\n\n-----\n\n```\nimport pefile\nfrom capstone import *\ndef search(instructions, offset):\n dwords = []\n for inst in instructions:\n  if inst[2] == 'mov':\n   try:\n    dword = int(inst[3].split(' ')[-1], 16).to_bytes(4, 'little')\n    dwords.append(dword)\n   except:\n    pass # not the mov we want\n   if inst[3].split(', ')[0].split(' ')[-1] == offset:\n    return b''.join(dwords[::-1][:4]) # 16 bytes str chunk   \n# disassemble .txt section\npe = pefile.PE('aa2c0a9e34f9fa4cbf1780d757cc84f32a8bd005142012e91a6888167f80f4d5')\nmd = Cs(CS_ARCH_X86, CS_MODE_32)\ninstructions = []\nfor (address, size, mnemonic, op_str) in md.disasm_lite(pe.sections[0].get_data(),\n0):\n instructions.append((address, size, mnemonic, op_str))\n# search, build and decrypt strings\nstrings = []\naddr = None\nstring = ''\nfor i, inst in enumerate(instructions):\n if inst[2] == 'pxor': \n  try: # possible string decryption found\n   key_offset = inst[3].split(' ')[-1]\n   key = search(instructions[:i][::-1], key_offset)\n   insts = instructions[:i][::-1] # from pxor up\n   for j, inst in enumerate(insts):\n    if inst[2] == 'movaps': \n     # encrypted string being moved to xmm1\n     str_offset = inst[3].split(' ')[-1]\n     encrypted_str = search(insts[j:], str_offset)\n     # str chunk decryption\n     string += bytearray(key[i] ^ encrypted_str[i] for i in\nrange(len(key))).decode()\n     break # next chuck\n   if not addr:\n    addr = hex(inst[0])\n   if '\\x00' in string: \n    strings.append((addr, string.replace('\\x00', '')))\n    string = '' \n    addr = None\n   except:\n    pass # not the pxor we want\n\n### After running it against the sample we are analyzing, we get the following strings:\n\n```\n\n-----\n\n```\n0x3ee GetCurrentProcess\n0x469 CreateThread\n0x4ba CreateFileA\n0x506 Sleep\n0x572 SetPriorityClass\n0x5ec Shell32.dll\n0x657 SHGetFolderPathA\n0x83b null\n0x1078 rb\n0x157c http://212.193.30.45/proxies.txt\n0x1795 :1080\n0x1839 \\n\n0x1f2d :1080\n0x1fd1 :\n0x26ce .\n0x28ac .\n0x2972 .\n0x2a34 .\n0x32ad http://45.144.225.57/server.txt\n0x33c0 HOST:\n0x346e :\n0x3760 pastebin.com/raw/A7dSG1teëä\n0x38a3 HOST:\n0x3965 HOST:\n0x3b93 http://wfsdragon.ru/api/setStats.php\n0x3dcd HOST:\n0x3f84 :\n0x40ae 2.56.59.42\n0x4350 /base/api/statistics.php\n0x4439 URL:\n0x44b6 :\n0x4a5e https://\n0x4ad8 .tmp\n0x4bf6 \\\n0x53e9 kernel32.dll\n0x544a WINHTTP.dll\n0x54a5 wininet.dll\n0x65a8 WinHttpConnect\n0x6682 WinHttpOpenRequest\n0x671a WinHttpQueryDataAvailable\n0x67b2 WinHttpSendRequest\n0x684a WinHttpReceiveResponse\n0x68e2 WinHttpQueryHeaders\n0x6956 WinHttpOpen\n0x69b5 WinHttpReadData\n0x6a20 WinHttpCloseHandle\n0x6b09 Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like\nGecko) Chrome/93.0.4577.63 Safari/537.36\n0x7402 http://\n0x74ab /\n0x7582 ?\n0x851a HEAD\n0x8fa8 Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like\nGecko) Chrome/93.0.4577.63 Safari/537.36\n0x91f0 wininet.dll\n\n```\n\n-----\n\n```\n0x925b InternetSetOptionA\n0x92ef HttpOpenRequestA\n0x938d InternetConnectA\n0x9421 InternetOpenUrlA\n0x949e InternetOpenA\n0x94f2 HttpQueryInfoA\n0x9567 InternetQueryOptionA\n0x95fb HttpSendRequestA\n0x9694 InternetReadFile\n0x9737 InternetCloseHandle\n0x97ad Kernel32.dll\n0x9801 HeapAlloc\n0x9852 HeapFree\n0x98a3 GetProcessHeap\n0x98f3 CharNextA\n0x9938 User32.dll\n0x9994 GetLastError\n0x99e5 CreateFileA\n0x9a36 WriteFile\n0x9a87 CloseHandle\n\n### We can now go back to Ghidra and continue our analysis, now with more context of what might be the malware’s behavior.\n\n## Network IOCs#\n\n### As a bonus, we get some network IOCs that can be used for defense and tracking purposes:\nhttp://212.193.30.45/proxies.txt\nhttp://45.144.225.57/server.txt\npastebin.com/raw/A7dSG1te\nhttp://wfsdragon.ru/api/setStats.php\n2.56.59.42\n/base/api/statistics.php\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-06-06 - Hunting PrivateLoader- Pay-Per-Install Service.pdf"
+    ],
+    "report_names": [
+        "2022-06-06 - Hunting PrivateLoader- Pay-Per-Install Service.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673535549,
+    "ts_updated_at": 1743041164,
+    "ts_creation_date": 1655092941,
+    "ts_modification_date": 1655092941,
+    "files": {
+        "pdf": "https://archive.orkl.eu/06189257d86ee68b9c3e530d64e081c9f8fc6be2.pdf",
+        "text": "https://archive.orkl.eu/06189257d86ee68b9c3e530d64e081c9f8fc6be2.txt",
+        "img": "https://archive.orkl.eu/06189257d86ee68b9c3e530d64e081c9f8fc6be2.jpg"
+    }
+}

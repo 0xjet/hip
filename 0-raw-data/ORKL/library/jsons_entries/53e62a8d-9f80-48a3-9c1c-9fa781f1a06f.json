@@ -1,0 +1,67 @@
+{
+    "id": "53e62a8d-9f80-48a3-9c1c-9fa781f1a06f",
+    "created_at": "2023-01-12T15:04:08.772723Z",
+    "updated_at": "2025-03-27T02:08:40.509979Z",
+    "deleted_at": null,
+    "sha1_hash": "661d44b05b1b4c25a275a94db5f411f39fdee937",
+    "title": "2021-06-22 - Preventing Exploitation of the ZIP File Format",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:26:14Z",
+    "file_modification_date": "2022-05-28T19:26:14Z",
+    "file_size": 905467,
+    "plain_text": "# How to Prevent Zip File Exploitation\n\n**[crowdstrike.com/blog/how-to-prevent-zip-file-exploitation/](https://www.crowdstrike.com/blog/how-to-prevent-zip-file-exploitation/)**\n\nRich Seymour June 22, 2021\n\n[ZIP files are a known vector for phishing campaigns, ransomware and other malicious](https://www.crowdstrike.com/cybersecurity-101/ransomware/)\naction. Because the format isn’t generally executable (minus self-extracting ZIPs), it hasn’t\ngotten as much attention as executable formats. This blog post looks at how the format can\nbe exploited and shares the solution we came up with.\n\nCompressed file formats come in many flavors such as tarballs (.tar.gz), RAR Archives (.rar)\nand 7Zip (.7z), but ZIP has become the foundation for widely used file formats in addition to\nbecoming the generic term used for compressing and bundling files. It forms the basis of\nMicrosoft OfficeOpenXML files (docx, xlsx, pptx file extensions), Java Archives (JAR),\nAndroid Packages (APK) and Electronic Publication (EPUB) files. ZIP structures are also\n[found inside of self-extracting EXEs, hiding in PDFs and other obscure formats.](https://blogs.windows.com/devices/2014/04/15/relive-those-moving-moments-with-nokia-living-images/)\n\n[The redundancies inherent in the ZIP format, combined with Postel’s Law (i.e., “be](https://en.wikipedia.org/wiki/Robustness_principle)\nconservative in what you send, be liberal in what you accept”), have created a wide variety of\n“acceptable” ZIPs. Along with the variety, choices made by ZIP parsers can lead to a single\nZIP producing different output based on the ZIP parser used. In this post, we highlight some\nof the redundancies and parts of the format that leave the interpretation of a given file in the\n\n\n-----\n\nhands of the application reading it. These differences in interpretation can be exploited by\nadversaries, and we’ll hint at what we’re doing to see these maliciously crafted ZIPs from all\nangles.\n\n## ZIP Name Confusion\n\nThe ZIP format has been [explained visually by corkami and others, but I will attempt to](https://github.com/corkami/pics/blob/master/binary/zip101/zip101.pdf)\nreduce the format for the sake of this example to two chunks of data that can provide a name\nfor a stored file. Outside of symlinks and hard links, filesystems generally enforce\nuniqueness of file names. ZIP on the other hand does not.\n\nIf you glance at corkami’s ZIP 101 poster, you can see that ZIP is meant to be read from the\nbottom up, unlike many other formats. But odd things can happen if you read in the other\ndirection.\n\nTwo data structures in the ZIP format can be responsible for holding the file name,\nspecifically the Central Directory Entry and the Local File Header. The Central Directory is at\nthe end of the file (right before the End of Central Directory structure mentioned later), and a\nLocal File Header is prefixed to each of the stored files, earlier in the file. Parsers can be\nconfused by putting two different names into each structure that refer to the same data. The\n[malicious impact is negligible (assuming a ZIP parser patched for the ZIP Slip vulnerability)](https://snyk.io/research/zip-slip-vulnerability)\nbut it provides a nice starting point to examine the complexities of how different parsers\nrespond to malformed ZIP files.\n\nA short example file and program can make this more concrete.\n\n\n-----\n\nRuby code (adapted from:\n[https://github.com/rubyzip/rubyzip/blob/master/samples/example.rb):](https://github.com/rubyzip/rubyzip/blob/master/samples/example.rb)\n```\n#!/usr/bin/env ruby\nrequire 'zip'\n## reads from localfile header name\nZip::InputStream.open('centralbar-localfoo.zip') do |zis|\n entry = zis.get_next_entry\n puts \"#{entry.name}\"\nend\n## reads from central directory name\nzf = Zip::File.new('centralbar-localfoo.zip')\nzf.each_with_index do |entry, index|\n puts \"#{entry.name}\"\nend\n\n```\nThis concisely demonstrates in one script how two functions that look very similar can\nproduce different results. In the first, the ZIP is read in a streaming mode that finds files by\nthe Local File Header alone, in the second it is read from the Central Directory Entry after the\nstored data is trusted. This has some interesting history in that System Enhancement\nAssociates (SEA) ARC format, popular in the early floppy shareware days, just had file\nheaders and no central directory. A lawsuit by SEA against Phil Katz for his PKARC utility led\n[him to create ZIP. From looking at the original release docs, it seems that the central](https://groups.google.com/g/comp.sys.ibm.pc/c/0tun_9sqKYU/m/RNeLTza9fAEJ?pli=1)\ndirectory was helpful in keeping track of archives that spanned several floppy disks. Floppies\nhave disappeared (except for the save icon) but ZIP has remained.\n\n\n-----\n\nWhile this isn t a threat vector per se (or even unexpected to experienced rubyists), the\nvariations in ZIPs don’t stop at giving a file two possible names. File sizes, compression\nmethods, duplicated names and concatenated zips can all give difficulties to programmers\ntrying to open them safely.\n\n## Additional Methods\n\n### File Sizes\n\nFile sizes — the size of the compressed and uncompressed data — are stored in the Central\nDirectory Entry or the Local File Header, but can also be stored in extensions to the ZIP\nformat known as ZIP64, or in an structure known as the Data Descriptor, which acts like a\nfooter to the stored data. Disagreements in the compressed size can lead to different\nextracted files, especially if the files are stored only (i.e., added to the ZIP uncompressed).\n\n### Compression Methods\n\nCompression methods define what algorithm was used to compress the data stored in the\nZIP, or none in the case of files too small to compress or stored uncompressed on purpose\nby the ZIP creator. They are an entire field in the aforementioned structs, but luckily only the\n[DEFLATE method has widespread acceptance, and others such as LZMA are sometimes](https://en.wikipedia.org/wiki/Deflate)\nseen. Because DEFLATE blocks can also be uncompressed, the compression method tied\nwith size and offset disagreements can allow subsets of files to be extracted by one parser\nbut the full file extracted by another.\n\n### Duplicated Names\n\nSimilar to the foo / bar name confusion in the centralbar-localfoo.zip, specially crafted ZIP\nfiles can have names that collide with one another in a variety of ways. Multiple Local File\nHeaders can simply have the same name, Central Directory Entries can report duplicate\nnames, and there’s no protection from one overwriting the other if the unzipping application\nis blindly writing files.\n\n### Concatenated ZIPs\n\nConcatenated ZIPs are one of the simplest to construct evasion methods, such as this\n[nanocore delivery method. Based on the aforementioned issues, you can see how two](https://www.trustwave.com/en-us/resources/blogs/spiderlabs-blog/double-loaded-zip-file-delivers-nanocore/)\nconcatenated ZIP files might look like a valid ZIP file to a parser, but which one gets\nextracted is up to the design. For all of these cases, we wanted a parser that wouldn’t make\nan opinionated decision but would give us every possible file that could be hiding inside a\nZIP. One more example of ZIP confusion relating to concatenated ZIPs follows.\n\n## End of Central Directory Offset Confusion\n\n\n-----\n\nThe End of Central Directory (EOCD) is the suffix at the end of a well-formed ZIP file. It acts\na bit like if the last page of a book told you which page the index (the Central Directory itself)\nwas on. In books, we normally think of them starting with page one, and in binaries we\nsimilarly think of them starting from offset zero. But ZIP can be embedded within other file\nformats, meaning there can be different interpretations of what offset zero means. Different\nparsers can make different choices — Python’s zipfile, Rust’s zip-rs and Info-Zip (standard\n**unzip command on Linux/Mac) take the offset to the Central Directory as an offset from the**\nstart of the file. Go’s ZIP archive extraction starts looking from the start of the compressed\ndata. This means you can have two different Central Directories within one file and see\ncompletely different contents depending on the interpretation of the same offset by a given\nunzipping tool.\n\nIn addition to file name and EOCD offset confusion, the ZIP format is robust (or weak)\nenough that many other tricks can fool ZIP parsers. If an adversary knows what tool is\nreading their ZIP payload, chances are they can craft a ZIP to confuse it. Or they can make\nthe ZIP look enough like another file to evade detection. For instance, some threat actors will\nhave their stager download what looks like an image file, but is actually ZIP files with the file\nfingerprint of the image file prepended or simply renamed.\n\n## Our Solution: Build an Omnivorous UnZIP\n\nWe could have used existing parsers in our language of choice (Rust) but even that parser\nmakes choices when confronted with the confusing ZIP issues above. We wanted a tool that\ncould explore and extract from ZIP files with all sorts of anomalous content, so we decided to\nmake our own.\n\nWe decided to create a ZIP parser that doesn’t make opinionated choices when confronted\nwith disagreements in a ZIP file. Instead, we attempt to extract the superset of information\nfrom any given ZIP it is confronted with. In other words, if we get two options for a\ncompressed size, we try them both. If we see two names for the same file, we report them\nboth. If we see two files with the same name, we extract them both for processing.\n\nOur preliminary results are promising, and we are continuing work to make sure our parser\ngets as many interpretations of ZIP files as programmers have seen fit to implement. In a\nfuture blog post we’ll get into more specifics about our Robust ZIP Parsing in Rust. If there is\ncommunity interest we may open source this library and the tools based on it for use by the\nInfoSec community and anyone interested in exploring the vast corner cases inside of this\nuseful and popular file format.\n\n**Additional Resources**\n\n_Read more from our Data Science team: Building on the Shoulders of Giants:_\n_Combining TensorFlow and Rust._\n\n\n-----\n\n_Learn about recent intrusion trends, adversary tactics and highlights of notable_\n_[intrusions in the CrowdStrike 2021 Threat Hunting Report.](https://www.crowdstrike.com/resources/reports/global-threat-report/)_\n_[Learn more about the CrowdStrike Falcon® platform by visiting the product webpage.](https://www.crowdstrike.com/endpoint-security-products/falcon-platform/)_\n_[Test CrowdStrike next-gen AV for yourself. Start your free trial of Falcon Prevent™](https://go.crowdstrike.com/try-falcon-prevent.html)_\n_today._\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-06-22 - Preventing Exploitation of the ZIP File Format.pdf"
+    ],
+    "report_names": [
+        "2021-06-22 - Preventing Exploitation of the ZIP File Format.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535848,
+    "ts_updated_at": 1743041320,
+    "ts_creation_date": 1653765974,
+    "ts_modification_date": 1653765974,
+    "files": {
+        "pdf": "https://archive.orkl.eu/661d44b05b1b4c25a275a94db5f411f39fdee937.pdf",
+        "text": "https://archive.orkl.eu/661d44b05b1b4c25a275a94db5f411f39fdee937.txt",
+        "img": "https://archive.orkl.eu/661d44b05b1b4c25a275a94db5f411f39fdee937.jpg"
+    }
+}

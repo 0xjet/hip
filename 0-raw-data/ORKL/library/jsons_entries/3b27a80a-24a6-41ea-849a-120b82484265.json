@@ -1,0 +1,93 @@
+{
+    "id": "3b27a80a-24a6-41ea-849a-120b82484265",
+    "created_at": "2023-01-12T15:02:47.247928Z",
+    "updated_at": "2025-03-27T02:06:02.691936Z",
+    "deleted_at": null,
+    "sha1_hash": "1957896e0f373fb60cb5b1ae1b08ac5a80638e9e",
+    "title": "2021-11-09 - [EX008] The exploit chain allows to take control of Zalo user accounts",
+    "authors": "",
+    "file_creation_date": "2022-05-29T01:13:12Z",
+    "file_modification_date": "2022-05-29T01:13:12Z",
+    "file_size": 362335,
+    "plain_text": "# [EX008] The exploit chain allows to take control of Zalo user accounts\n\n**[blog.vincss.net/2021/11/ex008-exploit-chain-allows-to-take-control-of-Zalo-user-accounts.html](https://blog.vincss.net/2021/11/ex008-exploit-chain-allows-to-take-control-of-Zalo-user-accounts.html)**\n\nWhile using the Zalo application, one of the popular chat applications in Vietnam today\n(According to statistics from Wikipedia, since May 2018, Zalo has reached 100 million users),\nthe Threat Hunting team from VinCSS LLC discovered some security vulnerabilities that\nallow the attacker to form an exploit chain to take control of Zalo accounts.\n\nBeside that, while researching this attack chain, we also found it can exploit ZaloPay, an ewallet and online payment platform that was also very successful in Vietnam.\n\nA unique feature of the discovered exploit chain is that the bad guy can completely take\ncontrol of any Zalo user account by tricking the victim into clicking on a sophisticated\nconcealed link. When successfully accessing the Zalo user account, the Zalo application on\nthe victim's phone will not appear in any new login session warning.\n\nOn August 10, 2021, VinCSS informed the security team of Zalo and immediately received\npositive feedback from the Zalo security team. By August 15, 2021, Zalo informed that it had\nfixed most of the vulnerabilities. A detailed timeline will be available at the end of this article.\n\nThis article will summarize technical information about the vulnerabilities that VinCSS has\ndiscovered, thereby helping businesses avoid similar vulnerabilities in the future.\n\n**I. Vulnerability in “login with Zalo” feature**\n\n\n-----\n\nIn using the Zalo application, VinCSS discovered that the **Login with Zalo feature exists an**\nOpen Redirection vulnerability that allows changing the address to receive tokens from the\napplication.\n\nExpressly, when using the Web-based Zalo application, or some other applications in the\nVNG ecosystem, users are provided with the option \"Login with Zalo\":\n\nWhen using this feature, Zalo processes with the following flow:\n\nAuthenticate with the API at the following address to get the token:\n\nf'https://id.zalo.me/account/login/native/check-login-status' \\\n\nf'?browser={redirect_url}&continue=https%3A%2F%2Fchat.zalo.me%2F'\n\nUse the token obtained in step 1 to send to the Zalo application on your phone via a\nshared deep link for both iOS and Android platforms:\n\nf'zalo://login/?browser=chrome&token={token}'\n\nThe phone will switch to the Zalo application, and Zalo will display a message\n**Requires login to the Zalo Web application.**\n\n\n-----\n\nWhen the user presses click Allow button, the application will open the default browser\non the phone with the link to the redirect_url address with a token used to log in (If you\npress the Reject button, the token will not be sent).\nBy arbitrarily changing the redirect_url address in step 1, the bad guys can redirect\nthe authenticated user to a website that they own or have taken control of, thereby\nobtaining the token. to log into the user's account.\nContinues to interact with the API below to convert the token obtained in step 4 into\ncookies:\n\nurl = f'https://id.zalo.me/account/login/native/verify?token={verify_token}'\n\nresp = requests.get(\n\nurl,\n\n_headers={'User-Agent': user_agent},_\n\n_cookies={'zvid': check_login_cookie},_\n\n_allow_redirects=False)_\n\nTo interact with this API, the bad guy needs to save the value of the cookie name zvid\n(issued together with the token in step 2). In addition, it should be noted that the user_agent\nparameter value will be the value used by Zalo to display in the Settings ® Account and\n**Security ® Login history of the user account.**\n\nAfter exploiting this vulnerability, the bad guys obtained Cookies that allowed access to the\nvictim's account. However, we quickly recognize 03 limitations if the bad guys only exploit\nthis vulnerability:\n\n\n-----\n\nDifficult to trick users into clicking on the link because the link will look very strange\nThere is a login notification message when using the token and comply with the\nprocessing flow of the Zalo Web application.\nAfter a period of use, the expired cookie will not be able to log in again.\n\nSo need to exploit this vulnerability with the following sequence of vulnerabilities to exploit it\nmore effectively.\n\n**II. Vulnerability in Link Preview feature**\n\nWhen the first vulnerability above was discovered, VinCSS also noticed that when pasting a\nlink into Zalo chat, the Zalo bot would conduct a link check by crawling the destination page\nwith a special user_agent. This mechanism also allows Zalo to display the content of the\ndestination page for users to preview. Suppose the Zalo bot checks and gets the response\nas the 302 Moved Temporarily redirect status code. In that case, the Zalo application will\n**only display the website's content being redirected, not the link address. This**\nmechanism allows bad guys to hide the phishing link, easily tricking users into clicking the\nlink because then only the website content is displayed like the real thing. Check out the\nphishing chat below. Will you click or try to check the destination page before clicking?\n\nWhen this vulnerability is exploited in combination with the first vulnerability, hackers will lure\nusers, as shown above. When the user clicks and is redirected to the bad guy's server, the\ntoken will be automatically logged and redirected the user to the actual destination website.\nSince the redirect is so fast, the user, after clicking on the phishing link, will only see that they\nare being redirected to a legitimate and utterly normal destination website.\n\n\n-----\n\n**III. Vulnerability in Relogin mechanism**\n\nVinCSS also discovered that Zalo uses a re-login mechanism, allowing users to re-login the\nZalo Web session with the logged-in session's cookie. However, the re-login mechanism\n**still works with the session that has never been logged in, hiding the logged in**\n**message on the new device.**\n\nSpecifically, the Zalo Web application will interact with an API as follows:\n\nurl = 'https://id.zalo.me/account/checksession?type=ajax&login_type=relogin' \\\n\n'&continue=https%3A%2F%2Fchat.zalo.me'\n\nresponse = requests.get(url, headers={'Referer': 'https://chat.zalo.me/login'}, cookies=\n{'zpsid': cookie_value})\n\ncontinueUrl = response.json()['data']['continueUrl']\n\nUsing the continueUrl link in a brand new browser, Zalo will automatically set the necessary\ncookies and allow access to Zalo Web. Also, don't show an unknown login session warning\nto the user.\n\n**IV. Vulnerability related to the Session expiration time**\n\nIn using the Zalo application, VinCSS discovered that when exploiting the relogin mechanism\nas described in the above security error, the session corresponding to the zpsid value will\nexist for a very long time. Bad guys can take advantage of this bug to access user accounts\nand take control of accounts for a long time.\n\n**V. Login to ZaloPay with the token obtained**\n\nWhen using the relogin mechanism described in vulnerability III, in addition to the new\nsession access path of Zalo Web, the API also returns many ways to log in to other Zalo\napplications, including ZaloPay. When changing the browser's user_agent to the format of\nthe mobile device, can access the ZaloPay application via the link\n[https://social.zalopay.vn/spa.](https://social.zalopay.vn/spa)\n\n\n-----\n\n**Demo:**\n\nhttps://youtu.be/AbEO4ucta4E\n\n**Summary**\n\n\nWatch Video At:\n\n\nIt is possible to form an exploit chain aimed at Zalo users when combining the five\nvulnerabilities presented above. Fortunately, the problem was dealt with quickly. Not only\nZalo but any application can also have serious cyber security problems even with strict\n\n\n-----\n\nsecurity. So, besides Bug bounty programs to attract bug hunters, the role of Red teams is\nequally important.\n\nAt VinCSS, the Threat Hunt teams are constantly monitor customers' IT resources from the\nbad guys' perspective, continuously targeting and simulating possible hazards to clients.\nFrom there, VinCSS can provide early and honest warnings to customers to promptly detect\nand deal with complex cyber threats.\n\n**Timeline**\n\nAugust 10, 2021: Report to Zalo Security team.\nAugust 10, 2021: Zalo replied that it has received the report and is processing it.\nAugust 15, 2021: Zalo Security team informed that 4/5 vulnerabilities have been fixed.\nAugust 15, 2021: VinCSS verify and confirm.\nNovember 6, 2021: VinCSS sent an email to Zalo to ask about the status of the last\nvulnerability and requested to publish information about the vulnerability to the\ncommunity when it was almost 90 days from the reporting date.\nNovember 9, 2021: Zalo Security team confirmed to have fixed all of vulnerabilities and\nVinCSS published the research paper.\n\n_[Click here for Vietnamese version.](https://blog.vincss.net/2021/11/ex008-chuoi-khai-thac-cho-phep-chiem-quyen-kiem-soat-tai-khoan-nguoi-dung-Zalo.html)_\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-11-09 - [EX008] The exploit chain allows to take control of Zalo user accounts.pdf"
+    ],
+    "report_names": [
+        "2021-11-09 - [EX008] The exploit chain allows to take control of Zalo user accounts.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "52d5d8b3-ab13-4fc4-8d5f-068f788e4f2b",
+            "created_at": "2022-10-25T16:07:24.503878Z",
+            "updated_at": "2025-03-27T02:02:10.261742Z",
+            "deleted_at": null,
+            "main_name": "Lapsus$",
+            "aliases": [
+                "DEV-0537",
+                "Strawberry Tempest"
+            ],
+            "source_name": "ETDA:Lapsus$",
+            "tools": [],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "be5097b2-a70f-490f-8c06-250773692fae",
+            "created_at": "2022-10-27T08:27:13.22631Z",
+            "updated_at": "2025-03-27T02:00:55.534879Z",
+            "deleted_at": null,
+            "main_name": "LAPSUS$",
+            "aliases": [
+                "LAPSUS$",
+                "DEV-0537",
+                "Strawberry Tempest"
+            ],
+            "source_name": "MITRE:LAPSUS$",
+            "tools": [
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d4b9608d-af69-43bc-a08a-38167ac6306a",
+            "created_at": "2023-01-06T13:46:39.335061Z",
+            "updated_at": "2025-03-27T02:00:03.053961Z",
+            "deleted_at": null,
+            "main_name": "LAPSUS",
+            "aliases": [
+                "LAPSUS$",
+                "DEV-0537",
+                "SLIPPY SPIDER",
+                "Strawberry Tempest"
+            ],
+            "source_name": "MISPGALAXY:LAPSUS",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535767,
+    "ts_updated_at": 1743041162,
+    "ts_creation_date": 1653786792,
+    "ts_modification_date": 1653786792,
+    "files": {
+        "pdf": "https://archive.orkl.eu/1957896e0f373fb60cb5b1ae1b08ac5a80638e9e.pdf",
+        "text": "https://archive.orkl.eu/1957896e0f373fb60cb5b1ae1b08ac5a80638e9e.txt",
+        "img": "https://archive.orkl.eu/1957896e0f373fb60cb5b1ae1b08ac5a80638e9e.jpg"
+    }
+}

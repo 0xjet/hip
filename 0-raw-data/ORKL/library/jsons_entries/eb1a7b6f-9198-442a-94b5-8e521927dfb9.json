@@ -1,0 +1,42 @@
+{
+    "id": "eb1a7b6f-9198-442a-94b5-8e521927dfb9",
+    "created_at": "2023-01-12T15:08:10.116387Z",
+    "updated_at": "2025-03-27T02:05:21.593607Z",
+    "deleted_at": null,
+    "sha1_hash": "79161d7bcc58f2f90c00f7180fdf563b4ed97ee0",
+    "title": "2020-11-28 - Hunting Koadic Pt. 2 - JARM Fingerprinting",
+    "authors": "",
+    "file_creation_date": "2022-05-28T17:30:02Z",
+    "file_modification_date": "2022-05-28T17:30:02Z",
+    "file_size": 81311,
+    "plain_text": "# Hunting Koadic Pt. 2 - JARM Fingerprinting\n\n**blog.tofile.dev/2020/11/28/koadic_jarm.html**\n\npat_h/to/file November 28, 2020\n\nNov 28, 2020\n\n[A year ago, I looked into](https://blog.tofile.dev/2019/12/03/koadic.html) [Koadic C2, a post-exploitation tool used by APTs and Pentesters](https://github.com/zerosum0x0/koadic)\nalike.\n\nAt the time, I was able to fingerprint all non-fronted Koadic C2 servers across the internet,\ndue to mismatches in it’s 404 page, where it fails to make the server look like a benign\nApache web server.\n\nKoadic hasn’t had many updates in the last 12 months, but in the meantime Salesforce have\n[released JARM, a method of fingerprinting TLS Servers. According to Salesforce, it works by](https://github.com/salesforce/jarm)\nquerying the server in various ways to gather information about things such:\n\nOperating system\nOperating system version\nLibraries used\nVersions of those libraries used\nThe order in which the libraries were called\nCustom configuration\n\nI wanted to revisit Koadic, and see if JARM would be able to pick up the C2 server as good\nas or better than my 404 analysis.\n\n## Step 1. Get Koadic’s JARM\n\nKoadic C2 is written in Python, so already what OS we run it on will have an impact on it’s\nJARM signature. But I decided to run it on an Ubuntu server, as that was probably a common\nplace it was deployed.\n\nFirst I started a Koadic Server, making sure to run it over HTTPS:\n\n\n-----\n\n```\n# First Create TLS keypair for the websever\n# enter a password and enter defaults for everything else\nsudo apt-get install openssl git python3 python3-pip\nopenssl req -x509 -newkey rsa:4096 -days 365 -keyout koadic-key.pem -out koadiccert.pem\n# Clone Koadic and install dependecies\ngit clone https://github.com/zerosum0x0/koadic.git\ncd koadic\npip3 install -r requirements.txt\n# Start Koadic and run the server in in HTTPS mode:\n./koadic\nset SRVHOST 127.0.0.1\nset SRVPORT 8000\nset KEYPATH ../koadic-key.pem\nset CERTPATH ../koadic-cert.pem\nrun\n\n```\nThen I grabbed the JARM tools from SalesForce and calculated my server’s fingerprint:\n```\ngit clone https://github.com/salesforce/jarm.git\ncd jarm\npython3 jarm.py 127.0.0.1 -p 8000\n\n```\nMy Result:\n```\nJARM: 2ad2ad0002ad2ad00042d42d000000ad9bf51cc3f5a1e29eecb81d0c7b06eb\n\n## Step 2. Search for JARM Fingerprint\n\n```\nShodan is currently looking to implement JARM fingerprinting, but it doesn’t do so currently.\n\nThankfully, [Silascutler on Twitter recently did an internet scan and generated JARM](https://twitter.com/silascutler/status/1331590681408704512)\nfingerprints from all hosts listening on port 443.\n\nThis isn’t going to see all servers, but it’s a place to start, so I grabbed their archive and\nlooked for our JARM signature:\n```\n# First got a sample of the data to find the format\nzcat 202011-443_fingerprint.json.gz | head -n 10 > sample.json\n# Format was very simple and 1 event per line, so can just use zgrep\n# Keep data gzipped in case there are lots of hits\nzgrep\n'\"fingerprint\":\"2ad2ad0002ad2ad00042d42d000000ad9bf51cc3f5a1e29eecb81d0c7b06eb\"'\n202011-443_fingerprint.json.gz | gzip > koadic_filtered.json.gz\n# Get a count of the number of entries\nzcat koadic_filtered.json.gz | wc -l\n\n```\nWhen I ran the last line, it listed 16,268 hits of our fingerprint 😐\n\n\n-----\n\n## So Why didn t this work?\n\n16,000 hits is way too high a number to be all Koadic servers, so I did some investigation\ninto why I got so many false positives. I grapped the IP addresses from the first 10 entries in\nthe list:\n```\n# Get the first 10 entries in plain text\nzcat koadic_filtered.json.gz | head -n 10 > possible_koadic.json\n# jq is a great tool to pretty-print JSON from the commandline\n# but if you don't have it you could also just use cat/vin/notepad\n# and strain your eyeballs for a bit\ncat possible_koadic.json | jq -r '.ip'\n\n```\nAnd then just looked up these IP addresses in Shodan. Our data might be slightly stale, but\nhopefully it can give us some indication as to what went wrong.\n\nThe data from Shodan starts to paint a picture of what has happened: A number of the IP\naddresses returned headers like the following:\n```\nServer: Python/3.8 aiohttp/3.6.2\nServer: Python/3.8 aiohttp/3.7.1\nServer: Python/3.8 aiohttp/3.6.1\n\n```\nWe know Koadic C2 is written in Python, so it is possibly just running the default Python web\nserver, which would mean the fingerprint is not Koadic’s, but Python’s.\n\nSure enough, we can create a simple Python TLS Server using the inbuilt `http.server :`\n```\nfrom http.server import HTTPServer, BaseHTTPRequestHandler\nimport ssl\nhttpd = HTTPServer(('localhost', 8000), BaseHTTPRequestHandler)\nhttpd.socket = ssl.wrap_socket (httpd.socket, \n    keyfile=\"koadic-key.pem\", \n    certfile=\"koadic-cert.pem\", server_side=True)\nprint(\"Stating Server https://localhost:8000\")\nhttpd.serve_forever()\n\n```\nBy running that code, then running JARM, we get the exact same fingerprint:\n```\nJARM: 2ad2ad0002ad2ad00042d42d000000ad9bf51cc3f5a1e29eecb81d0c7b06eb\n\n## Conclusion\n\n```\nJARM definitely looks to be an interesting addition to the TLS Fingerprinting suite, alongside\n[the client fingerprinting tool JA3. But it won’t pick up all malicious servers.](https://github.com/salesforce/ja3)\n\n\n-----\n\nOn top of this example of a known-bad server using language defaults to look benign, the\nmore common issue will be that a lot of C2 servers sit behind legitimate web server reverseproxies, such as Apache HTTPd or NGinx.\n\nThis means the JARM fingerprints will match only the legitimate outer layer, and not the C2\nserver’s fingerprint that sits behind the legitimate servers.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-11-28 - Hunting Koadic Pt. 2 - JARM Fingerprinting.pdf"
+    ],
+    "report_names": [
+        "2020-11-28 - Hunting Koadic Pt. 2 - JARM Fingerprinting.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673536090,
+    "ts_updated_at": 1743041121,
+    "ts_creation_date": 1653759002,
+    "ts_modification_date": 1653759002,
+    "files": {
+        "pdf": "https://archive.orkl.eu/79161d7bcc58f2f90c00f7180fdf563b4ed97ee0.pdf",
+        "text": "https://archive.orkl.eu/79161d7bcc58f2f90c00f7180fdf563b4ed97ee0.txt",
+        "img": "https://archive.orkl.eu/79161d7bcc58f2f90c00f7180fdf563b4ed97ee0.jpg"
+    }
+}

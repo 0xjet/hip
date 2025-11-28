@@ -1,0 +1,65 @@
+{
+    "id": "6da52bfa-712e-44e9-9347-9e53046b4a46",
+    "created_at": "2023-06-05T02:06:45.952441Z",
+    "updated_at": "2025-03-27T02:14:13.695694Z",
+    "deleted_at": null,
+    "sha1_hash": "7b9e3944d14593549f3e88d6218d3e9162405eb5",
+    "title": "2023-05-22 - Back in Black- BlackByte Ransomware returns with its New Technology (NT) version",
+    "authors": "",
+    "file_creation_date": "2023-06-04T12:54:46Z",
+    "file_modification_date": "2023-06-04T12:54:46Z",
+    "file_size": 781564,
+    "plain_text": "# Back in Black: BlackByte Ransomware returns with its New Technology (NT) version\n\n**[blog.cluster25.duskrise.com/2023/05/22/back-in-black-blackbyte-nt](https://blog.cluster25.duskrise.com/2023/05/22/back-in-black-blackbyte-nt)**\n\nCluster25 Threat Intel Team\n\nBy Cluster25 Threat Intel Team\n\nMay 22, 2023\n\n**BlackByte is a Ransomware-as-a-Service (RaaS) group that is known for the use of the homonymous**\nmalware that is constantly updated and spread in different variants. The first implementation of the\nmalware was written in the C# programming language, which was followed by a Golang implementation\nthat also integrated a privilege escalation technique that exploited the Bring Your Own Vulnerable\n**Driver (BYOVD) vulnerability.**\n\nThe last implementation, known as BlackByte NT, is written in C++ and integrates different techniques\nto hinder both the static and dynamic analysis of the malware, hiding the behavior of the malware when\nthe execution is monitored. The new version also adds new drivers for the exploit of the BYOVD\nvulnerability in order to disable security products and tools that may interfere with its execution.\n\n## INSIGHTS\n\nThe analyzed sample is a 64-bit PE with the compilation timestamp of February 19th 2023. The\nmalware uses different anti-analysis mechanisms to hinder both the static and the dynamic analysis.\nOne of these consists in the dynamic import of the APIs needed for the malware execution: the\nmalware uses a function to find the DLL and a function to import the needed procedure with the use of\nthe hash of their names. In both cases the hash is computed starting from a byte with the value 0x99,\nwhich is multiplied by three and added to each byte of the string of the module name. The following is an\nre-implementation of the algorithm in Python:\n\n\n-----\n\n**POWERSHELL**\n\ndef get_hash(module_name):\nmodule_name_b = bytearray()\nmodule_name_b.extend(map(ord, module_name))\ncurrent_hash = 0x99\nfor i in range(len(module_name_b)):\ncurrent_hash = module_name_b[i] + current_hash*3\nreturn hex(current_hash)\n\nThe team used the above function in a IDAPython script that allowed to retrieve all invocations to the\nfunctions responsible for the dynamic loading of the APIs in order to continue with the static analysis of\nthe malware.\n\nThe mentioned functions receive the hash of the module or function to load as one of their arguments,\nthen the Process Environment Block (PEB) structure of the binary is parsed to access to the list of the\nDLLs loaded in the process memory and their export function names.\n\nThe PEB structure is also accessed to perform an anti-debug check, verifying the content of the flag\n**BeingDebugged.**\n\nAfter loading the needed APIs, the malware checks the arguments passed during the execution, which\nmay have the following flags: -a, -s, -w, -q.\n\nIn case no one of the mentioned arguments is specified, the malware terminates its execution.\n\n\n-----\n\nMoreover, if the string “svc” is provided as an argument, the malware launches a new thread to register\na new service using a random name of 7 characters which may be used to establish persistence. This,\nlike other operations executed by the malware, is performed using syscalls instead of standard\nWindows API libraries. In this way, the malware tries to bypass detection techniques that monitor usermode hooks by using syscalls instead of standard Windows API libraries.The same method may be\nused also to hinder the actions of debugger hiding tools (e.g. ScyllaHide).\n\nThe main thread, instead, continues its execution decoding the string dHJ0dW9pYQc= from the Base64\nencoding, the resulting string is then decrypted with a XOR loop using the key BAGMVPR1p6PfdcfiV,\nthat is itself encrypted in the binary. The obtained value (i.e. 63389936), is compared against the value\npassed with one of the execution flags when the binary is launched and, if the values don’t match, the\nmalware terminates its execution. This is done possibly with the intent of hiding the behavior of the\nmalware from sandbox tools when the sample is not launched in the proper way.\n\nThe malware then creates the file at the path C:\\SystemData\\MsExchangeLog1.log using a syscall to\nthe function NtCreateFile. The file contains a sequence of elements q<number> and w<number> that\nseem to be used to keep track of the status of the process.\n\nTo proceed with its execution, the malware continues the dynamic resolution of functions from the\nfollowing DLLs:\n\n**kernel32.dll**\n\n\n-----\n\n**ntdll.dll**\n**advapi32.dll**\n**user32.dll**\n**shell32.dll**\n**rstrtmgr.dll**\n**netapi32.dll**\n**shlwapi.dll**\n**mpr.dll**\n**psapi.dll**\n**ole32.dll**\n**OleAut32.dll**\n**version.dll**\n**Winhttp.dll**\n**IPHLPAPI.dll**\n**Ws2_32.dll**\n**Dbghelp.dll**\n\nSome of these are retrieved from the hash of their names, that are hardcoded in the binary, others using\nthe string of their names, which are decrypted and passed to the LoadLibraryW function.\n\nWhen all the APIs are retrieved, the malware performs an anti-debug check using two syscalls to the\nNative API NtQueryInformationProcess, using the ProcessDebugPort and\n**ProcessBasicInformation arguments to detect if a debugger is attached to the process. If this is the**\ncase, the malware exists after deleting its executable file by launching a Windows command through the\n**CreateProcessInternalW API:**\n\n**WINDOWS COMMAND**\n\nC:\\\\Windows\\\\System32\\\\cmd.exe /c ping 1.1.1.1 -n 10 > Nul & fsutil file setZeroData offset=0\nlength=663424 \\\"<file-path>\" & Del \\\"<file-path>\" /F /Q\n\nOther checks are performed using the NtSystemDebugControl and NtGetContextThread functions, to\ncheck debug registers and also detect hardware breakpoints.\n\nIf all the checks are successful, the malware scans the list of running processes and injects itself in\n**svchost.exe, where the file encryption takes place. The encryption is performed in a dedicated thread**\nfor each file, using Curve25519 Elliptic Curve Cryptography (ECC) for asymmetric encryption and\n**ChaCha20 for symmetric file encryption. The files are also renamed with a Base64-encoded string and**\nthe .blackbytent extension (e.g. IjUSLV4COhRVDA0EbyABJg==.blackbytent).\n\n\n-----\n\nThe following figure shows an excerpt of the Random note:\n\nFinally, the new variant, like its previous version, continues to exploit vulnerable drivers to perform\nenhanced evasion techniques. In fact, the malware drops the following files in the directory\n**C:\\SystemData:**\n\n**A3V86HEL: which is the file RTCore64.sys, a kernel mode driver used by Micro-Star MSI AfterBurner,**\na graphics card utility;\n\n**A3V86HEL_1: which is DBUtil_2_3.Sys, a driver related to Dell Client firmware update utility.**\n\nBoth the drivers can be exploited to escalate the privileges in the target system and disable security\nprotection products. While the use of the RTCore64.sysdriver was already reported for previous analysis\nof the second version of BlackByte, the use of the Dell driver seems a peculiarity of the new version.\n\n## MITRE ATT&CK MATRIX\n\n\n-----\n\n**TACTIC** **TECHNIQUE** **DESCRIPTION**\n\nInitial Access T1566.001 Phishing: Spearphishing Attachment\n\nInitial Access T1566.002 Phishing: Spearphishing Link\n\nExecution T1059.003 Command and Scripting Interpreter: Windows Command Shell\n\nExecution T1106 Native API\n\nExecution T1204.002 User Execution: Malicious File\n\nExecution T1569 System Services\n\nPrivilege Escalation T1068 Exploitation for Privilege Escalation\n\nDefense Evasion T1140 Deobfuscate/Decode Files or Information\n\nDefense Evasion T1622 Debugger Evasion\n\nDefense Evasion T1211 Exploitation for Defense Evasion\n\nDefense Evasion T1562 Impair Defenses\n\nDefense Evasion T1070 Indicator Removal\n\nDefense Evasion T1055 Process Injection\n\nDiscovery T1082 System Information Discovery\n\nDiscovery T1083 File and Directory Discovery\n\nDiscovery T1057 Process Discovery\n\nDiscovery T1518 Software Discovery\n\nImpact T1486 Data Encrypted for Impact\n\n## INDICATORS OF COMPROMISE\n\n**CATEGORY** **TYPE** **VALUE**\n\nPAYLOAD SHA256 02a0a39dbe0dcb5600f4179aeab457bb86965699e45d1d154082b02139dc701d\n\nPAYLOAD SHA1 `c0950ebfa3a63c705ca813cfd28364aa1d90bb09`\n\nPAYLOAD MD5 `bf1f2f3759448a05d3dd92a4f7f042f6`\n\n[Malware,](https://blog.cluster25.duskrise.com/tag/malware) [Intelligence,](https://blog.cluster25.duskrise.com/tag/intelligence) [Ransomware](https://blog.cluster25.duskrise.com/tag/ransomware)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2023/2023-05-22 - Back in Black- BlackByte Ransomware returns with its New Technology (NT) version.pdf"
+    ],
+    "report_names": [
+        "2023-05-22 - Back in Black- BlackByte Ransomware returns with its New Technology (NT) version.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "4e453d66-9ecd-47d9-b63a-32fa5450f071",
+            "created_at": "2024-06-19T02:03:08.077075Z",
+            "updated_at": "2025-03-27T02:05:17.381141Z",
+            "deleted_at": null,
+            "main_name": "GOLD LOTUS",
+            "aliases": [
+                "Hecamede ",
+                "BlackByte"
+            ],
+            "source_name": "Secureworks:GOLD LOTUS",
+            "tools": [
+                " Cobalt Strike",
+                " ExByte",
+                " MEGA",
+                " RDP",
+                " SoftPerfect Network Scanner",
+                "BlackByte"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1685930805,
+    "ts_updated_at": 1743041653,
+    "ts_creation_date": 1685883286,
+    "ts_modification_date": 1685883286,
+    "files": {
+        "pdf": "https://archive.orkl.eu/7b9e3944d14593549f3e88d6218d3e9162405eb5.pdf",
+        "text": "https://archive.orkl.eu/7b9e3944d14593549f3e88d6218d3e9162405eb5.txt",
+        "img": "https://archive.orkl.eu/7b9e3944d14593549f3e88d6218d3e9162405eb5.jpg"
+    }
+}

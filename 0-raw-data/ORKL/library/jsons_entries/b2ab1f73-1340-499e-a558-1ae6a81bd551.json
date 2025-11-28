@@ -1,0 +1,127 @@
+{
+    "id": "b2ab1f73-1340-499e-a558-1ae6a81bd551",
+    "created_at": "2022-10-25T16:48:15.879116Z",
+    "updated_at": "2025-03-27T02:13:25.937623Z",
+    "deleted_at": null,
+    "sha1_hash": "f7db20ae4b3f4784a3b4ac346424872858370a18",
+    "title": "Wiper Malware _ A Detection Deep Dive",
+    "authors": "Cisco",
+    "file_creation_date": "2014-12-19T19:34:13Z",
+    "file_modification_date": "2014-12-19T19:34:13Z",
+    "file_size": 347317,
+    "plain_text": "_[This post was authored by Christopher Marczewski with contributions from Craig WIlliams](https://linkedin.com/in/christophermarczewski)_\n\nA new piece of wiper malware has received quite a bit of media attention. Despite all the recent press,\n\nCisco’s Talos team has historic examples of this type of malware going back to the 1990s. Data is the new\n\ntarget, this should not surprise anyone. Recent examples of malware effectively “destroying” data -\nputting it out of victims’ reach – also include Cryptowall, and Cryptolocker, common ransomware variants\n\ndelivered by exploit kits and other means.\n\nWiping systems is also an effective way to cover up malicious activity and make incident response more\n\n[difficult, such as in the case of the DarkSeoul malware in 2013.](http://blogs.cisco.com/security/thoughts-on-darkseoul-data-sharing-and-targeted-attackers)\n\nAny company that introduced proper back-up plans in response to recent ransomware like Cryptolocker\n\nor Cryptowall should already be protected to a degree against these threats. Mitigation strategies like\n\ndefense in depth will also help minimize the chance of this malware reaching end systems.\n\n## The Deep Dive\n\nInitially we started investigating a sample reported to be associated with the incident to improve detection\n\nefficacy. Based off our analysis of\n\ne2ecec43da974db02f624ecadc94baf1d21fd1a5c4990c15863bb9929f781a0a we were able to link\n\n0753f8a7ae38fdb830484d0d737f975884499b9335e70b7d22b7d4ab149c01b5 as a nearly identical\n\nsample. By the time we reached the network-related functions during our analysis, the relevant IP\n\naddresses belonging to the C2 servers were no longer responding back as expected. In order to capture the\n\nnecessary traffic we had to modify both of the aforementioned disk wiper components. One modification\n\nreplaced one of the hard-coded C2 server IP addresses with a local address belonging to a decoy VM while\n\nchanging references to the other hard-coded addresses to point to this local address instead. The other\n\nmodification simply changed the parameter being passed to an instance of the Sleep() function so\n\ndebugging efforts wouldn’t be put on hold for 45 minutes (the original sample used a 10 minutes sleep).\n\n[When we initially examined a rule that was being distributed in the public we were looking for areas where](http://krebsonsecurity.com/2014/12/sony-breach-may-have-exposed-employee-healthcare-salary-data/comment-page-1/)\n\nwe could improve coverage to better protect our customers. The new Wiper variant is poorly written code\n\nand luckily includes very little obfuscation.The author(s) made the mistake of allocating a buffer for the\n\nsend() function that surpasses the data they wished to include in the payload: a null-terminated opening\n\nparentheses byte, the infected host’s local IP address, and the first 15 bytes of the host name. This\n\nincorrect buffer allocation results in the desired data, in addition to some miscellaneous data already\n\npresent on the stack (including the 0xFFFFFFFF bytes we alerted on in the first revision of our rule).\n\n\n-----\n\nfrom the stack that we onced alerted on only applies to beacons being sent from Win XP hosts:\n\nBeacon payload from infected WinXP x86 VM:\n\nBeacon payload from infected Win7 x64 VM:\n\nWe have tested part of this hypothesis by running the malware on the same VMs when they had maximum\n\nlength host names. The resulting beacons continued to limit the hostname bytes in the payload to 15 bytes.\n\nTo confirm the entire hypothesis, we had to debug and step carefully through the instructions responsible\n\nfor the data in these beacon payloads. You start by running the disk wiper component alone with the -w\n\nflag (which will naturally occur at some point when the disk wiper component is executed and copies itself\n\nto host three times). When you hit the following instruction…\n\n…we have to force execution of the alternate jump condition using the debugger to get to the next\n\ninteresting chunk of assembly:\n\n\n-----\n\n[We eventually arrive to our function call in the code block following the ZF toggle. It’s responsible for](https://en.wikipedia.org/wiki/Zero_flag)\n\nsetting up the necessary socket and sending the beacon payload once a connection has been established:\n\nLater on, we reach a call within the current function (sub_402D10) that is purely responsible for sending\n\nthe constructed payload:\n\nWhen we arrive at the following instruction…\n\n\n-----\n\n0x415D60, which was on the stack prior to calling sub_402C80) to the stack itself (starting at EDI,\n\ncurrently assigned stack pointer 0x12F4CE).\n\nFinally, we reach the call to the Windows function send():\n\nNow, at this point you’re probably thinking, “Cool. You explained how the payload is ultimately sent out,\n\nbut how does this explain the random bytes in the payload?”. Glad you asked…\n\nShortly after the instruction where you had to manually toggle the ZF but prior to sub_402D10, there’s a\n\ncall to a function that fetches the name of the infected host:\n\nThe first block of instructions belonging to this function is shown below:\n\n\n-----\n\nWhen you get to the following instruction in that block…\n\n…ECX = 0x08, ESI = 0x14F8D4, & EDI = 0x415D64. This means that eight double words will be extracted\n\nstarting at the pointer in ESI and moved to the pointer in EDI. Guess what’s on the stack right now?:\n\n\n-----\n\nThe data from these eight stack frames will get moved to the .data section, starting at 0x415D64. You’ll get\n\nthe four “prefix bytes” added on once the local IP address is acquired from that same code block via:\n\nAnd, as we’ve already detailed earlier, 0x2800 will be added as final prefix bytes to the resulting payload.\n\nBut, we now have another hard-coded element we can alert on in the beacon payload:\n\nThe third instruction shown above will store 0x04 as a doubleword to 0x415D84, which just happens to be\n\nat the very end of the payload currently stored in the .data section.\n\nWith this information, we were able to revise accordingly and design the following rule:\n\n\n-----\n\n_Click for a text version. It is important to note that sid 32674 will continue to be improved in the future_\n\n_as the malware evolves. This blog applies to the variants we are aware of as of revision 2 of the_\n\n_signature._\n\nThis rule will alert on the samples we’ve analyzed thus far that send these beacons back to their respective\n\nC2 servers. What’s more, the rule alerts on all of the hard-coded portions of the payload, providing more\n\ncomplete coverage regardless of the major Windows version running on these infected hosts.\n\n## Conclusion\n\nWe always want to deliver up-to-date detection for the latest threats in the quickest most efficient manner\n\npossible. However, the quality of the detection should never be dismissed. The suggested rule we initially\n\nlanded upon did cover these wiper components when run under select Windows environments, but our\n\nteam wanted to fully understand the reasoning and justification behind every option of that rule. This\n\nhelps us ensure we cover the threat to the best extent possible and do so in the most efficient way possible.\n\nOnce we did we were able to analyze further and release coverage that was more robust for our customers\n\nto help prevent further compromises of this magnitude that may just utilize the Wiper malware family.\n\n## Coverage\n\n[Advanced Malware Protection (AMP) is well suited to detect and block this type of attack.](http://www.cisco.com/c/en/us/support/security/amp-firepower-software-license/tsd-products-support-series-home.html)\n\n[CWS or WSA web scanning will prevent access to malicious websites and detect the malware used in this](http://www.cisco.com/c/en/us/products/security/cloud-web-security/index.html)\n\nattack.\n\n[The Network Security protection of IPS and NGFW have up-to-date signatures and will block this threat.](http://www.cisco.com/c/en/us/products/security/intrusion-prevention-system-ips/index.html)\n\n[ESA is not applicable for this attack because this threat is not using email.](http://www.cisco.com/c/en/us/products/security/email-security-appliance/index.html)\n\n[Tags: APT, malware, security, Talos](http://blogs.cisco.com/tag/apt)\n\n\n-----\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "d63ae2b7-445f-460d-965d-2676dacdb6de",
+            "created_at": "2022-10-25T15:59:19.552139Z",
+            "updated_at": "2022-10-25T15:59:19.552139Z",
+            "deleted_at": null,
+            "name": "APTnotes",
+            "url": "https://github.com/aptnotes/data",
+            "description": "APTnotes data",
+            "reports": null
+        },
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://app.box.com/s/efz1qmraxgqzenl5mzyeqtrh8kg1nktb",
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2014/2014.12.17.Wiper_Malware_Deep_Dive/Wiper_Malware.pdf"
+    ],
+    "report_names": [
+        "Wiper_Malware"
+    ],
+    "threat_actors": [
+        {
+            "id": "68cc6e37-f16d-4995-a75b-5e8e2a6cbb3d",
+            "created_at": "2024-05-01T02:03:07.943593Z",
+            "updated_at": "2025-03-27T02:05:17.259709Z",
+            "deleted_at": null,
+            "main_name": "BRONZE EDISON",
+            "aliases": [
+                "DarkSeoul",
+                "Maverick Panda ",
+                "Sykipot ",
+                "TG-0623 ",
+                "getkys",
+                "APT4 "
+            ],
+            "source_name": "Secureworks:BRONZE EDISON",
+            "tools": [
+                " Wkysol",
+                " ZxPortMap",
+                "Gh0st RAT"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "a2b92056-9378-4749-926b-7e10c4500dac",
+            "created_at": "2023-01-06T13:46:38.430595Z",
+            "updated_at": "2025-03-27T02:00:02.831633Z",
+            "deleted_at": null,
+            "main_name": "Lazarus Group",
+            "aliases": [
+                "Operation DarkSeoul",
+                "APT38",
+                "ATK117",
+                "DEV-1222",
+                "G0032",
+                "APT 38",
+                "Stardust Chollima",
+                "APT-C-26",
+                "ATK3",
+                "Diamond Sleet",
+                "Hidden Cobra",
+                "Unit 121",
+                "Subgroup: Bluenoroff",
+                "NICKEL GLADSTONE",
+                "DEV-0139",
+                "Andariel",
+                "Operation Troy",
+                "COVELLITE",
+                "TA404",
+                "Lazarus group",
+                "Dark Seoul",
+                "G0082",
+                "NewRomanic Cyber Army Team",
+                "Bluenoroff",
+                "Appleworm",
+                "Nickel Academy",
+                "COPERNICIUM",
+                "Hastati Group",
+                "Bureau 121",
+                "Operation AppleJeus",
+                "Whois Hacking Team",
+                "Citrine Sleet",
+                "Sapphire Sleet",
+                "Group 77",
+                "Labyrinth Chollima",
+                "Operation GhostSecret",
+                "BeagleBoyz"
+            ],
+            "source_name": "MISPGALAXY:Lazarus Group",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716495,
+    "ts_updated_at": 1743041605,
+    "ts_creation_date": 1419017653,
+    "ts_modification_date": 1419017653,
+    "files": {
+        "pdf": "https://archive.orkl.eu/f7db20ae4b3f4784a3b4ac346424872858370a18.pdf",
+        "text": "https://archive.orkl.eu/f7db20ae4b3f4784a3b4ac346424872858370a18.txt",
+        "img": "https://archive.orkl.eu/f7db20ae4b3f4784a3b4ac346424872858370a18.jpg"
+    }
+}

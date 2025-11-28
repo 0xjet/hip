@@ -1,0 +1,67 @@
+{
+    "id": "baca9a45-9314-4e6c-b4fd-e910c13e42ea",
+    "created_at": "2023-01-12T15:08:43.548331Z",
+    "updated_at": "2025-03-27T02:08:40.155073Z",
+    "deleted_at": null,
+    "sha1_hash": "a14f85b77ce74f93e1a8602ea767e90bfb74b475",
+    "title": "2021-03-05 - Advancements in Invoicing - A highly sophisticated way to distribute ZLoader",
+    "authors": "",
+    "file_creation_date": "2022-05-28T16:55:41Z",
+    "file_modification_date": "2022-05-28T16:55:41Z",
+    "file_size": 417427,
+    "plain_text": "# Advancements in Invoicing - A highly sophisticated way to distribute ZLoader\n\n**[forcepoint.com/blog/x-labs/invoicing-spam-campaigns-malware-zloader](https://www.forcepoint.com/blog/x-labs/invoicing-spam-campaigns-malware-zloader)**\n\nMarch 5, 2021\n\n**Classic invoicing campaigns**\n\nSpam campaigns using this new distribution chain first started to appear in early February\n2021. The content of the emails follow the long-standing simplistic style of invoicing scams.\nWhile the message body varies, it contains only a couple of basic sentences, for example\nasking recipients to review all information attached, claiming to be new taxation rules from\n[the Internal Revenue Service (IRS), posing as a bill already processed, or a similar lure](https://www.irs.gov/)\n[along those lines. What they have in common is a Microsoft Word attachment in MHTML](https://en.wikipedia.org/wiki/MHTML)\nformat with a randomly generated filename.\n\n\n-----\n\n**First Stage: MHTML attachments and ActiveMime**\n\nOne advantage of the MHTML format is its compatibility with web-based technologies. There\nis no visible difference using this format over the more typical OLE or DOCX, but it has been\npopular amongst cybercriminals for years due to the technical challenges it might pose to\nsecurity products.\n\nTaking a closer look at the internal structure of the document, there is an HTML component\nwith the same name as the MHTML file, a couple of small XML descriptors, a PNG image\nand an “editdata.mso” object.\n\n\n-----\n\nThis last MSO object is actually an ActiveMime binary containing compressed data, but\nfortunately the algorithm used is the quite popular zlib. Once decompressed (inflated) we will\nbe presented with a traditional OLE document.\n\n**UserForms**\n\nExamination of the newly acquired OLE document reveals multiple UserForms and the\npresence of VBA macros. That alone would make it suspicious, but the macro code is\nobfuscated and won't give away its intended functionality very easily. This is where the real\nfun begins.\n\nIf we were to open the original attachment by simply double clicking on it - and Microsoft\nWord was rightfully configured to have macros disabled - a short message would be\ndisplayed asking the user to enable content. This should never be done when dealing with\ndocuments from unknown sources, as it will immediately enable macros and lead to their\nexecution - which is exactly the case here.\n\n\n-----\n\n**Some VBA Magic**\n\nAs stated earlier, the VBA project contains a lot of forms and functions. We’ll start\ninvestigating the macro that executes upon closing of the document (Document_Close):\n\nThe function “tg” requires an object from UserForm2, so this resource needs to be initialized.\n\n\n-----\n\nThat means execution will redirect to the appropriate UserForm_Initialize function.\n\nThe above code is looping through all instances of the entries in the UserForm2/o object,\nwhich looks like this:\n\n\n-----\n\nThis is a rather complicated structure to parse, and documentation on it is sparse at best.\n\nAt the time of writing, we processed all entries in this table to generate the content of the “qj”\nvariable. The result of that is going to be an URL:\n\nhttps://tanikku[.]com/tan.php?IUI92CaHF9AKOFsJA2V7ZSK5ylpeDYQj\n\nThe rest of the “tg” function then creates an object via CreateObject(“excel.application”) and\nuses the CallByName function to request Excel to “OpEn” a new spreadsheet by this URL\nwith the addition of a password (“gomrhd”) which was gathered from the UserForm1/o object.\n\nFinally, Excel will start to download and decrypt a spreadsheet from the specified C2.\n\n**Second Stage: An encrypted Excel document**\n\nHaving an encrypted document or archive as the ignition point of an infection chain is a\ndecade old technique used by cybercriminals. There are clear benefits, the on-access\nsecurity components won't be able to dissect the file without having the right password.\nThere are also downsides, the password must be included in the original email message and\na basic level of user interaction is required for entering it. This could raise suspicion and\nthere is always the possibility of user failure as well. The appearance of a password input\nfield in the middle of an infection chain would be even more suspicious. Using macros in one\ndocument to load another - a password protected and encrypted Excel sheet - is taking best\nof both worlds; the Excel file will be somewhat invisible to any typical on-access scanner on\nthe endpoint, while no user interaction will be necessary at all.\n\nHaving the matching password, we can also investigate the content of the downloaded\nspreadsheet. There are no macros present, but a total of 5 sheets, some containing strings\nand Excel functions in seemingly random cells/order, and a large blob of encoded data in\nsheet 4. Anybody with previous experience working with encoded content will easily see that\nbase64 encoding is used.\n\n\n-----\n\n**A protected container**\n\nIf we consider the base64 data to be the final payload, we must also locate the piece of code\nresponsible for decoding and loading it. For that we will have to go back to the VBA macros\nin the ActiveMime object. There is a fair amount of macro code for grabbing strings and data\nfrom those “random” cells in the other Excel sheets for the purpose of building and executing\nadditional functions with “CallByName”. Covering all of them is outside of the scope of this\nblog.\n\nAt last, the decoding and execution of the payload is done by the “ThisWorkbook.gykvtla”\nfunction. The “hp” variable contains the base64 encoded data, while “bu” is a numeric value\nmeant to specify the type of the payload (even number=EXE, odd number=DLL).\n\n\n-----\n\nThis way, the downloaded Excel file acts more as protected storage, containing strings and\ndata necessary for successful execution, as well as the encoded payload. Neither the\nMHTML document nor the Excel spreadsheet can work on its own and content of the latter is\nhidden from prying eyes.\n\n**Third Stage: Payload**\n\nAs pointed out above, the embedded “gykvtla” Excel function acts as a simplistic loader for\nthe final payload. It employs obfuscation - mainly using IIF and SWITCH functions – but\nretrieving its core functionality isn't too challenging. First it would generate a 6-character long\nstring used as a filename, then the base64 encoded data on sheet4 would be decoded and\nsaved under the ProgramData folder. Depending on whether the payload is a standard\nPortable Executable (PE), or a Dynamic Link Library (DLL) execution would slightly differ,\nwhile the EXE will be done alone with the help of “WScript.Shell”, the DLL will be loaded\nusing the rundll32 windows utility. Finally, there is a GET request sent to the C2\n(hxxps://tanikku.com/kku.php) which provides a status report on the successful infection.\n\n\n-----\n\n[The payload in this specific campaign was ZLoader, a highly popular multi-purpose malware](https://blog.malwarebytes.com/threat-analysis/2020/05/the-silent-night-zloader-zbot/)\nwhich can act as a banking trojan, but also used to help distributing ransomware families in\nthe past such as Ryuk and Egregor. How the operators behind these campaigns plan to\nutilize ZLoader's powerful capabilities is yet to be seen.\n\n**Conclusion**\n\nInvoice-themed spam campaigns rarely offer new and challenging delivery techniques. While\nthe spammed emails lack finesse, the rest of the infection chain demonstrates a high level of\nunderstanding of various Microsoft Office file formats and how they can be used in\ncombination. It is well thought out, fairly complex, but also lacks any unnecessary\novercomplication, a mistake typically done by juniors. Creators of this delivery chain are\nshowcasing skills from the higher tiers of the cybercriminal pyramid, as such extra vigilance\nis needed to counter it.\n\n## Protection Statement\n\nForcepoint customers are protected against this threat at the following stages of attack:\n\nStage 2 (Lure) – Malicious emails associated with these attacks are identified and\nblocked.\nStage 5 (Dropper File) – Malicious files are prevented from being downloaded.\nStage 6 (Call Home) – Attempts to contact C2 servers are blocked.\n\n\n-----\n\n## IOCs\n\n**Files**\n\n6cd67f6ce51c3a57f5d9a65415780ee8ef9ee44c\nf762d7e999c3f1fa768aba1c0469db1a1596b69e\n98727b1b6826e2816f908c08b15db427c875ca53\n\n**URLs**\n\nhxxps://tanikku[.]com/tan.php\nhxxps://tanikku[.]com/kku.php\nhxxps://fiberswatch[.]com/watch.php\nhxxps://heftybtc[.]com/hef.php\nhxxps://dailyemploy[.]com/day.php\nhxxps://findinglala[.]com/down/doc.xls\nhxxps://sejutamanfaat[.]com/faat.php\nhxxps://earfetti[.]com/post.php\nhxxps://evalynews[.]com/post.php\nhxxps://sanciacinfofoothe[.]tk/post.php\nhxxps://enriwetmiti[.]tk/post.php\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-03-05 - Advancements in Invoicing - A highly sophisticated way to distribute ZLoader.pdf"
+    ],
+    "report_names": [
+        "2021-03-05 - Advancements in Invoicing - A highly sophisticated way to distribute ZLoader.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536123,
+    "ts_updated_at": 1743041320,
+    "ts_creation_date": 1653756941,
+    "ts_modification_date": 1653756941,
+    "files": {
+        "pdf": "https://archive.orkl.eu/a14f85b77ce74f93e1a8602ea767e90bfb74b475.pdf",
+        "text": "https://archive.orkl.eu/a14f85b77ce74f93e1a8602ea767e90bfb74b475.txt",
+        "img": "https://archive.orkl.eu/a14f85b77ce74f93e1a8602ea767e90bfb74b475.jpg"
+    }
+}

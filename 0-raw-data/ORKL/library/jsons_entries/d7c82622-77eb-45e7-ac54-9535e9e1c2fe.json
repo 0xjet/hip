@@ -1,0 +1,204 @@
+{
+    "id": "d7c82622-77eb-45e7-ac54-9535e9e1c2fe",
+    "created_at": "2022-10-25T16:48:17.535353Z",
+    "updated_at": "2025-03-27T02:16:59.316614Z",
+    "deleted_at": null,
+    "sha1_hash": "fa51e4fc31413cc11e93b0245b93dc0dd36b07ce",
+    "title": "",
+    "authors": "",
+    "file_creation_date": "2021-04-09T02:25:22Z",
+    "file_modification_date": "2021-04-09T02:25:22Z",
+    "file_size": 666138,
+    "plain_text": "# (Are you) afreight of the dark? Watch out for Vyveva, new Lazarus backdoor\n\n**[welivesecurity.com/2021/04/08/are-you-afreight-dark-watch-out-vyveva-new-lazarus-backdoor](https://www.welivesecurity.com/2021/04/08/are-you-afreight-dark-watch-out-vyveva-new-lazarus-backdoor/)**\n\nApril 8, 2021\n\nESET researchers have discovered a previously undocumented Lazarus backdoor, which they have\ndubbed Vyveva, being used to attack a freight logistics company in South Africa. The backdoor\nconsists of multiple components and communicates with its C&C server via the Tor network. So far,\nwe have been able to find its installer, loader and main payload – a backdoor with a TorSocket DLL.\nThe previously unknown attack was discovered in June 2020.\n\nAlthough Vyveva has been used since at least December 2018, its initial compromise vector is still\nunknown. Our telemetry data suggests targeted deployment as we found only two victim machines,\nboth of which are servers owned by a freight logistics company located in South Africa. The backdoor\nfeatures capabilities for file exfiltration, timestomping, gathering information about the victim\ncomputer and its drives, and other common backdoor functionality such as running arbitrary code\nspecified by the malware’s operators. This indicates that the intent of the operation is most likely\nespionage.\n\nThis blogpost provides the first public, technical analysis of Vyveva’s components.\n\n## Attribution to Lazarus\n\nVyveva shares multiple code similarities with older Lazarus samples that are detected by ESET\nproducts as the NukeSped malware family. However, the similarities do not end there: the use of fake\nTLS in network communication, command line execution chains, and the way of using encryption and\nTor services all point towards Lazarus; hence we can attribute Vyveva to this APT group with high\nconfidence.\n\nAn example of the numerous code similarities can be seen in Figure 1 – resolving uniquely named Tor\nlibrary exports.\n\n92F5469DBEFDCEE1343934BE149AFC1241CC8497 msobjs.drx Vyveva backdoor\nBF98EA1326E5F8C351E68C79B5D1E0164C7BE728 taskhosts.exe Win32/NukeSped.HV trojan\n\n_Figure 1. Hex-Rays decompilation showing similarity between Vyveva (left) and NukeSped sample (right)_\n\n\n-----\n\n## Technical analysis\n\nUp until now, we have managed to find three of the multiple components comprising Vyveva – its\ninstaller, loader and backdoor. The installer is the earliest chronological stage found and since it\nexpects other components to be already present on the machine, it suggests the existence of an\nearlier, unknown stage – a dropper. The loader serves to decrypt the backdoor using a simple XOR\ndecryption algorithm.\n\nFigure 2 provides a closer look at the functionality of the installer, the backdoor, and the Tor library.\n\n_Figure 2. Overview of Vyveva components_\n\n### Installer\n\nThe main purposes of the installer are twofold: it creates a service that ensures persistence of the\nbackdoor loader, and it stores the embedded, default backdoor configuration in the registry.\n\n\n-----\n\nTo create a legitimate-looking service, its attributes, such as service name and display name, are\nformed using a combination of words from the attributes of existing services, which are randomly\nselected. It is also possible to specify these attributes to the installer via command line parameters\n\n- dll, -svc, -disp, -desc, and -group. We observed the following in the wild, with these parameters:\n\n<SYSDIR>\\powerctl.exe -svc powerctl -dll powerctl.dll\n\nAs for the latter task, the installer first sets the configuration infection ID, which uniquely identifies\neach victim, to a randomly generated value, and then stores it in the registry, as shown in Figure 3.\n\n[HKLM\\SOFTWARE\\Microsoft\\DirectX]\nUsageMask = <CONFIG_DATA>\n\n_Figure 3. Configuration registry value_\n\nOne of the entries in the configuration is a list of encrypted C&C servers: for example, the installer\nsample we analyzed is configured with the following C&Cs:\n\n4bjt2rceijktwedi[.]onion:80\ncwwpxpxuswo7b6tr[.]onion:80\n\n### Backdoor functionality\n\nThe backdoor, Vyveva’s main component, connects to C&C servers and executes commands issued by\nthe threat actors. It features 23 commands, some of which are asynchronous and executed in their\nown threads. Most of them are ordinary commands for file and process operations or information\n[gathering, but there is also a less common command for file timestomping. It can copy](https://attack.mitre.org/versions/v8/techniques/T1070/006/)\ncreation/write/access time metadata from a “donor” file to a destination file or use a random date in\nthe years 2000—2004.\n\nOther noteworthy commands are Vyveva’s file upload command, and command 0x26. The file upload\ncommand is capable of exfiltrating directories recursively and supports file extension filtering – for\nexample, Office documents only. As for command 0x26, it indicates the existence of another,\nunknown component that we have not yet observed at the time of writing.\n\nThe full list of commands is shown in Table 1.\n\n_Table 1. Vyveva backdoor commands_\n\n**ID** **Description**\n\n0x03 Reply to “ping” from server\n\n0x10 Get information about computer – username, computer name, IP, code page, OS version,\nOS architecture, tick count, time zone, current directory\n\n0x11 Get information about drives – type, size, name, serial number, filesystem type\n\n0x12 Write data to specified file, optionally timestomp.\n\n\n-----\n\n**ID** **Description**\n\n0x13\n\nUpload specified file or directory\n    - File – size, last write time, content\n\n    - Directory stats – total files size, file count, directory count\n\n    - For each entry – name, attributes\n\n    - Directories – recurse into directories\n\n    - Files – size, last write time, content\n\nOptions\n\n    - Use compression for file content (zlib 1.2.5)\n\n    - File extension filter (whitelist/blacklist)\n\n    - Recursion flag\n\n0x14 Get listing of specified directory\n\n    - name, attributes, write time\n\n    - Directories – is nonempty\n\n    - Files – size\n\n0x15 Set current directory to specified directory\n\n0x16 Create specified process\n\n0x17 Get information about running processes – PID, PPID, executable file path\n\n0x18 Terminate process(es) by PID or executable file path\n\n0x19 Create process with redirected output and upload the output\n\nThe command uses a format string which hints at execution through cmd.exe\n\n   - \"%param0% /c \"%param1% > %tmp_fpath%\" 2>&1\"\n\nIf the output is empty, unique string \"\\x0D\\x0A\" is uploaded instead\n\n0x1A Delete specified path. File deletion methods:\n\n    - delete only\n\n    - overwrite & move & delete\n\n0x1B Copy creation/write/access time metadata from source file or directory to destination file or\ndirectory.\n\nIf the source doesn’t exist, random time in year 2000-2004 is used for creation & last write\ntime, access time is unchanged.\n\n0x1C Get info about specified path:\n\n    - File – attributes, creation/write/access time, type, size\n\n    - Directory / Drive – total files size, file count, directory count (with optional extension\nfiltering and recursion)\n\n0x1D Set current configuration blob, save to registry\n\n0x1E Get current configuration blob\n\n0x1F Enable/disable drive watchdog (configuration field enable_drive_watchdog)\n\n0x20 Enable/disable session watchdog (configuration field enable_session_watchdog)\n\n0x21 Set configuration value related to delay of backdoor execution (configuration field\ndelay_until_time)\n\n0x23 Store data used by asynchronous command (related to commands 0x12, 0x13)\n\n0x24 Stop executing asynchronous command (related to commands 0x12, 0x13)\n\n\n-----\n\n**ID** **Description**\n\n0x25 Set configuration value related to delay between failed C&C connection attempts\n(configuration field wait_minutes)\n\n0x26 If <SYSDIR>\\wsdchngr.drx exists\n\n     - Delete configuration registry value\n\n     - Delete backdoor file (self delete)\n\n     - Delete loader file\n\n    - Read, decrypt, PE-load wsdchngr.drx and call SamIPromote export in a new thread\n\n     - Exit current thread\n\nOf particular interest are the backdoor’s watchdogs, which can be optionally enabled or disabled.\nThere is a drive watchdog used to monitor newly connected and disconnected drives, and a session\nwatchdog monitoring the number of active sessions (i.e. logged-on users). These components can\ntrigger a connection to the C&C server outside the regular, preconfigured three-minute interval, and\non new drive and session events.\n\n### Configuration\n\nThe configuration of the backdoor, which is initially set by the installer, is read from the registry value\n(shown in Figure 3). When the configuration is modified by a C&C command, the value stored in the\nregistry is updated. An example configuration and its structure are shown in Figure 4.\n\n_Figure 4. Configuration structure and annotated example_\n\nThe wait_minutes field specifies the time to wait before next connection to the C&C after a failed\nconnection attempt. If the execution of the backdoor needs to be delayed until a particular time and\ndate, it can be specified in the delay_until_time field. The encrypted_cncs field is an encrypted string,\nwhich contains semicolon-separated C&Cs.\n\n### Tor library\n\nVyveva uses the Tor library, which is based on the official Tor source code, to communicate with a\nC&C server selected at random from the configuration. It contacts the C&C at three-minute intervals,\nsending information about the victim computer and its drives before receiving commands. The\n\n\n-----\n\nbackdoor’s export directory contains the TorSocket.dll with self-explanatory exports close_ch,\nconnect_ch, open_ch, read_ch, write_ch.\n\n## Conclusion\n\nVyveva constitutes yet another addition to Lazarus’s extensive malware arsenal. Attacking a company\nin South Africa also illustrates the broad geographical targeting of this APT group.\n\nFor any inquiries, or to make sample submissions related to the subject, contact us at\n_threatintel@eset.com._\n\n## Indicators of Compromise (IoCs)\n\n### Samples\n\n\n**SHA-1** **Filename**\n\n\n**ESET detection**\n**name** **Description**\n\n\nDAD50AD3682A3F20B2F35BE2A94B89E2B1A73067 powerctl.exe Win32/NukeSped.HX Installer\n\n69529EED679B0C7F1ACC1FD782A4B443CEC0CF83 powerctl.dll Win32/NukeSped.HX Loader\n(x86)\n\n043ADDFB93A10D187DDE4999D78096077F26E9FD wwanauth.dll Win64/NukeSped.EQ Loader\n(x64)\n\n1E3785FC4FE5AB8DAB31DDDD68257F9A7FC5BF59 wwansec.dll Win32/NukeSped.HX Loader\n(x86)\n\n4D7ADD8145CB096359EBC3E4D44E19C2735E0377 msobjs.drx - Backdoor\n(encrypted)\n\n92F5469DBEFDCEE1343934BE149AFC1241CC8497 msobjs.drx Win32/NukeSped.HX Backdoor\n(decrypted\nwith fixed\nMZ header)\n\nA5CE1DF767C89BF29D40DC4FA6EAECC9C8979552 JET76C5.tmp - Backdoor\nTor library\n(encrypted)\n\n66D17344A7CE55D05A324E1C6BE2ECD817E72680 JET76C5.tmp Win32/NukeSped.HY Backdoor\nTor library\n(decrypted\nwith fixed\nMZ header)\n\n### Filenames\n\n%WINDIR%\\System32\\powerctl.exe\n\n%WINDIR%\\SysWOW64\\powerctl.exe\n\n%WINDIR%\\System32\\power.dat\n\n%WINDIR%\\SysWOW64\\power.dat\n\n\n-----\n\n%WINDIR%\\System32\\wwanauth.dll\n%WINDIR%\\SysWOW64\\wwanauth.dll\n%WINDIR%\\System32\\wwansec.dll\n%WINDIR%\\SysWOW64\\wwansec.dll\n%WINDIR%\\System32\\powerctl.dll\n%WINDIR%\\SysWOW64\\powerctl.dll\n\n%WINDIR%\\System32\\JET76C5.tmp\n%WINDIR%\\SysWOW64\\JET76C5.tmp\n%WINDIR%\\System32\\msobjs.drx\n%WINDIR%\\SysWOW64\\msobjs.drx\n\n## MITRE ATT&CK techniques\n\n_[This table was built using version 8 of the MITRE ATT&CK framework.](https://attack.mitre.org/versions/)_\n\n**Tactic** **ID** **Name** **Description**\n\n\nExecution [T1569.002](https://attack.mitre.org/versions/v8/techniques/T1569/002/) System Services:\nService Execution\n\n\nVyveva loader executes via a service.\n\n\n[T1106](https://attack.mitre.org/versions/v8/techniques/T1106/) Native API Vyveva backdoor uses the CreateProcessA\nAPI to execute files.\n\n\nPersistence [T1543.003](https://attack.mitre.org/versions/v8/techniques/T1543/003/) Create or Modify\nSystem Process:\nWindows Service\n\n\nDefense\nEvasion\n\n\n[T1140](https://attack.mitre.org/versions/v8/techniques/T1140/) Deobfuscate/Decode\nFiles or Information\n\n[T1070.006](https://attack.mitre.org/versions/v8/techniques/T1070/006/) Indicator Removal\non Host: Timestomp\n\n[T1036.004](https://attack.mitre.org/versions/v8/techniques/T1036/004/) Masquerading:\nMasquerade Task or\nService\n\n\nVyveva installer creates a new service to\nestablish persistence for its loader.\n\nVyveva decrypts strings and components\n(backdoor, Tor library).\n\nVyveva backdoor can timestomp files.\n\nVyveva installer can create a service with\nattributes mimicking existing services.\n\n\n[T1112](https://attack.mitre.org/versions/v8/techniques/T1112/) Modify Registry Vyveva stores its configuration in the registry.\n\n\n[T1027](https://attack.mitre.org/versions/v8/techniques/T1027/) Obfuscated Files or\nInformation\n\nDiscovery [T1083](https://attack.mitre.org/versions/v8/techniques/T1083/) File and Directory\nDiscovery\n\n\nVyveva has encrypted strings and components.\n\nVyveva backdoor can obtain file and directory\nlistings.\n\n\n[T1057](https://attack.mitre.org/versions/v8/techniques/T1057/) Process Discovery Vyveva backdoor can list running processes.\n\n\n[T1082](https://attack.mitre.org/versions/v8/techniques/T1082/) System Information\nDiscovery\n\n[T1016](https://attack.mitre.org/versions/v8/techniques/T1016/) System Network\nConfiguration\nDiscovery\n\n[T1033](https://attack.mitre.org/versions/v8/techniques/T1033/) System Owner/User\nDiscovery\n\n\nVyveva backdoor can obtain system\ninformation, including computer name, ANSI\ncode page, OS version and architecture.\n\nVyveva backdoor can obtain the local IP\naddress of the victim computer.\n\nVyveva backdoor can obtain victim's username.\n\n\n-----\n\n**Tactic** **ID** **Name** **Description**\n\n\n[T1124](https://attack.mitre.org/versions/v8/techniques/T1124/) System Time\nDiscovery\n\nCollection [T1560.002](https://attack.mitre.org/versions/v8/techniques/T1560/002/) Archive Collected\nData: Archive via\nLibrary\n\n[T1005](https://attack.mitre.org/versions/v8/techniques/T1005/) Data from Local\nSystem\n\n[T1025](https://attack.mitre.org/versions/v8/techniques/T1025/) Data from\nRemovable Media\n\n\nCommand\nand Control\n\n\n[T1573.001](https://attack.mitre.org/versions/v8/techniques/T1573/001/) Encrypted Channel:\nSymmetric\nCryptography\n\n[T1573.002](https://attack.mitre.org/versions/v8/techniques/T1573/002/) Encrypted Channel:\nAsymmetric\nCryptography\n\n\nVyveva backdoor can obtain system time and\ntime zone.\n\nVyveva backdoor can compress files with zlib\nbefore sending to C&C.\n\nVyveva backdoor can collect files from\ncomputer.\n\nVyveva backdoor can notify C&C about newly\ninserted removable media and collect files from\nthem.\n\nVyveva backdoor encrypts C&C traffic using\nXOR.\n\nVyveva backdoor communicates with C&C via\nTor.\n\nVyveva exfiltrates data to C&C server.\n\n\nExfiltration [T1041](https://attack.mitre.org/versions/v8/techniques/T1041/) Exfiltration Over C2\nChannel\n\n8 Apr 2021 - 11:30AM\n\n### Newsletter\n\n Discussion\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2021/2021.04.08.Vyveva_Lazarus/%28Are%20you%29%20afreight%20of%20the%20dark_%20Watch%20out%20for%20Vyveva%2C%20new%20Lazarus%20backdoor%20_%20WeLiveSecurity.pdf"
+    ],
+    "report_names": [
+        "(Are you) afreight of the dark_ Watch out for Vyveva, new Lazarus backdoor _ WeLiveSecurity"
+    ],
+    "threat_actors": [
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "bbefc37d-475c-4d4d-b80b-7a55f896de82",
+            "created_at": "2022-10-25T15:50:23.571783Z",
+            "updated_at": "2025-03-27T02:00:55.502112Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT"
+            ],
+            "source_name": "MITRE:BRONZE BUTLER",
+            "tools": [
+                "Mimikatz",
+                "build_downer",
+                "cmd",
+                "ABK",
+                "at",
+                "BBK",
+                "schtasks",
+                "down_new",
+                "Daserf",
+                "ShadowPad",
+                "Windows Credential Editor",
+                "gsecdump"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "f9806b99-e392-46f1-9c13-885e376b239f",
+            "created_at": "2023-01-06T13:46:39.431871Z",
+            "updated_at": "2025-03-27T02:00:03.08926Z",
+            "deleted_at": null,
+            "main_name": "Watchdog",
+            "aliases": [
+                "Thief Libra"
+            ],
+            "source_name": "MISPGALAXY:Watchdog",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716497,
+    "ts_updated_at": 1743041819,
+    "ts_creation_date": 1617935122,
+    "ts_modification_date": 1617935122,
+    "files": {
+        "pdf": "https://archive.orkl.eu/fa51e4fc31413cc11e93b0245b93dc0dd36b07ce.pdf",
+        "text": "https://archive.orkl.eu/fa51e4fc31413cc11e93b0245b93dc0dd36b07ce.txt",
+        "img": "https://archive.orkl.eu/fa51e4fc31413cc11e93b0245b93dc0dd36b07ce.jpg"
+    }
+}

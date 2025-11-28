@@ -1,0 +1,147 @@
+{
+    "id": "2e59d867-2281-4d02-a82e-8c9ec03428a4",
+    "created_at": "2023-01-12T15:01:35.674776Z",
+    "updated_at": "2025-03-27T02:13:58.299546Z",
+    "deleted_at": null,
+    "sha1_hash": "97f4b5c869a2ef09c339a0dd8c363b423749c825",
+    "title": "2021-05-17 - Let’s set ice on fire- Hunting and detecting IcedID infections",
+    "authors": "",
+    "file_creation_date": "2022-05-27T21:13:32Z",
+    "file_modification_date": "2022-05-27T21:13:32Z",
+    "file_size": 739278,
+    "plain_text": "# Let’s set ice on fire: Hunting and detecting IcedID infections\n\n**[telekom.com/en/blog/group/article/let-s-set-ice-on-fire-hunting-and-detecting-icedid-infections-627240](https://www.telekom.com/en/blog/group/article/let-s-set-ice-on-fire-hunting-and-detecting-icedid-infections-627240)**\n\nBlog.Telekom\n\n05‑17‑2021\n[Thomas Barabosch](https://www.telekom.com/en/blog/592636-592636)\n\n0 Comments\n\nShare Share\nTwo clicks for more data privacy: click here to activate the button and send your\nrecommendation. Data will be transfered as soon as the activation occurs.\n\nPrint\n[Read out](https://app-eu.readspeaker.com/cgi-bin/rsent?customerid=4779&lang=en&readid=readspeakercontent&url=https://www.telekom.com/en/blog/group/article/let-s-set-ice-on-fire-hunting-and-detecting-icedid-infections-627240)\n\nWith the fall of the infamous Emotet botnet earlier this year, there are several cybercrime\ngangs competing to fill out the void that it left behind. One of these malware families that\npositions itself as a replacement is IcedID.\n\nLearn how to hunt for IcedID samples and detect local infections.\n\n\n-----\n\n[IcedID - also known as BokBot - emerged in late 2017. First, it served as a banking Trojan,](https://malpedia.caad.fkie.fraunhofer.de/details/win.icedid)\nwhich was common for this time. However, banking Trojans already faced several difficulties\nlike two-factor authentication (2FA) introduced by many banks. Consequently, the IcedID\ndevelopers transformed it into a downloader and it became part of the Malware-as-a-Service\necosystem (MaaS).\n\nAs of 2021, more and more ransomware operators use the service provided by IcedID’s\n[operators. Telekom Security as well as others observed ransomware deployment after](https://www.fireeye.com/blog/threat-research/2021/02/melting-unc2198-icedid-to-ransomware-operations.html)\nIcedID infections. This is in line with the general trend towards human-operated ransomware\noperations.\n\nIn this blog post, I will present ways how to hunt for IcedID samples and detect local IcedID\ninfections. This allows on one side blue teamers to proactively find latent infections that could\nturn into ransomware deployment and on the other side incident responders to quickly find a\npatient zero during an investigation. In addition to this blog post, I recommend to read this\ntechnical analysis of IcedID core and a recent technical analysis of the initial IcedID GZIP\nloader. All scripts, YARA signatures and, additional IoCs mentioned in this blog post can be\nfound in [our Github repository.](https://github.com/telekom-security/icedid_analysis)\n\nOur Incident Response Service at Deutsche Telekom Security GmbH can quickly investigate\nand remediate ongoing IcedID-related intrusions. Please contact security-info@tsystems.com for more information.\n\n## IcedID infection chain overview\n\nIcedID infection chain is quite complex when compared to other common malware families.\nThe initial infection vector is email. Over the last months, several threat actors delivered\n[spam that led to IcedID infections. This includes the Qakbot affiliate “TR” and](https://www.binarydefense.com/icedid-gziploader-analysis/) TA551 /\nShatak. Attachment types are as of now [malicious Word / Excel documents or](https://www.malware-traffic-analysis.net/2021/04/29/index.html) zipped\nJavaScript files.\n\nFigure 1 Example maldoc delivering IcedID requesting the user to activate macros\n\nIn the case of a malicious document, the infection chain goes on as follows. After the user\n[has enabled the macro in the maldoc, the initial IcedID GZIP loader is fetched. This is a](https://www.binarydefense.com/icedid-gziploader-analysis/)\nbinary code component deployed as DLL. It is run using a command line similar to\n“rundll32.exe DLL_FILENAME,DllRegisterServer”. This DLL with internal name\n“loader_dll_64.dll” conducts an initial reconnaissance and fingerprints the target system. It\nsends this data to its command and control server (CC) and the CC may respond with a fake\nGZIP payload.\n\nThe GZIP loader decrypts this payload, which contains information on how to run the\npayload (e.g. command line to execute), another loader with internal name “sadl_64.dll”, and\nanother encrypted payload currently with filename “license.dat”, which is the IcedID core\n\n\n-----\n\nmodule with internal name fixed_loader64.dll . The DLL with internal name sadl_64.dll is\nrun with, for instance, with rundll32 using a similar command line to “rundll32.exe\nDLL_FILENAME,update /i:\"FOLDER_NAME\\license.dat\"”, where in our case\nDLL_FILENAME was “Haimaw2.dll” and FOLDER_NAME was “GlacePlay”.\n\nIt decrypts the encrypted IcedID core module license.dat, loads it, and executes it.\nNoteworthy is that the core “fixed_loader64.dll” does not comprise configuration parameters\nlike domain names of CC servers. This information is stored in the core loader “sadl_64.dll”\nand loaded by the core “fixed_loader64.dll” upon execution.\n\nFigure 2 Decrypted configuration from \"sadl_64.dll\" decrypted by IcedID core\n\n## Hunting for IcedID samples\n\nProactively tracking adversaries helps us to follow their recent changes of their tooling and to\nimprove their detection. As I’ve described in the last section, there are several stages\ninvolved in IcedID’s complex infection chain. Hence, there are several (binary) tools that are\nworth to hunt for.\n\n[Even though the developers of IcedID chose to encrypt strings (as described here), there are](https://www.group-ib.com/blog/icedid)\nstill many plain text strings allowing high confidence detection. This includes the internal\nproject names.\n\nFigure 3 Plain text string of the internal project name \"sadl_64.dll\"\n\nIn [our Github repository, you can find several YARA rules to detect all binary code stages of](https://github.com/telekom-security/icedid_analysis)\nIcedID:\n\nIcedID GZIP loader (“loader_dll_64.dll”)\nIcedID core module loader (“sadl_64.dll”)\nIcedID core module (“fixed_loader64.dll”)\n\nNote that the string encryption was slightly changed in recent versions. The following\nscreenshot shows the decompiled string decryption function. An encrypted string is\nprepended with its size, conceptually similar to Pascal-type strings. However, the first two\nWORDs have to be XORed in order to get the string size. Subsequently, the string is\ndecrypted character after character in a for loop. In each round of the loop, first, a new key is\ngenerated based on a custom random function using x64 assembly ROR and ROL\noperations. Next, the character is XORed with the round’s new key.\n\nFigure 4 Decompiled string decryption function\n\n## Detecting IcedID infections\n\n\n-----\n\nApart from using YARA rules to perform, for instance, memory scans, another way to detect\nIcedID infections reliably is searching for the registry keys it creates. The names of these\nregistry keys are account-specific since they are derived from the bot ID, which is derived\nfrom the current user’s SID.\n\nI implemented the bot ID computation and the derivation of the registry keys names in\n[Python. They are also provided in our Github repository.](https://github.com/telekom-security/icedid_analysis)\n\n## Computing the Bot ID\n\nOne of the first things that IcedID’s core module does is computing a bot ID. This bot ID is\nused heavily across the code base, e.g. it is also send to the CC server as a way to identify\nbots and as we later will see to derive account-specific registry key names.\n\nIn a nutshell, the function “compute_bot_id” (see next screenshot) derives the bot ID from the\ncurrently logged-in account’s SID (security identifier, e.g. “S-1-5-21-1984500107-30418722149949575”). If the bot is not able to acquire this SID, it defaults to the MachineGuid. In the\nfollowing, I assume that the bot can acquire the account’s SID. It hashes the SID string using\n[the FNV hash (as described here). The resulting hash value is XORed with a constant. The](https://www.group-ib.com/blog/icedid)\nfunction returns a DWORD value.\n\nLater, this DWORD value is negated using the x64 assembly instruction “not”. For instance,\nthe SID “S-1-5-21-1984500107-304187221-49949575” yields the bot ID 0x9c80033f and the\nnegated bot ID 0x637ffcc0. Curiously, both bot IDs are used across the code base. However,\nthe negated bot ID has the lion’s share of the usages.\n\nFigure 5 Decompiled function for computing the bot ID\n\n## Deriving Machine-Specific Registry Key Names\n\nIcedID’s core stores configuration information (e.g. domain names) in account-specific\nregistry keys. All of them are subkeys of “Software\\\\Classes\\\\CLSID\\\\”. The registry key\nnames are derived from hard-coded GUIDs and the account-specific bot ID. Hence, they are\nalso account-specific.\n\nOnce we know how to derive the registry keys, we can reliably detect IcedID infections for an\naccount. Blue teamers can use this knowledge to proactively scan for infections and incident\nresponders to find a patient zero during an IcedID-related investigation.\n\nRecent samples derived their registry key names from the following hard-coded GUIDs:\n\n{0ccac395-7d1d-4641-913a-7558812ddea2}\n{d65f4087-1de4-4175-bbc8-f27a1d070723}\n{e3f38493-f850-4c6e-a48e-1b5c1f4dd35f}\n\n\n-----\n\nTo derive a registry key name from one of the hard-coded GUIDs, IcedID computes a simple\nhash of the GUID. Each character is rotated to the right by 13/0xD. This results in a DWORD\nvalue. This is then XORed with the negated bot ID. Next, it hashes the hardcoded GUID as\nwell as the above DWORD value using the MD5 hash sum. This results in a value of 16\nbytes. Finally, it formats these 16 bytes as a GUID.\n\nFor instance, for the above SID and bot IDs, we can derive the registry key name\n“{404FE54D-A5F1-3480-D7E1-2463C1FC62FD}” from the input “{0ccac395-7d1d-4641913a-7558812ddea2}“.\n\nFigure 6 Decompiled function of registry key derivation\n\n## Conclusion\n\nIcedID is one of the uptrending malware families that tries to fill the void that Emotet left\nbehind. Initially a banking Trojan, it soon became a downloader. Recently, more and more\nransomware deployments are associated with initial IcedID infections. It’s rather complex\ninfection chain increases analysis difficulty and ensures that an easy IoC extraction with offthe-shelf sandbox systems is not possible.\n\nIn this blog post, I’ve given a quick overview of IcedID current infection chain, focusing on the\nbinary payloads and showed how to detect IcedID infections based on its use of the registry.\nIn a nutshell, each bot computes a bot ID based on the current user’s SID. This is utilized to\nas a seed to derive a handful of account-specific registry key names, where it stores\nconfiguration parameters like CC domains. The blog post’s companion YARA rules, Python\n[scripts, and additional IoCs can be found in our repository on Github.](https://github.com/telekom-security/icedid_analysis)\n\n## Appendix: IoCs\n\n**IoC** **Description**\n\nfc148647bf11e143f44e89ba3b229aca GZIP loader dump\n\nacc57b939ac8bb9bd4bf18f76e779977 GZIP loader\n\n92fdfe61cf977a7e5bed5ceeabdf895f Core loader dump\n\n11965662e146d97d3fa3288e119aefb2 IcedID core unpacked\n\nameripermanentno[.]website IcedID core CC server\n\n\n-----\n\nodichaly[.]space IcedID core CC server\n\n## Further information:\n\n[IcedID (Malware Family) – Malpedia](https://malpedia.caad.fkie.fraunhofer.de/details/win.icedid)\n\n[Technical Analysis of IcedID](https://blog.group-ib.com/icedid)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-05-17 - Let’s set ice on fire- Hunting and detecting IcedID infections.pdf"
+    ],
+    "report_names": [
+        "2021-05-17 - Let’s set ice on fire- Hunting and detecting IcedID infections.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "26a04131-2b8c-4e5d-8f38-5c58b86f5e7f",
+            "created_at": "2022-10-25T15:50:23.579601Z",
+            "updated_at": "2025-03-27T02:00:55.50292Z",
+            "deleted_at": null,
+            "main_name": "TA551",
+            "aliases": [
+                "TA551",
+                "GOLD CABIN",
+                "Shathak"
+            ],
+            "source_name": "MITRE:TA551",
+            "tools": [
+                "QakBot",
+                "IcedID",
+                "Valak",
+                "Ursnif"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "04e34cab-3ee4-4f06-a6f6-5cdd7eccfd68",
+            "created_at": "2022-10-25T16:07:24.578896Z",
+            "updated_at": "2025-03-27T02:02:10.286803Z",
+            "deleted_at": null,
+            "main_name": "TA551",
+            "aliases": [
+                "Gold Cabin",
+                "Monster Libra",
+                "Shathak",
+                "TA551"
+            ],
+            "source_name": "ETDA:TA551",
+            "tools": [
+                "BokBot",
+                "CRM",
+                "Gozi",
+                "Gozi CRM",
+                "IceID",
+                "IcedID",
+                "Papras",
+                "Snifula",
+                "Ursnif",
+                "Valak",
+                "Valek"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "c3c864b3-fac9-4d56-8500-7c06c829fbf8",
+            "created_at": "2023-01-06T13:46:39.071873Z",
+            "updated_at": "2025-03-27T02:00:02.990045Z",
+            "deleted_at": null,
+            "main_name": "TA2101",
+            "aliases": [
+                "Storm-0216",
+                "DEV-0216",
+                "UNC2198",
+                "Maze Team",
+                "TWISTED SPIDER",
+                "GOLD VILLAGE"
+            ],
+            "source_name": "MISPGALAXY:TA2101",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "90f216f2-4897-46fc-bb76-3acae9d112ca",
+            "created_at": "2023-01-06T13:46:39.248936Z",
+            "updated_at": "2025-03-27T02:00:03.031127Z",
+            "deleted_at": null,
+            "main_name": "GOLD CABIN",
+            "aliases": [
+                "Shakthak",
+                "TA551",
+                "ATK236",
+                "G0127",
+                "Monster Libra"
+            ],
+            "source_name": "MISPGALAXY:GOLD CABIN",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "40b623c7-b621-48db-b55b-dd4f6746fbc6",
+            "created_at": "2024-06-19T02:03:08.017681Z",
+            "updated_at": "2025-03-27T02:05:17.342829Z",
+            "deleted_at": null,
+            "main_name": "GOLD CABIN",
+            "aliases": [
+                "TA551 ",
+                "Shathak"
+            ],
+            "source_name": "Secureworks:GOLD CABIN",
+            "tools": [
+                ""
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535695,
+    "ts_updated_at": 1743041638,
+    "ts_creation_date": 1653686012,
+    "ts_modification_date": 1653686012,
+    "files": {
+        "pdf": "https://archive.orkl.eu/97f4b5c869a2ef09c339a0dd8c363b423749c825.pdf",
+        "text": "https://archive.orkl.eu/97f4b5c869a2ef09c339a0dd8c363b423749c825.txt",
+        "img": "https://archive.orkl.eu/97f4b5c869a2ef09c339a0dd8c363b423749c825.jpg"
+    }
+}

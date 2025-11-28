@@ -1,0 +1,42 @@
+{
+    "id": "3993da33-751a-4dbd-874b-a5c3ced444e7",
+    "created_at": "2023-05-06T02:08:08.412505Z",
+    "updated_at": "2025-03-27T02:06:15.311613Z",
+    "deleted_at": null,
+    "sha1_hash": "2d908bd65f646c9f62330b728ea0e42c7da361a2",
+    "title": "2023-03-30 - 3CX Supply Chain Attack",
+    "authors": "",
+    "file_creation_date": "2023-05-05T01:46:57Z",
+    "file_modification_date": "2023-05-05T01:46:57Z",
+    "file_size": 284689,
+    "plain_text": "# 3CX Supply Chain Attack\n\n**[research.openanalysis.net/3cx/northkorea/apt/triage/2023/03/30/3cx-malware.html](https://research.openanalysis.net/3cx/northkorea/apt/triage/2023/03/30/3cx-malware.html#Functionality)**\n\nOALABS Research March 30, 2023\n\n## Overview\n\nFrom the [Volexity post](https://www.volexity.com/blog/2023/03/30/3cx-supply-chain-compromise-leads-to-iconic-incident/)\n\nCrowdStrike identified signed 3CX installation files as being malicious and reported\nthat customers were seeing malicious activity emanating from the “3CXDesktopApp”.\n\n\n-----\n\n3CX is client software for VOIP phones, that was delivered to targets with a backdoor. The\nbackdoored application was delivered in an MSI 3CXDesktopApp-18.12.416.msi which is\nsigned by a valid certificate belonging to 3Cx Ltd.\n\n## References\n\n Samples\n```\n   3CXDesktopApp-18.12.416.msi\n\n```\n[59e1edf4d82fae4978e97512b0331b7eb21dd4b838b850ba46794d9c7a2c0983](https://tria.ge/230330-3nzfjshc2s)\n```\n   icon15.ico\n\n```\n[f47c883f59a4802514c57680de3f41f690871e26f250c6e890651ba71027e4d3](https://malshare.com/sample.php?action=detail&hash=f47c883f59a4802514c57680de3f41f690871e26f250c6e890651ba71027e4d3)\n\n## Analysis\n\nLet's take a look at the .msi and see what is in there, we can just use 7zip to unzip it. Inside\nthe .msi we have a backdoored file ffmpeg.dll\n\n### Stage 1 ffmpeg.dll\n\n**Artifacts**\n```\n   ffmpeg.dll\n\n```\n[7986bbaee8940da11ce089383521ab420c443ab7b15ed42aed91fd31ce833896](https://malshare.com/sample.php?action=detail&hash=7986bbaee8940da11ce089383521ab420c443ab7b15ed42aed91fd31ce833896)\n```\n   d3dcompiler_47.dll\n\n```\n[11be1803e2e307b647a8a7e02d128335c448ff741bf06bf52b332e0bbf423b03](https://malshare.com/sample.php?action=detail&hash=11be1803e2e307b647a8a7e02d128335c448ff741bf06bf52b332e0bbf423b03)\n\n**Functionality**\n\nUses CreateEventW with the string AVMonitorRefreshEvent like a mutex to ensure it is\nonly running once\nGets its process path (file location) to locate d3dcompiler_47.dll which it expects to\nbe in the same directory\nScans d3dcompiler_47.dll for the magic hex bytes 0xFEEDFACE\nThe magic bytes 0xFEEDFACE occur twice in a row\nAll the file data following the magic bytes is decrypted with RC4 using the hard coded\nkey 3jB(2bsG#@c7\nOnce decrypted the data contains shellcode followed by an embedded PE file (Stage\n2) which is loaded into memory and executed\n\n**Signed DLL**\n\n\n-----\n\nThe d3dcompiler_47.dll DLL is signed by Microsoft. The 0xFEEDFACE magic bytes suggest\n[that the open source tool SigFlip was used to patch the authenticode signed PE file without](https://github.com/med0x2e/SigFlip)\nbreaking the signature.\n\n### Stage 2\n\n**Artifacts**\n\nShellcode with stage 2 PE attached\n[b56279136d816a11cf4db9fc1b249da04b3fa3aef4ba709b20cdfbe572394812](https://malshare.com/sample.php?action=detail&hash=b56279136d816a11cf4db9fc1b249da04b3fa3aef4ba709b20cdfbe572394812)\n\n**Functionality**\n\nCreates a file called manifest in the directory from which the process was launched\nThe manifest file is used to maintain a delay timer value for the malware\nThe delay is calculated by adding 7 days to a randomly generated value between 0\ndays and 20 days, 20 hours for a total potential delay of between 7 days, and 20 days\n20 hours\nWhen the malware executes this value is read from the manifest file and checked\nagainst the system time, if the time has not expired the malware will simply sleep\nThe MachineGuid key value is read from the registry key\n```\n   Software\\\\Microsoft\\\\Cryptography then transformed into the following \"cookie\"\n\n```\nvalue to be used in future C2 requests\n```\n_tutma=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxx\n\n```\nA random number generator is used to build a variation of the following URL with an\nicon file between icon1.ico and icon16.ico (either I'm not reading the code right or\nthis is an off-by-one error as the icon files are number 0-15?)\n```\nhttps[:]//raw.githubusercontent[.]com/IconStorages/images/main/icon%d.ico\n\n```\nThe icon file is downloaded from GitHub and parsed to extract encoded data that is\nappended to the file\nThe appended data is preceded by a $ which the malware uses as a marker to identify\nit\nThe following is an example of the bas64 encoded data in icon15.ico\n```\n`KQAAAGVhV4u+Eo4SGUuZypP8kNOkwQWzha6sxQrtzFo3oPSejc470WC47cKqv12+CshijG0HCfex40WinKat\n68EHqq8i6lHiifZpsxN3lxBRabtJ`\n\n```\nThe data is then base64 decoded and passed through an unidentified generator used\nto create a key for the data\nThe key is then used to decrypt the remaining data using AES\n\n\n-----\n\nOnce decrypted the data reveals the stage2 C2 URL\n```\n   https[:]//pbxsources[.]com/exchange, each icon file contains a different URL\n\n```\nA request is then sent to the C2 using the _tutma cookie described above and stage 3\nis downloaded\n\n**Stage 3 was not recovered**\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2023/2023-03-30 - 3CX Supply Chain Attack.pdf"
+    ],
+    "report_names": [
+        "2023-03-30 - 3CX Supply Chain Attack.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1683338888,
+    "ts_updated_at": 1743041175,
+    "ts_creation_date": 1683251217,
+    "ts_modification_date": 1683251217,
+    "files": {
+        "pdf": "https://archive.orkl.eu/2d908bd65f646c9f62330b728ea0e42c7da361a2.pdf",
+        "text": "https://archive.orkl.eu/2d908bd65f646c9f62330b728ea0e42c7da361a2.txt",
+        "img": "https://archive.orkl.eu/2d908bd65f646c9f62330b728ea0e42c7da361a2.jpg"
+    }
+}

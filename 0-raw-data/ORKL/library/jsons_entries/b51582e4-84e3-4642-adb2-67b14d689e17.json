@@ -1,0 +1,98 @@
+{
+    "id": "b51582e4-84e3-4642-adb2-67b14d689e17",
+    "created_at": "2023-01-12T15:05:43.163576Z",
+    "updated_at": "2025-03-27T02:12:03.984391Z",
+    "deleted_at": null,
+    "sha1_hash": "b5e709e6c4ab1167bf1cd30e04b24b0b23f5bc34",
+    "title": "2021-03-25 - CVE-2021-26855- Microsoft Exchange Server-Side Request Forgery",
+    "authors": "",
+    "file_creation_date": "2022-05-29T01:25:43Z",
+    "file_modification_date": "2022-05-29T01:25:43Z",
+    "file_size": 145675,
+    "plain_text": "# CVE-2021-26855: Microsoft Exchange Server-Side Request Forgery\n\n**[googleprojectzero.github.io/0days-in-the-wild/0day-RCAs/2021/CVE-2021-26855.html](https://googleprojectzero.github.io/0days-in-the-wild/0day-RCAs/2021/CVE-2021-26855.html)**\n\nGoogle Project Zero\n\n_Anthony Weems, Michael Weber, Dallas Kaman_\n\n## The Basics\n\n**Disclosure or Patch Date: March 2 2021**\n\n**Product: Microsoft Microsoft Exchange Server**\n\n**Advisory:** [https://msrc.microsoft.com/update-guide/vulnerability/CVE-2021-26855](https://msrc.microsoft.com/update-guide/vulnerability/CVE-2021-26855)\n\n**Affected Versions:** [Exchange 2010, 2013, 2016, and 2019 before KB5000871.](https://techcommunity.microsoft.com/t5/exchange-team-blog/march-2021-exchange-server-security-updates-for-older-cumulative/ba-p/2192020)\n\n**First Patched Version:** [KB5000871](https://support.microsoft.com/en-us/topic/description-of-the-security-update-for-microsoft-exchange-server-2019-2016-and-2013-march-2-2021-kb5000871-9800a6bb-0a21-4ee7-b9da-fa85b3e1d23b)\n\n**Issue/Bug Report: N/A**\n\n**Patch CL: N/A**\n\n**Bug-Introducing CL: N/A**\n\n**Reporter(s): Volexity,** [Orange Tsai from](https://twitter.com/orange_8361) [DEVCORE research team, and Microsoft Threat](https://devco.re/)\nIntelligence Center (MSTIC)\n\n## The Code\n\n**Proof-of-concept:** [https://github.com/praetorian-inc/proxylogon-exploit](https://github.com/praetorian-inc/proxylogon-exploit)\n\n**Exploit sample: N/A**\n\n**Did you have access to the exploit sample when doing the analysis? No**\n\n## The Vulnerability\n\n**Bug class: Server-Side Request Forgery (SSRF)**\n\n**Vulnerability details:**\n\n_Note: This analysis relies upon source code obtained by decompiling the various .NET_\n_assemblies within Microsoft Exchange 2013._\n\n\n-----\n\nThe Exchange frontend proxy is tricked into sending a request to an arbitrary backend\nendpoint authenticated via Kerberos as the Exchange server.\n\nThe `BEResourceRequestHandler is used to handle requests for static resources within`\n```\n/ecp that pass the IsResourceRequest check. This function validates that the provided\n\n```\nURL ends with one of many static file extensions (e.g. js, jpg, ico, png, ttf, etc.). Since this\nhandler is within the frontend, it does not validate the full static file path and therefore a\nrandom filename with a `.js suffix will be sent to this handler.`\n\nRequests in the frontend proxy are routed to the backend via \"anchor mailboxes\" (the\n```\nAnchoredRoutingTarget field within ProxyRequestHandler ). Each resource handler is\n\n```\nresponsible for returning an anchor mailbox to describe how its request should be routed.\nThe `BEResourceRequestHandler uses the following pseudo-code for its routing:`\n```\nprotected override AnchorMailbox ResolveAnchorMailbox()\n{\n  string cookie = BEResourceRequestHandler.GetBEResouceCookie(base.ClientRequest);\n  if (!string.IsNullOrEmpty(cookie))\n  {\n    return new ServerInfoAnchorMailbox(BackEndServer.FromString(cookie), this);\n  }\n  return base.ResolveAnchorMailbox();\n}\nprivate static string GetBEResouceCookie(HttpRequest httpRequest)\n{\n  string result = null;\n  HttpCookie httpCookie = httpRequest.Cookies[Constants.BEResource];\n  if (httpCookie != null)\n  {\n    result = httpCookie.Value;\n  }\n  return result;\n}\n\n```\nThe `BEResourceRequestHandler uses the` `X-BEResource cookie to construct a`\n```\nBackEndServer and then a ServerInfoAnchorMailbox . Pseudo-code for\nBackEndServer instantiation is shown below:\npublic static BackEndServer FromString(string input)\n{\n  string[] array = input.Split(new char[]{'~'});\n  int version;\n  if (array.Length != 2 || !int.TryParse(array[1], out version))\n  {\n    throw new ArgumentException(\"Invalid input value\", \"input\");\n  }\n  return new BackEndServer(array[0], version);\n}\n\n```\n\n-----\n\nFinally, this anchor mailbox is used within the `ProxyRequestHandler s`\n```\nGetTargetBackEndServerUrl function to resolve the actual Uri to use in the backend\n\n```\nrequest. Pseudo-code for this method is shown below:\n```\nprotected virtual Uri GetTargetBackEndServerUrl()\n{\n  // ...\n  UriBuilder clientUrlForProxy = new UriBuilder(this.ClientRequest.Url);\n  clientUrlForProxy.Scheme = Uri.UriSchemeHttps;\n  clientUrlForProxy.Host = this.AnchoredRoutingTarget.BackEndServer.Fqdn;\n  clientUrlForProxy.Port = 444;\n  if (this.AnchoredRoutingTarget.BackEndServer.Version < Server.E15MinVersion)\n  {\n    this.ProxyToDownLevel = true;\n    clientUrlForProxy.Port = 443;\n  }\n  return clientUrlForProxy.Uri;\n}\n\n```\nThe `UriBuilder implementation in .NET uses simple string concatenation when building`\nthe `Uri string in the last line of` `GetTargetBackEndServerUrl . For example, if the` `Host`\nis set to `example.local/endpoint#, then the resulting Uri from this method call might be`\n```\nhttps://example.local:443/endpoint#/ecp/favicon.eco . If the Host header\n\n```\ncontains a `: (e.g. to change the destination port to` `444 ), the` `UriBuilder class`\nassumes the host must be an IPv6 address and surrounds it with `[] . To resolve this issue,`\nthe desired host must be prefixed with an `@ symbol, which causes the leading` `[ to be`\ntreated as a username.\n\nIt seems likely that this vulnerability arose due to incorrect assumptions about `UriBuilder`\nvalidation.\n\n**Patch analysis:**\n\nThe patch adds hostname validation in two locations:\n\n\n-----\n\n```\na/Microsoft.Exchange.Data.ApplicationLogic/Exchange/Data/ApplicationLogic/Cafe/BackEnd\n+++\nb/Microsoft.Exchange.Data.ApplicationLogic/Exchange/Data/ApplicationLogic/Cafe/BackEnd\n@@ -34,7 +34,7 @@ namespace Microsoft.Exchange.Data.ApplicationLogic.Cafe\n    '~'\n  });\n  int version;\n-  if (array.Length != 2 || !int.TryParse(array[1], out version))\n+  if (array.Length != 2 || !int.TryParse(array[1], out version) ||\nUriHostNameType.Dns != Uri.CheckHostName(array[0]))\n  {\n    throw new ArgumentException(\"Invalid input value\", \"input\");\n  }\n--a/Exchange2013/Microsoft.Exchange.FrontEndHttpProxy/HttpProxy/ProxyRequestHandler.cs\n+++\nb/Exchange2013/Microsoft.Exchange.FrontEndHttpProxy/HttpProxy/ProxyRequestHandler.cs\n@@ -923,7 +923,10 @@ namespace Microsoft.Exchange.HttpProxy\n  try\n  {\n    Uri uri = this.GetTargetBackEndServerUrl();\n-    bool proxyKerberosAuthentication = this.ProxyKerberosAuthentication;\n+    if (!this.ProxyKerberosAuthentication && !string.Equals(uri.Host,\nthis.AnchoredRoutingTarget.BackEndServer.Fqdn, StringComparison.OrdinalIgnoreCase))\n+    {\n+      throw new HttpException(503, \"Service Unavailable\");\n+    }\n    bool flag2 = false;\n\n```\nAdditionally, the patch overrides `ShouldBackendRequestBeAnonymous in`\n```\nBEResourceRequestHandler to return true.\n\n```\n**Thoughts on how this vuln might have been found (fuzzing, code auditing, variant**\n**_analysis, etc.):_**\n\nIt seems plausible that this vulnerability was found through code auditing of the frontend\nproxy and reviewing connections between the frontend and backend.\n\n**(Historical/present/future) context of bug:**\n\n[In March 2021, Microsoft published that \"multiple 0-day exploits [were] being used to attack](https://www.microsoft.com/security/blog/2021/03/02/hafnium-targeting-exchange-servers/)\non-premises versions of Microsoft Exchange Server in limited and targeted attacks\".\nMicrosoft credited Volexity for discovering the active exploitation and Volexity published their\nanalysis on the same day.\n\n## The Exploit\n\n\n-----\n\n(The terms exploit primitive, exploit strategy, exploit technique, and exploit flow are defined\nhere.)\n\n**Exploit strategy (or strategies):**\n\nThe SSRF allows an attacker to submit arbitrary requests to backend `/ecp endpoints. The`\nfrontend proxy authenticates to the backend via Kerberos as the Exchange server. However,\nthis user is unlikely to have access provisioned for the application itself. For example, when\nattempting to access the DDIService via the SSRF, it responds with the error:\n```\nThe user \"XYZ\" isn't assigned to any management roles.\n\n```\nAs a result, an authentication bypass is also needed to make use of this vulnerability. The\nECP backend exposes an endpoint that is used for authentication between proxied\ncomponents. The `/ecp/proxyLogon.ecp endpoint uses request headers and a serialized`\nXML request body to initialize an `EcpIdentity within the`\n```\nMicrosoft.Exchange.Management.ControlPanel.RbacSettings class. If a valid user\n\n```\nSID is provided, it creates this identity and sets the `ASP.NET_SessionId and`\n```\nmsExchEcpCanary cookies needed to authenticate to /ecp . An example request is to\n/ecp/proxyLogon.ecp via the SSRF is shown below:\nPOST /ecp/favicon.ico HTTP/1.1\nHost: example.local\nCookie: X-BEResource=@backend.example.local:444/ecp/proxyLogon.ecp#~1941962753;\nmsExchLogonMailbox: S-1-5-21-1234567890-123456789-1234567890-500\n<r at=\"\" ln=\"\"><s>S-1-5-21-1234567890-123456789-1234567890-500</s></r>\nHTTP/1.1 241 \nCache-Control: private\nServer: Microsoft-IIS/8.0\nrequest-id: 00000000-0000-0000-0000-000000000000\nX-CalculatedBETarget: example.local\nX-Content-Type-Options: nosniff\nX-DiagInfo: example\nX-BEServer: example\nX-FEServer: example\nSet-Cookie: ASP.NET_SessionId=11111111-1111-1111-1111-111111111111; path=/; HttpOnly\nSet-Cookie:\nmsExchEcpCanary=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n path=/ecp\nContent-Length: 0\n\n```\n**Exploit flow:**\n\nThe active exploitation in the wild used this SSRF as the starting point for a full remote code\nexecution chain against Microsoft Exchange. The general exploit flow is as follows:\n\nLeak the backend hostname\nLeak a user SID\n\n\n-----\n\nAuthenticate with proxyLogon via SSRF (CVE-2021-26855)\nUse one of three remote code execution vulnerabilities via SSRF (CVE-2021-26857,\nCVE-2021-26858, or CVE-2021-27065)\n\n_As an example, CVE-2021-27065 has the following flow (all via SSRF):_\nList OABVirtualDirectory objects via the DDIService\nModify the OABVirtualDirectory to inject ASP code into the ExternalUrl (typically a\nwebshell)\n\"Reset\" the OABVirtualDirectory, which writes all properties to disk at a usercontrolled path\nAccess this webshell externally (optionally using the SSRF)\n\n**Known cases of the same exploit flow:**\n\nThere have been other authenticated remote code execution gadgets within Exchange,\nsuch as [CVE-2020-16875 and its bypass CVE-2020-171324.](https://msrc.microsoft.com/update-guide/vulnerability/CVE-2020-16875)\nThe authentication bypass via proxyLogon appears to be unknown prior to these\nexploits.\n\n**Part of an exploit chain? This vulnerability was used as part of the observed HAFNIUM**\n[exploitation as described by Microsoft.](https://www.microsoft.com/security/blog/2021/03/02/hafnium-targeting-exchange-servers/)\n\n## The Next Steps\n\n### Variant analysis\n\n**Areas/approach for variant analysis (and why):**\n\nAudit overrides of `GetTargetBackEndServerUrl for similar mistakes in URI routing.`\nSeveral request handlers override this method.\n\n**Found variants: N/A**\n\n### Structural improvements\n\nWhat are structural improvements such as ways to kill the bug class, prevent the introduction\nof this vulnerability, mitigate the exploit flow, make this type of vulnerability harder to exploit,\netc.?\n\n**Ideas to kill the bug class:**\n\n**Ideas to mitigate the exploit flow:**\n\n**Other potential improvements:**\n\n### 0-day detection methods\n\n\n-----\n\nWhat are potential detection methods for similar 0-days? Meaning are there any ideas of\nhow this exploit or similar exploits could be detected as a 0-day?\n\n## Other References\n\n[March 2, 2021: HAFNIUM targeting Exchange Servers with 0-day exploits by Microsoft.](https://www.microsoft.com/security/blog/2021/03/02/hafnium-targeting-exchange-servers/)\nThis post was the initial public disclosure of in-the-wild exploitation.\nMarch 2, 2021: Operation Exchange Marauder: Active Exploitation of Multiple Zero-Day\nMicrosoft Exchange Vulnerabilities by Volexity. This post was released concurrently\nwith the Microsoft disclosure.\n[March 5, 2021: Proxylogon by DEVCORE, the team who reported the vulnerability to](https://proxylogon.com/)\nMicrosoft.\n[March 9, 2021: Reproducing the Microsoft Exchange Proxylogon Exploit Chain by the](https://www.praetorian.com/blog/reproducing-proxylogon-exploit/)\nauthors of this RCA describing the process for reproducing this exploit chain using\npublicly available information.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-03-25 - CVE-2021-26855- Microsoft Exchange Server-Side Request Forgery.pdf"
+    ],
+    "report_names": [
+        "2021-03-25 - CVE-2021-26855- Microsoft Exchange Server-Side Request Forgery.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "529c1ae9-4579-4245-86a6-20f4563a695d",
+            "created_at": "2022-10-25T16:07:23.702006Z",
+            "updated_at": "2025-03-27T02:02:09.93109Z",
+            "deleted_at": null,
+            "main_name": "Hafnium",
+            "aliases": [
+                "Red Dev 13",
+                "Silk Typhoon"
+            ],
+            "source_name": "ETDA:Hafnium",
+            "tools": [],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "7c969685-459b-4c93-a788-74108eab6f47",
+            "created_at": "2023-01-06T13:46:39.189751Z",
+            "updated_at": "2025-03-27T02:00:03.017103Z",
+            "deleted_at": null,
+            "main_name": "HAFNIUM",
+            "aliases": [
+                "ATK233",
+                "G0125",
+                "Operation Exchange Marauder",
+                "Red Dev 13",
+                "Silk Typhoon"
+            ],
+            "source_name": "MISPGALAXY:HAFNIUM",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "2704d770-43b4-4bc4-8a5a-05df87416848",
+            "created_at": "2022-10-25T15:50:23.306305Z",
+            "updated_at": "2025-03-27T02:00:55.43633Z",
+            "deleted_at": null,
+            "main_name": "HAFNIUM",
+            "aliases": [
+                "HAFNIUM",
+                "Operation Exchange Marauder",
+                "Silk Typhoon"
+            ],
+            "source_name": "MITRE:HAFNIUM",
+            "tools": [
+                "Tarrask",
+                "ASPXSpy",
+                "Impacket",
+                "PsExec",
+                "China Chopper"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535943,
+    "ts_updated_at": 1743041523,
+    "ts_creation_date": 1653787543,
+    "ts_modification_date": 1653787543,
+    "files": {
+        "pdf": "https://archive.orkl.eu/b5e709e6c4ab1167bf1cd30e04b24b0b23f5bc34.pdf",
+        "text": "https://archive.orkl.eu/b5e709e6c4ab1167bf1cd30e04b24b0b23f5bc34.txt",
+        "img": "https://archive.orkl.eu/b5e709e6c4ab1167bf1cd30e04b24b0b23f5bc34.jpg"
+    }
+}

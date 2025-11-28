@@ -1,0 +1,62 @@
+{
+    "id": "06d7e7a9-d7c7-4be6-95e8-b7f17d2ec244",
+    "created_at": "2023-02-02T02:07:36.625953Z",
+    "updated_at": "2025-03-27T02:06:12.644133Z",
+    "deleted_at": null,
+    "sha1_hash": "552410ce549d189ac63e2affb1c95d686e114254",
+    "title": "2022-10-25 - Brute Ratel Config Decoding update",
+    "authors": "",
+    "file_creation_date": "2023-02-01T07:55:46Z",
+    "file_modification_date": "2023-02-01T07:55:46Z",
+    "file_size": 232699,
+    "plain_text": "# Brute Ratel Config Decoding update\n\n**[medium.com/walmartglobaltech/brute-ratel-config-decoding-update-7820455022cb](https://medium.com/walmartglobaltech/brute-ratel-config-decoding-update-7820455022cb)**\n\nJason Reaves October 25, 2022\n\n### Jason Reaves\n\n Oct 25, 2022\n\n ·\n\n 4 min read\n\n By: Jason Reaves\n\n There have been a few reports on how to decrypt Brute Ratels[1] configuration data along with a few decryptors created[2,3]. However, the developer added in the release notes that they changed it to be a dynamic key instead of the hardcoded key everyone refers to. The hardcoded key is still used and exists for decrypting some of the strings on board.\n\n Ref: We start with a sample from a TrendMicro report on BlackBasta actors leveraging QBot to deliver Brute Ratel and CobaltStrike:\n```\n62cb24967c6ce18d35d2a23ebed4217889d796cf7799d9075c1aa7752b8d3967\n\n The shellcode-based loader is stored onboard and is loaded into memory. The shellcode stager uses a few Anti Debugging checks such as checking the NtGlobalFlag.\n\n The encoded onboard DLL is still stored RC4 encrypted as mentioned in the MDSec blog[3] the key is the last 8 bytes:\n\n RC4\n\n```\n\n-----\n\n### Manually decoding:\n```\n>>> data[-8:]'*%@{.de|'>>> rc4 = ARC4.new(data[-8:])>>> t = rc4.decrypt(data)>>>\nt[:1000]'zn<dq{f%\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\\n\\x00\\x00\\x00\\x00\\x00\\x00\\x10\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x10\\x00\\x00\\x00\\x00\\x00\\x\n\\x00P`.data\\x00\\x00\\x000\\x1b\\x00\\x00\\x00\\xd0\\x02\\x00\\x00\\x1c\\x00\\x00\\x00\\xbc\\x02\\x00\\x\n\n As we previously mentioned, the RC4 key for the config is no longer the hardcoded value in the DLL. Instead, it is now the last 8 bytes from the decoded DLL blob:\n>>> a =\nbase64.b64decode('FE2frlPu/3cYTkUYWP9aoUwTUKZ778EWaz5b2nzDTz2OAR2qI5Jvqozn6a2BTADp7kUT\n rc4 = ARC4.new('\\x24\\x7b\\x29\\x75\\x5e\\x2f\\x2e\\x70')>>>\nrc4.decrypt(a)'0|5|5|||||eyJjaGFubmVsIjoi|In0=|0|1|symantecuptimehost.com|8080|Mozilla\n (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)\nChrome/90.0.4430.93 Safari/537.36|AHOEN1R8FF7NF1VJ|GM8Q54SRAII7TKET|/admin.php?\nlogin=|Content-Type:\napplication/json|a3fd9bbed51227aca2f7f1577395132776ff95f4e906bd33a92344d59a6e77fc'\n\n So, if we wanted to automate, we need to account for two methods I’ve seen being used for loading the config and DLL data by the shellcode layer.\n\n The call over method which calls over the relevant data causing it’s address to be pushed onto the stack:\n\n Call over method Also the stack load method where chunks of the data are pushed onto the stack causing it to be rebuilt:\n\n Stack load method For the call over method, we just look for the instructions leading to the call and then pull out the data. I’ll be using a naive method, but I would recommend switching the code to using YARA as your decoder will last much longer.\ncfg_off =\nblob.find('\\x5a\\xe8\\x00\\x00\\x00\\x00\\x59\\x48\\x01\\xd1\\x48\\x83\\xc1\\x0a\\xff\\xd1')cfg_len\n= struct.unpack_from('<I', blob[cfg_off-4:])[0]cfg_off += 16cfg =\nblob[cfg_off:cfg_off+cfg_len]\n\n For finding the data in this scenario, we use a similar approach by just finding the call instruction sequence and pulling out the length while we are there:\nif cfg != '':#Few ways to find the end  #way1  off1 =\nblob.find('\\x41\\x59\\xe8\\x00\\x00\\x00\\x00\\x41\\x58')  l = struct.unpack_from('<I',\nblob[off1-4:])[0]  bb = blob[off1+19:]  bb = bb[:l]\n\n Decoding the config, then just involves first decrypting the DLL and recovering the key:\n\n```\n\n-----\n\n```\n  rc4 ARC4.new(bb[ 8:])  decoded rc4.decrypt(bb[: 8])  rc4 \nARC4.new(decoded[-8:])  decoded_cfg = rc4.decrypt(base64.b64decode(cfg))  \nprint(decoded_cfg)\n\n### For the stack-based loading, I will be using the Unicorn[5] emulator which I’ve used for decoding data out of previous malware samples. First, we need the config data:\nelse:  #need to pull from stack  offset = data.find(needle)  blob =\ndata[offset:]  STACK=0x90000  code_base = 0x10000000  mu =\nUc(UC_ARCH_X86,UC_MODE_64)  test =\nre.findall(r'''4883e4f04831c050.+4889e168''',binascii.hexlify(blob))  temp =\n[test[0][:-2]]  mu.mem_map(code_base, 0x100000)  mu.mem_map(STACK, 4096*10)  \nfor i in range(len(temp)):    #print(temp[i])    try:      blob =\nbinascii.unhexlify(temp[i])    except:      blob =\nbinascii.unhexlify(temp[i][1:])    mu.mem_write(code_base, '\\x00'*0x100000)   \nmu.mem_write(STACK, '\\x00'*(4096*10))    mu.mem_write(code_base,blob)    \nmu.reg_write(UC_X86_REG_ESP,STACK+4096)    \nmu.reg_write(UC_X86_REG_EBP,STACK+4096)    try:      \nmu.emu_start(code_base, code_base+len(blob), timeout=10000)    except:      \npass    a = mu.mem_read(STACK,4096*10)    b = a.rstrip('\\x00')    b =\nb.lstrip('\\x00')    cfg = str(b)\n\n For the data, we just need to account for a larger stack size:\n  mu =\nUc(UC_ARCH_X86,UC_MODE_64)#045e95f1a5bcc1ce2eeb905ab1c5f440a42364a170008309faef1cfdba2\n has 5a48  test = re.findall(r'''00005a4[89].+4989e068''',binascii.hexlify(blob)) \nif len(test) > 0:    temp = [test[0][6:-2]]    mu.mem_map(code_base,\n0x100000)    mu.mem_map(STACK, 4096*200)    for i in range(len(temp)):    \ntry:        blob = binascii.unhexlify(temp[i])      except:      \nblob = binascii.unhexlify(temp[i][1:])      mu.mem_write(code_base,\n'\\x00'*0x100000)      mu.mem_write(STACK, '\\x00'*(4096*200))      \nmu.mem_write(code_base,blob)      mu.reg_write(UC_X86_REG_ESP,STACK+(4096*100))\nmu.reg_write(UC_X86_REG_EBP,STACK+(4096))      mu.emu_start(code_base,\ncode_base+len(blob), timeout=100000)      a = mu.mem_read(STACK,4096*200)   \nb = a.rstrip('\\x00')    b = b.lstrip('\\x00')    b = str(b)\n\n Decoding the config is then the same process of first decrypting the DLL:\n    rc4 = ARC4.new(b[-8:])    t = rc4.decrypt(b[:-8])    rc4 =\nARC4.new(t[-8:])    decoded_cfg = rc4.decrypt(base64.b64decode(cfg))    \nprint(decoded_cfg)\n\n While enumerating samples off VirusTotal, we also discovered what looks more like a stager version:\nd79f991d424af636cd6ce69f33347ae6fa15c6b4079ae46e9f9f6cfa25b09bb0\n\n This version just loads a bytecode blob onto the stack:\n\n Stager like version\n\n```\n\n-----\n\n### The decoding of the bytecode config is once again just the last 8 bytes as an RC4 key:\n```\n|{\"channel\":\"|\"}|1|login.offices365.de|443|Mozilla/5.0 (Windows NT 10.0; Win64; x64)\nAppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.93\nSafari/537.36|ITOU1PFRSSE8GHCJ|Fd6Ve1xcaCO4EhDTbgTV|/en/ec2/pricing/|content-type:\napplication/json|\n\n## IOCs\nsymantecuptimehost.comlogin.offices365.de\n\n References\n\n### 1: https://bruteratel.com/\n\n 2: https://github.com/Immersive-Labs-Sec/BruteRatel- DetectionTools/blob/main/ConfigDecoder.py\n\n 3: https://www.mdsec.co.uk/2022/08/part-3-how-i-met-your-beacon-brute-ratel/\n\n 4: https://www.trendmicro.com/en_us/research/22/j/black-basta-infiltrates-networks-via- qakbot-brute-ratel-and-coba.html\n\n 5: https://www.unicorn-engine.org/\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-10-25 - Brute Ratel Config Decoding update.pdf"
+    ],
+    "report_names": [
+        "2022-10-25 - Brute Ratel Config Decoding update.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1675303656,
+    "ts_updated_at": 1743041172,
+    "ts_creation_date": 1675238146,
+    "ts_modification_date": 1675238146,
+    "files": {
+        "pdf": "https://archive.orkl.eu/552410ce549d189ac63e2affb1c95d686e114254.pdf",
+        "text": "https://archive.orkl.eu/552410ce549d189ac63e2affb1c95d686e114254.txt",
+        "img": "https://archive.orkl.eu/552410ce549d189ac63e2affb1c95d686e114254.jpg"
+    }
+}

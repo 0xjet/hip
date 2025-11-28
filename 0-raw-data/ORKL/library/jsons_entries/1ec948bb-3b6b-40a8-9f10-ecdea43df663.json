@@ -1,0 +1,148 @@
+{
+    "id": "1ec948bb-3b6b-40a8-9f10-ecdea43df663",
+    "created_at": "2023-01-12T15:01:51.220294Z",
+    "updated_at": "2025-03-27T02:15:46.981946Z",
+    "deleted_at": null,
+    "sha1_hash": "7d5086436723ac163cc5b57836f10faf4b3583d6",
+    "title": "2020-07-01 - DLL Search Order Hijacking",
+    "authors": "",
+    "file_creation_date": "2022-05-28T17:01:25Z",
+    "file_modification_date": "2022-05-28T17:01:25Z",
+    "file_size": 74258,
+    "plain_text": "# DLL Search Order Hijacking\n\n**contextis.com/en/blog/dll-search-order-hijacking**\n\n[1. Home](https://www.contextis.com/en/)\n[2. Blog](https://www.contextis.com/en/blog)\n3. DLL Search Order Hijacking\n\nDLL Search Order Hijacking\n\nContext's Intelligence and Response teams have seen DLL Search Order being abused as a means of conducting network\nintrusions in real environments. Abusing the DLL Search Order and taking advantage of this mechanism in order for an application\nto load a rogue DLL instead of the legitimate one is known as DLL preloading, or (in the MITRE ATT&CK framework) hijacking.\n\nIn this blog post, you will find out more about the fundamentals of DLL Search Order and how legitimate binaries can be\nweaponized, and introduce a tool to automate the discovery of binaries suitable for payload execution via DLL hijacking.\n\n### By Lampros Noutsos & Oliver Fay\n\n01 Jul 2020\n\n[Security,](https://www.contextis.com/blog/category/security) [Tools](https://www.contextis.com/blog/category/tools)\n\n## About Dynamic Link Libraries\n\nA Dynamic Link Library (DLL) is a module that contains functions and data that can be used by another module (application or\nDLL). These functions are exported from library files in order to be available for use by the applications or DLLs that rely on them.\nIn order to use these functions, the applications have to import them from the library files. There are two ways an application\nimports functions from modules: implicitly (load-time dynamic linking) and explicitly (run-time dynamic linking). Let's have a look at\neach.\n\n### Implicit Linking (Load-Time Dynamic Library Linking)\n\nWhen an application is opened, the Windows loader takes steps in order to map the application's executable image in memory and\neventually start up a process that hosts and executes its code. During the loading process, the loader parses the import table of\nthe executable image in order to map the imported module(s) (Dynamic Link Library) in the address space of this process.\n\nAn executable image may have embedded a manifest that describes dependencies on Windows side-by-side assemblies. Before\nloading the imported DLL(s), the Side-by-Side Manager (SxS Manager) checks if any of the dependencies that exist in the\nmanifest file of this executable are met. If yes, the required modules are loaded from the path C:\\Windows\\WinSxS\\.\n\nFor the rest of the imported modules, the loader first checks if each one of the DLLs that are to be imported exists on the list set by\nthe KnownDLLs registry key (HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\KnownDLLs). If\nyes, the loader uses the copy of the DLL pointed to by this registry key. Otherwise, it searches for the module by applying the DLL\nsearch order. More on the DLL search order to follow on in this article.\n\n### Explicit Linking (Run-Time Dynamic Library Linking)\n\nApplications may need to make use of functions within DLLs that are loaded dynamically while the application is running. Loading\nDLLs in this way is called Run-Time DLL Dynamic Linking. This type of loading occurs when the application calls the functions\nLoadLibrary or LoadLibraryEx.\n\nThese two functions accept the name of the module to be loaded. The name can be either the filename of the module or a full path\nto the module. In case the application does not specify a full path to the module, the Windows loader is looking for the DLL\napplying the Dynamic Library Search Order.\n\n## DLL Search Order hijacking and how to identify it\n\n\n-----\n\nAbusing the DLL Search Order and taking advantage of this mechanism in order for an application to load a rogue DLL instead of\nthe legitimate one is known as DLL preloading. It is called preloading because the attackers can place their DLL earlier in the\nsearch order and thus the application loads this instead of the legitimate one. This technique is documented as DLL Search Order\nHijacking in the MITRE ATT&CK framework (T1038). In the following sections of this article we demonstrate how legitimate\napplications can be abused to load and execute a Cobalt Strike beacon payload via search order hijacking.\n\nThe DLL Search Order hijacking mainly offers two advantages that make it an effective technique. The first advantage is that it can\nbe used to evade detections. The weaponized application is often a legitimate signed binary that loads the malicious DLL in its\naddress space by calling a function that this DLL exports. Thus, in order to execute the malicious DLL, an automated sandbox has\nto first identify which exported function to call or execute the innocuous binary and set up the environment so it loads the malicious\nDLL. This requirement makes DLL search order hijacking a suitable vector for defence evasion.\n\nThe other advantage this technique offers is the potential to escalate privileges. When the legitimate application which loads a DLL\nin its address space runs with elevated privileges, any code that executes in its context is executed with the same level of\nprivileges. This means that the payload DLL, and as a result the functionality it implements, gets executed with the same privileges\nas the process that loads it.\n\nThere are two different approaches in identifying a candidate DLL for hijacking: static analysis and dynamic analysis, just like the\napproach taken in malware analysis. The dynamic analysis consists of executing the application and monitoring the libraries it\nloads. This can be achieved with tools such as Procmon and API Monitor, which monitor API calls. The static analysis approach\nconsists of using disassembler tools such as IDA and Ghidra to identify - without executing the application - if calls to specific APIs\noccur.\n\nThe main difference between the two approaches is that with employing dynamic analysis, a larger number of candidate DLLs for\nboth load-time and run-time dynamic linking is revealed, whereas the static analysis only reveals candidate DLLs that are loaded\nin run-time.\n\n### DLL Search Order\n\nSince Windows XP, when the SafeDllSearchMode option is enabled a module is loaded in the address space of an application either during load-time or run-time - and the full path to the module is not explicitly specified or the manifest file does not state\nwhere the dependency can be looked up, the operating system searches for the DLL in a defined search order, that consists of the\nfollowing:\n\n1. The directory from which the application is loaded\n2. The system directory\n3. The 16-bit system directory\n4. The Windows directory\n5. The current directory (same as 1 unless otherwise specified)\n6. The directories that are listed in the PATH environment variable\n\nThe above search order is slightly different when the SafeDllSearchMode is not enabled. For additional information on this, please\n[consult the Microsoft documentation.](https://docs.microsoft.com/en-us/windows/win32/dlls/dynamic-link-library-search-order)\n\nWhen the operating system starts the search for a DLL that the application is importing, unless a full path is specified the directory\nfrom which the application was loaded is searched first. If the DLL does not exist there, the system directory is searched next and\nso on. The abuse occurs when the attackers, having observed the behaviour of an application, place their own DLL earlier in the\nsearch order so the application loads that DLL instead of continuing the search. The threat group tracked by Context's intelligence\nteam as [AVIVORE have used this technique in order to achieve payload execution within victim environments.](https://www.contextis.com/en/news/context-identifies-new-avivore-threat-group)\n\n## A case of Load-Time Dynamic Linking\n\nTo illustrate the Load-Time loading, we analysed a signed Google executable (GoogleCrashHandler - MD5:\n83bb030c71c9727dcfb2737005772c4e) that Context's Intelligence team observed being used in intrusions.\n\nThe reason we focus on this binary, is that it makes a suitable candidate. And what do we mean by this? First of all, it is a\nlegitimate and signed binary from a trusted vendor. Once this application is executed it presents no visible window and it\nterminates upon execution, so the user upon executing this binary is not made aware that the binary was indeed run and the\nprocess does not stay in a running state. Last by not least, even though the application loads a rogue DLL, it does not generate\nany other activity - like a pop up window - that would potentially raise user's suspicion. So, it can be used as a leverage to execute\na payload DLL.\n\n\n-----\n\nIn order to identify the modules this executable attempts to load and could potentially be hijacked, we use SysInternal s Procmon\nwith the following filters:\n\nAfter applying the filters, we get the following candidate DLLs:\n\n### Weaponize the DLL search order\n\nIn order to weaponize the GoogleCrashHandler.exe, we created a custom DLL that executes the beacon shellcode generated from\nCobaltStrike. We named the output DLL wkscli.dll, placed it in the same directory the GoogleCrashHandler executable image\nexists. We then opened GoogleCrashHandler. The next picture shows the rogue DLL was mapped in the address space of\nGoogleCrashHandler and a beacon was launched.\n\n## A case of Run-Time Dynamic Linking\n\nTo illustrate the Run-Time loading, we analysed a signed Microsoft executable (OleView - MD5:\nd1e6767900c85535f300e08d76aac9ab). The signed executable was used to load a DLL that subsequently decrypted a PlugX\npayload. For more information, please see the ‘Indicators of Compromise’ section of this article.\n\nLet's have a look with Procmon at the DLLs this executable attempts to load once it is launched:\n\nTo confirm that this DLL is loaded dynamically and not during load-time, we use API Monitor. By hooking the LoadLibrary and\nLoadLibraryEx APIs, we observe that the application attempts to dynamically load multiple DLLs:\n\nCorrelating the data we get from Procmon and API monitor, we determine the DLL ACLUI.DLL is searched by applying the DLL\nsearch order. We can do the same by analysing the executable on Ghidra. In the Defined Strings section (Window -> Defined\nStrings) we search for the string ACLUI. Three results show up:\n\nWe then follow the reference to the string ACLUI.DLL and we end up where the call to LoadLibraryW is made:\n\nWe observe that the argument to the LoadLibraryW API is not a full path and thus we confirm that the DLL search order is applied.\n\nIf we create a payload DLL, place it in the same directory as the executable and then run the executable, the following message\nbox is shown:\n\nThis means the executable requests a function from our payload DLL that does not exist. In order to allow our payload to execute\nfrom the application, we have to export the function EditSecurity. A way to do this in C/C++ code is shown in the following\nscreenshot:\n\n### Weaponize the DLL search order\n\nLikewise as we did for the GoogleCrashHandler image, we created a custom DLL that executes the beacon shellcode generated\nfrom CobaltStrike. We named the output DLL ACLUI.DLL and placed it in the same directory as OleView.exe executable image.\nWe then opened OleView. The next picture shows the rogue DLL was mapped in the address space of OleView and a beacon was\nlaunched.\n\n## Mitigation Strategies\n\nBased on the incidents we have observed and how DLL Search Order has been abused in the past, we can recommend specific\nbest practices to be applied in the environments. The recommendations aim to reduce attack surface, limit consequences of a\npotential attack and reduce the amount of time it takes related attacks to be detected.\n\nCompanies are generally recommended to deploy capabilities and policies within their environments. As part of the capabilities, it\nis highly recommended that Event Detection and Response (EDR) software is deployed. On the policies side, it is a good practice\nto populate and maintain a list of all the applications that are authorized to run within the environment and implement application\nwhite-listing to prevent applications that do not belong in this list from running. In order to detect rogue DLLs, it is recommended to\n\n\n-----\n\nconduct frequency analysis of the observed DLLs within the environment. Low frequency occurrence of a DLL would probably be\nan indicator worth further analysis. One more thing that can protect against other DLL hijacking attack scenarios is to enable the\nSafeDllSearchMode and configure the CWDIllegalInDLLSearch registry on systems.\n\nBest practices have to be followed by software developers, as well. For example, when an application is loading modules in runtime, it is recommended to specify an absolute path for modules provided to LoadLibrary and LoadLibraryEx APIs or use the API\nSetDllDirectory to specifically set the path from where the Windows loader will load the provided module. By doing this, the normal\nsearch order is not being looked up. One more recommendation in accordance to best practises would be to implement integrity\n[checks for the loaded modules via Application Manifests. By doing this the application will prevent the load of rogue DLLs and](https://docs.microsoft.com/en-us/windows/win32/sbscs/application-manifests)\npotentially inform the users of identified anomalies.\n\n### Introducing DLLHSC\n\nDLLHSC is an application designed to automate the scan of a provided executable image, generate leads - that can later be\nmanually assessed - and report potential paths of taking advantage of the DLL search order with the ultimate goal to load a\npayload DLL in the address space of the provided image via search order hijacking.\n\n### Modes of operation\n\nThe tool implements 3 modes of operation which are described below.\n\n**Lightweight Mode**\n\nLoads the executable image in memory, parses the Import table and then replaces any DLL referred in the Import table with a\npayload DLL. The tool places in the application directory a module (DLL) that does not already exist in the application directory,\ndoes not belong to WinSxS and does not belong to the KnownDLLs.\n\nThen, it launches the application and reports if the payload DLL was executed. The payload DLL upon execution creates a\ntemporary file in the path C:\\Users\\%USERNAME%\\AppData\\Local\\Temp\\DLLHSC.tmp. If the temporary file exists, this indicates\nthe scanned application can be abused. As some executables import functions from the DLLs they load, error message boxes may\nbe shown up when the provided DLL fails to export these functions and thus meet the dependencies of the provided image.\n\nHowever, the message boxes indicate the DLL may be a good candidate for payload execution if the dependencies are met. In this\ncase, additional analysis is required. The title of these message boxes may contain the strings: ‘Ordinal Not Found’ or ‘Entry Point\nNot Found’. DLLHSC looks for windows that contains these strings, closes them as soon as they shown up and reports the results.\n\n**List Modules Mode**\n\nCreates a process with the provided executable image, enumerates the modules that are loaded in the address space of this\nprocess and reports the results after applying filters.\n\nThe tool only reports the modules loaded from the System directory and do not belong to the KnownDLLs. The results are leads\nthat require additional analysis. The analyst can then place the reported modules in the application directory and check if the\napplication loads the provided module instead.\n\n**Run-Time Mode**\n\nHooks the LoadLibrary and LoadLibraryEx APIs via Microsoft Detours and reports the modules that are loaded in run-time.\n\nEach time the scanned application calls LoadLibrary and LoadLibraryEx, the tool intercepts the call and writes the requested\nmodule in the file C:\\Users\\%USERNAME%\\AppData\\Local\\Temp\\DLLHSCRTLOG.tmp. If the LoadLibraryEx is specifically called\nwith the flag LOAD_LIBRARY_SEARCH_SYSTEM32, no output is written to the file. After all interceptions have finished, the tool\nreads the file and prints the results. Of interest for further analysis are modules that do not exist in the KnownDLLs registry key,\nmodules that do not exist in the System directory and modules with no full path (for these modules loader applies the normal\nsearch order).\n\n[You can find the source code of DLLHSC as well as compiled binaries for x86 and x64 architecture on our GitHub page.](https://github.com/ctxis/DLLHSC)\n\n## References:\n\n Indicators of Compromise\n\n**Indicator** **Type** **Filepath** **Comment**\n\n\n-----\n\nb38703090659bc5c297f74e0da3d5d75\n\nf8d089ed3ab422f7bf5776bc180001d1e7e83d1c\n\ndba03177d6612c9117970de0696e167fbe1c42dc3e9b68663969e88ad59a0082\n\nd1e6767900c85535f300e08d76aac9ab\n\n4a0f328e7672ee7ba83f265d48a6077a0c9068d4\n\n91f6547bceddfb2f241570ac82c00de700e311e4a38dea60d8619638f1ed3520\n\n4b62274eb48440e2d080e111124d9d04\n\nf98e12eedfe451220a5765a0e808f48c66d9433d\n\nc82556bfc26fa5b38839c361aa11651177c2c35cf9e985debf0faec6aa789b87\n\n73d13e8c38778d0cc62ff29f89c1c337\n\n2170fb614ad2e04081adc9fbcfa8ff6f9f000787\n\n016b269293abcd607f476aebe18524df7d7044f3ef99f3b3e94344243c0e955c\n\n\nMD5\n\nSHA-1\n\nSHA256\n\nMD5\n\nSHA-1\n\nSHA256\n\nMD5\n\nSHA-1\n\nSHA256\n\nMD5\n\nSHA-1\n\nSHA256\n\n\n- Dropper\n\n\nC:\\ProgramData\\Microsoft\nHelp\\OleView.exe\n\nC:\\ProgramData\\Microsoft\nHelp\\ACLUI.DLL\n\nC:\\ProgramData\\Microsoft\nHelp\\ACLUI.DLL.UI\n\n\nLegitimate\nExecutable\n\nLoader\nDLL\n\nEncrypted\nPlugX\nPayload\n\n\nyy[.]h365[.]net:443 Domain - PlugX\ncommand\nand control\n(C2)\ndomain\n\nyy[.]u1e[.]net:443 Domain - PlugX\ncommand\nand control\n(C2)\ndomain\n\nyy[.]wwdlq[.]com:443 Domain - PlugX\ncommand\nand control\n(C2)\ndomain\n\n### About Lampros Noutsos & Oliver Fay\n\nLampros Noutsos is a Consultant in our Assurance team and Oliver Fay is Technical Lead in our Threat Intelligence & Incident\nResponse team.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-07-01 - DLL Search Order Hijacking.pdf"
+    ],
+    "report_names": [
+        "2020-07-01 - DLL Search Order Hijacking.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "680d62c6-23e2-411b-86e9-af6dc6a64d53",
+            "created_at": "2023-01-06T13:46:39.329055Z",
+            "updated_at": "2025-03-27T02:00:03.052401Z",
+            "deleted_at": null,
+            "main_name": "Avivore",
+            "aliases": [],
+            "source_name": "MISPGALAXY:Avivore",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "3b978023-9d82-46fb-b836-a0d011504d2c",
+            "created_at": "2022-10-25T16:07:23.368134Z",
+            "updated_at": "2025-03-27T02:02:09.763477Z",
+            "deleted_at": null,
+            "main_name": "AVIVORE",
+            "aliases": [],
+            "source_name": "ETDA:AVIVORE",
+            "tools": [
+                "Agent.dhwf",
+                "Destroy RAT",
+                "DestroyRAT",
+                "Kaba",
+                "Korplug",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "Mimikatz",
+                "PlugX",
+                "RedDelta",
+                "Sogu",
+                "TIGERPLUG",
+                "TVT",
+                "Thoper",
+                "Xamtrav"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535711,
+    "ts_updated_at": 1743041746,
+    "ts_creation_date": 1653757285,
+    "ts_modification_date": 1653757285,
+    "files": {
+        "pdf": "https://archive.orkl.eu/7d5086436723ac163cc5b57836f10faf4b3583d6.pdf",
+        "text": "https://archive.orkl.eu/7d5086436723ac163cc5b57836f10faf4b3583d6.txt",
+        "img": "https://archive.orkl.eu/7d5086436723ac163cc5b57836f10faf4b3583d6.jpg"
+    }
+}

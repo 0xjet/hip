@@ -1,0 +1,172 @@
+{
+    "id": "2183f50a-dab8-4542-8bd1-64c8c4648069",
+    "created_at": "2023-01-12T15:08:09.462506Z",
+    "updated_at": "2025-03-27T02:10:54.38395Z",
+    "deleted_at": null,
+    "sha1_hash": "84e3a01a0cf137a8e655d1a8265305976eae4585",
+    "title": "2019-12-11 - Waterbear Returns, Uses API Hooking to Evade Security",
+    "authors": "",
+    "file_creation_date": "2022-05-28T21:36:35Z",
+    "file_modification_date": "2022-05-28T21:36:35Z",
+    "file_size": 3533272,
+    "plain_text": "# Waterbear Returns, Uses API Hooking to Evade Security\n\n**[trendmicro.com/en_us/research/19/l/waterbear-is-back-uses-api-hooking-to-evade-security-product-detection.html](https://www.trendmicro.com/en_us/research/19/l/waterbear-is-back-uses-api-hooking-to-evade-security-product-detection.html)**\n\nDecember 11, 2019\n\nWaterbear, which has been around for several years, is a campaign that uses modular malware capable of including\n[additional functions remotely. It is associated with the cyberespionage group BlackTech, which mainly targets](https://blog.trendmicro.com/trendlabs-security-intelligence/following-trail-blacktech-cyber-espionage-campaigns/)\ntechnology companies and government agencies in East Asia (specifically Taiwan, and in some instances, Japan\nand Hong Kong) and is responsible for some infamous campaigns such as PLEAD and Shrouded Crossbow. In\nprevious campaigns, we’ve seen Waterbear primarily being used for lateral movement, decrypting and triggering\npayloads with its loader component. In most cases, the payloads are backdoors that are able to receive and load\nadditional modules. However, in one of its recent campaigns, we’ve discovered a piece of Waterbear payload with a\nbrand-new purpose: hiding its network behaviors from a specific security product by API hooking techniques. In our\nanalysis, we have discovered that the security vendor is APAC-based, which is consistent with BlackTech’s targeted\ncountries.\n\nKnowing which specific APIs to hook might mean that the attackers are familiar with how certain security products\ngather information on their clients' endpoints and networks. And since the API hooking shellcode adopts a generic\napproach, a similar code snippet might be used to target other products in the future and make Waterbear harder to\ndetect.\n\n## A closer look at Waterbear\n\nWaterbear employs a modular approach to its malware. It utilizes a DLL loader to decrypt and execute an RC4encrypted payload. Typically, the payload is the first-stage backdoor which receives and loads other executables\nfrom external attackers. These first-stage backdoors can be divided into two types: First, to connect to a commandand-control (C&C) server, and second, to listen in on a specific port. Sometimes, the hardcoded file paths of the\nencrypted payloads are not under Windows native directories (e.g., under security products or third-party libraries'\ndirectories), which may indicate that the attackers might have prior knowledge of their targets' environments. It is\nalso possible that the attackers use Waterbear as a secondary payload to help maintain presence after gaining\nsome levels of access to the targets’ systems. The evidence is that Waterbear frequently uses internal IPs as its own\nC&C servers (for instance, b9f3a3b9452a396c3ba0ce4a644dd2b7f494905e820e7b1c6dca2fdcce069361 uses an\ninternal IP address of 10[.]0[.]0[.]211 as its C&C server).\n\n## The typical Waterbear infection chain\n\n\n-----\n\nFigure 1. A typical Waterbear infection chain\n\nA Waterbear infection starts from a malicious DLL loader, as shown in Figure 1. We have seen two techniques of\n[DLL loader triggering. One is modifying a legitimate server application to import and load the malicious DLL loader,](http://blog.trendmicro.com/trendlabs-security-intelligence/attack-gains-foothold-against-east-asian-government-through-auto-start/)\nwhile the second technique is performing phantom DLL hijacking and DLL side loading. Some Windows services try\nto load external DLLs with hardcoded DLL names or paths during boot-up. However, if the DLL is a legacy DLL (i.e.,\none that is no longer supported by Windows) or a third-party DLL (i.e., one that is not part of the original Windows\nsystem DLLs), attackers can give their malicious DLL a hardcoded DLL name and place it under one of the\nsearched directories during the DLL loading process. After the malicious DLL is loaded, it will gain the same\npermission level as the service that loads it.\n\nDuring our recent Waterbear investigation, we discovered that the DLL loader loaded two payloads. The payloads\nperformed functionalities we have never seen in other Waterbear campaigns. The first payload injects code into a\nspecific security product to hide the campaign’s backdoor. The second payload is a typical Waterbear first-stage\nbackdoor, which we will attempt to dissect first based on a specific case we observed during our analysis.\n\n## Waterbear’s first-stage backdoor\n\nWe saw a Waterbear loader named \"ociw32.dll\" inside one of the folders in the %PATH% environmental variable.\nThis DLL name is hardcoded inside \"mtxoci.dll\" which is loaded by the MSDTC service during boot-up.\n“mtxoci.dll” first tries to query the registry key\n**\"HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\MSDTC\\MTxOCI\" to see if the value \"OracleOciLib\" exists. If**\nso, it retrieves the data inside it and loads the corresponding library. If the value doesn't exist, “mtxoci.dll” tries to\nload \"ociw32.dll\" instead. During our investigation, we noticed that the value \"OracleOciLib\" was deleted from the\n\n\n-----\n\nvictim s machine, as shown in Figure 2. Hence, the malicious loader **ociw32.dll was loaded and successfully**\nexecuted on the host.\n\nFigure 2. The deleted value \"OracleOciLib\" on the victim's host\n\n_Note: The image on the left shows how the DLL on a normal machine normally looks. The image on the right_\n_showcases how the DLL on a victim's machine appears. Because there is no \"OracleOciLib\" value, it loads the_\n_hardcoded DLL \"ociw32.dll\" instead, which triggers the malicious Waterbear DLL loader._\n\nAfter the Waterbear DLL loader is executed, it searches for a hardcoded path and tries to decrypt the corresponding\npayload, which is a piece of encrypted shellcode. The decryption algorithm is RC4, which takes the hardcoded path\nto form the decryption key. If the decrypted payload is valid, it picks a specific existing Windows Service —\nLanmanServer, which is run by svchost.exe — and injects the decrypted shellcode into the legitimate service. In\nmost cases, the payload is a first-stage backdoor, and its main purpose is to retrieve second-stage payloads —\neither by connecting to a C&C server or opening a port to wait for external connections and load incoming\nexecutables.\n\n## Configuration of the first-stage backdoor\n\nWaterbear’s first-stage backdoor configuration contains the information required for the proper execution of and\ncommunication with external entities.\n\nOffset 0x00, Size 0x10: Encryption / decryption key for the functions\nOffset 0x10, Size 0x04: 0x0BB8 (reserved)\nOffset 0x14, Size 0x10: Version (e.g., 0.13, 0.14, 0.16, and so on)\nOffset 0x24, Size 0x10: Mutex or reserved bytes\nOffset 0x34, Size 0x78: C&C server address which is XOR-encrypted by key 0xFF. If the backdoor is intended\nto listen in on a specific port, this section will be filled with 0x00.\nOffset 0xAC, Size 0x02: Port\nOffset 0xAE, Size 0x5A: Reserved bytes\nTable: The function address table of the payload. The block is initially filled with 0x00 and will be propagated\nduring runtime.\nTable: The sizes of functions\nTable: The API address table. The block is initially filled with 0x00 and will be filled with loaded API addresses\nduring runtime.\nTable: The API hashes for dynamic API loading\nA list of DLL names and the number of APIs to be loaded\n\n\n-----\n\n-----\n\nFigure 3. The first-stage backdoor’s configuration structure\n\n## Anti-memory scanning of shellcode payload\n\nIn order to avoid in-memory scanning during runtime, the payload encrypts all of the function blocks before\nexecuting the actual malicious routine. Afterwards, whenever it needs to use a function, it will decrypt the function,\nexecute it, and encrypt the function back again, as can be seen in Figure 4. If a function will not be used on the rest\nof the execution, it will be scrambled by another mess-up function, as illustrated in Figure 6. The mess-up function\nmuddles up the bytes with random values and makes the input blocks unrecoverable. The purpose of this is to\nfurther avoid being detected by a certain cybersecurity solution.\n\nFigure 4. The decryption-execution-encryption flow in the shellcode execution routine\n\nFigure 5. The function for the function block encryption and decryption\n\n\n-----\n\nFigure 6. The payload’s mess-up function\n\n## Same Waterbear, different story\n\nDuring our investigation, we found a peculiar incident that stands out from most of the Waterbear infections we’ve\npreviously seen. This time, the DLL loader loaded two payloads – the first payload performed functionalities we have\nnot seen before: It injected codes into a specific security product to do API hooking in order to hide the backdoor\nfrom the product. Meanwhile, the second payload is a typical Waterbear first-stage backdoor.\n\n\n-----\n\nFigure 7. An unusual Waterbear infection chain\n\nBoth payloads were encrypted and stored on the victim’s disk and were injected into the same service, which was, in\nthis case, LanmanServer. We have observed that the loader tried to read the payloads from the files, decrypted\nthem, and performed thread injections with the following conditions:\n\n1. If the first payload could not be found on the disk, the loader would be terminated without loading the second\n\none.\n2. If the first payload was successfully decrypted and injected into the service, the second piece would also be\n\nloaded and injected regardless of what happened to the first thread.\n3. In the first injected thread, if the necessary executable from the security product was not found, the thread\n\nwould be terminated without performing other malicious routines. Note that only the thread would be\nterminated, but the service would still be running.\n\nRegardless if the API hooking was performed or otherwise, the second backdoor would still be executed after having\nbeen successfully loaded.\n\n## API hooking to evade detection\n\nIn order to hide the behaviors of the first-stage backdoor (which is the second payload), the first payload uses API\nhooking techniques to avoid being detected by a specific security product and to make an interference in the result\nof the function execution. It hooks two different APIs, namely \"ZwOpenProcess\" and \"GetExtendedTcpTable\", to\nhide its specific processes. The payload only modifies the functions in the memory of the security product process,\nhence the original system DLL files remain unchanged.\n\nThe payload is composed of a two-stage shellcode. The first-stage shellcode finds a specific security product's\nprocess with a hardcoded name and injects the second-stage shellcode into that process. The second-stage\nshellcode then performs API hooking inside the targeted process.\n\n### Hiding process identifiers (PIDs)\n\n\n-----\n\nThe process identifiers or PIDs to be hidden are stored in the shared memory \"Global\\<computer_name>.\" If the\nshared memory doesn't exist, it takes the PID embedded by the first-stage shellcode. In this case, the intention of\nthe malicious code is to hide Waterbear’s backdoor activities from the security product. Therefore, the first-stage\nshellcode takes the PID of the Windows Service — which the first-stage shellcode and the succeeding backdoor\nboth inject into — hides the target process, and embeds that PID into the second-stage shellcode.\n\nFigure 8. Code that injects current PID into the second-stage shellcode\n\n### Hooking \"ZwOpenProcess\" in ntdll.dll\n\nThe purpose of hooking “ZwOpenProcess” is to protect the specific process from being accessed by the security\nproduct. Whenever “ZwOpenProcess” is called, the injected code will first check if the opened process hits any\nPIDs in the protected process ID list. If yes, it modifies the process ID, which should open on another Windows\nService PID.\n\nFirst, it builds the hooked function and writes the function at the end of “ntdll.dll”. This function includes two parts,\nas shown in Figure 9:\n\n1. The PID checking procedure. It recursively checks if the PID to be opened by “ZwOpenProcess” is in the list\n\nof the protected process IDs. If yes, it replaces the PID to be opened with another Windows Service PID that\nhas been written by the Waterbear loader in the beginning.\n2. After the PID checking procedure, it executes the original “ZwOpenProcess” and returns the result.\n\nFigure 9. The function hook of “ZwOpenProcess” to check and modify the output of the function\n\nSecondly, it writes \"push <ADDRESS> ret\" at the beginning of the original “ZwOpenProcess” address. Hence,\nwhen “ZwOpenProcess” is called, the modified version of “ZwOpenProcess” will be executed.\n\nFigure 10. “ZwOpenProcess” after modification\n\nThe API hooking on “ZwOpenProcess” will only be triggered if \"%temp%\\KERNELBASE.dll\" exists on the host. It\nis possible that this check is designed according to the nature of the security product it targets.\n\n### \"GetExtendedTcpTable\" and \"GetRTTAndHopCount\" hooks in iphlpapi.dll\n\n\n-----\n\nThe second part of API hooking hooks on **GetExtendedTcpTable. GetExtendedTcpTable is used for retrieving**\na table that contains a list of TCP endpoints available to the application, and it is frequently used in some networkrelated commands, such as netstat. The purpose of the hook is to remove TCP endpoint records of certain PIDs. In\norder to achieve that, it modifies two functions: “GetExtendedTcpTable” and “GetRTTAndHopCount.” The\nsecond function, “GetRTTAndHopCount,” acts as the place to put the injected hooking code.\n\n**“GetExtendedTcpTable” only writes a jump to “GetRTTAndHopCount” in the beginning of the function. Only the**\nfirst 5 bytes of the code of the API \"GetExtendedTcpTable\" are changed, as shown in Figure 11.\n\nFigure 11. Only 5 bytes changed in the “GetExtendedTcpTable”\n\nThe rest of the routine is all placed in “GetRTTAndHopCount.” In the first part of the code, it pushes\n\n[“GetRTTAndHopCount”+0x3E] as the return address and then executes the first four instructions of the original\n**“GetExtendedTcpTable” function (which has already been replaced by the jump instruction in Figure 11). After that,**\nit jumps to “GetExtendedTcpTable” to execute the function normally and to catch its return values. The code is\nshown in Figure 12.\n\nFigure 12. The first part of injected code in “GetRTTAndHopCount,” which executes “GetExtendedTcpTable” and\nreturns back to the next instruction\n\nAfter “GetExtendedTcpTable” is executed and the process returns back to the second part of the code, it iteratively\nchecks every record in the returned Tcp table. If any record contains the PID Waterbear wants to hide, it will remove\nthe corresponding record, modify the record number inside the table, and continue to check the succeeding records.\n\n\n-----\n\nIn the end, it returns the modified table.\n\nFig. 13. The injected code’s second part in “GetRTTAndHopCount” that checks and removes returned records of\ncertain PIDs\n\nRather than directly disabling these two functions, this method of using API hooking makes noticing malicious\nbehaviors more difficult, especially since both functions still work and return results normally. Although in this case,\nthe affected process is specified in the first-stage shellcode, the API hooking logic is quite generic that the same\npiece of shellcode can be used to hook other vendors' products.\n\n## Conclusion\n\nThis is the first time we’ve seen Waterbear attempting to hide its backdoor activities. By the hardcoded product\nname, we infer that the attackers are knowledgeable of the victims' environment and which security product(s) they\nuse. The attackers might also be familiar with how security products gather information on their clients’ endpoints\nand networks, so that they know which APIs to hook. Since the API hooking shellcode adopts a generic approach,\nthe similar code snippet might be used to target other products in the future and make the activities of Waterbear\nharder to detect.\n\n\n-----\n\n**Tactic** **Technique** **ID** **Description**\n\n\nExecution Execution through\nModule Load\n\n\n[T1129](https://attack.mitre.org/techniques/T1129/) Dynamically loads the DLLs\nthrough the shellcode\n\n\nExecution through\nAPI\n\n\n[T1106](https://attack.mitre.org/techniques/T1106/) Dynamically loads the APIs\nthrough the shellcode\n\n\nPersistence Hooking [T1179](https://attack.mitre.org/techniques/T1179/) Hooks security product’s\ncommonly used APIs\n\nPrivilege Escalation Process Injection [T1055](https://attack.mitre.org/techniques/T1055/) Injects the decrypts payload\ninto svchost.exe process\n\nHooking [T1179](https://attack.mitre.org/techniques/T1179/) Hooks security products’\ncommonly used APIs\n\nDefense Evasion Binary Padding [T1009](https://attack.mitre.org/techniques/T1009/) Adds junk data to evade antivirus scan\n\n\nDisabling Security\nTools\n\nDeobfuscate/Decode\nFiles or Information\n\n\n[T1089](https://attack.mitre.org/techniques/T1089/) Targets a specific security\nproduct’s process for injection\npurposes\n\n[T1140](https://attack.mitre.org/techniques/T1140/) Uses TROJ_WATERBEAR to\ndecrypt encrypted payload\n\n\nExecution Guardrails [T1480](https://attack.mitre.org/techniques/T1480/) Targets specific software in the\nvictim’s environment\n\nDLL Side-Loading [T1073](https://attack.mitre.org/techniques/T1073/) Uses modified legitimate DLL to\nload the malicious DLL\n\nProcess Injection [T1055](https://attack.mitre.org/techniques/T1055/) Injects the decrypted payload\ninto svchost.exe process\n\n\nExfiltration Exfiltration Over\nCommand and Control\nChannel\n\n### Indicators of Compromise (IoCs)\n\n\n[T1041](https://attack.mitre.org/techniques/T1041) Possibly sends collected\ndata to attackers via C&C\nchannel\n\n\n**SHA256** **Detection Name**\n\n649675baef92381ffcdfa42e8959015e83c1ab1c7bbfd64635ce5f6f65efd651 BKDR_WATERBEAR.ZTGF\n\n3909e837f3a96736947e387a84bb57e57974db9b77fb1d8fa5d808a89f9a401b TROJ_WATERBEAR.ZTGD\n\nfcfdd079b5861c0192e559c80e8f393b16ba419186066a21aab0294327ea9e58 TROJ_WATERBEAR.ZTGJ\n\n3f26a971e393d7f6ce7bf4416abdbfa1def843a0cf74d8b7bb841ca90f5c9ed9 TROJ_WATERBEAR.ZTGH\n\nabb91dfd95d11a232375d6b5cdf94b0f7afb9683fb7af3e50bcecdb2bd6cb035 TROJ_WATERBEAR.ZTGH\n\nbda6812c3bbba3c885584d234be353b0a2d1b1cbd29161deab0ef8814ac1e8e1 TROJ_WATERBEAR.ZTGI\n\n53402b662679f0bfd08de3abb064930af40ff6c9ec95469ce8489f65796e36c3 TROJ_WATERBEAR.ZTGH\n\nf9f6bc637f59ef843bc939cb6be5000da5b9277b972904bf84586ea0a17a6000 TROJ_WATERBEAR.ZTGI\n\n3442c076c8824d5da065616063a6520ee1d9385d327779b5465292ac978dec26 BKDR_WATERBEAR.ZTGD\n\n\n-----\n\n7858171120792e5c98cfa75ccde7cba49e62a2aeb32ed62322aae0a80a50f1ea TROJ64_WATERBEAR.ZTGI\n\nacb2abc7fb44c2fdea0b65706d1e8b4c0bfb20e4bd4dcee5b95b346a60c6bd31 BKDR_WATERBEARENC.ZTGF\n\nb9f3a3b9452a396c3ba0ce4a644dd2b7f494905e820e7b1c6dca2fdcce069361 BKDR64_WATERBEAR.ZTGD\n\n7c0d2782a33debb65b488893705e71a001ea06c4eb4fe88571639ed71ac85cdd BKDR_WATERBEARENC.ZTGH\n\nc7c7b2270767aaa2d66018894a7425ba6192730b4fe2130d290cd46af5cc0b7b BKDR_WATERBEARENC.ZTGI\n\n7532fe7a16ba1db4d5e8d47de04b292d94882920cb672e89a48d07e77ddd0138 BKDR_WATERBEARENC.ZTGI\n\ndea5c564c9d961ccf2ed535139fbfca4f1727373504f2972ac92acfaf21da831 BKDR_WATERBEARENC.ZTGI\n\n05d0ab2fbeb7e0ba7547afb013d307d32588704daac9c12002a690e5c1cde3a4 BKDR64_WATERBEARENC.ZTGJ\n\n39668008deb49a9b9a033fd01e0ea7c5243ad958afd82f79c1665fb73c7cfadf BKDR_WATERBEARENC.ZTGD\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-12-11 - Waterbear Returns, Uses API Hooking to Evade Security.pdf"
+    ],
+    "report_names": [
+        "2019-12-11 - Waterbear Returns, Uses API Hooking to Evade Security.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "2646f776-792a-4498-967b-ec0d3498fdf1",
+            "created_at": "2022-10-25T15:50:23.475784Z",
+            "updated_at": "2025-03-27T02:00:55.479958Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "BlackTech",
+                "Palmerworm"
+            ],
+            "source_name": "MITRE:BlackTech",
+            "tools": [
+                "Kivars",
+                "PsExec",
+                "TSCookie",
+                "Flagpro",
+                "Waterbear"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d3a7123c-f519-49a0-a234-de24a1ef052a",
+            "created_at": "2022-10-25T16:47:55.545211Z",
+            "updated_at": "2025-03-27T02:05:17.254744Z",
+            "deleted_at": null,
+            "main_name": "BRONZE CANAL",
+            "aliases": [
+                "CTG-6177 ",
+                "Circuit Panda ",
+                "Palmerworm ",
+                "Shrouded Crossbow ",
+                "BlackTech"
+            ],
+            "source_name": "Secureworks:BRONZE CANAL",
+            "tools": [
+                " DRIGO",
+                " Flagpro",
+                " Gh0stTimes",
+                " PLEAD",
+                " Spiderpig",
+                " Waterbear",
+                "Bifrose"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "75024aad-424b-449a-b286-352fe9226bcb",
+            "created_at": "2023-01-06T13:46:38.962724Z",
+            "updated_at": "2025-03-27T02:00:02.964002Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "CIRCUIT PANDA",
+                "Temp.Overboard",
+                "G0098",
+                "Red Djinn",
+                "HUAPI",
+                "Palmerworm",
+                "T-APT-03",
+                "Manga Taurus",
+                "Earth Hundun"
+            ],
+            "source_name": "MISPGALAXY:BlackTech",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c93a7f58-3f75-487c-9bd6-e705b73fc07f",
+            "created_at": "2023-01-06T13:46:38.330916Z",
+            "updated_at": "2025-03-27T02:00:02.806744Z",
+            "deleted_at": null,
+            "main_name": "RADIO PANDA",
+            "aliases": [
+                "Shrouded Crossbow"
+            ],
+            "source_name": "MISPGALAXY:RADIO PANDA",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "efa7c047-b61c-4598-96d5-e00d01dec96b",
+            "created_at": "2022-10-25T16:07:23.404442Z",
+            "updated_at": "2025-03-27T02:02:09.781478Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "BlackTech",
+                "Circuit Panda",
+                "Earth Hundun",
+                "Manga Taurus",
+                "Operation PLEAD",
+                "Operation Shrouded Crossbow",
+                "Operation Waterbear",
+                "Palmerworm",
+                "Radio Panda",
+                "Red Djinn",
+                "T-APT-03",
+                "TEMP.Overboard"
+            ],
+            "source_name": "ETDA:BlackTech",
+            "tools": [
+                "BIFROST",
+                "BUSYICE",
+                "BendyBear",
+                "Bluether",
+                "CAPGELD",
+                "DRIGO",
+                "Deuterbear",
+                "Flagpro",
+                "GOODTIMES",
+                "Gh0stTimes",
+                "IconDown",
+                "KIVARS",
+                "LOLBAS",
+                "LOLBins",
+                "Linopid",
+                "Living off the Land",
+                "TSCookie",
+                "Waterbear",
+                "XBOW",
+                "elf.bifrose"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536089,
+    "ts_updated_at": 1743041454,
+    "ts_creation_date": 1653773795,
+    "ts_modification_date": 1653773795,
+    "files": {
+        "pdf": "https://archive.orkl.eu/84e3a01a0cf137a8e655d1a8265305976eae4585.pdf",
+        "text": "https://archive.orkl.eu/84e3a01a0cf137a8e655d1a8265305976eae4585.txt",
+        "img": "https://archive.orkl.eu/84e3a01a0cf137a8e655d1a8265305976eae4585.jpg"
+    }
+}

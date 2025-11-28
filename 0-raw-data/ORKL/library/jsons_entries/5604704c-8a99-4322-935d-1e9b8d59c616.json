@@ -1,0 +1,99 @@
+{
+    "id": "5604704c-8a99-4322-935d-1e9b8d59c616",
+    "created_at": "2023-01-12T15:07:52.115455Z",
+    "updated_at": "2025-03-27T02:05:55.441679Z",
+    "deleted_at": null,
+    "sha1_hash": "4f7f733c5538223fcedd35ab89f8b110e849cd96",
+    "title": "2020-07-10 - Deep Dive Into the M00nD3V Logger",
+    "authors": "",
+    "file_creation_date": "2022-05-27T22:32:19Z",
+    "file_modification_date": "2022-05-27T22:32:19Z",
+    "file_size": 4036015,
+    "plain_text": "# Deep Dive into the M00nD3V Logger\n\n**zscaler.com/blogs/research/deep-dive-m00nd3v-logger**\n\nThreatLabz observed a multifunctional information-stealing trojan named \"M00nD3V\n**Logger'' that is being dropped by a multistage loader. Due to its multiple stealing**\nfeatures, M00nD3V Logger has gradually gained popularity on hacking forums.\n\nRecently, [Blueliv published a blog discussing the relationship of M00nD3V with the](https://www.blueliv.com/cyber-security-and-cyber-threat-intelligence-blog-blueliv/covid-19-cybercrime-m00nd3v-hawkeye-malware-threat-actor/)\nHawkEye stealer, along with information about the bad actor selling M00nD3V.\n\nAside from keystroke logging, the M00nD3VLoggerhas the ability to steal confidential\ninformation, such as browser passwords, FTP client passwords, email client passwords,\nDynDNS credentials, JDownloader credentials; capture Windows keystrokes; and\ngain access to the webcam and hook the clipboard. In all, it has the ability to steal\npasswords from 42 applications.\n\nM00nD3VLogger is also equipped with other major functionality, including a botkiller, an\nantivirus killer, communicating over SMTP/FTP/proxy, downloading additional plugins, and\nthe BouncyCastle crypto package. These mechanisms makes this logger unique and\npopular on hacking forums.\n\n\n-----\n\n_Figure 1: An image from the owner account._\n\n**Delivery mechanism**\n\nDuring our research, we found M00nD3V was delivered via spam mail or through a\ncompromised website that drops a payload on the victim's machine. One such spam mail\nclaims to be from \"Hyundai Heavy Industries Co., Ltd\" regarding a bid on a project for\nQatargas. The spam mail includes ZIP attachments that contain malicious executables.\n\n_Figure 2: Spam mail._\n\n\n-----\n\n_Figure 3: M00nD3V Logger subscription and payment method pages._\n\nIn this blog, we will provide a detailed technical analysis of commercial\nM00nD3V Logger malware.\n\n**Technical analysis**\n\ndab9565e03fae2c5c18c9071a713153a - Parent File (.Net)\n\ne9cf47f3b0750dd0ee1ca30ea9861cc9 - Loader (.Net)\n\nbf8801bcd5a196744ccd0f863f84df71 - Final Payload (.Net)\n\nDelivering malware without triggering any suspicious activity while blending into an existing\nbenign Windows process makes detection a bit harder. Here, the M00nD3V malware does\none such trick to deliver its payload without getting easily noticed.\n\n_Figure 4: The M00nD3V malware register running with RegAsm.exe - Microsoft utility._\n\n\n-----\n\nFigure 4 shows the post execution of the malware. In case of an allowlisted application, the\nendpoint antivirus will not trigger any malicious activity. Hence, the malware can do its job\non the fly without getting caught. The malware also runs by elevating its own privileges.\n\n**Unpacking routine**\n\nThe malware unpacks the encrypted payload using multibyte XOR decryption. While\nunpacking, the malware also uses null bytes in the XOR key. Hence, a few bytes are not\nactually ciphered.\n\n**First layer decryption**\n\nThe hardcoded pass variable \"zvjzpeuCFasb\" is used as a key. When converted to Unicode\nstring, the same pass variable is:\n\"z\\x00v\\x00j\\x00z\\x00p\\x00e\\x00u\\x00C\\x00F\\x00a\\x00s\\x00b\\x00\".\n\nThe key length is 24 bytes.\n\n_Figure 5: First-level decryption using multibyte XOR._\n\nEven though key length is 24, the malware uses only the first 16 bytes to decrypt the\nresource section of the encrypted data. The above decryption routine results in a .NET PE\nfile. In this dumped file, there is also a similar XOR routine to decrypt the data but with a\ndifferent key to run the final payload.\n\n**Second layer decryption**\n\nHere, the hardcoded pass variable \"WcqqicsgTUaj\" is used as a key. When converted to\nUnicode string, the same pas variable is:\n\"W\\x00c\\x00q\\x00q\\x00i\\x00c\\x00s\\x00g\\x00T\\x00U\\x00a\\x00j\\x00\".\n\nWe have written a Python script to decrypt the encrypted payload, which can be found in\nAppendix I and Appendix II.\n\n**Payload analysis**\n\n\n-----\n\nStubConfig Class contains the configuration details - some of them are initialized with\nBase64 values while others are hardcoded.\n\n_Figure 6: StubConfig details._\n\nBefore starting to log user data, the M00nD3V Logger initializes its configuration. The\ninitialization phase includes several checks, such as an anti-debugger, a bot killer, an\nantivirus killer, and more. Figure 7 shows the initialization module.\n\n_Figure 7: Initialization phase_\n\nInitialization details:\n\nDependencyLoader - Downloads the DLL from\nm00nd3v[.]com/M00nD3v/Decryption/BouncyCastle[.]Crypto.dll and loads it in\nmemory.\nExecutionDelay - Sleeps for 5,000 milliseconds before executing.\nSingleInstance - Checks to see if a single instance is running or not by checking for\nthe hardcoded mutex value {99ed2fc7-0fdc-42ef-8b82-78d1c7c554e3} and sets a flag\naccordingly. If an app is running with the same mutex, then the loader exits from\nenvironment.\nDecryptCredential - Uses the Rijndael256 algorithm to decrypt the Stub configuration\nvalues [cipher data is Base64 encoded value and key is hardcoded mutex value] and\nset them to their respective variables, as show in Figure 8.\n\n\n-----\n\n_Figure 8: The decrypt credential._\n\nPersistence - Copies the parent file to AppData directory and begins the startup entry\n\n[SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run].\nAntiDebugger - Checks to see if any of the following processes are\nrunning: SbieDll.dll, Wireshark, Winsock Packet Editor. If any are found, the malware\nterminates.\n\n_Figure 9: AntiDebugger checks during the initialization process._\n\nAntivirus killer - Uses Image File Execution Options (IFEO) to interfere with\nthe executables shown in Figure 10. By modifying the registry entry\n\n[Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\Image File Execution Options\\\\],\nthe malware attaches rundll32.exe as debugger to each of the executables. This way,\nit disables all the listed applications to run.\n\n_Figure 10: Application list_\n\nProcess elevation - As shown in Figure 11, the malware contains a process elevation\nmodule, which is responsible for elevating the privilege of the malware executable.\nThe malware sets the security identifier type as \"WorldSid\" with AceQualifier\nAccessDenied. It is applicable to the \"Everyone\" group, so if anyone attempts to kill\nthe process, it won't be allowed to terminate.\n\n\n-----\n\n_Figure 11: Process elevation._\n\nBot killer - Scans all running processes and Windows Startup registry entries [ \\\\Run\\\\\nand \\\\RunOnce\\\\ ], then passes the file location path to module IsFileMalicious() to\ntag either the process or file as malicious and delete it accordingly. [Note: In case of a\nrunning process, it additionally checks for each process window visibility property. If it\nis set to false, then it is tagged as malicious.]\n\nFigure 12 shows the checks used inside IsFileMalicious(). Here, ‘fileloc’ is the\nfull path of the file or process.\n\n_Figure 12: Malicious checks of the file._\n\nBefore starting to log the stored credentials and other personal data, it checks whether the\nmalware was previously installed or not on the victim's machine by looking for a specific file\nname with a combination of Processor Id and Volume Serial Number in the temp directory. If\n\n\n-----\n\nthe file is not present, then it creates and writes Rijndael256 encrypted data, which is a\ncombination of the current executable path and the hardcoded StubConfigEncryptionKey,\nand then shows a fake message box to fool the victim.\n\n_Figure 13: The Rijndael256 key._\n\nThe malware has three kinds of communication methods to send logged data: SMTP, FTP,\nand proxy. But this stub is configured to use only and send data over SMTP only.\n\nBefore starting any logging functionality, it checks whether the respective logging\nfunctionality variable is set in the Stub config entry or not. If the value is not set in config,\nthen it won't execute the \"keystroke functionality\". As shown in Figure 14, the Stub is\nconfigured to execute the keystroke but not the webcam as the webcam value is not\nassigned.\n\n_Figure 14: Stub configuration._\n\nThe Stub starts its core stealing functionality by sending full victim machine information, as\nshown in Figure 15, to the attacker over SMTP port 587\n\n_Figure 15: Basic machine information sent to the attacker._\n\n**Network communication**\n\n**_Via SMTP_**\n\nThe malware communicates with the attacker over SMTP using port 587.\n\nThe malware crafts an email with the captured details shown in Figure 16 and sends it to\nthe attacker. The attackers use \"smtp.privateemail.com\" service to transfer the captured\ndata.\n\n\n-----\n\n_Figure 16: Information sent via SMTP._\n\nThe LogTypeName mentioned below is used to tag the data to inform the attacker what\nmodule it is running currently.\n\n_Figure 17: Log type._\n\n**_Via FTP_**\n\nWhile uploading data over FTP, it first converts plain text data to bytes and creates FTP\nrequests by configuring all the FTP request fields (i.e., ftp_host, credentials, method). The\nvalue for all these fields is set from the Stub configuration class. The FTP method used to\nupload files is \"STOR\".\n\n\n-----\n\n_Figure 18: Communication via FTP._\n\n**Via proxy**\n\nThe malware sets the proxy URL from the config class and uploads the below-mentioned\ndata using the POST method.\n\n_Figure 19: Communication via proxy._\n\nThe values encrypted with Rijndael256 where the key is the Proxy Key, which is configured\nin the Stub config class.\n\nEach stealing module runs independently with individual threads, as shown in Figure 20.\n\n_Figure 20: The core modules._\n\n\n-----\n\n**Password stealer: M00nD3V Logger has the capability to steal passwords and cookies**\nfrom all possible browsers and email clients, as well as FTP clients.\n\nInterestingly, the malware has three separate classes named \"ChromiumProvider\",\n\"MailProvider\", and \"MozillaProvider\" as shown in Figure 21. Each provider has a\nfunctionality to retrieve and decrypt the password for the application that is assigned to that\nprovider.\n\n_Figure 21: Provider list._\n\nThe malware first tries to decrypt the password with the data protection APT (DPAPI) library.\nBut if it isn't successful, then it attempts to decrypt the passwords using \"BouncyCastle\",\nwhich the malware downloaded\nfrom \"m00nd3v.]com/]M00nD3v/Decryption/BouncyCastle.Crypto.dll\". It includes\n\"GcmBlockCipher\" and \"AeadParameters\" classes, whose instances help the malware\ndecrypt the final password.\n\n\n-----\n\n_Figure 22: The BouncyCastle code._\n\nThe collected passwords are sent to the attacker over SMTP.\n\n_Figure 23: The collected passwords sent over SMTP._\n\n**Webcam**\n\nThe malware has the capability to secretly access the device's webcam and capture the\nimage. The malware copies the captured image onto the clipboard, extracts the image from\nclipboard, then saves it in the temp directory. To send stolen images over SMTP, it reads the\nimage path and attaches the .bmp image as an email attachment with a personalize the\nsubject line, such as \"Dear M00nD3v user Please find the attachment of Webcam.\n**Regards M00nD3v\"**\n\n_Figure 24: The webcam module._\n\n\n-----\n\nSimilarly, the other modules named keystrokes, clipboard, and screen sender, execute with\nindividual threads and send stolen data to the attacker, then sleep for some period of time\nbefore repeating the same stealing process.\n\n_Figure 24: The Zscaler Cloud Sandbox report for the M00nD3V Logger._\n\nThe following is the advanced threat protection signature released for detecting the\nmalware:\n\n[Win32.Backdoor.M00nD3v](https://threatlibrary.zscaler.com/?keyword=M00nD3v)\n\n**[MITRE ATT&CK™ tactic and technique mapping](https://attack.mitre.org/)**\n\nT1503 Credentials from Web Browsers\n\nT1112 Modify Registry\n\nT1060 Persistence\n\nT1057 Process Discovery\n\nT1105 Remote File Copy\n\nT1497 Defense Evasion, Discovery\n\nT1083 File and Directory Discovery\n\nT1089 Disabling Security Tools\n\nT1055 Process Injection\n\n\n-----\n\nT1548 Abuse Elevation Control Mechanism\n\nT1115 Clipboard Data\n\nT1113 Screen Capture\n\nT1125 Video Capture\n\nT1056 Input Capture\n\nT1048 Exfiltration Over Alternative Protocol\n\nT1183 Image File Execution Options Injection\n\n**IOCs:**\n\ndab9565e03fae2c5c18c9071a713153a - Parent File (.Net)\n\ne9cf47f3b0750dd0ee1ca30ea9861cc9 - Loader (.Net)\n\nbf8801bcd5a196744ccd0f863f84df71 - Final Payload\n\n**C&C:**\n\nm00nd3v[.]com\n\n**_Appendix I :_**\n\nPython Script to decrypt first level decryption:\n\nfile=open('enc.bin','rb')\n\ncont=file.read()\n\nfile.close()\n\nxor_key=\"z\\x00v\\x00j\\x00z\\x00p\\x00e\\x00u\\x00C\\x00\"\n\nfl=''\n\nindex=0\n\nfor i in range(len(cont)):\n\nfl+=chr(ord(cont[i])^ord(xor_key[index%16])) #Malware doesn’t use full key\n\nindex+=1\n\nhexval=[]\n\n\n-----\n\nfor i in fl:\n\ntemp=hex(ord(i))\n\ntemp=temp[2:]\n\nif len(temp) !=2:\n\ntemp='0'+temp\n\nhexval.append(temp)\n\nhexva=(\"\".join(hexval))\n\nimport binascii\n\nbinstr=binascii.unhexlify(hexva)\n\nf=open('fixed','wb')\n\nf.write(binstr)\n\nf.close()\n\n**_Appendix II :_**\n\nPython script to decrypt second level decryption:\n\nfile=open('enc2.bin','rb')\n\ncont=file.read()\n\nfile.close()\n\nxor_key=\"W\\x00c\\x00q\\x00q\\x00i\\x00c\\x00s\n\n\\x00g\\x00T\\x00U\\x00a\\x00j\\x00\"\n\nxor_key=xor_key[0:16]\n\nfl=''\n\nindex=0\n\nfor i in range(len(cont)):\n\nfl+=chr(ord(cont[i])^ord(xor_key[index%16]))  #Malware doesn’t use full key\n\nindex+=1\n\n\n-----\n\nhexval=[]\n\nfor i in fl:\n\ntemp=hex(ord(i))\n\ntemp=temp[2:]\n\nif len(temp) !=2:\n\ntemp='0'+temp\n\nhexval.append(temp)\n\nhexva=(\"\".join(hexval))\n\nimport binascii\n\nbinstr=binascii.unhexlify(hexva)\n\nf=open('fixed2','wb')\n\nf.write(binstr)\n\nf.close()\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-07-10 - Deep Dive Into the M00nD3V Logger.pdf"
+    ],
+    "report_names": [
+        "2020-07-10 - Deep Dive Into the M00nD3V Logger.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "9f101d9c-05ea-48b9-b6f1-168cd6d06d12",
+            "created_at": "2023-01-06T13:46:39.396409Z",
+            "updated_at": "2025-03-27T02:00:03.074969Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "CHROMIUM",
+                "ControlX",
+                "Red Dev 10",
+                "RedHotel",
+                "Red Scylla",
+                "TAG-22",
+                "BRONZE UNIVERSITY",
+                "AQUATIC PANDA",
+                "Charcoal Typhoon",
+                "BountyGlad"
+            ],
+            "source_name": "MISPGALAXY:Earth Lusca",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "1a76ed30-4daf-4817-98ae-87c667364464",
+            "created_at": "2022-10-25T16:47:55.891029Z",
+            "updated_at": "2025-03-27T02:05:17.408867Z",
+            "deleted_at": null,
+            "main_name": "IRON LIBERTY",
+            "aliases": [
+                "ATK6 ",
+                "BROMINE ",
+                "CASTLE ",
+                "Crouching Yeti ",
+                "DYMALLOY ",
+                "Dragonfly ",
+                "Energetic Bear / Berserk Bear ",
+                "Ghost Blizzard ",
+                "TEMP.Isotope ",
+                "TG-4192 ",
+                "ALLANITE "
+            ],
+            "source_name": "Secureworks:IRON LIBERTY",
+            "tools": [
+                " Ddex Loader",
+                " Havex",
+                " Karagany",
+                " Loek",
+                " MCMD",
+                " Sysmain",
+                " xfrost",
+                "ClientX"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536072,
+    "ts_updated_at": 1743041155,
+    "ts_creation_date": 1653690739,
+    "ts_modification_date": 1653690739,
+    "files": {
+        "pdf": "https://archive.orkl.eu/4f7f733c5538223fcedd35ab89f8b110e849cd96.pdf",
+        "text": "https://archive.orkl.eu/4f7f733c5538223fcedd35ab89f8b110e849cd96.txt",
+        "img": "https://archive.orkl.eu/4f7f733c5538223fcedd35ab89f8b110e849cd96.jpg"
+    }
+}

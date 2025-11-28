@@ -1,0 +1,180 @@
+{
+    "id": "b30d4080-3aed-47c1-b51e-4fd548e9da61",
+    "created_at": "2022-10-25T16:48:11.11314Z",
+    "updated_at": "2025-03-27T02:09:43.020536Z",
+    "deleted_at": null,
+    "sha1_hash": "2f7a1368b3927bfbb7aea55aa173425cea798e5b",
+    "title": "",
+    "authors": "",
+    "file_creation_date": "2021-08-24T18:51:55Z",
+    "file_modification_date": "2021-08-24T18:52:01Z",
+    "file_size": 5338912,
+    "plain_text": "#### Security \n# FIN8 Threat Actor Goes Agile with New Sardonic Backdoor\n\nwww.bitdefender.com\n\n\n-----\n\n##### Attack Flow........................................................................................................................4\n\nPersistence...............................................................................................................................4\n\n.NET loader and downloader shellcode..................................................................................6\n\nSardonic backdoor...................................................................................................................7\n\nNaming and TTPs..................................................................................................................11\n\n##### Recommendations..........................................................................................................12\n\n Indicators Of Compromise..............................................................................................13\n\n\n-----\n\nFIN8 Threat Actor Goes Agile with New Sardonic Backdoor\n\n\n## Foreword\n\n\n-----\n\nFIN8 Threat Actor Goes Agile with New Sardonic Backdoor\n\n## Attack Flow\n\nThe attack described in this whitepaper was uncovered after a FIN8 infection at a financial institution in the US. While\nwe couldn’t identify how the attackers gained initial access to the network, FIN8 is known for using social engineering\nand spear-phishing tactics to infiltrate target organizations.\n\nAs described in our previous threat intelligence report on FIN8, once in the network, the attackers began with network\nreconnaissance, obtaining information about the domain (users, domain controllers) and continued with lateral\nmovement and privilege escalation. In addition to the use of WMIExec, which we reported earlier, we found traces of\nSMBExec from the same toolset (Impacket), along with, of course, the offensive features of their signature backdoor,\nBADHATCH.\n\nThe BADHATCH loader was deployed using PowerShell scripts downloaded from the 104.168.237[.]21 IP address\nusing the legitimate sslip.io service. It was used during the reconnaissance, lateral movement, privilege escalation\nand possibly impact stages.\n\nThere were multiple attempts to deploy the Sardonic backdoor on domain controllers in order to continue with\nprivilege escalation and lateral movement, but the malicious command lines were blocked. We saw no traces of\nBADHATCH on these high-value targets. However, we identified one SQL server where some artifacts indicate that the\nthreat actors intended to deploy both backdoors.\n\n### Persistence\n\nDeployment of this backdoor begins by running the Sardonic loader. First, a PowerShell script named “sldr.ps1”\n(SHA256 edfd3ae4def3ddffb37bad3424eb73c17e156ba5f63fd1d651df2f5b8e34a6c7) is copied to the victim machine\nand executed. We believe this was performed manually by the attackers, rather than being installed at one point as\npart of an automated loader process.\n\nThis script contains two base-64 strings, corresponding to two additional PowerShell scripts: the first is an RC4encrypted second stage, and the second one implements the decryption algorithm for the former. In an improvement\nfrom earlier loaders used by FIN8, the decryption key “B4a0f3AE251b7689CFdDe1” is not included in the sample, but\nis given as a command-line argument.\n\nThe purpose of the second stage task is to install the persistence mechanism. Additionally, it can kill an existing\nprocess passed as a command-line argument, but we haven’t seen this feature used.\n\nInstead of persisting itself, this second stage abuses WMI (Windows Management Instrumentation) to execute a\nPowerShell command approximately 2-4 minutes after each startup, using the following event filter:\n\nSELECT * FROM __InstanceModificationEvent WITHIN 60\nWHERE TargetInstance ISA ‘Win32_PerfFormattedData_PerfOS_System’\nAND TargetInstance.SystemUpTime >= 140 AND TargetInstance.SystemUpTime < 240\n\nThat PowerShell command loads and executes a .NET DLL file from another WMI object:\n\npowershell.exe -nop -c [System.Reflection.Assembly]::Load(([WmiClass] ‘root\\cimv2:Win32_\nBase64Class’).Properties[‘Prop’].Value);[MSDAC.PerfOSChecker]::StartCheck()\n\nAdditionally, to ensure that the third stage starts executing immediately, two more WMI objects are created which,\ncombined, run it every four seconds, using the following event filter:\n\nSELECT * FROM __InstanceModificationEvent WITHIN 4\nWHERE TargetInstance ISA ‘Win32_PerfFormattedData_PerfOS_System\n\n\n-----\n\nFIN8 Threat Actor Goes Agile with New Sardonic Backdoor\n\nThese objects are deleted seven seconds later to ensure that this stage executes exactly once. The WMI objects used\nto start the next stage are depicted in figure 1.\n\n**Fig. 1: WMI persistence objects**\n\nThe third stage .NET DLL is contained in the second-stage PowerShell script, in 2 versions, one 32-bit and one 64-bit,\neach encoded in a base-64 string. The architecture-specific version is installed in a WMI “root/cimv2:Win32_\nBase64Class” object, in a “Prop” property. The PowerShell command mentioned above loads that assembly, then\nexecutes its “MSDAC.PerfOSChecker::StartCheck” method.\n\n\n-----\n\nFIN8 Threat Actor Goes Agile with New Sardonic Backdoor\n\n### .NET loader and downloader shellcode\n\nThis stage consists of a .NET assembly that contains a piece of shellcode, compressed using GZip and RC4encrypted, using the key “CA0ac8F6655244d2E10e7819BD337bf9”, which is contained in the binary.\n\nSince the shellcode is both self-modifying and contains a self-inject feature, an unmodified copy of itself is required.\nIt is prepended by a null-terminated “4BMARC2WKL” marker and copied in the same buffer, immediately before the\ncopy that is executed, as seen in fig. 2. The second copy of the shellcode is executed from the beginning, using the\nMarshal.GetDelegateForFunctionPointer method.\n\n**Fig. 2: Downloader shellcode buffer layout**\n\nMost of the shellcode is encrypted and begins with a simple decryption routine (fig. 3). After decryption, the shellcode\nresolves a long list of Win32 API functions and checks whether the current process (where the .NET assembly DLL\nand downloader shellcode is running) is “powershell.exe”. This is expected when the DLL has been started using\nWMI, as the .NET assembly is loaded through PowerShell. In this case, the shellcode injects the unmodified copy\nmentioned above (located using the “4BMARC2WKL“ marker) into a new thread in the parent process (in case of WMI\npersistence, the “wmiprvse.exe” process) and returns. This could be done to prevent a long-running PowerShell\nprocess, which could raise suspicions; the shellcode will restart executing in the parent process, decrypting itself and\nchecking the process name again. This execution flow is explained in fig. 4.\n\n**Fig. 3: Shellcode decryption routine**\n\n\n-----\n\nFIN8 Threat Actor Goes Agile with New Sardonic Backdoor\n\n**Fig. 4: Execution flow**\n\nWhen not running inside PowerShell the downloader routine starts: A 32-bit or 64-bit binary (depending on which\n.NET assembly was persisted by the PowerShell first stage) is downloaded from one of the following C&C servers,\nin order of priority: “api-cdn[.]net”, “git-api[.]com”, “api-cdnw5[.]net”. A binary protocol over port 443\nis used, identical to the one used by the final backdoor, described below. If a server has port 443 closed, the next\nserver will be tried after 50 minutes (a much longer sleep time than normal, probably to avoid triggering any network\ndetection).\n\nThe downloaded file is loaded in memory and its Run export is executed (all three argument values are zero). This\nis the final stage, the Sardonic backdoor. After the export function is executed, the shellcode exits. If it could not be\nloaded or executed, the download retries with the first C&C server.\n\n### Sardonic backdoor\n\nThe Sardonic backdoor is written in C++ and has the same C&C servers as the downloader shellcode (“api-cdn[.]\n```\nnet”, “git-api[.]com”, “api-cdnw5[.]net”), and talks over port 443 as well. It can obtain information about the\n\n```\nsystem, execute commands, and has a plugin system that can load specially made DLLs and execute their functions.\nWe believe that more than one person developed this project, as there are some differences in code style and level of\nuse of the C++ standard library between functions.\n\n##### Protocol\nCommunication with the C&C server, both by the downloader shellcode and the backdoor binary, is performed using a\ncustom little-endian binary protocol with a 12-byte header. The first 4 bytes contain the size of the payload (excluding\nheader), the next 4 bytes contain some flags (meanings are unknown, but a flag of 4 is used for messages from the\nclient to the server), and the last 4 bytes of the header contain a 32-bit operation code (either a command or response\ntype). The payload follows the 12-byte header, and its structure depends on the operation code.\n\n\n-----\n\nFIN8 Threat Actor Goes Agile with New Sardonic Backdoor\n\n**Fig. 5: Sardonic C&C communication binary protocol**\n\nEvery packet sent to the C&C server contains a client ID made of 32 uppercase hex characters. This is constructed\nfrom the computer name, CPUID instruction results (number of fields and CPU manufacturer name), and C:\\ drive\nserial number, processed down to 16 bytes that are then hex-encoded.\n\nOnly one connection with any of the three C&C servers can be open at any time. Additionally, the first server to have\nport 443 open will be used exclusively, even if it does not respond according to the protocol. The communication\nflow is as follows: immediately after connection, the client sends a packet containing its client ID. After that, until one\nof the parties closes the socket, repeatedly, the server sends a command and the client responds with a report that\ncontains a maximum of 64KB (65536 bytes) of text data.\n\nDespite running on port 443, no TLS encryption is used. Instead, the communication is initially plaintext, but the\nserver can enable encryption at any time by sending a packet with the operation code 0x39. The client generates\na random 64-byte RC4 key at startup and, at the server’s request, sends it encrypted using an RSA public key. All\nfollowing communication in either direction will have the payload (but not the header) encrypted with that RC4 key.\n\nAlthough the encryption features might seem comprehensive at first glance, using a mix of symmetric and\nasymmetric encryption, it can be easily defeated either through a man-in-the-middle attack, where a third party could\ncommunicate with the client in plain text and impersonate it to the server, or by using the fact that the private RSA\nkey is publicly available. The public key comes from an open-source X.509 certificate used for testing in the OpenSSL\nrepository, “/C=AU/ST=Queensland/O=CryptSoft Pty Ltd/CN=Test CA (1024 bit)”, whose private key\nis also known. This is an unusual choice: the certificate is very old (issued on Dec. 5, 1999 and expired on June 10,\n2005) and creating an RSA key pair is very easy. The result of this oversight is that, by identifying RSA-encrypted\npackets and extracting the RC4 key inside them, the entire communication can be decrypted from a traffic capture,\nwhich can be very useful in a forensic investigation.\n\n##### Common backdoor commands\nThe Sardonic backdoor seems to be still under development; while analyzing the samples, we found a few commands\nfor which the binary protocol parsing is implemented, but the execution of those commands is not implemented.\nHowever, Sardonic already provides enough features for the threat actors to complete their job.\n\nA common feature in backdoors is the ability to execute a shell command and send its output back to the C&C server.\nFor Sardonic, this behavior is triggered by a packet with operation code 0x4D, with the command line as an argument.\nThe backdoor runs it with the standard output and error streams redirected to memory using a pipe. After the\ncommand finishes, the output is sent to the C&C server.\n\nImplemented in most backdoors is the ability to gather information about the system, which is then sent to the C&C\nserver. When the server sends a packet with operation code 0x43, a JSON string is created, containing the following\nfields in this order:\n\n- “ver”: version string; we’ve seen “v2.2.1r”, “v2.2.4r”, and we have seen different samples with the same\nversion string.\n\n- “modules”: space-separated list of installed plugins (which will be explained below)\n\n- “systeminfo”: output of “cmd /c chcp 65001 & systeminfo”\n\n- “netview”: output of “cmd /c chcp 65001 & net view”\n\n- “netstat”: output of “cmd /c chcp 65001 & netstat /naop TCP”\n\n\n-----\n\nFIN8 Threat Actor Goes Agile with New Sardonic Backdoor\n\n- “tasklist”: output of “cmd /c chcp 65001 & tasklist /v”\n\n- “netstart”: output of “cmd /c chcp 65001 & net start”\n\n- “ipconfig”: output of “cmd /c chcp 65001 & ipconfig”\nInterestingly, the shell command outputs are not properly escaped. In version v2.2.1r, no escaping is done, and\nthe abundance of newlines alone violates the JSON standard. Even if that can be ignored by a custom JSON parser,\na stray double quote in one of the command outputs can cause the string to end prematurely, which almost certainly\nleads to unparseable JSON. This is partially fixed in version v2.2.4r, which converts double quote characters inside\ncommand outputs to single quote characters. This fixes the critical bug mentioned above, but still requires a nonstandards-compliant JSON parser that allows newlines and other special characters unescaped inside strings.\n\nThe system information feature is the only one we saw developed between versions; fields “netstat”, “tasklist”,\n“netstart” have been added between v2.2.1r and v2.2.4r.\n\nFinally, when a packet with operation code 0xB1 is received, the backdoor exits.\n\n##### Plugin system\nSardonic plugins are MZPE DLLs with a Run exported function taking 3 arguments (argument count, array of nullterminated argument strings, and a 64KB output buffer), and an optional Stop exported function taking 2 arguments\n(reason integer and a 64KB output buffer). The output buffers are sent to the C&C as part of the report. The plugins\nare identified by a C&C-given name, and are saved and executed in memory (fileless operation). Command names in\nthis section are obtained from Runtime Type Information (RTTI).\n\nTo install a plugin, the C&C sends an Update command (operation code 0x25), which contains a plugin name and its\nimage data. Counterintuitively, given the command name, the plugin name must not already exist. The DLL data is\nsaved to memory unprocessed, and the plugin is not loaded or executed yet.\n\nTo execute an installed plugin, a Run command must be sent (operation code 0x1B), specifying a plugin name and an\narbitrary number of function parameters. The name is looked up in the list of installed plugins and loaded in memory\n(sections are copied, imports are resolved, relocations are applied, the TLS directory is loaded and the DLL entry point\nis executed). Then, the module’s Run export is executed with the supplied arguments. After it finishes, the function’s\noutput is sent in the report.\n\nAn additional command, RunModule (operation code 0x9D), is implemented, which bundles the Update and Run\ncommands, installing a new module and executing it in a single step.\n\nWhen a plugin needs to be stopped, a StopModule command is issued, giving it a module name and stop reason\ninteger. The plugin’s Stop method is executed and its output is, as before, sent in the report. Then, the module is\nunloaded, but its DLL image data is kept and can be executed again with a subsequent Run command.\n\nAn overview of plugin commands is depicted in figure 6.\n\n\n-----\n\nFIN8 Threat Actor Goes Agile with New Sardonic Backdoor\n\n**Fig. 6: Sardonic plugin commands**\n\n##### Unimplemented commands\nFrom unused code and Runtime Type Information added by the compiler, we can infer a few features for which the\nparsing was implemented, but not the execution.\n\nAn Install command exists, having the same operation code as the one used by the downloader shellcode in the\nprevious stage when requesting and receiving the backdoor DLL. The backdoor can apparently understand these\npackets but can’t execute them yet.\n\nAnother interesting command name is Multiplex. This command’s parsing in the binary protocol is assigned to\nmultiple operation codes, which points to a large number of variations, but we can only speculate on its use.\n\nSurprisingly, commands related to file manipulations are not implemented, but can still be performed by running shell\ncommands or through a plugin. However, we found parsing for an Upload command, which we assume would be a file\nupload feature.\n\n\n-----\n\nFIN8 Threat Actor Goes Agile with New Sardonic Backdoor\n\n### Naming and TTPs\n\nBased on PDBs paths and in-the-wild filenames, we can infer the internal name of at least the PowerShell and\n.NET stages: Sardonic Loader, by combining the PDB path for the .NET assembly “C:\\Users\\dev_win10_00\\\nDocuments\\Sardonic\\SardonicUtility\\LoaderAssembly\\obj\\x86\\Release\\MSDAC.pdb” and PowerShell\nscript name “sldr.ps1”. Additionally, judging from the PDB parent directories and loader name, the name used by\nthe attackers for the entire backdoor ecosystem is likely Sardonic.\n\nIn the attack we investigated, we saw a few interesting TTPs: Firstly, inspecting command lines used in the attack, we\nfound evidence of both the smbexec and wmiexec tools from the Impacket suite, which are used for lateral movement.\nThe usage of a “C:\\Windows\\TEMP\\execute.bat” path is a smbexec IOC, and a command line ending with “>\n\\\\127.0.0.1\\ADMIN$\\__<timestamp> 2>&1” (with the timestamp in Unix format with fractional seconds) is an\nindicator of wmiexec usage, as can be seen in the source code for both tools.\n\nAnother interesting technique is the use of the ping command to check connectivity to the C&C servers after running\nthe first-stage PowerShell script. This indicates the attackers did not observe the expected C&C connection from the\nmachine, which is because one of the links in the loader chain was blocked by the security solution. This technique is\nused to ensure that the failure is not due to network connectivity issues or firewalls.\n\nThirdly, the attackers tried to evade detection by renaming the PowerShell script from “sldr.ps1” to “s.txt” and\n“s.ps1”. This did not succeed in bypassing the security solution.\n\nFinally, from previous versions we saw earlier this year, the BADHATCH loader has been improved with an RC4\nlayer of encryption, whose key is not contained in the loader script, but received as a command-line argument.\nThis is a defense evasion tactic aimed at sample repositories (either public, like VirusTotal, or private): without\nthe separately stored key, it is impossible to obtain the payload of these scripts, even if such a sample is found.\nHowever, we found at least one loader file from a different attack that reused this password (hex-encoded:\nb640a9c0e64704e1e202a07774613a29971fe5aa). We do not know yet if this key holds for multiple samples or if\nthis is a one-time error on their part.\n\n\n-----\n\nFIN8 Threat Actor Goes Agile with New Sardonic Backdoor\n\n## Recommendations\n\nFIN8 continues to strengthen its capabilities and malware delivery infrastructure. The highly skilled financial threat\nactor is known to take long breaks to refine tools and tactics to avoid detection before it strikes viable targets.\n\nBitdefender recommends that companies in target verticals (retail, hospitality, finance) check for potential\ncompromise by applying the following IoCs to their EDR, XDR and other security defenses.\n\nTo further minimize the impact of financial malware, companies should:\n\n- Separate the POS network from the ones used by employees or guests\n\n- Introduce cybersecurity awareness training for employees to help them spot phishing e-mails.\n\n- Tune the e-mail security solution to automatically discard malicious or suspicious attachments.\n\n- Integrate threat intelligence into existing SIEM or security controls for relevant Indicators of Compromise.\n\n- Small and medium organizations without a dedicated security team should consider outsourcing security\noperations to Managed Detection and Response providers.\n\n\n-----\n\nFIN8 Threat Actor Goes Agile with New Sardonic Backdoor\n\n\n## Indicators Of Compromise\n\n\n**Domains**\n\n\napi-cdn[.]net\n\n\ngit-api[.]com\n\napi-cdnw5[.]net\n\n104-168-237-21.sslip[.]io\n\n\n89.45.4[.]192\n\n\n**URLs**\n\n\nhttps://104-168-237-21.sslip[.]io/134af6\n\nhttps://104-168-237-21.sslip[.]io/edaea0\n\n\n**Hashes**\n\n```\nede6ca7c3c3aedeb70e8504e1df70988263aab60ac664d03995bce645dff0935\n5b8b732d0bb708aa51ac7f8a4ff5ca5ea99a84112b8b22d13674da7a8ca18c28\n4e73e9a546e334f0aee8da7d191c56d25e6360ba7a79dc02fe93efbd41ff7aa4\n05236172591d843b15987de2243ff1bfb41c7b959d7c917949a7533ed60aafd9\nedfd3ae4def3ddffb37bad3424eb73c17e156ba5f63fd1d651df2f5b8e34a6c7\n827448cf3c7ddc67dca6618f4c8b1197ee2abe3526e27052d09948da2bc500ea\n0e11a050369010683a7ed6a51f5ec320cd885128804713bb9df0e056e29dc3b0\n0980aa80e52cc18e7b3909a0173a9efb60f9d406993d26fe3af35870ef1604d0\n64f8ac7b3b28d763f0a8f6cdb4ce1e5e3892b0338c9240f27057dd9e087e3111\n2d39a58887026b99176eb16c1bba4f6971c985ac9acbd9e2747dd0620548aaf3\n8cfb05cde6af3cf4e0cb025faa597c2641a4ab372268823a29baef37c6c45946\n72fd2f51f36ba6c842fdc801464a49dce28bd851589c7401f64bbc4f1a468b1a\n6cba6d8a1a73572a1a49372c9b7adfa471a3a1302dc71c4547685bcbb1eda432\n\n```\n\n**Filenames**\n\n\nsldr.ps1\n\n\n**WMI objects**\n\n\nroot/cimv2:Win32_Base64Class\n\n\nroot/subscription:PerfOs\n\nroot/subscription:PerfData\n\nroot/subscription:PerfOsOnce\n\nUnnamed object in root/subscription, class “__FilterToConsumerBinding”, filter value “__eventfilter.\nname=’PerfOs’”\n\nUnnamed object in root/subscription, class “__FilterToConsumerBinding”, filter value “__eventfilter.\nname=’PerfOsOnce’”\n\n\n-----\n\n##### Proudly Serving Our Customers Dedicated To Our +20.000 Worldwide Partners\nBitdefender provides solutions and services for small business and A channel-exclusive vendor, Bitdefender is proud to share success with tens of\nmedium enterprises, service providers and technology integrators. We take thousands of resellers and distributors worldwide.\npride in the trust that enterprises such as Mentor, Honeywell, Yamaha, _CRN 5-Star Partner, 4th Year in a Row. Recognized on CRN’s Security 100 List. CRN Cloud_\n**Speedway, Esurance or Safe Systems place in us.** _Partner, 2nd year in a Row_\n_Leader in Forrester’s inaugural Wave™ for Cloud Workload Security_ _More MSP-integrated solutions than any other security vendor_\n_NSS Labs “Recommended” Rating in the NSS Labs AEP Group Test_ _3 Bitdefender Partner Programs - to enable all our partners – resellers, service providers_\n_SC Media Industry Innovator Award for Hypervisor Introspection, 2nd Year in_ _and hybrid partners – to focus on selling Bitdefender solutions that match their own_\n_a Row_ _specializations_\n_Gartner® Representative Vendor of Cloud-Workload Protection Platforms_\n\n##### Trusted Security Authority\nBitdefender is a proud technology alliance partner to major virtualization vendors, directly contributing to the development of secure ecosystems with\n**VMware, Nutanix, Citrix, Linux Foundation, Microsoft, AWS, and Pivotal.**\nThrough its leading forensics team, Bitdefender is also actively engaged in countering international cybercrime together with major law enforcement agencies\nsuch as FBI and Europol, in initiatives such as NoMoreRansom and TechAccord, as well as the takedown of black markets such as Hansa. Starting in 2019,\nBitdefender is also a proudly appointed CVE Numbering Authority in MITRE Partnership.\n\n**RECOGNIZED BY LEADING ANALYSTS AND INDEPENDENT TESTING ORGANIZATIONS** **TECHNOLOGY ALLIANCES**\n\n##### UNDER THE SIGN OF THE WOLF\n\n**Founded 2001, Romania** A trade of brilliance, data security is an industry where only the clearest view, sharpest mind and deepest insight can\n**Number of employees 1800+** win — a game with zero margin of error. Our job is to win every single time, one thousand times out of one thousand,\n\nand one million times out of one million.\n\n**Headquarters**\nEnterprise HQ – Santa Clara, CA, United States And we do. We outsmart the industry not only by having the clearest view, the sharpest mind and the deepest insight,\nTechnology HQ – Bucharest, Romania but by staying one step ahead of everybody else, be they black hats or fellow security experts. The brilliance of our\n\ncollective mind is like a luminous Dragon-Wolf on your side, powered by engineered intuition, created to guard against\n\n**WORLDWIDE OFFICES** all dangers hidden in the arcane intricacies of the digital realm.\n**USA & Canada: Ft. Lauderdale, FL | Santa Clara, CA | San Antonio, TX |**\nToronto, CA This brilliance is our superpower and we put it at the core of all our game-changing products and solutions.\n**Europe: Copenhagen, DENMARK | Paris, FRANCE | München, GERMANY**\n| Milan, ITALY | Bucharest, Iasi, Cluj, Timisoara, ROMANIA | Barcelona,\nSPAIN | Dubai, UAE | London, UK | Hague, NETHERLANDS\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "99fdc3ef-333d-48f5-a4a1-becd788c7b80",
+            "created_at": "2022-10-25T15:28:29.802983Z",
+            "updated_at": "2022-10-25T15:28:29.802983Z",
+            "deleted_at": null,
+            "name": "MITRE",
+            "url": "https://github.com/mitre-attack/attack-stix-data",
+            "description": "MITRE ATT&CK STIX Data",
+            "reports": null
+        },
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        },
+        {
+            "id": "6fc23d14-23a6-4870-8fad-b291b182596f",
+            "created_at": "2022-10-25T16:07:18.480113Z",
+            "updated_at": "2022-10-25T16:07:18.480113Z",
+            "deleted_at": null,
+            "name": "ETDA",
+            "url": "https://apt.etda.or.th",
+            "description": "Threat Group Cards: A Threat Actor Encyclopedia",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2021/2021.08.25.FIN8_Sardonic_Backdoor/Bitdefender-PR-Whitepaper-FIN8-creat5619-en-EN.pdf",
+        "https://www.bitdefender.com/files/News/CaseStudies/study/401/Bitdefender-PR-Whitepaper-FIN8-creat5619-en-EN.pdf"
+    ],
+    "report_names": [
+        "Bitdefender-PR-Whitepaper-FIN8-creat5619-en-EN",
+        "Bitdefender-PR-Whitepaper-FIN8-creat5619-en-EN.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "72d09c17-e33e-4c2f-95db-f204848cc797",
+            "created_at": "2022-10-25T15:50:23.832551Z",
+            "updated_at": "2025-03-27T02:00:55.554841Z",
+            "deleted_at": null,
+            "main_name": "FIN8",
+            "aliases": [
+                "FIN8",
+                "Syssphinx"
+            ],
+            "source_name": "MITRE:FIN8",
+            "tools": [
+                "BADHATCH",
+                "PUNCHBUGGY",
+                "Ragnar Locker",
+                "PUNCHTRACK",
+                "dsquery",
+                "Nltest",
+                "Sardonic",
+                "PsExec",
+                "Impacket"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "fc80a724-e567-457c-82bb-70147435e129",
+            "created_at": "2022-10-25T16:07:23.624289Z",
+            "updated_at": "2025-03-27T02:02:09.892602Z",
+            "deleted_at": null,
+            "main_name": "FIN8",
+            "aliases": [
+                "ATK 113",
+                "Syssphinx"
+            ],
+            "source_name": "ETDA:FIN8",
+            "tools": [
+                "ALPHV",
+                "ALPHVM",
+                "BadHatch",
+                "BlackCat",
+                "Noberus",
+                "PSVC",
+                "PUNCHTRACK",
+                "PoSlurp",
+                "Powersniff",
+                "PunchBuggy",
+                "Ragnar Locker",
+                "RagnarLocker",
+                "Sardonic",
+                "ShellTea"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "5bdde906-0416-42ee-9100-5ebd95dda77a",
+            "created_at": "2023-01-06T13:46:38.601977Z",
+            "updated_at": "2025-03-27T02:00:02.870694Z",
+            "deleted_at": null,
+            "main_name": "FIN8",
+            "aliases": [
+                "ATK113",
+                "G0061"
+            ],
+            "source_name": "MISPGALAXY:FIN8",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716491,
+    "ts_updated_at": 1743041383,
+    "ts_creation_date": 1629831115,
+    "ts_modification_date": 1629831121,
+    "files": {
+        "pdf": "https://archive.orkl.eu/2f7a1368b3927bfbb7aea55aa173425cea798e5b.pdf",
+        "text": "https://archive.orkl.eu/2f7a1368b3927bfbb7aea55aa173425cea798e5b.txt",
+        "img": "https://archive.orkl.eu/2f7a1368b3927bfbb7aea55aa173425cea798e5b.jpg"
+    }
+}

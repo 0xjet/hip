@@ -1,0 +1,269 @@
+{
+    "id": "a1312f7d-2518-46a6-80cb-0d01aafa5417",
+    "created_at": "2023-01-12T15:05:21.535747Z",
+    "updated_at": "2025-03-27T02:12:11.097789Z",
+    "deleted_at": null,
+    "sha1_hash": "d5a8d6f4b294a2d83c22c51aa95661caff57b16f",
+    "title": "2014-06-02 - Sinowal banking trojan",
+    "authors": "",
+    "file_creation_date": "2022-05-27T22:33:54Z",
+    "file_modification_date": "2022-05-27T22:33:54Z",
+    "file_size": 3571845,
+    "plain_text": "# Sinowal banking trojan\n\n**[virusbulletin.com/virusbulletin/2014/06/sinowal-banking-trojan](https://www.virusbulletin.com/virusbulletin/2014/06/sinowal-banking-trojan)**\n\n2014-06-02\n\n### Chao Chen\n\nFortinet, China Editor: Martijn Grooten\n**Abstract**\n\nWith a modular architecture and sophisticated functionality, Sinowal is a multi-component\nbanking trojan targeted at various web browsers which threatens users of online banking\nsystems around the globe. Chao Chen delves into the inner workings of each of the\ncomponents of this powerful malware.\n\nOnce considered to be one of the most malicious and advanced pieces of malware, Sinowal\n(a.k.a. Mebroot [1] or Theola [2]) has drawn the attention of both security researchers and\nmembers of the public alike since 2006. With a modular architecture and sophisticated\nfunctionality, Sinowal is a multi-component banking trojan targeted at various web browsers\nwhich threatens users of online banking systems around the globe. In this article, we will\ndelve into the inner workings of each of the components of this powerful malware.\n\n## Installation\n\nThe Sinowal installer (MD5: 7efc5e7452d98843b9ae4a2678d057ea) may arrive on a victim’s\ncomputer via any of a number of different means, including drive-by download, spam\nattachment and file-sharing networks. The infamous Blackhole [3] exploit kit also served as a\nmajor vector of infection until last autumn (since when Blackhole has been inactive).\n\nThe installer drops a dynamic-link library (DLL) onto the local hard disk. The DLL acts as a\nloader module and will load other components, if any exist, and download a manager module\nwhich plays a central role in conducting banking fraud. The manager module downloads\nseveral plug-in modules from the C&C server, aimed at different target applications. These\nmodules are used to steal sensitive information including bank account details, email\naddresses and FTP accounts. All plug-in modules contact the manager module through a\nnamed pipe, while the manager module communicates directly with the C&C server,\nuploading stolen information, reporting the local status of the trojan and downloading\nconfiguration and plug-in modules, as well as script commands for the plug-in modules to\nrun.\n\n\n-----\n\n## Loader module\n\nThe loader module is named ‘mini’ on 32-bit systems and ‘mi64’ on 64-bit systems. Each of\nSinowal’s modules has a different 32-bit and 64-bit version. In this article, we will focus on\nthe versions for the 32-bit platform.\n\n### Back-up loader on disk\n\nAfter being dropped and decoded by the installer, the loader module is loaded with the\nfdwReason parameter of the EntryPoint function set to 0xFEFEFEEE, indicating that this is\nthe first time it has run. The DllRegisterServer function will be called later to perform the\nfollowing tasks:\n\n1. Write the image of the loader module to the file ‘%SystemDrive%\\Documents and\n\nSettings\\All Users\\Application Data\\{Random Number}\\{Filename}.dll’ on the hard disk.\nHere, {Random Number} is determined by calling the GetTickCount API, and\n{Filename} is chosen from a given group on the basis of the creation time of\nSystemRoot, as shown in Figure 1.\n\n**Figure 1. Choosing a random filename.**\n\n\n-----\n\n2. Keep uploading local information to the C&C server. The URL of the C&C server is\n\nhard-coded in the loader module’s binary. The information uploaded is an encrypted list\nof numbers, each one representing a special event that has taken place on the\ncompromised machine, as shown in Figure 2.\n\n**Figure 2. Upload events information.**\n\nThe encryption routine performs a simple XOR operation on each double-word. The\ninitial value of the crypt key is generated on the basis of the CPU time stamp counter.\nThe size of data is extended to a multiple of four. In the encrypted data, the first doubleword is the crypt key, the second is the encoded value of the original data size, and the\nrest is encoded data.\n\n\n-----\n\n**Figure 3. Encryption routine with XOR.**\n\n3. Execute the command ‘regsvr32.exe /s {Path of Loader Module}’, which will cause the\n\nloader module to run in the regsvr32.exe process.\n\n### Download manager module\n\nRunning in the regsvr32.exe process, the loader module will check the fdwReason\nparameter of the EntryPoint function. This time, the value of fdwReason is\nDLL_PROCESS_ATTACH. In this case, the hash of the name of the current process will be\ncalculated and compared against a set of hashes that represent some particular processes.\nThe result of the comparison will determine what happens in the next step.\n\nA Python version of the hash generation algorithm is shown in Figure 4.\n\n\n-----\n\n**Figure 4. Hash generation algorithm.**\n\nSome useful hash values and their corresponding filenames are listed below:\n\n0x56C00521 ‘explorer.exe’\n\n0x58AF052E ‘regsvr32.exe’\n\n0xAAFF04C6 ‘sysprep.exe’\n\n0x54E50518 ‘iexplore.exe’\n\n0xAC0104A3 ‘firefox.exe’\n\n0xD4C0042E 'chrome.exe'\n\nThe main work in the regsvr32.exe process can be divided into three parts:\n\n\n-----\n\n1. Download the manager module via the routine used for uploading the event list. The\n\nHTTP session for downloading is shown in Figure 5.\n\n**Figure 5. Download the manager module.**\n\nAn encrypted list of running processes and installed software is sent to the C&C server,\nwhich will reply with the XTEA-encrypted manager module. The downloaded manager\nmodule will be decrypted with the key ‘HONNJCUPKFVBBYCC’. After being verified as\na PE file, the manager module (which is also a DLL) will be XTEA-encrypted locally\nand stored in the folder that contains the loader module. This time, the crypt key (128\nbits) consists of two parts: the first 32 bits are generated on the basis of the\nSystemRoot creation time, and the other 96 bits are hard-coded in the binary. The\nname of the encrypted manager module is chosen from another group of given names\nand uses ‘.dat’ as its extended filename.\n\n\n-----\n\n2. Make the registry value\n\n‘HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\ShellServiceObjectDelayLoad’\npoint to the path of the loader module and add the path of the loader module to the\nregistry value ‘HKLM\\SOFTWARE\\Microsoft\\Windows NT\\\nCurrentVersion\\Windows\\LoadAppInit_DLLs’. The first registry value will enable the\nloader module to be loaded when Explorer starts up, and the second will enable it to be\nloaded into all user-mode processes in the system.\n\n3. Inject a piece of code into the explorer.exe process to load the loader module.\n\n### Start manager module\n\nOnce the loader module is loaded in the explorer.exe process, it will realise that Explorer has\nbecome its host process by using the hash comparison described earlier. Then it will retrieve\nthe encrypted manager module from the hard disk and decrypt it with a key generated on the\nbasis of the SystemRoot creation time. Next, the EntryPoint and Initialize functions of the\nmanager module will be invoked in sequence so that the manager module can work in the\n_Explorer process. We will discuss the manager module in detail later._\n\n### Record browser information\n\nIf the loader module is loaded in a process of iexplore.exe, firefox.exe or chrome.exe, it will\nrecord some information in the registry key ‘HKCU\\Software\\Microsoft\\Notepad’ or, if that\nfails, ‘HKCU\\Software\\AppDataLow’. The value ‘LastMsg’ is set to the number of browser\nprocesses that have been injected by the loader module. The value ‘msg{Number}’ records\nthe identity of the browser program being injected. Some examples are as follows:\n\nValueName = ‘msg0’, data = ‘MD I’ for Internet Explorer\n\nValueName = ‘msg1’, data = ‘MD F’ for Mozilla Firefox\n\nValueName = ‘msg2’, data = ‘MD C’ for Google Chrome.\n\n### Beef file\n\nIf the loader module is loaded in the Explorer process or any other user-mode process, such\nas a web browser process, it will search for a special file from the folder containing the loader\nmodule. The file in question is XTEA-encrypted and its first double-word after decryption\nshould be 0xBEEFBEEF. We call it the ‘beef file’. The double-word 0xBEEFBEEF is written\ninto the beef file by the loader module. Other data in the beef file will be written by the\nmanager module, which will be discussed later. The structure of the beef file is as follows:\n\n\n-----\n\n```\nBeef File:\n+0   0xBEEFBEEF\n+4   NumOfEntries (should <= 0x20)\n+8   BeefEntry[NumOfEntries]\nStruct BeefEntry:\n+0   EntryName\n+14h  SizeHashes\n+18h  SizeModule\n+1Ch  Hashes[SizeHashes]\n+1Ch+ SizeHashes Module[SizeModule]\n\n```\n**EntryName: entry name consisting of four characters, including ‘mini’, ‘mi64’, ‘gbcl’, ‘gc64’,**\n‘iecl’, ‘ffcl’, ‘crcl’ and ‘snif’.\n\n**Hashes: an array of hashes. The loader module will compare the hash of the name of its**\nhost process with each hash in this array. If a match is found, the corresponding module\nstored in this BeefEntry will be loaded into the host process. Module: a module exporting two\nfunctions – Initialize and Deinitialize.\n\n### Module life cycle\n\nWhen the manager module or a plug-in module from the beef file is loaded into a process by\na copy of the loader module injected into the same process (the manager module will only be\nloaded in the Explorer process), the EntryPoint function and its initialization will be invoked\nby the loader module (see Figure 6).\n\n\n-----\n\n**Figure 6. Invoke Initialize function.**\n\nWhen the manager module or plug-in module finishes its work, its Deinitialize function will be\ninvoked by the loader module. After that, the loader module will unload itself by calling the\nFreeLibrary API and then reload itself by calling the LoadLibraryA API with the path of the\nloader binary on disk as the parameter. Using this method, the loader module, manager\nmodule and plug-in modules are periodically reloaded into a host process, which ensures\nthat any newly downloaded or updated modules will be given a chance to run.\n\n### Anti-Trusteer Rapport\n\n\n-----\n\nAs an advanced banking trojan, Sinowal is equipped with a weapon to defeat Trusteer\n_Rapport_ [4], a security tool used to prevent phishing and man-in-the-browser attacks.\n_Trusteer Rapport runs in all browser processes, monitoring suspicious activities by hooking_\n_Windows APIs._\n\nIf Trusteer Rapport is found to be installed on the compromised machine, the following\nactions will be taken by the loader module running in a browser process:\n\n1. Suspend all threads belonging to the Trusteer Rapport module in the browser process.\n\n2. Recover APIs in the following DLLs from binary files on disk:\n\nntdll.dll\n\nkernel32.dll\n\nuser32.dll\n\ngdi32.dll\n\nwininet.dll\n\nws2_32.dll\n\nole32.dll\n\nurlmon.dll\n\noleaut32.dll\n\ncomctl32.dll\n\ncomdlg32.dll\n\nwintrust.dll\n\n3. Hook the NtCreateThread and NtCreateThreadEx APIs to abort threads created by\n\n_Trusteer Rapport._\n\n4. If the top-level exception filter is in the Trusteer Rapport module, replace it with\n\nUnhandledExceptionFilter.\n\n## Manager module\n\nThe manager module downloaded by the loader module plays a central role in the malware’s\nactivity. It will download plug-in modules and configuration data from the C&C server for\nstealing information such as bank accounts. Downloaded plug-in modules will be stored in\n\n\n-----\n\nthe beef file, while the configuration data is written into a local encrypted file. The manager\nmodule communicates with the plug-in modules through a named pipe. This module is\ndubbed ‘gbcl’ (32-bit version) or ‘gc64’ (64-bit version).\n\n### Time-based DGA for C&C server\n\nUnlike the hard-coded C&C server URL used for downloading the manager module, the C&C\nserver domains for downloading configuration data and plug-in modules are obtained\nthrough a DGA (Domain Generation Algorithm) which is based on the current date and time\ntaken from Google. Some generated domains are shown in Figure 7.\n\n**Figure 7. C&C server domains.**\n\n### Register bot with C&C server\n\nTo register the compromised machine with the C&C server, encrypted local information,\nincluding the IP address table, is uploaded. A custom encryption algorithm is employed in the\ncommunication between the manager module and the C&C server. The first double-word of\nthe transferred data is the crypt key, and a signature double-word,‘BIP’ 0x02, is at offset\n0x10 to the beginning of the decrypted data, as shown in Figure 8.\n\n\n-----\n\n**Figure 8. Crypt key and signature double-word.**\n\n### Download plug-in modules and configuration\n\nPlug-in modules and configuration data are downloaded using the same encryption scheme\nas described above. The configuration contains thousands of URLs belonging to online\nbanks and e-commerce services around the world. A small piece of decrypted configuration\nis shown in Figure 9.\n\n**Figure 9. URLs in configuration.**\n\n\n-----\n\nThe URLs in the configuration data reveal that the financial institutions targeted by Sinowal\nare distributed in the following countries:\n\n**Europe**\nAndorra, Austria, Belgium, Bulgaria, Switzerland, Cyprus, Czech Republic, Germany,\nDenmark, Spain, Finland, France, Guernsey, Greece, Hungary, Ireland, Isle of Man, Iceland,\nItaly, Jersey, Cayman Islands, Liechtenstein, Luxembourg, Latvia, Malta, New Caledonia,\nNetherlands, Norway, Poland, Portugal, Romania, Russian Federation, Sweden, Slovenia,\nSlovak Republic, Turkey, United Kingdom.\n\n**Asia**\nUnited Arab Emirates, China, Israel, India, Japan, Nepal, Qatar, Singapore.\n\n**Africa**\nKenya, Uganda, South Africa.\n\n**North America**\nCanada, United States.\n\n**Latin America**\nArgentina, Brazil, Belize, Mexico.\n\n**Oceania**\nAustralia, New Zealand, Samoa.\n\nThe plug-in modules are downloaded and stored in the beef file.\n\n### Pipe communication\n\nThe manager module creates a named pipe through which it exchanges data and scripts\nwith the plug-in modules. The pipe’s name is generated by the routine shown in Figure 10.\n\n\n-----\n\n**Figure 10. Generation of pipe name.**\n\n## Banking fraud for Internet Explorer\n\nA plug-in module named ‘Iecl.dll’ (Figure 11) is injected into the iexplore.exe process to\nperform banking fraud. The main functionality of this module is to steal sensitive information\nsuch as the login and password details of compromised users for online banks and e\n\n-----\n\ncommerce sites, and to run customized scripts from the C&C server at specific times.\n\n**Figure 11. Iecl module information.**\n\n### Preparation\n\nBecause Sinowal targets victims who speak various different languages around the world, it\nis important to ensure that mlang.dll, which provides multi-language support, exists on the\nvictim’s computer. If mlang.dll does not exist on the machine, the Iecl module will not work.\n\nTo enable browser active scripting, which is required by the Iecl module, the registry value\n‘HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\\Zones\\3\\1400’ is set to\nzero. This means that Internet Explorer will no longer prompt the user before running\ndynamic scripts.\n\n### Hijack Internet Explorer\n\nFigure 12 shows an overview of the complete procedure of stealing bank accounts and\nrunning the malicious script. In the following sections, we will discuss how it works, step by\nstep.\n\n\n-----\n\n**Figure 12. Procedure of hijacking IE.**\n\n### Monitor and respond to web browser events\n\nThe Iecl module will enumerate all running instances of Internet Explorer (IE). For each IE\nbrowser object, a property named ‘__BRCL__’ is created and set as a string generated as a\nresult of calling the GetTickCount API. This property is used to identify a specific IE browser\nobject.\n\nFor each IE object, an IDispatch interface object is constructed and connected to the\nIConnectionPoint interface of a connection point for the DIID_DWebBrowserEvents2 of the\nbrowser object. In this way, the IDispatch object can respond to browser events using the\nInvoke method.\n\nIf the dispIdMember parameter of the Invoke method is DISPID_BEFORENAVIGATE2 or\nDISPID_NEWWINDOW3, the Iecl module will check the URL the browser is going to. If the\nURL is on a blacklist maintained by Sinowal, the visit to this URL will be cancelled by setting\nDISPPARAMS.Cancel to VARIANT_TRUE.\n\nIf the dispIdMember parameter is DISPID_NAVIGATECOMPLETE2, the Iecl module will\ncheck the URL the browser has arrived at. If the URL is blacklisted, navigation will be\nstopped by calling IWebBrowser2::Stop.\n\nIf the dispIdMember parameter is DISPID_DOWNLOADBEGIN, the host name of the current\nURL will be obtained and saved in the IDispatch object constructed for this browser object.\n\nIf the dispIdMember parameter is DISPID_BEFORENAVIGATE2,\nDISPID_DOWNLOADBEGIN, DISPID_NAVIGATECOMPLETE2 or\nDISPID_DOWNLOADCOMPLETE, the IHTMLDocument2 interfaces of all the frames\nopened in the browser will be obtained. An IDispatch interface object will be created for each\nframe This IDispatch object will be connected to the IConnectionPoint interface for the\n\n\n-----\n\nDIID_HTMLDocumentEvents2 of the frame. If the value of the tagName property of this\nframe is ‘BODY’, the IDispatch object will also be connected to the IConnectionPoint\ninterface for the DIID_HTMLTextContainerEvents2 of the frame. The job of this IDispatch\nobject is to monitor forms on web pages and to execute a given script at specific points in\ntime, which will be discussed later.\n\nIf the dispIdMember parameter is DISPID_ONQUIT, the IDispatch object for\nDIID_DWebBrowserEvents2 will be disconnected from the connection point. If no other IE\nbrowser instance is running in the system, a WM_QUIT message will be sent to the Iecl\nmodule, which will then cease to work.\n\n### Stealing sensitive form information\n\nThe Invoke method of the IDispatch object for DIID_HTMLDocumentEvents2 and\nDIID_HTMLTextContainerEvents2 will find all form elements on a web page and monitor the\ncontent and submission of each form.\n\nIf the dispIdMember parameter of the Invoke method refers to keyboard and mouse events,\nsuch as DISPID_HTMLDOCUMENTEVENTS2_ONCLICK or\nDISPID_HTMLDOCUMENTEVENTS2_ONKEYPRESS, the Invoke method will do nothing.\n\nIf the dispIdMember parameter is\nDISPID_HTMLDOCUMENTEVENTS2_ONREADYSTATECHANGE or\nDISPID_HTMLDOCUMENTEVENTS2_ONPROPERTYCHANGE, and the readyState of the\nHTML document is ‘complete’, the following actions will be taken on each form in the HTML\ndocument:\n\nFirst, an attribute named ‘cnct’ will be created for the form. This attribute is used as a flag\ntelling the Iecl module that the form is already under control.\n\nSecondly, a newly created IDispatch object will be connected to the connection point for the\nDIID_HTMLInputTextElementEvents of each input text element of the form if the type of the\nelement is ‘password’ and the method of the form is ‘post’. In the Invoke method of the\nIDispatch object, an attribute named ‘pwd’ is created for the password input text element,\nand the value of this attribute is set to the content of the element – which is very likely the\npassword entered by the compromised user. The ‘pwd’ attribute is used to highlight the\npassword when the form content is grabbed and sent to the C&C server.\n\nNext, two IDispatch objects are created. One is attached to the onsubmit event of the form\nby calling IHTMLElement2::attachEvent; the other is assigned to the member ‘submit’ by\ncalling IDispatchEx::InvokeEx with the parameter wFlags set to\nDISPATCH_PROPERTYPUT. These two IDispatch objects are used to collect the following\nsensitive information:\n\nThe current URL representing the web page containing the form\n\n\n-----\n\nThe value of the property action of the form, which is the destination URL to which the\nform content should be sent by an HTTP post command\n\nThe name, type and value of each item in the form.\n\nFinally, the grabbed form data will be sent through a pipe to the manager module, which in\nturn will send the information to the C&C server.\n\n### Custom script engine\n\nWhen the state of an HTML document changes to ‘rendering’, ‘download_complete’ or\n‘submit’, the Iecl module reports the current URL and HTML document state to the C&C\nserver and receives a custom script to execute. The manager module acts as a middle-man\nin this procedure.\n\nIn order to run the custom script provided by the C&C server, the Iecl module creates a\nmember of IHTMLDocument::Script and names the member with a randomly generated\nstring. Then an IDispatch interface object is created and wrapped in a VARIANTARG with\ntype VT_DISPATCH. This VARIANTARG will be assigned to the randomly named member of\nIHTMLDocument::Script so that this member will act as a script interpreter, recognizing and\nexecuting the custom script provided by the C&C server.\n\nThe IDispatch object for the randomly named member contains names of a set of commands\nused in the custom script, each command having a number as its ID, which will be retrieved\nby the GetIDsOfNames and GetDispID methods.\n\nIn the Invoke method of this IDispatch object, commands of the custom script will be parsed\nand executed. The commands and their descriptions are as follows:\n\n**jsre (dispId 0x01): JavaScript regular expression parser.**\n\n**open (dispId 0x02): open given URL with given referrer. The parameter is in the format**\n{Host}/{Path}?rhcpre={Base64 Encoded Referrer}&{Parameter List}. The URL to be opened\nis {Host}/{Path}?{Parameter List}, and the referrer set in the HTTP header is {Base64\nDecoded Refererr}. This command gives the Iecl module the ability to pop up a phishing\npage at the appropriate time without raising suspicion.\n\n**close (dispId 0x03): close a specific Internet Explorer browser object.**\n\n**eval (dispId 0x04): run the custom script given as the first parameter. The second**\nparameter is the value of the ‘__BRCL__’ property identifying the browser object.\n\n**screen (dispId 0x05): take a screenshot in JPEG format and send it to the C&C server.**\n\n**encrypt (dispId 0x06): custom encryption routine using XOR.**\n\n\n-----\n\n**image (dispId 0x07): get and base64-encode the stored data of a given URL in the cache**\nentry file.\n\n**request (dispId 0x08): download a string from the C&C server using the IStream interface.**\n\n**video (dispId 0x09): record an MPEG video of the user screen by using an open-source**\nx264 library embedded in the Iecl module, and send the video to the C&C server.\n\n**update (dispId 0x0A): update the time property of the current host.**\n\n**freeze (dispId 0x0B): lock the in-place activation window in the browser.**\n\n**unfreeze (dispId 0x0C): unlock the in-place activation window in the browser.**\n\n**cookie (dispID 0x0D): search cookies for the current URL.**\n\n**report (dispId 0x0E): report local information to the C&C server.**\n\n## Banking fraud for Google Chrome\n\nFor the Google Chrome browser, a plug-in module named ‘CrclReg.dll’ is downloaded and\ninjected into all running chrome.exe processes (see Figure 13).\n\n**Figure 13. CrclReg module information.**\n\n### Install Chrome extension\n\nThe main job of the CrclReg module is to install a Chrome extension which will conduct\nbanking fraud. The files for the Chrome extension, including a DLL, are embedded in the\nbinary of the CrclReg module, as shown in Figure 14.\n\n\n-----\n\n**Figure 14. Files for Chrome extension.**\n\nIn fact, the original name of the DLL for the extension is ‘Crcl.dll’, as shown in Figure 15.\n\n**Figure 15. Crcl.dll for Chrome extension.**\n\nThese files are dropped into a randomly named folder in the C:\\WINDOWS\\TEMP directory.\n\nTo install the extension, the following shell command is executed by calling the\nShellExecuteA API with the parameter operation set to ‘open’:\n```\n{Path of chrome.exe} --pack-extension=’{Path of Randomly named Folder}’ --no-messagebox\n\n```\nA .crx file is generated as a result of the command.\n\nThe ScriptItemize, ShowWindow and DrawTextW APIs are hooked to make the installation\nprocess silent and invisible. In addition, the extension is enabled in incognito mode. We can\nsee the installed extension named ‘Default Plug-in’ in Chrome’s extension panel, as shown in\nFigure 16.\n\n\n-----\n\n**Figure 16. Malicious Chrome extension.**\n\n### Monitoring web activities\n\nIn the exported NP_GetEntryPoints function of Crcl.dll, a set of NPAPI functions are provided\nfor the browser to invoke at the appropriate time. The most important NPAPI functions are\nNPP_New and NPP_GetValue. NPP_New is called by the browser to create a new instance\nof the extension. In this function, several listeners are set up to monitor web activities. The\nscript setting the listeners is hard-coded in Crcl.dll, as shown in Figure 17.\n\n\n-----\n\n**Figure 17. Script for monitoring web activities.**\n\nThe script equips the extension with the capacity to redirect network traffic, forge the HTTP\nreferrer, intercept session cookies, and monitor browser navigation.\n\n### Grab form content\n\nThe NPP_GetValue function creates a ScriptableNPObject to receive and execute the script\nfrom the browser. The content.js file packed in the .crx file of the extension contains a script\nfor stealing form content. The de-obfuscated version of content.js is shown in Figure 18.\n\n\n-----\n\n-----\n\n**Figure 18. De-obfuscated content.js.**\n\nThe submitEvent function defined in the script will grab the form content when a form is\nsubmitted. The collected information will be given as a parameter to a method also named\n‘submitEvent’ of the ScriptableNPObject representing the extension. This submitEvent\nmethod implemented in Crcl.dll will transfer stolen form data through a pipe to the manager\nmodule, which then communicates directly with the C&C server.\n\n### Script command list of extensions\n\nFrom inside the Invoke method of ScriptableNPObject for the extension, we can see a list of\nscript commands and the routines for executing them.\n\n**Figure 19. The Invoke method of ScriptableNPObject.**\n\nThe commands are as follows:\n\n**beforeNavigate: monitor the URL the browser is going to**\n\n**executeScript: get script from the C&C server to run when the state of the HTML document**\nchanges to ‘rendering’, ‘download_complete’ or ‘submit’\n\n**beforeRequest: redirect traffic for certain URLs**\n\n**beforeSendHeaders: forge referrer in the HTTP request header**\n\n\n-----\n\n**sendHeaders: intercept information in the HTTP request header, including request method,**\ndestination URL, referrer URL and HTTP session cookie\n\n**submitEvent: send stolen form data to the manager module through a pipe**\n\n**jsre, screen, video, encrypt, request, open, close, eval, image, update, cookie, report:**\nimplement the same functionalities as discussed in the section on Internet Explorer banking\nfraud.\n\n## Banking fraud for Mozilla Firefox\n\nThe module for conducting banking fraud in Firefox, named ‘Ffcl.dll’, is similar to Iecl.dll in its\ncode architecture.\n\n**Figure 20. Ffcl module information.**\n\nThe script embedded in the binary file for stealing form data is shown in Figure 21.\n\n**Figure 21. Script in Ffcl.dll.**\n\nFfcl.dll also has the same script command list as Iecl.dll.\n\n\n-----\n\n## Sniffer module\n\nA module named ‘gbsniffer.dll’ is employed to sniff network data and to harvest email\naddresses from POP3/SMTP traffic and the usernames/passwords of FTP client applications\ninstalled on the compromised machine (see Figure 22).\n\n**Figure 22. Sniffer module information.**\n\n### Hook APIs\n\nTo monitor data transferred on the network and intercept the original data of hash operations,\nthe sniffer module hooks a number of APIs, listed as follows:\n\n**Ws2_32.dll: closesocket, WSASend, WSARecv, send, recv**\n\n**Wininet.dll: InternetConnectA, HttpOpenRequestA, HttpSendRequestA HttpSendRequestW,**\nInternetReadFile, InternetCloseHandle\n\n**Advapi32.dll: CryptHashData**\n\n**Bcrypt.dll: BCryptHashData**\n\n**nspr4.dll: PR_Read, PR_Write, PR_Close**\n\n**Ole32.dll: CoGetClassObject**\n\n### Harvest email addresses and FTP accounts\n\nThe sniffer module will collect sensitive information from POP3, SMTP and FTP sessions.\nThe following information extracted from a monitored session will be sent through a pipe to\nthe manager module:\n\nName of client application for POP3, SMTP or FTP\n\nURL and port of POP3, SMTP or FTP server\n\nEmail addresses from POP3/SMTP or user account of FTP.\n\n\n-----\n\nThe code for harvesting email addresses is shown in Figure 23.\n\n**Figure 23. Harvesting email addresses.**\n\n## Conclusion\n\nSinowal has become a persistent trojan by continuously upgrading its weapons, including\nuse of multi-stage injection, time-based DGA, a complex encryption scheme and plug-in\nmodules aimed at different kinds of browsers. Enormous economic losses affecting both\nindividuals and institutions have been seen during the long evolution of this malware family. It\nis now time for the security community to launch a campaign which will put an end to the\nSinowal story.\n\n### Bibliography\n\n[1] Bell, H. Trojan.Mebroot Technical Details.\nhttp://www.symantec.com/security_response/writeup.jsp?docid=2008-010718-344899&tabid=2.\n\n[2] Matrosov, A. How Theola malware uses a Chrome plugin for banking fraud.\nhttp://www.welivesecurity.com/2013/03/13/how-theola-malware-uses-a-chrome-plugin-forbanking-fraud/.\n\n[3] Howard, F. Exploring the Blackhole exploit kit. http://nakedsecurity.sophos.com/exploringthe-blackhole-exploit-kit/.\n\n[[4] https://www trusteer com/products/trusteer-rapport](https://www.trusteer.com/products/trusteer-rapport)\n\n\n-----\n\n## Latest articles:\n\n### Cryptojacking on the fly: TeamTNT using NVIDIA drivers to mine cryptocurrency\n\nTeamTNT is known for attacking insecure and vulnerable Kubernetes deployments in order\nto infiltrate organizations’ dedicated environments and transform them into attack\nlaunchpads. In this article Aditya Sood presents a new module introduced by…\n\n### Collector-stealer: a Russian origin credential and information extractor\n\nCollector-stealer, a piece of malware of Russian origin, is heavily used on the Internet to\nexfiltrate sensitive data from end-user systems and store it in its C&C panels. In this article,\nresearchers Aditya K Sood and Rohit Chaturvedi present a 360…\n\n### Fighting Fire with Fire\n\nIn 1989, Joe Wells encountered his first virus: Jerusalem. He disassembled the virus, and\nfrom that moment onward, was intrigued by the properties of these small pieces of selfreplicating code. Joe Wells was an expert on computer viruses, was partly…\n\n### Run your malicious VBA macros anywhere!\n\nKurt Natvig wanted to understand whether it’s possible to recompile VBA macros to another\nlanguage, which could then easily be ‘run’ on any gateway, thus revealing a sample’s true\nnature in a safe manner. In this article he explains how he recompiled…\n\n### Dissecting the design and vulnerabilities in AZORult C&C panels\n\nAditya K Sood looks at the command-and-control (C&C) design of the AZORult malware,\ndiscussing his team's findings related to the C&C design and some security issues they\nidentified during the research.\n\n[Bulletin Archive](https://www.virusbulletin.com/virusbulletin/archive)\n\n_Copyright © 2014 Virus Bulletin_\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2014/2014-06-02 - Sinowal banking trojan.pdf"
+    ],
+    "report_names": [
+        "2014-06-02 - Sinowal banking trojan.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "ea844ee6-eb12-42c0-8426-11395fe81e6f",
+            "created_at": "2022-10-25T15:50:23.300796Z",
+            "updated_at": "2025-03-27T02:00:55.434471Z",
+            "deleted_at": null,
+            "main_name": "Night Dragon",
+            "aliases": [
+                "Night Dragon"
+            ],
+            "source_name": "MITRE:Night Dragon",
+            "tools": [
+                "at",
+                "gsecdump",
+                "zwShell",
+                "PsExec",
+                "ASPXSpy",
+                "gh0st RAT"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "09a8f8fe-e907-47b4-8709-a97717dde3cc",
+            "created_at": "2022-10-25T16:07:23.90252Z",
+            "updated_at": "2025-03-27T02:02:10.020919Z",
+            "deleted_at": null,
+            "main_name": "Night Dragon",
+            "aliases": [],
+            "source_name": "ETDA:Night Dragon",
+            "tools": [
+                "ASPXSpy",
+                "ASPXTool",
+                "Cain & Abel",
+                "gsecdump",
+                "zwShell"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "f809bfcb-b200-4988-80a8-be78ef6a52ef",
+            "created_at": "2023-01-06T13:46:39.186988Z",
+            "updated_at": "2025-03-27T02:00:03.016358Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "Adept Libra"
+            ],
+            "source_name": "MISPGALAXY:TeamTNT",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c3ca592f-0669-49bd-ab5c-310007ab2fb4",
+            "created_at": "2022-10-25T15:50:23.334495Z",
+            "updated_at": "2025-03-27T02:00:55.445098Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "TeamTNT"
+            ],
+            "source_name": "MITRE:TeamTNT",
+            "tools": [
+                "Peirates",
+                "MimiPenguin",
+                "LaZagne",
+                "Hildegard"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "020794ec-7315-47de-818c-2032c362fd15",
+            "created_at": "2023-01-06T13:46:38.306576Z",
+            "updated_at": "2025-03-27T02:00:02.800515Z",
+            "deleted_at": null,
+            "main_name": "Night Dragon",
+            "aliases": [
+                "G0014"
+            ],
+            "source_name": "MISPGALAXY:Night Dragon",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535921,
+    "ts_updated_at": 1743041531,
+    "ts_creation_date": 1653690834,
+    "ts_modification_date": 1653690834,
+    "files": {
+        "pdf": "https://archive.orkl.eu/d5a8d6f4b294a2d83c22c51aa95661caff57b16f.pdf",
+        "text": "https://archive.orkl.eu/d5a8d6f4b294a2d83c22c51aa95661caff57b16f.txt",
+        "img": "https://archive.orkl.eu/d5a8d6f4b294a2d83c22c51aa95661caff57b16f.jpg"
+    }
+}

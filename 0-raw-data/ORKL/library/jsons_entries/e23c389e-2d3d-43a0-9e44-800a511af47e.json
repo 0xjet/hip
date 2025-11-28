@@ -1,0 +1,67 @@
+{
+    "id": "e23c389e-2d3d-43a0-9e44-800a511af47e",
+    "created_at": "2023-01-12T15:00:40.344066Z",
+    "updated_at": "2025-03-27T02:08:40.670307Z",
+    "deleted_at": null,
+    "sha1_hash": "205e00c4c8f89cde99fcb5efc78cb3e0b0bca65f",
+    "title": "2018-09-20 - On the Trail of OSX.FairyTale - Adware Playing at Malware",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:55:41Z",
+    "file_modification_date": "2022-05-28T19:55:41Z",
+    "file_size": 1370412,
+    "plain_text": "# On the Trail of OSX.FairyTale | Adware Playing at Malware\n\n**[sentinelone.com/blog/trail-osx-fairytale-adware-playing-malware/](https://www.sentinelone.com/blog/trail-osx-fairytale-adware-playing-malware/)**\n\nSeptember 20, 2018\n\n**Spotted: An adware installer tries its best to avoid detection but leaves behind more**\n**clues than intended. Scroll down to find out more!**\n\n**Trojan installers delivering adware and unwanted applications (PUPs) have been the most**\nprevalent security nuisance on the macOS platform in recent years. To date, these have\nengaged in little more than low-level scraping of user data and browsing habits, but their\npotential to be far more threatening is only awaiting the right monetary incentive. A recent\nreport on what appeared to be a run-of-the-mill adware infection set us on the trail of\nOSX.FairyTale, an adware variant first identified in early 2018 by Malwarebytes researcher\n[Thomas Reed. FairyTale uses a lot of heavy obfuscation and anti-reversing technology, not](https://blog.malwarebytes.com/author/treed/)\nunusual for malware, but overkill for simple adware. We decided to take a closer look.\n\nOur sample came in the guise of a trojan installer called SpellingChecker.app that was\n[uploaded to VirusTotal in late August. The application bundle is signed with a valid Apple](https://www.virustotal.com/#/file/4eaa4caea4ac543516ffc9954a901e8b8e8c623fcce48304ea74d7a74218683b/detection)\nDeveloper ID:\n\n\n-----\n\nHowever, that has since been revoked by Apple:\n\n```\nSentinel:$ spctl --verbose=4 --assess --type execute SpellingChecker.app\n\n```\n```\nSpellingChecker.app: CSSMERR_TP_CERT_REVOKED\n\n```\n\nStatic analysis of the installer binary reveals two things of immediate note: an attempt to\nescalate privileges with AppleScript, and a lot of base64 encoded strings.\n\n```\ndo shell script \"%@\" with administrator privileges\n\n```\n```\nH0VDQh9SWV4fSFFEREI=\n\n```\n```\nHUJT\n\n```\n```\nH0VDQh9SWV4fX0BVXg==\n\n```\n\nWe knew things were going to get interesting when our first attempt to decode the base64\nonly spewed out gibberish:\n\n```\nSentinel:$ echo H0VDQh9SWV4fSFFEREI= | base64 -D; echo\n\n```\n```\nECBRY^HQDDB\n\n```\n```\nSentinel:$\n\n```\n\nA quick trip to Hopper showed us the pseudo-code for the decryption method:\n\n\n-----\n\nA fairly-straightforward XOR, which we re-implemented in Objective-C. Looking at the\narguments passed into the method, the base64 was XOR’d with 0x30 (48 in decimal):\n\nUsing our decoder, we were now able to see what the installer was up to: an XProtect\nbypass:\n\n\n-----\n\nUsing `xattr to remove Apple’s quarantine bit is a common technique used by researchers.`\nIt makes it possible to run and examine malware on a Mac even after it has been blocked by\nApple. Clearly, this trick hasn’t gone unnoticed among malware authors, either.\n\nFairyTale’s installer had another surprise for us, too. For both safety and convenience,\nmalware researchers make use of virtual machines to analyse samples, but FairyTale’s\nauthors didn’t want anyone looking at their code in a virtual machine:\n```\nDecoded: ioreg -l | grep -e 'VirtualBox' -e 'Oracle' -e 'VMware' -e\n'Parallels' | wc -l\n\n```\nAnd they didn’t want to get caught by Legacy AntiVirus software either, as this list of deobfuscated base64 strings makes clear:\n\n\n-----\n\nOn execution, the Installer takes a trip to Temp folder where it drops the following\ncompressed file:\n\n```\n/tmp/ot3497.zip\n\n```\n\nAfter unpacking the zip file, FairyTale then writes and loads a persistence agent and its\nexecutable to the following paths:\n\n```\n~/Library/LaunchAgents/com.sysd.launchserviced.plist\n\n```\n```\n~/Library/Application Support/com.sysd.launchserviced/launchserviced\n\n```\n\nThe installer uses the `xattr to both remove the quarantine bit and the`\n```\nkMDItemWhereFroms bit, which is used by Spotlight and MDQuery to keep track of where a\n\n```\nfile has come from. Typically, for downloads, that will be the URL from which the file was\nsourced. Fortunately, macOS has other ways of spilling secrets; namely, in this case, in\n```\n~/Library/Caches/com.spelling.checker.Agent sql database:\n\n```\n\n-----\n\nFrom this, we can see that the installer grabbed the launchserviced.zip from\n\n```\nhttp://vision-set.download/files/launchserviced.zip\n\n```\n\nStealth was undoubtedly on the author’s mind. The name of the executable, launchserviced,\nis just one letter different from the name of a real Apple process that runs on every user’s\nMac. The highlighted item below is OSX.FairyTale trying to blend in with legitimate Apple\nprocesses:\n\nClearly, FairyTale aims to go unnoticed or to be taken for something legitimate.\n\nAmong the installer’s obfuscated base64 is the template for a property list file:\n\n\n-----\n\nNotice that it uses placeholders for some of the keys: label – the name that is typically used\nfor the property list’s filename and also the name it gives to launchd when it’s loaded;\n_StartInterval – which tells launchd how often to run the job; and ProgramArguments – an_\narray of commands to pass to the job when it runs.\n\nAgain, the intent is clear: this isn’t a one-off package, but a re-usable installer for any\npayload the author chooses. Here’s the actual property list dropped for Spelling.Checker,\nwith a start interval of 3600 seconds, i.e., every hour:\n\nThe dropped version used the Program key rather than ProgramArguments key, which tells\nus that no commands are passed to the executable on launch in this case. Although the\nproperty list structure is correct, it’s an unnecessary change, as the same effect is achieved\nby simply passing in the program path as the first argument to the ProgramArguments key.\n\nIt seems the coder is a careful programmer who pays attention to details. Alas, like all\nvillains in a FairyTale, it’s the bad guys’ own actions that lead to their downfall, and this story\nis no different when we look at the launchserviced binary.\n\n\n-----\n\nAfter all the effort put into avoiding detection and reverse engineering, the author of\nlaunchserviced made an error, and appears to have accidentally allowed debug entitlements\nin the binary:\n\nAlthough not currently enforced by Apple, the `com.apple.security.get-task-allow`\nentitlement is intended to allow a debugger to attach to a sandboxed app when it’s running.\nThis is necessary during development to allow Xcode or the low-level debugger (lldb) to\nlaunch and inspect the running code. However, the entitlement is stripped automatically\nwhen code is exported for distribution through Xcode’s Organizer. The presence of it here\nsuggests that the developer copied the target from the project after building it, or perhaps\nexported the binary using ‘debug’ rather than ‘release’ settings.\n\nWe also see this binary is signed with a different developer ID than the revoked one used for\nthe installer. Although it’s not possible to tell whether this signature is revoked, we have\nreported it to Apple and assume they are investigating.\n\nWhen executed, the launchserviced appears to have relatively benign behaviour. If Safari is\nopen, it is redirected through several sites and finally lands on `online-empire.co :`\n\nOther addresses loaded include `rdtrck2.com and` `bizprofits.go2cloud.org,`\n```\nrdtrck2.com, bizprofits.go2cloud.org and tracklik.com .\n\n```\nFurther static analysis of the code reveals methods that we’d expect to see in browser\nredirection:\n\n\n-----\n\nTwo data files are written to the executable’s parent folder with a hard-coded file name prefix\n```\n840D2EBF08F9E4C880E5BE6919FB46EA . The files contain a single byte, which in our tests\n\n```\nwas either ‘1’ or ‘2’.\n\n## A Happy Ending?\n\nOSX.FairyTale is an interesting adware variant not because of what it does, but because of\nthe techniques used to prevent detection and analysis. Considerable effort has been\nexpended in hardening the installer code to prevent reversal, and launchserviced was clearly\nnamed for stealth. Given the rather unadventurous behaviour of the launchserviced code, we\ncan only assume that these efforts were either a proof-of-concept or part of a larger project\nstill in development.\n\n\n-----\n\nThe developer signatures and code are now on the radar, but like many a real-life FairyTale,\nwe won’t be surprised to see this one get retold and adapted for other purposes in the future.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2018/2018-09-20 - On the Trail of OSX.FairyTale - Adware Playing at Malware.pdf"
+    ],
+    "report_names": [
+        "2018-09-20 - On the Trail of OSX.FairyTale - Adware Playing at Malware.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535640,
+    "ts_updated_at": 1743041320,
+    "ts_creation_date": 1653767741,
+    "ts_modification_date": 1653767741,
+    "files": {
+        "pdf": "https://archive.orkl.eu/205e00c4c8f89cde99fcb5efc78cb3e0b0bca65f.pdf",
+        "text": "https://archive.orkl.eu/205e00c4c8f89cde99fcb5efc78cb3e0b0bca65f.txt",
+        "img": "https://archive.orkl.eu/205e00c4c8f89cde99fcb5efc78cb3e0b0bca65f.jpg"
+    }
+}

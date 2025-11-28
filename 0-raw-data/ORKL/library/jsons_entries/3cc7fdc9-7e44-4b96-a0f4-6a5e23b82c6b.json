@@ -1,0 +1,82 @@
+{
+    "id": "3cc7fdc9-7e44-4b96-a0f4-6a5e23b82c6b",
+    "created_at": "2023-01-12T15:10:01.606802Z",
+    "updated_at": "2025-03-27T02:16:26.60071Z",
+    "deleted_at": null,
+    "sha1_hash": "34d3a4c00d33744c90be180296cd79b68707f498",
+    "title": "2020-12-02 - Automated string de-gobfuscation",
+    "authors": "",
+    "file_creation_date": "2022-05-28T02:26:50Z",
+    "file_modification_date": "2022-05-28T02:26:50Z",
+    "file_size": 1790648,
+    "plain_text": "# Automated string de-gobfuscation\n\n**[kryptoslogic.com/blog/2020/12/automated-string-de-gobfuscation/](https://www.kryptoslogic.com/blog/2020/12/automated-string-de-gobfuscation/)**\n\n[Authored by: Jamie Hankins on Wednesday, December 2, 2020](https://twitter.com/2sec4u)\nLast week the Network Security Research Lab at 360 released a blog post on an obfuscated\nbackdoor written in Go named Blackrota. They claim that the Blackrota backdoor is available\nfor both x86/x86-64 architectures which is no surprise given how capable Golang’s cross\ncompilation is.\n\nFor the last 4 years we have been using Golang for our internal services, and I can definitely\nsee the allure that Golang has for malware authors:\n\nStatically compiled binaries by default\nCross compilation is often as simple as setting two environment variables\nStrong package ecosystem allowing you to pull in code that you need from other\nsources\nNo runtime dependencies\nEsoteric runtime with a non-standard calling convention breaks most decompilation\ntools forcing reverse engineers to read assembly\n\nBlackrota uses [gobfuscate to obfuscate their source code before it gets compiled by the Go](https://github.com/unixpickle/gobfuscate)\ntoolchain. Gobfuscate presents a number of challenges to reverse engineers but the one I’ll\nbe focusing on today is string obfuscation.\n\n\n-----\n\n## String Obfuscation\n\nMalware has been using XOR encoded strings for years now, but Blackrota takes this a step\nfurther .1 It generates a random XOR key per string and wraps the string in a function that\nXORs the string at runtime to return the correct one.\n\ngobfuscate runs before the compilation process to produce an obfuscated version of your\ncode which is then compiled by the Go compiler:\n\nBefore:\n```\npackage main\nimport \"fmt\"\nfunc main() {\n     fmt.Println(\"Hello world!\")\n}\n\n```\nAfter:\n```\npackage main\nimport \"fmt\"\nfunc main() {\n     fmt.Println((func() string {\n          mask := []byte(\"\\x21\\x0f\\xc7\\xbb\\x81\\x86\\x39\\xac\\x48\\xa4\\xc6\\xaf\")\n          maskedStr :=\n[]byte(\"\\x69\\x6a\\xab\\xd7\\xee\\xa6\\x4e\\xc3\\x3a\\xc8\\xa2\\x8e\")\n          res := make([]byte, 12)\n          for i, m := range mask {\n              res[i] = m ^ maskedStr[i]\n          }\n          return string(res)\n     }()))\n}\n\n```\n[You can use a tool like GCHQ’s CyberChef to verify that the result of those 2 byte arrays](https://gchq.github.io/CyberChef/#recipe=From_Hex('Auto')XOR(%7B'option':'Hex','string':'%5C%5Cx69%5C%5Cx6a%5C%5Cxab%5C%5Cxd7%5C%5Cxee%5C%5Cxa6%5C%5Cx4e%5C%5Cxc3%5C%5Cx3a%5C%5Cxc8%5C%5Cxa2%5C%5Cx8e'%7D,'Standard',false)&input=XHgyMVx4MGZceGM3XHhiYlx4ODFceDg2XHgzOVx4YWNceDQ4XHhhNFx4YzZceGFm)\nXORed together is: `Hello world! .`\n\nWhile you could go through the effort of manually XORing each string in a binary you’re\nreversing, it’ll get tedious very quickly.\n\n## How do I solve it at scale?\n\nSo I know that Golang has a very capable cross compiler and that I want to deal with these\nXORed strings across different architectures, but how?\n\n\n-----\n\n[Binary Ninja (aka Binja) has a very powerful intermediate language (IL), which allows us to](https://blog.trailofbits.com/2017/01/31/breaking-down-binary-ninjas-low-level-il/)\noperate on a representation of a function regardless of the system architecture (assuming\nthere is an architecture loader for it) .2\n\nWhen deciding on an approach here I specifically wanted to use Binary Ninja’s IL as a\nlearning exercise. The solution could certainly be implemented using any number of\n[alternative tools (e.g. Unicorn), however Binja has the benefit of being very easy to use on](https://www.unicorn-engine.org/)\nany of its supported platforms. Another benefit, of course, is that the IL eliminates the need\nto understand the target architecture at all, which (depending on implementation) may not be\nthe case using something like Unicorn.\n\nSo the solution will need a way of identifying what functions we want to extract the strings\nfrom (Candidate Identification) and a way to extract the correct string from Binary Ninja’s low\nlevel IL.\n\n### Candidate Identification\n\nLuckily for us, the Go compiler doesn’t inline this function call so it’s seen as an entirely new\nfunction:\n\nAssuming the approach I take can avoid the Go runtime functions:\n```\n_runtime.morestack_noctxt and _runtime.slicebytetostring it should be pretty\n\n```\neasy to emulate.\n\nThe solution will need to find functions in the binary which call\n```\n_runtime.slicebytetostring and make use of an xor instruction.\n\n```\nIn my first attempt you’ll see that I’m not using the IL for this, but that’s trivially solved in the\nfinal solution.\n\n## String Extraction - Attempt One\n\nMy first attempt at writing this didn’t go very well&mldr; Binary Ninja implements multiple\ndifferent ILs at varying levels of readability based on how much lifting, transformation and\ncontrol flow recovery takes place. You can see examples of LLIL (low level intermediate\nlanguage), [MLIL (medium level intermediate language) and](https://cloud.binary.ninja/embed/b10dc64a-6970-499e-9984-424bfaf339db) HLIL (high level intermediate\nlanguage) ILs in the corresponding links.\n\nSo I made the assumption that HLIL would be the best choice because there was less text. I\nalso didn’t really understand that an IL operation could consist of multiple different IL\noperations:\n\n\n-----\n\n**Example of a XOR/assign operation in HLIL**\n\n[You can see my first attempt here. I wish I had read](https://gist.github.com/jamie-34254/45cb4687d679c29bf8ce512ae7780cc8) [Josh Watson’s blog post on Binja’s IL](https://blog.trailofbits.com/2017/01/31/breaking-down-binary-ninjas-low-level-il/)\nbefore I started working on it as it details some of the non obvious details 😅\n\nI managed to get some results from this approach but it was not consistent and broke very\neasily.\n\n## String Extraction - Attempt Two\n\nI started chatting to [Jordan Wiens one of the founders of Vector35, the company who makes](https://twitter.com/psifertex)\nBinary Ninja – and he suggested that I should rewrite it using LLIL and a full blown emulator\nrather than a state machine.\n\nAt first this was daunting, but I started to play around with it and thanks to some incredibly\n[helpful plugins which I’ll detail later, as well as a project from Josh Watson which had the](https://github.com/joshwatson/emilator)\nfoundations of an LLIL emulator, I was able to start making headway.\n\nUsing a [helpful snippet from Jordan I was able to work out what LLIL operations I needed to](https://gist.github.com/psifertex/6fbc7532f536775194edd26290892ef7#file-count_il-py)\nimplement and in total there were around 28 of them:\n\n**IL operation** **Description**\n\n`LLIL_TAILCALL` Call another function without writing a return address to the stack\n\n`LLIL_CALL` Call another function and push a return address to the stack\n\n\n-----\n\n**IL operation** **Description**\n\n`LLIL_RET` Pop a return address from the stack and jump to it\n\n`LLIL_PUSH` Push a value onto the stack\n\n`LLIL_POP` Pop a value from the stack\n\n`LLIL_XOR` XOR 2 values\n\n`LLIL_ZX` Zero Extends\n\n`LLIL_GOTO` Set the instruction pointer\n\n`LLIL_STORE` Write some data to memory\n\n`LLIL_READ` Read some data from memory\n\n`LLIL_SET_FLAG` Sets a flag\n\n`LLIL_FLAG` Reads a flag\n\n`LLIL_CMP_NE` Is not equal\n\n`LLIL_CMP_E` Is equal\n\n`LLIL_CMP_SLE` Signed less than or equal\n\n`LLIL_CMP_SGT` Signed greater than\n\n`LLIL_CMP_SGE` Signed greater than or equal\n\n`LLIL_CMP_UGE` Unsigned greater than or equal\n\n`LLIL_CMP_UGT` Unsigned greater than\n\n`LLIL_CMP_ULT` Unsigned less than\n\n`LLIL_CMP_SLT` Signed less than comparison\n\n`LLIL_CMP_ULE` Unsigned less than or equal\n\n`LLIL_IF` Check a conditional and set the instruction pointer based on the\noutcome\n\n`LLIL_SET_REG` Set a register value\n\n`LLIL_CONST` Get a constant value\n\n`LLIL_CONST_PTR` Get a constant value that happens to be a pointer\n\n`LLIL_REG` Read a register value\n\n\n-----\n\n**IL operation** **Description**\n\n`LLIL_SUB` Subtract two values\n\n`LLIL_ADD` Add two values\n\nAlone none of these seem too complex right? But together they allow us to fully implement\nwhat is required to decode the XOR obfuscation in less than 500 lines of code. There’s a\nhuge amount of heavy lifting that Binary Ninja does under the hood that helps us keep the\ncode as simple as possible, and I’m sure I’m missing some tricks.\n\nOnce I had something that kinda worked Jordan jumped in and converted it into a functional\nBinary Ninja plugin and cleaned up some of the code smell that occurs when you’re hacking\naway on a problem.\n\nWhile developing the plugin I came across some incredibly useful Binary Ninja plugins which\nI feel need a mention:\n\n### SENinja\n\n[SENinja is a symbolic execution engine for Binja, built using the Z3 SMT solver. It](https://github.com/borzacchiello/seninja)\nimplements a LLIL emulator that builds and manipulates Z3 formulae. Although the intentions\nof SENinja are much more complex then what I was using it for, it was really useful to have\nsomething I could compare with (I didn’t want to turn on a Linux VM and use a debugger and\ndeal with possible anti debugging tricks).\n\n\n-----\n\n**What SENinja looks like while emulating a function**\n\n### BNIL Instruction Graph\n\n[BNIL Instruction Graph allows you to click on a line of IL and generate a graph of the IL](https://github.com/withzombies/bnil-graph)\noperations that make up that line.\n\n**LLIL**\n\n\n-----\n\n**HLIL**\n\nThe difference in complexity between a line of LLIL and HLIL is surprising. However it makes\nsense once you understand that HLIL exists to allow higher level control flows to be\nrecovered with the intention of producing a source code representation, typically in an\nemulator though you don’t need this kind of high level control flow data.\n\nAnother powerful feature of BNIL Instruction Graph is the ability to generate specific IL\nmatching templates that are convenient starting points for building IL code:\n\n\n-----\n\n```\ndef match_LowLevelIL_10a6df6_0(insn):\n  # ecx = ecx ^ edx\n  if insn.operation != LowLevelILOperation.LLIL_SET_REG:\n    return False\n  if insn.dest.name != 'ecx':\n    return False\n  # ecx ^ edx\n  if insn.src.operation != LowLevelILOperation.LLIL_XOR:\n    return False\n  # ecx\n  if insn.src.left.operation != LowLevelILOperation.LLIL_REG:\n    return False\n  if insn.src.left.src.name != 'ecx':\n    return False\n  # edx\n  if insn.src.right.operation != LowLevelILOperation.LLIL_REG:\n    return False\n  if insn.src.right.src.name != 'edx':\n    return False\n  return True\n\n## Can haz please?\n\n```\nAs the usage of Golang by malware authors increases, so will their understanding and\ncapabilities within the Go ecosystem. Right now gobfuscate is the main obfuscator used by\n[actors using Golang, but this won’t always be true. As a Hacker News comment puts it: this](https://news.ycombinator.com/item?id=25231309)\nis fairly weak. Gobfuscator doesn’t implement control flow obfuscation, the runtime functions\naren’t obfuscated and at most gobfuscate serves mostly as an annoyance and a thinly veiled\nlayer of obscurity.\n\n\n-----\n\n**Solver at work!**\n\n[You can download the Binary Ninja plugin on the plugin manager or download the code from](https://docs.binary.ninja/guide/plugins.html#plugin-manager)\nthe [GitHub repository linked here. Additionally you can find the Blackrota 32-bit and](https://github.com/kryptoslogic/binja_degobfuscate) [64-bit](https://cloud.binary.ninja/bn/99702ecb-6656-42e7-aa0e-31035a6d18dc?view=Disassembly&function=4837184&address=4837184)\nBinary Ninja databases to look at on Binary Ninja cloud.\n\n### Thanks:\n\nA massive thanks to the people in the Binary Ninja Slack who answered some of my\nquestions while I was getting started.\nJosh Watson, for his [permissibly licensed emulator that I was able to use to get an idea](https://github.com/joshwatson/emilator)\nof what was required to achieve my goal.\nJordan Wiens, for providing assistance during development, cleaning up messy code,\nfiling a couple of Binja bug reports for me and generally answering questions about\nBinary Ninja.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-12-02 - Automated string de-gobfuscation.pdf"
+    ],
+    "report_names": [
+        "2020-12-02 - Automated string de-gobfuscation.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "5d2bd376-fcdc-4c6a-bc2c-17ebbb5b81a4",
+            "created_at": "2022-10-25T16:07:23.667223Z",
+            "updated_at": "2025-03-27T02:02:09.916086Z",
+            "deleted_at": null,
+            "main_name": "GCHQ",
+            "aliases": [
+                "Government Communications Headquarters",
+                "Operation Socialist"
+            ],
+            "source_name": "ETDA:GCHQ",
+            "tools": [
+                "Prax",
+                "Regin",
+                "WarriorPride"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536201,
+    "ts_updated_at": 1743041786,
+    "ts_creation_date": 1653704810,
+    "ts_modification_date": 1653704810,
+    "files": {
+        "pdf": "https://archive.orkl.eu/34d3a4c00d33744c90be180296cd79b68707f498.pdf",
+        "text": "https://archive.orkl.eu/34d3a4c00d33744c90be180296cd79b68707f498.txt",
+        "img": "https://archive.orkl.eu/34d3a4c00d33744c90be180296cd79b68707f498.jpg"
+    }
+}

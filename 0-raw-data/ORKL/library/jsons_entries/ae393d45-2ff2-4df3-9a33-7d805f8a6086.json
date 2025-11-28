@@ -1,0 +1,138 @@
+{
+    "id": "ae393d45-2ff2-4df3-9a33-7d805f8a6086",
+    "created_at": "2023-01-12T15:10:04.06934Z",
+    "updated_at": "2025-03-27T02:09:59.174587Z",
+    "deleted_at": null,
+    "sha1_hash": "bbad513f4754a4bb6ba81757559b0d625890d641",
+    "title": "2020-10-07 - Duck Hunting with Falcon Complete- Analyzing a Fowl Banking Trojan, Part 2",
+    "authors": "",
+    "file_creation_date": "2022-05-28T22:07:07Z",
+    "file_modification_date": "2022-05-28T22:07:07Z",
+    "file_size": 2601377,
+    "plain_text": "# Duck Hunting w/Falcon Complete Pt. 2: QakBot ZIP-based Campaign\n\n**[crowdstrike.com/blog/duck-hunting-with-falcon-complete-qakbot-zip-based-campaign/](https://www.crowdstrike.com/blog/duck-hunting-with-falcon-complete-qakbot-zip-based-campaign/)**\n\nThe Falcon Complete Team October 7, 2020\n\nThis blog is Part 2 of a three-part blog series detailing the reemergence and evolution of QakBot in the spring and summer of\n2020. In this installment we cover analysis of the QakBot ZIP-based delivery campaign, particularly one example that\nexhibited a tactical breakdown by the threat actor with a botched downloader. In addition, the CrowdStrike® Falcon\nComplete™ team will cover dynamic analysis of two experimental campaigns, one of which also includes an additional\nstage-two malware, Zloader.\n\n## Threat Background and Context\n\n[As discussed in Part 1, QakBot is an eCrime banking trojan that has the potential to severely impact an organization’s ability](https://www.crowdstrike.com/blog/duck-hunting-with-falcon-complete-analyzing-a-fowl-banking-trojan-part-1/)\nto operate. QakBot has the ability to spread laterally throughout a network utilizing a worm-like functionality through brute\nforcing network shares, brute forcing Active Directory user group accounts or via server message block (SMB) exploitation.\n\nQakBot also employs a robust set of anti-analysis features to evade detection and frustrate analysis. Despite these\n[protections, the CrowdStrike Falcon® platform detects and prevents this](https://www.crowdstrike.com/endpoint-security-products/falcon-platform/) [malware from completing its execution chain.](https://www.crowdstrike.com/epp-101/malware/)\n\n\n-----\n\nFigure 1. Timeline of QakBot Campaigns (click image to enlarge)\n\n## Failed Campaigns with “Broken” Downloader — Late April\n\nIn early-to-mid-April 2020, Falcon Complete identified an attempted, unsuccessful QakBot campaign. This was possibly an\nexample of a failed development cycle during the threat actor’s retooling efforts.\n\nThis campaign diverged from the tactics, techniques and procedures (TTPs) observed in the prior, DOC-based campaign.\nInstead, the delivery tactic includes a .ZIP attachment containing a malicious Visual Basic Script (VBS) dropper; however,\ndue to a failure in error handling within the .VBS, the actor was unable to download and write the payload to disk\nsuccessfully.\n\nFigure 2. The portion of the dropper responsible for writing QakBot to disk (click image to enlarge)\n\nIn this instance, the VBS dropper would reach out to an array of sites, beginning with\nhxxp[:]//millionsawesomeproducts[.]com, in an attempt to download 444444.png from the distribution server — which is\nactually a Windows PE file — and would subsequently be written to disk with the name PaintHelper.exe.\n\nFigure 3. The malware distribution sites associated with the failed campaign (click image to enlarge)\n\n\n-----\n\nIf a 404 error was returned, the script would move on to the next site in the array, and attempt to download the malware and\nplace it into the user’s %TEMP% directory. The script would then proceed along the kill chain with a persistence mechanism\nin the form of a scheduled task with a GUID-based naming convention.\n\nThe site in question did not have a DNS record published — and thus, no HTTP response was returned because no\nconnection could be made. Due to an apparent failure in error handling in the QakBot dropper, the script would fail to infect\nthe host and write a zero-byte, innocuous PaintHelper.exe to %TEMP%.\n\nIt was discovered that via spoofing a DNS response and the subsequent 404 from the site, the QakBot loader would move\non to the next site and successfully write its payload — PaintHelper.exe.\n\nAdditionally, the dropper would encode the antivirus product in use, the current OS version and other system information into\na Base64 string, and utilize GET strings to inform the malware distribution servers of this information, as shown in Figure 4.\n\nFigure 4. Spoofing the DNS response and subsequent 404 to un-break the dropper; decoded Base64 sent as a GET parameter to the server\n\n(click image to enlarge)\n\nThis appears to be an implementation of hashbusting — a method of obfuscation in which a malware sample is subtly\nchanged on the fly so each sample has a different checksum. As a result, the SHA256 hash of each payload downloaded\nfrom the sites in question appeared to be unique. However, the SSDEEP fuzzy hash of this sample was as follows:\n\n_6144:y2la96gEZbXtD/uY/HmJV8cc0em/wnXPKYGvZxYney3brNLFDPMTJYhr64Fgw:y2JvZbJYRwnXPKvZxYn7hLFPMdV4Fgw_\n\nUnfortunately, the actors behind QakBot quickly recovered, and a new campaign was launched the week of May 25, 2020,\nwith no such mistakes and far more success. Despite this success, the operators continued development and\nexperimentation with additional delivery tactics as their campaigns persisted.\n\n## QakBot Experiments with PicturesViewer.dll and Secondary Payloads \n\nThe following dynamic analysis was conducted on two iterations of QakBot observed and blocked within client environments.\nDuring mid-June, the actors behind the QakBot malware experimented with two disparate tactics that each only lasted one\nday.\n\nThe first anomalous TTP payload was on June 11, 2020. QakBot would drop a Windows PE named PicturesViewer.dll,\nwhich differs from the PicturesViewer.exe seen in prior weeks and noted in the previous section.\nThe following day on June 12, QakBot downloaded and executed an additional Windows PE named senate.m4a. Once\nexecuted, this binary would install additional malware from the ZeuS family known as Zloader, or Zbot.\n\n**Please Note: Some of the examples in the following scenario have CrowdStrike Falcon configured with**\n**DETECTIONS ONLY and PREVENTIONS off for illustrative purposes. A properly configured Falcon instance as**\n**noted above would prevent the activity presented here.**\n\n\n-----\n\n## Dynamic Analysis of QakBot — June 11\n\nOn June 11, QakBot reemerged with new tactics. Beginning at approximately 13:47 UTC, Falcon Complete observed\nQakBot threat actors using a new .VBS payload. Once a user invokes this script, the process tree is as follows.\n\n1.  Wscript makes subsequent DNS requests for a Stage Two payload\n2.  ‘Rundll32.exe -> PicturesViewer.dll, DllRegisterServer,’ allowing for C2 communication\n3.  MSIExec, spawning multiple Cmd.exe processes and Explorer injection\n4.  Commands run by the C2:\n\nCmd.exe /c net view /all /domain\nCmd.exe /c net view /all\nCmd.exe /c net config workstation\nCmd.exe /c ipconfig /all\n\nFigure 5. Process tree of QakBot as displayed in Falcon (click image to enlarge)\n\nIf we take a closer look at Wscript.exe, we can see the process reaches out to four suspicious-looking domains. Further\nanalysis of these four domains reveals an HTTP GET request for the following payloads.\n\n**hxxp[:]ameliasmoments[.]com/wp-includes/js/thickbox/wifgyfro/8888888.jpg**\n\n**hxxp[:]digitalschoolfaridabad[.]in /courses/images/parallax/mjogqxakfxg/8888888.jpg**\n\n**hxxp[:]Uniquehindunames[.]com/ wp-content/uploads/cnesco/8888888.jpg**\n\n**hxxp[:]Sometechsense[.]com/ wp-includes/jtinymce/plugins/wptextpattern/tbpfdfelf/8888888.jpg**\n\n\n-----\n\nFigure 6. Suspicious DNS requests as displayed in Falcon and Wireshark-captured GET request (click images to enlarge)\n\nFurther review of the dynamic behavior of MSIExec.exe shows process injection into Explorer, multiple files written to disk,\nand multiple DNS requests, as shown below.\n\nFiles written:\n\n%AppData%\\lwob\\esexydry.dll\n%AppData%\\PicturesViewer.dll\n\nFigure 7. Disk operations as displayed in Falcon (click image to enlarge)\n\nFigure 8. Further DNS requests as displayed in Falcon (click image to enlarge)\n\n\n-----\n\n## Dynamic Analysis of QakBot — June 12\n\nOn June 12, QakBot continued its evolution. The delivery method of a .ZIP file to malicious .VBS was the same, but this time\nQakBot also dropped a Zloader payload on its victim. Beginning around 14:24 UTC, Falcon Complete observed QakBot\nthreat actors using a new .VBS payload. Once the user invoked this script, the process tree is as follows.\n\n1. Wscript.exe\n2. WmiPrivSe.exe\n3. Rundll32 -> %AppData%\\senate.m4a, DllRegisterServer\n4. MSIExec, spawning multiple Cmd.exe processes, DNS requests, and writing a few interesting files to disk\n5. Commands run by the C2:\n\nCmd.exe /c net view /all /domain\nCmd.exe /c net view /all\nCmd.exe /c net config workstation\nCmd.exe /c ipconfig /all\n\nFigure 9. Process tree as displayed in Falcon (click image to enlarge)\n\nWscript.exe does a number of things: It deletes the original QakBot.vbs and writes four files to disk in %APPDATA%\ninduce.flac, pep.csv, rhythm.tex and senate.m4a. Senate.m4a is deleted after full process execution.\n\nLooking closer at Rundll32.exe, we can see that it’s executing a senate.m4a, DllRegisterServer. Further analysis shows\nsenate.m4a is actually a Zloader.dll. At the time of this writing, we are no longer seeing the senate.m4a Zloader being\ndistributed by the QakBot .VBS delivery method.\n\nContinuing with the dynamic behavior of MSIExec.exe shows multiple files written to disk and multiple DNS requests, as\nshown below.\n\nDNS requests:\n\nwithifceale[.]top/treusparq.php\nxeemoquo[.]top/treusparq.php\nleeephee[.]top/treusparq.php\ncccommercialcleaning[.]com[.]au/wp-content/themes/twentyfifteen/1/spx139/dasfdsfsdf.exe\n\n\n-----\n\nFigure 10. DNS requests as displayed in Falcon (click image to enlarge)\n\nFiles written:\n\n%APPDATA%\\dasfdsfsdf.exe\n%APPDATA%\\Iwhoq\\pozypua.dll\n%APPDATA%\\IE\\GGYJG27Z\\dasfdsfs.df[1].exe\n\nFigure 11. QakBot disk operations as displayed in Falcon (click image to enlarge)\n\nOnce the full QakBot and Zloader process execution is complete, persistence may be established through the following\nregistry key: HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run.\n\nThe name of the value will either be randomly chosen or a GUID, targeting a PE in the %APPDATA%\\Roaming\\Microsoft\\\nfolder.\n\n## Conclusion\n\n\n-----\n\nAs we have seen, QakBot employs a robust set of anti analysis features and has recently surged in its operational volume\nwithin the threat landscape.\n\nThis blog provided an in-depth analysis of a botched QakBot downloader along with dynamic analysis of experimental\npayloads that include a secondary malware stage: Zloader. The threat actors behind QakBot, tracked as MALLARD\nSPIDER, have demonstrated the ability to rapidly retool, implement anti-analysis techniques and develop methods of\nadvanced obfuscation in a short period.\n\n[Part 3 of this series will outline the Falcon Complete team’s strategy for the remote remediation of a QakBot-infected host.](https://www.crowdstrike.com/blog/duck-hunting-with-falcon-complete-qakbot-countermeasures/)\n\n### Additional Resources\n\n_[Read Part 1 of this blog series.](https://www.crowdstrike.com/blog/duck-hunting-with-falcon-complete-analyzing-a-fowl-banking-trojan-part-1/)_\n_Find out how CrowdStrike can help your organization answer its most important security questions: Visit the_\n_CrowdStrike Services webpage._\n_[Learn how any size organization can achieve optimal security with Falcon Complete by visiting the product webpage.](https://www.crowdstrike.com/endpoint-security-products/falcon-complete/)_\n_[Learn more about Falcon X™ threat intelligence by visiting the webpage.](https://www.crowdstrike.com/endpoint-security-products/falcon-x-threat-intelligence/)_\n_Learn about CrowdStrike’s comprehensive next-generation endpoint protection platform by visiting the Falcon products_\n_webpage._\n_Test CrowdStrike next-gen AV for yourself:_ _[Start your free trial of Falcon Prevent™.](https://go.crowdstrike.com/try-falcon-prevent.html)_\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-10-07 - Duck Hunting with Falcon Complete- Analyzing a Fowl Banking Trojan, Part 2.pdf"
+    ],
+    "report_names": [
+        "2020-10-07 - Duck Hunting with Falcon Complete- Analyzing a Fowl Banking Trojan, Part 2.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "529c1ae9-4579-4245-86a6-20f4563a695d",
+            "created_at": "2022-10-25T16:07:23.702006Z",
+            "updated_at": "2025-03-27T02:02:09.93109Z",
+            "deleted_at": null,
+            "main_name": "Hafnium",
+            "aliases": [
+                "Red Dev 13",
+                "Silk Typhoon"
+            ],
+            "source_name": "ETDA:Hafnium",
+            "tools": [],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "aa5b200f-a6c6-4d17-bc65-911d9a7bf4ef",
+            "created_at": "2022-10-25T16:07:23.866039Z",
+            "updated_at": "2025-03-27T02:02:10.002227Z",
+            "deleted_at": null,
+            "main_name": "Mallard Spider",
+            "aliases": [
+                "Gold Lagoon"
+            ],
+            "source_name": "ETDA:Mallard Spider",
+            "tools": [
+                "Egregor",
+                "Mimikatz",
+                "Oakboat",
+                "PinkSlip",
+                "Pinkslipbot",
+                "ProLock",
+                "PwndLocker",
+                "QakBot",
+                "Qbot",
+                "QuackBot",
+                "QuakBot"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "7c969685-459b-4c93-a788-74108eab6f47",
+            "created_at": "2023-01-06T13:46:39.189751Z",
+            "updated_at": "2025-03-27T02:00:03.017103Z",
+            "deleted_at": null,
+            "main_name": "HAFNIUM",
+            "aliases": [
+                "ATK233",
+                "G0125",
+                "Operation Exchange Marauder",
+                "Red Dev 13",
+                "Silk Typhoon"
+            ],
+            "source_name": "MISPGALAXY:HAFNIUM",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d5cb8d20-b5b9-4ec6-9660-3dded9bd3c89",
+            "created_at": "2023-01-06T13:46:39.204681Z",
+            "updated_at": "2025-03-27T02:00:03.020862Z",
+            "deleted_at": null,
+            "main_name": "MALLARD SPIDER",
+            "aliases": [
+                "GOLD LAGOON"
+            ],
+            "source_name": "MISPGALAXY:MALLARD SPIDER",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "2704d770-43b4-4bc4-8a5a-05df87416848",
+            "created_at": "2022-10-25T15:50:23.306305Z",
+            "updated_at": "2025-03-27T02:00:55.43633Z",
+            "deleted_at": null,
+            "main_name": "HAFNIUM",
+            "aliases": [
+                "HAFNIUM",
+                "Operation Exchange Marauder",
+                "Silk Typhoon"
+            ],
+            "source_name": "MITRE:HAFNIUM",
+            "tools": [
+                "Tarrask",
+                "ASPXSpy",
+                "Impacket",
+                "PsExec",
+                "China Chopper"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536204,
+    "ts_updated_at": 1743041399,
+    "ts_creation_date": 1653775627,
+    "ts_modification_date": 1653775627,
+    "files": {
+        "pdf": "https://archive.orkl.eu/bbad513f4754a4bb6ba81757559b0d625890d641.pdf",
+        "text": "https://archive.orkl.eu/bbad513f4754a4bb6ba81757559b0d625890d641.txt",
+        "img": "https://archive.orkl.eu/bbad513f4754a4bb6ba81757559b0d625890d641.jpg"
+    }
+}

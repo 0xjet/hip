@@ -1,0 +1,114 @@
+{
+    "id": "5966b8df-84fa-47e0-a4a2-80774b07156b",
+    "created_at": "2023-01-12T15:10:20.108524Z",
+    "updated_at": "2025-03-27T02:16:05.801792Z",
+    "deleted_at": null,
+    "sha1_hash": "33975b3a08bd87435c689d86047ec57297ba27bd",
+    "title": "2017-09-21 - Avast Threat Labs analysis of CCleaner incident",
+    "authors": "",
+    "file_creation_date": "2022-05-28T21:55:06Z",
+    "file_modification_date": "2022-05-28T21:55:06Z",
+    "file_size": 428371,
+    "plain_text": "# Avast Threat Labs analysis of CCleaner incident\n\n**[blog.avast.com/avast-threat-labs-analysis-of-ccleaner-incident](https://blog.avast.com/avast-threat-labs-analysis-of-ccleaner-incident)**\n\nTechnical update and ongoing analysis of the APT security incident\n\nExperts at Avast Threat Labs have been analyzing the CCleaner advanced persistent threat\n(APT) continuously for the past few days and apart from the information in recent blog posts\n[(CCleaner and](https://www.ccleaner.com/news/blog/2017/9/18/security-notification-for-ccleaner-v5336162-and-ccleaner-cloud-v1073191-for-32-bit-windows-users) [Avast posts), we are starting a series of technical blog posts describing](https://blog.avast.com/progress-on-ccleaner-investigation)\ndetails and technical information that we encountered during our analysis. Today, we will\ncover the ongoing analysis of the CnC server and the 2nd stage payload.\n\n## Just 4 days of data?\n\nShortly after receiving the initial notification about the incident from Morphisec, we reached\nout to law enforcement agencies to help us take down the Command and Control (CnC)\nserver and get access to its contents. While analyzing the data, we noticed that there were\nonly a few days’ worth of data in the logs, and we wondered why? We knew the server was\ninstalled on July 31 so there had to be more than a month’s worth of data since then:st\n```\nJul 31 06:32:53 seassdvz3.servercrate.com systemd[1]: Started First Boot\nWizard.\n\n```\n\nAlthough the server was up and running since the end of July, data gathering started on\nAugust 11, in preparation of the release of the compromised CCleaner executable file:th\n\n\n-----\n\n```\nAug 11 07:36:52 seassdvz3 mariadb-prepare-db-dir[10729]: Initializing MySQL\ndatabase\nAug 11 07:36:52 seassdvz3 mariadb-prepare-db-dir[10729]: Installing\nMariaDB/MySQL system tables in '/var/lib/mysql' ...\n\n```\nThe database didn’t contain data older than September 12, so we originally thoughtth\nsomeone might have deleted the data to avoid being traced, but then we found this log:\n```\n170830 20:36:17 [Note] /usr/libexec/mysqld: ready for connections.\nVersion: '5.5.52-MariaDB' socket: '/var/lib/mysql/mysql.sock' port: 3306\n MariaDB Server\n170910 8:47:40 InnoDB: Error: Write to file ./ibdata1 failed at offset 11\n2854223872.\nInnoDB: 1048576 bytes should have been written, only 0 were written.\nInnoDB: Operating system error number 122.\nInnoDB: Check that your OS and file system support files of this size.\nInnoDB: Check also that the disk is not full or a disk quota exceeded.\nInnoDB: Error number 122 means 'Disk quota exceeded'.\n\n```\nThe MariaDB (fork of MySQL) database—which stored the data acquired by the backdoor—\nran out of disk space. Not coincidentally, there was a connection to the machine just a few\nhours after the database died:\n```\nroot   pts/0    Sun Sep 10 20:59 - 23:34 (02:34)   124-144-xxxxxx.rev.home.ne.jp\n\n```\n_(actual address was redacted)_\n\nThe user behind this connection came to free up some disk space. He (or she) started by\nerasing all the logs in the hope that this would quickly fix the issue, but the logs show the\ndatabase also encountered some serious issues and was corrupted:\n\n```\n170910 8:47:43 [ERROR] mysqld got signal 6 ;\n\n```\n\nTwo days later, another connection was made, and this time, the attacker decided to\nresurrect the database by a complete reinstall:\n```\nSep 12 07:56:13 Erased: 1:mariadb-server-5.5.52-1.el7.x86_64\nSep 12 07:56:13 Erased: 1:mariadb-5.5.52-1.el7.x86_64\nSep 12 08:02:43 Installed: 1:mariadb-5.5.52-1.el7.x86_64\nSep 12 08:02:44 Installed: 1:mariadb-server-5.5.52-1.el7.x86_64\n\n```\nIt is unfortunate that the server was a low-end machine with limited disk capacity, because if\nweren’t for this (just 5 days before we took the server down), we would likely have a much\nclearer picture of exactly who was affected by the attack as the entire database would have\nbeen intact from the initial launch date.\n\n\n-----\n\n## Where did the attackers come from?\n\nTo figure out who the attackers were, we looked for any breadcrumbs the attackers might\nhave left for us to follow. As Costin Raiu pointed out on Twitter\n[(https://twitter.com/craiu/status/910148928796061696), there are some striking similarities](https://twitter.com/craiu/status/910148928796061696)\nbetween the code injected into CCleaner and APT17/Aurora malware created by a Chinese\nAPT group in 2014/2015.\n\nIndeed, the similarity between the code linked to group APT17 and the recent payload is\nquite high. Some of the functions are almost identical (e.g. the base64 encoding function on\nthe following image) while other functions have a partial match, but the structure is overall\nvery similar.\n\nNext, we looked at where the attacker was connecting from to the CnC server.\n```\nroot   pts/0    Tue Sep 12 18:11 - 18:50 (00:39) xxxx.ap.sonet.ne.jp\nroot   pts/0    Tue Sep 12 09:23 - 14:14 (04:51) xxxxx.bbtec.net\n\n```\n\n-----\n\n```\nroot   pts/0    Sun Sep 10 20:59 - 23:34 (02:34) 124-144-xxxxxx.rev.home.ne.jp\n\n```\n_(+ other 32 connections)_\n\nInterestingly enough, most of the connections came from Japanese networks. Although\nthese addresses are likely just infected PCs and servers used as proxies, it suggests that the\nattackers might be familiar with Asian networks. The list of targeted companies contained\nquite a few Asian companies but none from China. Lastly, the time zone in the PHP scripts\nfeeding the database were set to PRC (People’s Republic of China) although the system\nclock is in UTC.\n\nEven with all of these clues, it is impossible at this stage to claim which country the attack\noriginated from, simply because all of the data points could easily be forged to hide the true\nlocation of the perpetrator.\n\n## Targeted companies - South Korea or Slovakia?\n\nIn addition to the domain names of targeted companies already published, there were four\nmore domains belonging to two more companies that haven’t been mentioned publicly (we\ndon’t want to disclose the names of these companies as they were potentially subjected to\nthe attack). These domains were commented out in the scripts, which can indicate the list of\ntargeted companies had changed repeatedly over time. This is further supported by the fact\nthat some of the 20 computers that we know received the 2nd stage payload were in\ndomains that were also not included in the original list.\n\nAs a side note, the attackers seem to have made a mistake with the domain name of one\ncompany specified as “<company>.sk”. We suppose they wanted to target the South Korean\nusers (i.e. the headquarters), but the domain .sk actually belongs to the Slovak Republic so\nthey were unknowingly trying to infect users from the Slovakian branch of the company!\n\n## Matryoshkas\n\nEver heard of the Russian nesting doll Matryoshka? It’s a set of dolls of decreasing size\nplaced one inside another, and while analyzing the 2nd stage payload binary, we had a\nsense of playing with Matryoshkas ourselves as there were multiple levels of indirection that\nwe had to go through.\n\nThe backdoor in CCleaner called home to receive the second stage payload which we found\nin the server dump under the name GeeSetup_x86.dll.\n\nOpening the first Matryoshka, we see two more containing 32- and 64-bit payloads, each of\nwhich piggybacked on a different legitimate binary along with additional malware for the\nappropriate architecture. The 32-bit version used patched TSMSISrv.dll which originally is a\n\n\n-----\n\nVirtCDRDrv32.dll created by Corel. The 64-bit version used a patched EFACli64.dll originally\ndeveloped by Symantec. The 2nd stage is illustrated in the next figure:\n\nWhen the DLLs were loaded, they saved the embedded malware into the registry and used\nelaborate tactics to extract the registry loader routine and run it. This procedure is described\nin the following section.\n\n## Hacked CRT\n\nOne way to show how sophisticated the attackers were is to look at the way they modified\nthe C runtime (CRT). We will demonstrate this on the 64-bit version. CRT is a piece of code\nthat contains important functions needed for the program to run. The modified CRT code can\nbe found in the second stage payload which is embedded in the original Symantec code. The\nmodifications are performed by adding a few instructions to the function\n__security_init_cookie which is ironically responsible for securing the code from buffer\noverflows—the well-known “canary”. The added instructions change the _pRawDllMain\nfunction pointer to point to the special function that extracts a hidden registry payload loader.\nThe following figure explains the functionality behind the _pRawDllMain.\n\n\n-----\n\nThere is an added jump and a few instructions at the end of CRT function\n__security_init_cookie.\n\nThe attackers found a nice way to hide the loader within the second stage. There are just a\nfew bytes woven into each padding which is commonly put in place by a compiler between\nfunction code. The following figure shows the difference between the original file by\nSymantec (left) and the weaponized one (right):\n\n## The (not so good) kill switch\n\n[Many of you may have heard about the WannaCry ransomware and its weak spot called the](https://www.avast.com/c-wannacry)\nkill switch. The good news in our case is that one of the payloads delivered by the\nbackdoored CCleaner also contains a code mechanism similar to a kill switch. The bad news\nis that it is not as powerful as a kill switch in a WannaCry attack, i.e. no silver bullet.\n\n\n-----\n\nThe most important outcome of the analysis is definitely the discovery of a kill switch. More\ndetails about this finding: The second stage payload checks for the presence of a file\n%TEMP%\\spf. If the file exists, the payload will terminate.\n\nAs you may notice from the code above, this payload is running in an endless loop. Within\nthis loop, the payload tries to communicate with one of its CnC servers. The previously\ndescribed kill-switch can be used to exit the loop and thus the whole program. In other\nwords, this will prevent any other connections to the CnC server. Sadly, the kill-switch is\nchecked after a communication attempt is made, so if the server responded, the user has\nalready received and ran the second stage payload which renders the kill-switch almost\nuseless.\n\n## Getting to Stage Three\n\nSimilar to the first stage payload, the second stage also relies on communication with CnC\nservers. However, there is no hardcoded IP address nor any DGA (domain generation\nalgorithm) like there was in the former payload. Instead, there are three different approaches\nto retrieve the CnC IP address and one of them is picked randomly each time by the\nalgorithm. The three approaches are:\n\n\n-----\n\n1. Via a hidden message stored in user profile details on a GitHub page (this doesn t exist\n\nanymore; it was probably deleted after the attackers realized something was going on).\nThe URL string is parsed by payload in the reply from GitHub and by using simple\nbinary operations. The result is an IP address of another CnC, which the payload uses\nfor communication over TCP port 443 (usually HTTPS). In other code parts, there is\nalso a UDP communication over port 53, which mimics DNS protocol.\n\n2. Alternatively to approach 1, it also tries to retrieve an IP address from a WordPress\nhosted page. Once again, this web page is not active at the moment so the payload is\nunable to retrieve any information from it.\n\n3. Finally, there is a third way to get a CnC IP address and it is very similar to the\n\napproach used in the DGA of the first payload. It tries to read DNS records for a\ndomain “get.adxxxxxx.net” (exact domain name redacted). It requires at least two IP\naddresses from which it computes the target CnC address.\n\nTo illustrate the algorithm, we demonstrate how it would work for the avast.com domain and\nits two IP addresses 77.234.43.52 and 77.234.45.78.\n\nAt first the IP addresses are represented as hexadecimal numbers:\n\n77.234.43.52 = 4D EA 2B 34\n77.234.45.78 = 4D EA 2D 4E\n\nThen the bytes of these numbers are XORed together:\n\n4D EA 2B 34 = /xor/ = C1 79\n4D EA 2D 4E = /xor/ = C7 03\n\nThese four bytes are grouped together forming four octets of the CnC address\nC1 79 C7 03. (Note: we omit displaying the resulting IP address because this was only an\nillustrative example using the avast.com domain). In the case of the get.adxxxxx.net\ndomain, there are no IP addresses registered to this domain right now, thus the algorithm is\nonce again not working and no CnC IP address is served at the time of writing this article.\n\nAs you can see, none of these three methods is able to retrieve the CnC IP address at this\nmoment. If it could retrieve the CnC IP address, however, it would start a bidirectional\nsocket-based communication with the CnC. It will once again upload some information\n(computer name, volume serial number of system drive, installed OS, etc.) about the victims\nof the attack. More importantly this second stage payload is capable of retrieving and\nexecuting additional code from the CnC - the 3rd stage payload.\n\n## Next steps\n\n\n-----\n\nOur investigation and hunt for the perpetrators continues. In the meantime, we advise users\nwho downloaded the affected version to upgrade to the latest version of CCleaner and\nperform a scan of their computer with a good security software, to ensure no other threats\nare lurking on their PC.\n\nThe companies who we believe were introduced to the second stage payload were notified.\nIf there are any other companies who believe they encountered this malware, please contact\n[us through our legal department at legal@avast.com.](http://10.10.0.46/mailto:legal@avast.com)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2017/2017-09-21 - Avast Threat Labs analysis of CCleaner incident.pdf"
+    ],
+    "report_names": [
+        "2017-09-21 - Avast Threat Labs analysis of CCleaner incident.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "2150d1ac-edf0-46d4-a78a-a8899e45b2b5",
+            "created_at": "2022-10-25T15:50:23.269339Z",
+            "updated_at": "2025-03-27T02:00:55.416524Z",
+            "deleted_at": null,
+            "main_name": "APT17",
+            "aliases": [
+                "APT17",
+                "Deputy Dog"
+            ],
+            "source_name": "MITRE:APT17",
+            "tools": [
+                "BLACKCOFFEE"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "a7aefdda-98f1-4790-a32d-14cc99de2d60",
+            "created_at": "2023-01-06T13:46:38.281844Z",
+            "updated_at": "2025-03-27T02:00:02.792526Z",
+            "deleted_at": null,
+            "main_name": "APT17",
+            "aliases": [
+                "G0025",
+                "AURORA PANDA",
+                "Group 72",
+                "G0001",
+                "HELIUM",
+                "Group 8",
+                "Hidden Lynx",
+                "Tailgater Team",
+                "BRONZE KEYSTONE"
+            ],
+            "source_name": "MISPGALAXY:APT17",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "1edcac0b-efd9-47b1-9aca-33827d5bd085",
+            "created_at": "2024-05-01T02:03:07.964773Z",
+            "updated_at": "2025-03-27T02:05:17.273595Z",
+            "deleted_at": null,
+            "main_name": "BRONZE KEYSTONE",
+            "aliases": [
+                "Aurora Panda ",
+                "DeputyDog ",
+                "Group 72 ",
+                "Hidden Lynx ",
+                "Shell Crew",
+                "TG-8153 ",
+                "Tailgater Team",
+                "APT17 "
+            ],
+            "source_name": "Secureworks:BRONZE KEYSTONE",
+            "tools": [
+                " BlackCoffee",
+                " DeputyDog",
+                " Derusbi",
+                " Gh0stHTTPSDropper",
+                " HiKit",
+                " InternalCMD",
+                " PlugX",
+                " PoisonIvy",
+                " ZxShell",
+                "9002"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536220,
+    "ts_updated_at": 1743041765,
+    "ts_creation_date": 1653774906,
+    "ts_modification_date": 1653774906,
+    "files": {
+        "pdf": "https://archive.orkl.eu/33975b3a08bd87435c689d86047ec57297ba27bd.pdf",
+        "text": "https://archive.orkl.eu/33975b3a08bd87435c689d86047ec57297ba27bd.txt",
+        "img": "https://archive.orkl.eu/33975b3a08bd87435c689d86047ec57297ba27bd.jpg"
+    }
+}

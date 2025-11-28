@@ -1,0 +1,64 @@
+{
+    "id": "1a64bb1e-f9fb-4e4d-a205-43b4c12fa8c8",
+    "created_at": "2023-01-12T15:05:14.242013Z",
+    "updated_at": "2025-03-27T02:09:30.373004Z",
+    "deleted_at": null,
+    "sha1_hash": "e0674874070aeaae6e334e58dcc2b1bf2b01183e",
+    "title": "2022-05-06 - Emotet- New Delivery Mechanism to Bypass VBA Protection",
+    "authors": "",
+    "file_creation_date": "2022-05-28T17:13:19Z",
+    "file_modification_date": "2022-05-28T17:13:19Z",
+    "file_size": 1062815,
+    "plain_text": "# Emotet: New Delivery Mechanism to Bypass VBA Protection\n\n**[netskope.com/blog/emotet-new-delivery-mechanism-to-bypass-vba-protection](https://www.netskope.com/blog/emotet-new-delivery-mechanism-to-bypass-vba-protection)**\n\nGustavo Palazolo May 6, 2022\n\n## Summary\n\n[Emotet started as a](https://www.netskope.com/blog/netskope-threat-coverage-emotet) [banking trojan in 2014 and later evolved to what has been considered](https://securelist.com/the-banking-trojan-emotet-detailed-analysis/69560/)\n[the world’s most dangerous malware by Europol, often used throughout the world to deliver](https://www.europol.europa.eu/media-press/newsroom/news/world%e2%80%99s-most-dangerous-malware-emotet-disrupted-through-global-action)\n[many different threats, including TrickBot.](https://cyber.wtf/2021/11/15/guess-whos-back/)\n\n[In October 2020, Netskope analyzed an Emotet campaign that was using PowerShell and](https://www.netskope.com/blog/you-can-run-but-you-cant-hide-detecting-malicious-office-documents)\nWMI within malicious Office documents to deliver its payload. Later in 2021, we also spotted\n[new delivery mechanisms being used, including squiblytwo. However, the most popular](https://attack.mitre.org/techniques/T1220/)\ndelivery mechanism used by Emotet to date is the malicious Microsoft Office document.\n\nIn January 2022, as an attempt to mitigate attacks via malicious Office documents, Microsoft\n[announced that VBA macros will be blocked by default in files downloaded from the internet,](https://techcommunity.microsoft.com/t5/microsoft-365-blog/helping-users-stay-safe-blocking-internet-macros-by-default-in/ba-p/3071805)\nwhich directly affected the way Emotet was being delivered. Netskope released a detailed\nblog post about this protection, anticipating that we would see the use of other types of files,\nlike LNK and VBS.\n\nOn April 26, 2022, [a new Emotet campaign was spotted in the wild, where the usual Office](https://twitter.com/ESETresearch/status/1518923380782739458)\ndelivery system was replaced with LNK files, in a clear response to the VBA protection\nlaunched by Microsoft. Netskope Threat Labs found 139 distinct LNK files that are part of the\n\n\n-----\n\nsame campaign, delivering two distinct payloads that share the same C2 infrastructure.\n\nIn this blog post, we will analyze this Emotet campaign, from the new delivery mechanism to\nthe last payload.\n\n## Stage 01 – LNK Files\n\n[Usually, the initial stage of Emotet is a malicious Office document that abuses VBA macros](https://www.netskope.com/blog/you-can-run-but-you-cant-hide-advanced-emotet-updates)\nto download and execute the payload. In this new delivery system, Emotet abuses the LNK\nfile format (a.k.a. MS-SHLLINK and Shortcut) to execute a PowerShell script.\n\nLooking at the file’s properties, we can see that the LNK target is pointing to the PowerShell\nexecutable.\n\nEmotet’s LNK file.\n\n\n-----\n\nUsing the [LNK parser tool, it s possible to extract more details, such as the command](https://code.google.com/archive/p/lnk-parser/)\nexecuted by PowerShell. The command here decodes a large base64 string and saves the\noutput to a file in the user’s temporary folder. This file is the main script, which is deleted\nafter it’s executed.\n\nEmotet’s PowerShell script, executed through the LNK file.\nThe decoded script contains a list of URLs where Emotet’s payload is hosted. Once running,\nit iterates over the list and makes a request using PowerShell’s [Invoke-WebRequest function.](https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/invoke-webrequest?view=powershell-7.2)\nIf the binary is successfully downloaded, it saves the file to Windows’ temporary directory\n[and executes it using regsvr32.exe.](https://lolbas-project.github.io/lolbas/Binaries/Regsvr32/)\n\nMain PowerShell\n\nscript executed by Emotet’s LNK file.\nWe found 139 distinctLNK files related to Emotet, sharing three different scripts, where the\nonly differences were the payload URLs. All the hashes can be found in our GitHub\nrepository.\n\n\n-----\n\nSimilarities between the analyzed LNK files.\n\n## Stage 02 – Downloaded File\n\nFrom the 139 LNK files we analyzed, we found 12 distinct URLs. Only 9 URLs were online at\nthe time of the analysis, delivering 2 distinct payloads.\n\nPayloads delivered by Emotet URLs.\nThese payloads are packed Emotet samples, both 64-bit DLLs with different compilation\ntimestamps. The first one was likely built on April 25, 2022, and the second on April 27,\n**2022.**\n\n\n-----\n\nComparison between the two downloaded payloads.\nEmotet’s main payload is encrypted and stored in the resources of both packed samples,\nwhich despite some differences, are using the same technique to decrypt and load Emotet.\n\n\n-----\n\nEncrypted Emotet payload.\nOnce running, the packer allocates and executes a shellcode, responsible for the payload\ndecryption process.\n\nShellcode responsible for decrypting Emotet.\nThen, it loads the resource data and decrypts it using a simple rolling XOR algorithm with a\nsmall string as the key, revealing Emotet’s payload.\n\n\n-----\n\nEmotet’s unpacking process.\n[We created a Python script that can be used to statically decrypt and extract Emotet’s](https://github.com/netskopeoss/NetskopeThreatLabsIOCs/blob/main/Emotet/IOCs/script/decrypt_payload.py)\npayload from the loader/packed sample.\n\nPython script used to unpack Emotet.\nAs previously mentioned, both files unpack Emotet using the same process. The only\ndifference is the decryption key.\n\n\n-----\n\nDecryption key used in the second payload.\n\n## Stage 03 – Emotet Payload\n\nIn the third stage, we have two 64-bit Emotet DLLs that were extracted from the two\nloaders/packed samples. They share many similarities, such as the real DLL name, the\ncompiler, and some C2 server addresses. The first one was likely compiled on April 19,\n**2022, and the second one on April 26, 2022.**\n\n\n-----\n\nComparison between the two Emotet payloads.\nThe real name for both files is “Y.dll”.\n\nEmotet’s DLL real name.\nFor persistence, Emotet creates a Windows service to execute itself via regsvr32.exe.\n\n\n-----\n\nAll the important strings used by Emotet are encrypted, located in the PE .text section.\n\nEmotet encrypted string.\n\n[To decrypt the string, this sample uses the same algorithm that is found in 32-bit samples.](https://research.openanalysis.net/emotet/malware/config/2021/11/18/emotet.html)\nThe first four bytes are the decryption key, followed by the length and the encrypted string.\n\n\n-----\n\nPart of decrypted Emotet strings.\n\n[All the decrypted strings can be found in our GitHub repository. For the C2 addresses,](https://github.com/netskopeoss/NetskopeThreatLabsIOCs/tree/main/Emotet/IOCs/2022-05-06)\nEmotet uses the same logic, but the data is located in the PE .data section.\n\nEncrypted C2 addresses\nWe found 63 IP addresses in each binary we analyzed. To extract this information statically,\nwe used a [Python script that parses the file and implements the same decryption logic.](https://github.com/netskopeoss/NetskopeThreatLabsIOCs/blob/main/Emotet/IOCs/script/decrypt_c2.py)\n\n\n-----\n\nPython script to extract Emotet’s C2 addresses.\n\n## Conclusions\n\nEmotet has already proven to be extremely resilient, as even after a global collaboration\n[among law enforcement agencies in January 2021 disrupted the malware’s infrastructure,](https://www.justice.gov/opa/pr/emotet-botnet-disrupted-international-cyber-operation)\n[the botnet managed to return to its activities in late 2021. Replacing the delivery mechanism](https://www.netskope.com/blog/netskope-threat-coverage-the-return-of-emotet)\nfrom malicious Office documents with another file format shows that the attackers are\nconstantly adapting Emotet to remain active.\n\n## Protection\n\nNetskope Threat Labs is actively monitoring this campaign and has ensured coverage for all\nknown threat indicators and payloads.\n\n**Netskope Threat Protection**\n\nShortcut.Trojan.GenAutorunLnkFile\nWin64.Trojan.Emotet\n\n\n-----\n\n**Netskope Advanced Threat Protection provides proactive coverage against this**\nthreat.\n\nGen.Malware.Detect.By.StHeur indicates a sample that was detected using static\nanalysis\nGen.Malware.Detect.By.Sandbox indicates a sample that was detected by our\ncloud sandbox\n\n## IOCs\n\nAll the IOCs related to this campaign, the scripts, and the Yara rules can be found in our\n[GitHub repository.](https://github.com/netskopeoss/NetskopeThreatLabsIOCs/tree/main/Emotet)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-05-06 - Emotet- New Delivery Mechanism to Bypass VBA Protection.pdf"
+    ],
+    "report_names": [
+        "2022-05-06 - Emotet- New Delivery Mechanism to Bypass VBA Protection.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535914,
+    "ts_updated_at": 1743041370,
+    "ts_creation_date": 1653757999,
+    "ts_modification_date": 1653757999,
+    "files": {
+        "pdf": "https://archive.orkl.eu/e0674874070aeaae6e334e58dcc2b1bf2b01183e.pdf",
+        "text": "https://archive.orkl.eu/e0674874070aeaae6e334e58dcc2b1bf2b01183e.txt",
+        "img": "https://archive.orkl.eu/e0674874070aeaae6e334e58dcc2b1bf2b01183e.jpg"
+    }
+}

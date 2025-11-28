@@ -1,0 +1,42 @@
+{
+    "id": "04013435-edb9-48c0-a4bd-ba79d3e221b4",
+    "created_at": "2023-01-12T15:03:47.637315Z",
+    "updated_at": "2025-03-27T02:05:41.921135Z",
+    "deleted_at": null,
+    "sha1_hash": "4b3cec9867ec9c5456449eedeaa67acc7b659ea9",
+    "title": "2022-02-04 - Shortcut to Windows Update",
+    "authors": "",
+    "file_creation_date": "2022-07-02T23:16:58Z",
+    "file_modification_date": "2022-07-02T23:16:58Z",
+    "file_size": 756770,
+    "plain_text": "# Shortcut to Windows Update\n\n**cyberandramen.net/2022/02/04/shortcut-to-windows-update/**\n\n## Summary\n\n\nFebruary 4, 2022\n\n\nOn January 27, 2022, Malwarebytes Labs shared an article covering new tactics including abusing the Windows Update Client for code\nexecuting believed to be the work of Lazarus.\n\nThe purpose of this post will be to cover possible detection points for defenders to identify adversaries misusing the Windows Update Client.\n\nPlease give the blog post by Ankur Saini and Hossein Jazi a read. The information for the piece of malware this blog will focus on is below:\n\n**Filename** **File Size** **SHA256** **Reference**\n\nwuaueng.dll 227.48KB 829eceee720b0a3e505efbd3262c387b92abdf46183d51a50489e2b157dac3b1 https://blog.malwarebytes.com/threatintelligence/2022/01/north-koreas[lazarus-apt-leverages-windows-](https://blog.malwarebytes.com/threat-intelligence/2022/01/north-koreas-lazarus-apt-leverages-windows-update-client-github-in-latest-campaign/)\nupdate-client-github-in-latestcampaign/\n\nTable 1\n\n## Shortcut to Success\n\nUpon opening the malicious document, a chain of code injections occur and numerous files are dropped to disk. Persistence is achieved via\nthe Word document creating a hidden C:\\Windows\\System32 and dropping a shortcut file (LNK) to the Startup folder.\n\nThe purpose of this shortcut file named windowsupdateconf.lnk, is to execute the malicious DLL identified above in Table 1, which is\nembedded with an additional payload that will communicate with the C2.\n\nwuauclt.exe which resides at C:\\Windows\\System32 is intended to be used via the command line and accepts a number of options, good luck\nfinding worthwhile documentation though.\n\nMore common options that may be seen used with wuauclt.exe are:\n\n/detectnow\n/resetauthorization\n/reportnow\n\nThe following is to achieve code execution in the LNK file’s target path: “C:\\Windows\\system32\\wuauclt.exe” /UpdateDeploymentProvider\n_C:\\Wíndows\\system32\\wuaueng.dll /RunHandlerComServer“._\n\n## Indicators/Detection\n\nImage 1: Sysmon Event 1, Process Creation\n\n\n-----\n\noo g at t e abo e p ocess c eat o e e t output, a e te s s ou d ju p out to de e de s\n\nThe Current Directory is the startup folder as opposed to cmd.exe.\nThe command line options “/UpdateDeploymentProvider” and “/RunHandlerComServer” are used to load a DLL. This should be\nconsidered suspicious and warrant a closer look.\n\nImage 2: Sysmon CreateRemoteThread detected\nAs discussed earlier, this particular malware makes use of code injection at numerous points during the execution flow. As we can see in\nImage 2, wuauclt has injected itself into the explorer.exe process.\n\nAfter running a few tests in a lab environment, I could not identify a legitimate purpose for wuauclt to inject into explorer.\n\nIdentifying the unusual command-line arguments in Splunk is very simple and can be completed in one line. This is an extremely basic rule,\nand an additional check for the DLL from well-known paths used by adversaries could be used as well.\n```\nsysmon EventID 1 AND ParentCommandLine \"/UpdateDeploymentProvider\" AND \"/RunHandlerComServer\" AND ParentImage NOT\n\"C:\\\\Windows\\\\System32\\\\cmd.exe\"\n\n```\nImage 3: Splunk query for suspicious wuauclt arguments\nAfter reading a recent CrowdStrike blog on Microsoft Protection Logging, or MPLog, I wanted to see what events if any may be detected during\nthe execution of the LNK file.\n\nUnfortunately, Microsoft doesn’t provide a great deal of documentation on the event types in MPLog but in addition to the possible detection\nareas identified by CrowdStrike, the below event is also worth mentioning.\n\n\n-----\n\nImage 4: MPLog BM telemetry\nThe BM or Behavior Monitoring telemetry as the name implies captures suspicious activity on workstations for additional analysis. Your\nenvironment may vary, but the only time a BM event was initiated in my lab was when the LNK was run.\n\nThis is out of the scope of this blog, but forwarding some of the more useful MPLog events to a SIEM could likely be a useful addition to\nidentifying compromise on a system.\n\nEnough of Sysmon and logs, let’s take a look at the DLL file.\n\nImage 5: capa output of wuaueng.dll\nUsing Mandiant’s capa tool, we can get a quick overview of the capabilities of the DLL. In the output, capa confirms what we already know, that\nthe DLL file contains an embedded PE file and installs an additional program.\n\n## Interesting Strings\n\n– {“message”:”Commit changed details”,”content”:”Q29tcGxldGVkIHN1Y2Nlc3NmdWxseQ==”}\n\n– Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/95.0.4638.69 Safari/537.36\n\n– Accept: application/vnd.github.v3+json\n\n– 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\n\n– api.github.com\n\n– metafiles/tmp%.4d%.2d%.2d%.2d%.2d%.2d.txt\n\n\n-----\n\nt t s s p obab y a good p ace to stop y a a ys s to a o d go g deepe do a abb t o e\n\nHope you enjoyed reading!\n\n## More Info\n\n Yara Rule\n```\nrule APT_LAZARUS_WINUPDATE_DLL {\n\n  meta:\n\n  description = \"Detect malicious DLL executed via the Windows Update Client.\"\n  author = \"Michael Rippey\"\n\n  reference = \"https://blog.malwarebytes.com/threat-intelligence/2022/01/north-koreas-lazarus-apt-leverages-windows-updateclient-github-in-latest-campaign/\"\n\n  date = \"2022-02-06\"\n\n  hash = \"829eceee720b0a3e505efbd3262c387b92abdf46183d51a50489e2b157dac3b1\"\n\n\n  strings:\n\n    $n1 = \"api.github.com\" fullword ascii\n\n    $n2 = \"repos/%s/%s/contents/%s\" fullword ascii\n\n    $n3 = \"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/95.0.4638.69 Safari/537.36\"\nfullword ascii\n\n    $n4 = \"metafiles/tmp%.4d%.2d%.2d%.2d%.2d%.2d.txt\" fullword ascii\n\n    $e1 = \"{\\\"message\\\":\\\"Commit changed details\\\",\\\"content\\\":\\\"Q29tcGxldGVkIHN1Y2Nlc3NmdWxseQ==\\\"}\" fullword ascii\n\n    $e2 = \"CreateRemoteThreNtProtectVirtualWriteProcessMemoRtlCreateUserThr\" fullword ascii\n\n    $e3 = \"omni callsig\" fullword ascii\n\n    $e4 = \" Type Descriptor'\" fullword ascii\n\n    $e5 = \"$Sectigo Public Code Signing Root R460\" fullword ascii\n\n    $e6 = \"Sleef\" fullword ascii\n\n  condition:\n\n    uint16(0) == 0x5A4D and\n\n    (any of ($n*) or 3 of ($e*))\n\n    and filesize < 228KB\n\n}\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-02-04 - Shortcut to Windows Update.pdf"
+    ],
+    "report_names": [
+        "2022-02-04 - Shortcut to Windows Update.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673535827,
+    "ts_updated_at": 1743041141,
+    "ts_creation_date": 1656803818,
+    "ts_modification_date": 1656803818,
+    "files": {
+        "pdf": "https://archive.orkl.eu/4b3cec9867ec9c5456449eedeaa67acc7b659ea9.pdf",
+        "text": "https://archive.orkl.eu/4b3cec9867ec9c5456449eedeaa67acc7b659ea9.txt",
+        "img": "https://archive.orkl.eu/4b3cec9867ec9c5456449eedeaa67acc7b659ea9.jpg"
+    }
+}

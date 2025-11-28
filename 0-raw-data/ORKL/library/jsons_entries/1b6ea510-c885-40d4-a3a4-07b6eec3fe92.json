@@ -1,0 +1,84 @@
+{
+    "id": "1b6ea510-c885-40d4-a3a4-07b6eec3fe92",
+    "created_at": "2023-03-03T02:05:49.975588Z",
+    "updated_at": "2025-03-27T02:16:26.536921Z",
+    "deleted_at": null,
+    "sha1_hash": "13e1ebe19139a55c5a30fead4458ee13bb1486c4",
+    "title": "2023-02-03 - Ave Maria and the Chambers of Warzone RAT",
+    "authors": "",
+    "file_creation_date": "2023-03-01T09:08:19Z",
+    "file_modification_date": "2023-03-01T09:08:19Z",
+    "file_size": 11255830,
+    "plain_text": "# Ave Maria and the Chambers of Warzone RAT\n\n**huntress.com/blog/ave-maria-and-the-chambers-of-warzone-rat**\n\nFriday, September 30, 2022, seemed a day like any other--until a large amount of PowerShell malware came\ncharging through seeking immediate attention. Sparing no time, I jumped right in.\n\nAt first, this was troubling. Are the detectors working?? Is something broken?? In order to verify our detector\n'ExecutionFromEnvironmentVariable' had triggered correctly for all these autoruns, I did a quick search:\n\n**details.path:powershell.exe +details.command:\"GetEnvironmentVariable\"**\n\nThis gave the result for 40 autoruns. 😬 _*cracks knuckles* Time to get down to business._\n\n[Pro Tip: Doing a quick search helps analysts develop a better understanding of the Elastic search syntax. This](https://www.elastic.co/guide/en/elasticsearch/reference/5.6/query-dsl-query-string-query.html#query-string-syntax)\ngives analysts a better understanding of common characteristics and could potentially assist in finding additional\nfootholds.\n\nNow let's dive into the autorun we are checking out.\n\nWe can see GetEnvironmentVariable('60493fbacedcfbcabe', 'User') along with the User Run Key Name. They\nboth use a Base-16 (HEX) formatting, which means alphabetic characters of A - F and numbers 0 - 9 with a length\n\n`of 12 to 18. Using` [regex we can use [a-f0-9]{12,18}.](https://regexr.com/)\n\n\n-----\n\nNow, on to implementing our findings in RIOs data within ELK. We use a similar but modified search query (seen\nbelow) which provided six additional hits. This information tells us this is an active threat still present on the host.\nRead: time is of the essence.\n\n+process.command_line.text:\"GetEnvironmentVariable\" +process.command_line.text:/[a-f0-9]{12,18}/\n\nReviewing the Foothold Details, we are able to see the persistence created within the Hive Current Users Run Key.\n(HKU\\SID\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run)\n\nThe command ran by the Users Run Key launches PowerShell and invokes expressions in the host's environments\nregistry with the value 60493fbacedcfbcabe.\n\nFrom here we will take to tasking the user's Hive Current Users Environment: (HKU\\SID\\Environment). We obtain the\nnext stage within the registry location HKU\\SID\\Software\\<value>.\n\n**It’s important to note: These additional registry keys will be required in the report for the customer to remove.**\n\n\n-----\n\nViewing the HKU\\SID\\Software\\27842badfbdabe, we see four values (default, 0, 1 and 3) which show PowerShell\nvariables and encoding. Save the values 0, 1 and 3 for later and isolate the script for further analysis.\n\nLet’s start digging further into the script.\n\nWithin the script, it has encoded variables with Base64, a reverse array that joins the data. What could it be hiding?\nAnd make no mistake--it's always hiding something.\n\n\n-----\n\nUsing Cyberchef, we can attempt to quickly decode the base64 strings with the formula of Subsection and\n```\nFrombase64. This should grab the majority of strings but will still need some manual intervention. This is where\n\n```\nanalysts come into play.\n\n\n-----\n\nAfter replacing the encoded Base64 script, we quickly see it has a key, padding, IV, and other common encryption\nfunctions. Let’s replace the variables with the corresponding value to make the functions of the script easier to read,\nthus attempting to reveal the secret embedded within.\n\nNow with the script variables replaced, we can see the payload is using AES Encryption using cipher mode Electronic\nCodeBook (ECB), dropping 16 bytes to create the IV, and it has also been compressed.\n\n**Note: Some samples use different cipher modes so make sure to verify this (for example, we have seen ECB**\n**and CBC).**\n\nTo get the IV for our AES encryption, we need to place the payload in Cyberchef. Since we can see the padding = for\nBase64, we reverse the payload. Then we use From Base64 after which we drop the bytes from 16 bytes (start at 16\nand a large length) Now we convert the IV back To Base64\n\n\n-----\n\nThis results in our IV: duNJnxEFm0/Nw/W34mpGMg==\n\nLet's combine everything together now. Make sure to reverse the payload From Base64 and drop the first 16 Bytes.\nWith the AES decrypt we require the Base64 Key 9fJygHL[...], an IV that was obtained earlier duNJnx[...], then\nchange the AES cipher mode to ECB, input as Raw, and the output as Raw. Since the payload has also been\ncompressed we will be required to use Raw Inflate to get our final output.\n\n\n-----\n\nWhen inspecting the output we can already see the next stage is another script. This script of the payload is identical\nto the previous one. This is a rinse-and-repeat stage. Hope you weren't expecting this to be straightforward; that'd be\ntoo easy!\n\n\n-----\n\nAfter cementing what we just learned, we gain a new output.\n\nTo go further, it’s required to download the payload from a Discord link. This comes down to analysts' choice in how\nthey download malicious samples.\n\n**Note: If a script has Reflection.Assembly** [(assembly), this loads a .NET payload. Therefore anytime we see](https://learn.microsoft.com/en-us/dotnet/api/system.reflection.assembly?view=net-6.0)\n```\nReflection.Assembly we know we’re dealing with a .NET malware.\n\n```\n\n-----\n\nAfter downloading the Discord payload, we will allow the script to do the heavy lifting. We just need to modify parts out\nof the script after we downloaded and isolated the payload:\n\n[string] $xoredText = Get-Content \"C:\\\\users\\\\Burgers\\\\Desktop\\\\mkv.txt\"\n\n[io.file]::writeallbytes(\"C:\\\\users\\\\burgers\\\\desktop\\\\mkv_decoded.bin\", $bytes)\n\n\n-----\n\n[With the decoded mkv_decoded.bin it’s important to still do a quick static analysis of the payload within pestudio. The](https://www.winitor.com/)\nsignature confirms our suspicions of it being .NET. Along with the description and version of the file, it gives us\nadditional information that the payload may be a netLoaderDll. We also see the entropy is only 2.980, showing this\npayload may not be packed.\n\nInspecting the netLoaderDll within dnSpy we see a few classes: Main, runPayload and StringToByteArray.\n\n\n-----\n\nThis application stores the next stage of the malware within Main(), which we see has a large byte array within it. The\nnetLoaderDll requires StringToByteArray to convert the hex to an application and runPayload will launch the next\nstage.\n\nExtract the hex string from dnSpy and place it within Cyberchef and convert From Hex to gain our next stage.\n\n\n-----\n\nOnce more place the next stage within pestudio for a quick static analysis of the file's contents. We can see the\noriginal files named RunPE.exe. With a description of SyscallPEloader, we can somewhat safely assume this is\npotentially a tool to modify the syscall. This file is now packed heavily with an entropy of 7.766.\n\n\n-----\n\nSadly this is not the last stage of the malware, and it appears that it is using a common evasion tactic of unhooking\nAPIs within the host and thus spawns a process for Notepad.exe. Needing further insight, we turn to one of our\nneighborhood experts to finish off this investigation.\n\n➡️ Big thanks to [@Matthew Brennanfor his insight on this next stage.](https://twitter.com/embee_research)\n\nThe following is basically a TL;DR of Matthew's findings. Let's check it out!\n\n\n-----\n\nAfter the execution of the RunPE.exe, we open ResourceHacker to see available processes on the host.\n\nWithin properties, we open the Threads tab. Instantly a TID of 3488 flashes in front of us and changes its start\naddress from 0x1da511e0000 to 0x0.\n\n\n-----\n\nInspect the thread, if you will: here we see SleepEx+0x9e which sleeps the host. Also, there is an address of\n```\n0x1da52c4acdf that is close to the start address that flashed at the beginning. This could be the decryption piece of\n\n```\nthe software. Copy the thread 0x1da52c4acdf. Go ahead. It's okay.\n\n\n-----\n\nNow attach the Notepad.exe process to x64dbg and Go to Expression with Ctrl + G. Now paste the thread address\n\n`0x1da52c4acdf` and set an execution breakpoint. We'll wait.\n\nChange the thread to the value closest to the address; in this case, it is the thread using 000001DA511E0000.\n\n\n-----\n\nNow we run the debugger until it hits the Hardware BreakPoint. We hit the key g and get a glimpse of what the loops\nare doing on this host. This is potentially the decryptor algorithm.\n\nWe also set a Hardware on Execution breakpoint on the address 000001DA52C4AD2B and run the application.\n\nNow step in the code a few times and we get our C2 information: organitations[.]com/Preserve/stat/3E8YZFXJ\n(69.28.84.201).\n\n\n-----\n\nReview ELK for the process notepad.exe that is spawned by the parent process powershell.exe with the command\nfrom the user's environment.\n\n**Note: It’s important to remove this process from the client as this is a cobalt strike beacon.**\n\n**TLDR:**\n\nThe Initial payload for this malware is:\n\n- a user downloads a maldocx from a phishing email\n\n- they execute the executable which runs an encoded base64 command that disables the firewall and installs\nenvironment persistence within the user's AutoRun key and creates a process that has RAT capabilities.\n\nIt’s found some samples that have this form of execution pattern:\nMaldocx → Javascript (Wscript) → Powershell Environment → Cobaltstrike\n\nMaldocx → Powershell Environment → Cobaltstrike\n\n## Final Thoughts\n\nWe hope you found this deconstruction helpful and useful. Below are some additional resources for you to get your\nhands dirty and gain a deeper understanding of what we did here in this blog today. The more analysts play around\nwith malware in a safe environment, the better they can become at spotting the nastier, greasier, well-hidden activity\nlurking within environments.\n\n**Discord URLs**\n```\n https://cdn[.]discordapp[.]com/attachments/1004902785772441697/1004915801771495495/ppp\n https://cdn[.]discordapp[.]com/attachments/1013559875034415135/1014369421629857882/sdwwcKkjnwsdw.mkv\n\n```\n**Autorun**\n```\n HKU\\SID\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run\n HKU\\SID\\Environment\n HKU\\SID\\Software\\<value>\n C:\\Users\\User\\appdata\\local\\temp\\<value>.js - Some Variants\n\n```\n\n-----\n\n**Search Queries**\n```\n +details.path:powershell.exe +details.command:\"GetEnvironmentVariable\"\n +process.command_line.text:\"GetEnvironmentVariable\" +process.command_line.text:/[a-f0-9]{12,18}/\n +process.name:notepad.exe +process.parent.name:powershell.exe +process.parent.args_count:7\n +process.cleartext:(cdn.discordapp.com AND attachments)\n\n```\n**Chad Hudson**\n\nThreatOps Analyst Team Lead at Huntress.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2023/2023-02-03 - Ave Maria and the Chambers of Warzone RAT.pdf"
+    ],
+    "report_names": [
+        "2023-02-03 - Ave Maria and the Chambers of Warzone RAT.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1677809149,
+    "ts_updated_at": 1743041786,
+    "ts_creation_date": 1677661699,
+    "ts_modification_date": 1677661699,
+    "files": {
+        "pdf": "https://archive.orkl.eu/13e1ebe19139a55c5a30fead4458ee13bb1486c4.pdf",
+        "text": "https://archive.orkl.eu/13e1ebe19139a55c5a30fead4458ee13bb1486c4.txt",
+        "img": "https://archive.orkl.eu/13e1ebe19139a55c5a30fead4458ee13bb1486c4.jpg"
+    }
+}

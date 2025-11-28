@@ -1,0 +1,160 @@
+{
+    "id": "0433aa6b-966f-42a8-92c8-456aab8cd55b",
+    "created_at": "2023-01-12T15:01:13.453299Z",
+    "updated_at": "2025-03-27T02:11:51.769016Z",
+    "deleted_at": null,
+    "sha1_hash": "451e988bd5d3399140dc853968307009ad72cd4c",
+    "title": "2022-01-19 - Operation Bleeding Bear",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:53:02Z",
+    "file_modification_date": "2022-05-28T19:53:02Z",
+    "file_size": 3704854,
+    "plain_text": "# Operation Bleeding Bear\n\n**[elastic.github.io/security-research/malware/2022/01/01.operation-bleeding-bear/article/](https://elastic.github.io/security-research/malware/2022/01/01.operation-bleeding-bear/article/)**\n\n\n-----\n\n-----\n\n2022-01-19\n\n## Key Takeaways¶\n\n\n-----\n\nElastic Security provides new analysis and insights into targeted campaign against Ukraine\norganizations with destructive malware reported over the weekend of Jan 15, 2022\nTechniques observed include process hollowing, tampering with Windows Defender, using a Master\nBoot Record (MBR) wiper, and file corruptor component\nElastic Security prevents each stage of the described campaign using prebuilt endpoint protection\nfeatures\n\n## Overview¶\n\nOver this past weekend (1/15/2022), Microsoft released details of a new campaign targeting Ukrainian\ngovernment entities and organizations with destructive malware. In a multi-staged attack, one malware\ncomponent known as WhisperGate utilizes a wiping capability on the Master Boot Record (MBR), making\nany machine impacted inoperable after boot-up.\n\n\n-----\n\nWithin another stage, a file infector component is used to corrupt files in specific directories with specific\nfile extensions. The elements used in this campaign lack the common characteristics of a ransomware\ncompromise – in this case the adversary uses the same Bitcoin address for each victim and offers no sign\nof intent to decrypt the victim’s machine.\n\n_Translation: Update information on the cyber attack on January 13-14 on Ukrainian infrastructure. For a_\n_coordinated response report the incident: report@ncscc.gov.ua_\n\n**Elastic users are fully protected from attacks like these through our advanced malware detection and**\nRansomware Protection capabilities in the platform. The Elastic Security team continues to monitor these\nevents. This case highlights the importance of prevention when it’s up against ransomware and malware\nwith destructive capabilities.\n\n## Malware analysis breakdown (Stages 1-4)¶\n\n### Stage 1: WhisperGate MBR payload¶\n\nThe Master Boot Record (MBR) is software that executes stored start-up information and, most\nimportantly, informs the system of the location of the bootable partition on disk that contains the user’s\noperating system. If tampered with, this can result in the system being inoperable – a common tactic for\nmalware and ransomware campaigns over the years to interrupt operation of the infected system.\n\nThe stage 1 binary is named `stage1.exe and has low complexity. A` `8192 byte buffer containing the`\nnew MBR data that includes the ransom note is allocated on the stack. A file handle is retrieved from\n**CreateFileW pointing to the first physical drive which represents the MBR. That file handle is then called**\nby WriteFile which takes only `512 bytes from the buffer writing over the Master Boot Record.`\n\n\n-----\n\nThe host is subsequently rendered inoperable during the next boot-up sequence. Below is a screenshot\nshowing the ransom note from an affected virtual machine.\n\nContained within the ransom note are instructions soliciting payment to a bitcoin wallet address of\n[1AVNM68gj6PGPFcJuftKATa4WLnzg8fpfv. The wallet does not appear to have received funds from](https://www.blockchain.com/btc/address/1AVNM68gj6PGPFcJuftKATa4WLnzg8fpfv)\nvictims as of the publication of this post.\n\n\n-----\n\n### Stage 2/3: Discord downloader and injector¶\n\nOnce the payload has gained a foothold, further destructive capabilities are facilitated by the stage 2\nbinary, called `stage2.exe . This binary pulls down and launches a payload hosted via the Discord`\n[content delivery network, a recently](https://www.riskiq.com/blog/external-threat-management/discord-cdn-abuse-malware/) [reported approach which is increasingly being used by malicious](https://www.zscaler.com/blogs/security-research/discord-cdn-popular-choice-hosting-malicious-payloads)\nactors.\n\nThe obfuscated .NET payload (described as Stage 3 below) is then executed in memory, setting off a\nnumber of events including:\n\nWriting and executing a VBS script that uses PowerShell to add a Windows Defender exclusion on\nthe root directory (C:)\n\n\n-----\n\nWriting and executing a VBS script\n```\n\"C:\\Windows\\System32\\WScript.exe\"\"C:\\Users\\jim\\AppData\\Local\\Temp\\Nmddfrqqrbyjeygggda.vbs\"\n\n```\nUses PowerShell to add a Windows Defender exclusion\n```\npowershell.exe Set-MpPreference -ExclusionPath 'C:\\'\n\n```\n[AdvancedRun, a program used to run Windows applications with different settings, is then dropped](https://www.nirsoft.net/utils/advanced_run.html)\nto disk and executed in order to launch the Service Control Manager and stop the Windows\nDefender service (WinDefend).\n\nAdvancedRun is used to stop Windows Defender\n```\n\"C:\\Users\\jim\\AppData\\Local\\Temp\\AdvancedRun.exe\" /EXEFilename \"C:\\Windows\\System32\\sc.exe\" `\n /WindowState 0 /CommandLine \"stop WinDefend\" /StartDirectory \"\" /RunAs 8 /Run\n\n```\nAdvancedRun is used again when launching PowerShell to recursively delete the Windows\nDefender directory and its files.\n\nAdvancedRun deleting the Windows Defender directory\n```\n\"C:\\Users\\jim\\AppData\\Local\\Temp\\AdvancedRun.exe\" `\n /EXEFilename \"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" /WindowState 0 `\n /CommandLine \"rmdir 'C:\\ProgramData\\Microsoft\\Windows Defender' -Recurse\" `\n /StartDirectory \"\" /RunAs 8 /Run\n\n```\nCopies `InstallUtil.exe is a command-line utility that allows users to install and uninstall server`\nresources from the local machine into the user’s `%TEMP% directory. This action leverages the file for`\n[process hollowing by launching it in a suspended state.](https://www.elastic.co/blog/ten-process-injection-techniques-technical-survey-common-and-trending-process)\n\n\n-----\n\nIt then proceeds to allocate memory ( VirtualAllocEx ), write the file corruptor payload (described\nas the Final Stage below) into memory ( WriteProcessMemory ), modify the thread entry point\n( SetThreadContext ) to point to the file corruptor entry point, and start execution of the file\ncorruptor ( ResumeThread ).\n\n### Final stage: File corruptor¶\n\nThe final file corruptor payload is loaded in memory via process hollowing to the InstallUtil process. The\nfile corruptor:\n\nTargets any local hard drives, attached USB drives, or mounted network shares\nScans directories for files matching internal hard-coded extension list (excluding the Windows\nfolder)\n```\n.3DM .3DS .602 .7Z .ACCDB .AI .ARC .ASC .ASM .ASP .ASPX .BACKUP .BAK .BAT .BMP .BRD\n.BZ .BZ2 .C .CGM .CLASS .CMD .CONFIG .CPP .CRT .CS .CSR .CSV .DB .DBF .DCH .DER .DIF\n.DIP .DJVU.SH .DOC .DOCB .DOCM .DOCX .DOT .DOTM .DOTX .DWG .EDB .EML .FRM .GIF .GO\n.GZ .H .HDD .HTM .HTML .HWP .IBD .INC .INI .ISO .JAR .JAVA .JPEG .JPG .JS .JSP .KDBX\n.KEY .LAY .LAY6 .LDF .LOG .MAX .MDB .MDF .MML .MSG .MYD .MYI .NEF .NVRAM .ODB .ODG .ODP\n.ODS .ODT .OGG .ONETOC2 .OST .OTG .OTP .OTS .OTT .P12 .PAQ .PAS .PDF .PEM .PFX .PHP .PHP3\n.PHP4 .PHP5 .PHP6 .PHP7 .PHPS .PHTML .PL .PNG .POT .POTM .POTX .PPAM .PPK .PPS .PPSM .PPSX\n.PPT .PPTM .PPTX .PS1 .PSD .PST .PY .RAR .RAW .RB .RTF .SAV .SCH .SHTML .SLDM .SLDX .SLK\n.SLN .SNT .SQ3 .SQL .SQLITE3 .SQLITEDB .STC .STD .STI .STW .SUO .SVG .SXC .SXD .SXI .SXM\n.SXW .TAR .TBK .TGZ .TIF .TIFF .TXT .UOP .UOT .VB .VBS .VCD .VDI .VHD .VMDK .VMEM .VMSD\n.VMSN .VMSS .VMTM .VMTX .VMX .VMXF .VSD .VSDX .VSWP .WAR .WB2 .WK1 .WKS .XHTML .XLC .XLM\n.XLS .XLSB .XLSM .XLSX .XLT .XLTM .XLTX .XLW .YML .ZIP\n\n```\nOverwrites the start of each targeted file with 1MB of static data (byte `0xCC ), regardless of file size`\nRenames each targeted file to a randomized extension\nDeletes self with the command:\n\nOverwriting, renaming, and deleting files\n```\ncmd.exe /min /C ping 111.111.111.111 -n 5 -w 10 > Nul & Del /f /q <running process path>\n\n```\n\n-----\n\n## MBR protection with Elastic Security¶\n\nChanges to the MBR are particularly strong signals of anomalous and destructive activity typically\nassociated with ransomware. To counteract this, Elastic security researchers built an MBR protection\ncomponent based around these signals into our multi-layered ransomware protection feature.\n\nWhen a process attempts to overwrite the contents of the MBR, the prewrite buffer and other associated\nprocess metadata will be analyzed inline before any changes are written to disk. If the activity is deemed\nmalicious in nature, the process will either be terminated immediately (prevention mode) and / or an\nappropriate ransomware alert will be generated (prevention and detection modes) to allow security\noperators time to respond.\n\nWhen configured in prevention mode, Elastic Security’s ransomware protection ensures that the integrity\nof the MBR is fully preserved, with no changes ever reaching disk thanks to the synchronous framework\nleveraged by the feature — effectively preventing the ransomware attack in their tracks as the offending\nprocess is terminated.\n\nWhen `WriteFile is invoked on` `PhysicalDrive0 on a host running Elastic Security with ransomware`\nprotection enabled, the pending change will immediately be analyzed and deemed malicious. Afterwards,\nthe process will be terminated, the endpoint user will be alerted via a popup notification, and a\nransomware prevention alert will be sent to and stored in Elasticsearch. The intended ransom note can\nbe easily deciphered after Base64 decoding the contents of the prewrite buffer found in the alert within\nKibana.\n\n\n-----\n\nIt is important to note that while this behaviour is detected by Elastic, it is not specific to this payload and\nrather the behaviour the payload is exhibiting. This increases our chance of being able to detect and\nprevent malicious behaviors, even when a static signature of the malware is not known. Threat actors find\nthis kind of control more difficult to evade than traditional, signature-based detection and prevention\napproaches.\n\n## Observing WhisperGate in Elastic Security¶\n\nBy observing the process hash of the stage 1 dropper above\n( a196c6b8ffcb97ffb276d04f354696e2391311db3841ae16c8c9f56f36a38e92 ) via the process.hash\nfunction within Elastic Security, we can isolate the ransomware alert and analyze the blocked attempt at\noverwriting the MBR.\n\n\n-----\n\nAs we can see, the data is stored as a Base64 encoded string in Elasticsearch. Decoded, we can see the\ncontents of the ransom note that would be displayed to the end user of an affected system.\n\n\n-----\n\n## Alert breakdown and defensive recommendations¶\n\nThe following alerts were triggered in Elastic Security during our investigations:\n\n### Endpoint Security Integration Alerts¶\n\n**Stage 1 - MBR Wiper ( a196c6b8ffcb97ffb276d04f354696e2391311db3841ae16c8c9f56f36a38e92)**\n\nMalware Prevention Alert\nRansomware Prevention Alert (MBR overwrite)\n\n**Stage 2 - Downloader ( dcbbae5a1c61dbbbb7dcd6dc5dd1eb1169f5329958d38b58c3fd9384081c9b78 )**\n\nMalware Prevention Alert\n\n**Stage 3 + Stage 4 - Injector/File Corruptor**\n( 34CA75A8C190F20B8A7596AFEB255F2228CB2467BD210B2637965B61AC7EA907 ))\n\nRansomware Prevention Alert (canary files)\nMalicious Behaviour Prevention Alert - Binary Masquerading via Untrusted Path\nMemory Threat Prevention Alert\n\n### Prebuilt Detection Engine Alerts¶\n\n[The following existing public detection rules can also be used to detect some of the employed techniques:](https://github.com/elastic/detection-rules)\n\n### Hunting queries¶\n\n[Detect attempt to tamper with Windows defender settings via NirSoft AdvancedRun executed by the](https://www.nirsoft.net/utils/advanced_run.html)\nStage 3 injector:\n\nDetect attempts to tamper with Windows Defender\n\n\n-----\n\n```\np ocess e e e e t type sta t a d\nprocess.pe.original_file_name == \"AdvancedRun.exe\" and\nprocess.command_line :\n  (\"*rmdir*Windows Defender*Recurse*\",\n  \"*stop WinDefend*\")\n\n```\nMasquerade as InstallUtil via code injection :\n\nIdentifies code injection with InstallUtil\n```\nprocess where event.type == \"start\" and\nprocess.pe.original_file_name == \"InstallUtil.exe\" and\nnot process.executable : \"?:\\\\Windows\\\\Microsoft.NET\\\\*\"\n\n## MITRE ATT&CK¶\n\n Summary¶\n\n```\nThese targeted attacks on Ukraine using destructive malware match a similar pattern observed in the\npast such as [NotPetya. By leveraging different malware components to wipe machines and corrupt files,](https://www.wired.com/story/notpetya-cyberattack-ukraine-russia-code-crashed-the-world/)\nit’s apparent there was no intent to recover any funds, but likely a technique used to sow chaos and doubt\ninto Ukraine’s stability.\n\nAs these events are still ongoing, we wanted to release some initial analysis and observations from our\nperspective. We also wanted to highlight the prevention capabilities of Elastic Security across each stage\nof this attack, available to everyone today.\n\nExisting Elastic Security users can access these capabilities within the product. If you’re new to Elastic\nSecurity, take a look at our [Quick Start guides (bite-sized training videos to get you started quickly) or our](https://www.elastic.co/training/free#quick-starts)\n[free fundamentals training courses. You can always get started with a free 14-day trial of Elastic Cloud.](https://www.elastic.co/training/free#fundamentals)\n\n## Indicators¶\n\n**Indicator** **Type** **Note**\n\n`a196c6b8ffcb97ffb276d04f354696e2391311db3841ae16c8c9f56f36a38e92` SHA256 Stage1.exe\n(MBR wiper)\n\n`dcbbae5a1c61dbbbb7dcd6dc5dd1eb1169f5329958d38b58c3fd9384081c9b78` SHA256 Stage2.exe\n(Downloader)\n\n`923eb77b3c9e11d6c56052318c119c1a22d11ab71675e6b95d05eeb73d1accd6` SHA256 Stage3\n(Injector original)\n\n`9ef7dbd3da51332a78eff19146d21c82957821e464e8133e9594a07d716d892d` SHA256 Stage3\n(Injector fixed)\n\n`34CA75A8C190F20B8A7596AFEB255F2228CB2467BD210B2637965B61AC7EA907` SHA256 Stage4 (File\nCorruptor)\n\n## Artifacts¶\n\n\n-----\n\nArtifacts are also available for download in both ECS and STIX format in a combined zip bundle.\n\n[Download indicators.zip](https://elastic.github.io/security-research/malware/2022/01/01.operation-bleeding-bear/indicators.zip)\n\nLast update: May 6, 2022\nCreated: January 19, 2022\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-01-19 - Operation Bleeding Bear.pdf"
+    ],
+    "report_names": [
+        "2022-01-19 - Operation Bleeding Bear.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "025b7171-98f8-4391-adc2-66333629c715",
+            "created_at": "2023-06-23T02:04:34.120175Z",
+            "updated_at": "2025-03-27T02:02:09.797581Z",
+            "deleted_at": null,
+            "main_name": "Cadet Blizzard",
+            "aliases": [
+                "DEV-0586",
+                "Operation Bleeding Bear",
+                "Ruinous Ursa"
+            ],
+            "source_name": "ETDA:Cadet Blizzard",
+            "tools": [
+                "GO Simple Tunnel",
+                "GOST",
+                "Impacket",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "P0wnyshell",
+                "PAYWIPE",
+                "Ponyshell",
+                "Pownyshell",
+                "WhisperGate",
+                "WhisperKill",
+                "netcat",
+                "reGeorg"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "c28760b2-5ec6-42ad-852f-be00372a7ce4",
+            "created_at": "2022-10-27T08:27:13.172734Z",
+            "updated_at": "2025-03-27T02:00:55.511386Z",
+            "deleted_at": null,
+            "main_name": "Ember Bear",
+            "aliases": [
+                "Ember Bear",
+                "UNC2589",
+                "Bleeding Bear",
+                "DEV-0586",
+                "Cadet Blizzard",
+                "Frozenvista",
+                "UAC-0056"
+            ],
+            "source_name": "MITRE:Ember Bear",
+            "tools": [
+                "P.A.S. Webshell",
+                "CrackMapExec",
+                "ngrok",
+                "WhisperGate",
+                "Saint Bot",
+                "PsExec",
+                "Rclone",
+                "Impacket",
+                "OutSteel"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "eecf54a2-2deb-41e5-9857-fed94a53f858",
+            "created_at": "2023-01-06T13:46:39.349959Z",
+            "updated_at": "2025-03-27T02:00:03.057647Z",
+            "deleted_at": null,
+            "main_name": "SaintBear",
+            "aliases": [
+                "UAC-0056",
+                "Nascent Ursa",
+                "Nodaria",
+                "FROZENVISTA",
+                "Storm-0587",
+                "Lorec53",
+                "Lorec Bear",
+                "UNC2589",
+                "TA471",
+                "DEV-0587",
+                "Saint Bear",
+                "EMBER BEAR",
+                "Bleeding Bear"
+            ],
+            "source_name": "MISPGALAXY:SaintBear",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "119c8bea-816e-4799-942b-ff375026671e",
+            "created_at": "2022-10-25T16:07:23.957309Z",
+            "updated_at": "2025-03-27T02:02:10.048343Z",
+            "deleted_at": null,
+            "main_name": "Operation Ghostwriter",
+            "aliases": [
+                "DEV-0257",
+                "Operation Asylum Ambuscade",
+                "PUSHCHA",
+                "Storm-0257",
+                "TA445",
+                "UAC-0051",
+                "UAC-0057",
+                "UNC1151"
+            ],
+            "source_name": "ETDA:Operation Ghostwriter",
+            "tools": [
+                "Agentemis",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "HALFSHELL",
+                "Impacket",
+                "RADIOSTAR",
+                "VIDEOKILLER",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535673,
+    "ts_updated_at": 1743041511,
+    "ts_creation_date": 1653767582,
+    "ts_modification_date": 1653767582,
+    "files": {
+        "pdf": "https://archive.orkl.eu/451e988bd5d3399140dc853968307009ad72cd4c.pdf",
+        "text": "https://archive.orkl.eu/451e988bd5d3399140dc853968307009ad72cd4c.txt",
+        "img": "https://archive.orkl.eu/451e988bd5d3399140dc853968307009ad72cd4c.jpg"
+    }
+}

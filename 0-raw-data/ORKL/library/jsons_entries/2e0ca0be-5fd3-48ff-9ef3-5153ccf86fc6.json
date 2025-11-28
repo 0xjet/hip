@@ -1,0 +1,294 @@
+{
+    "id": "2e0ca0be-5fd3-48ff-9ef3-5153ccf86fc6",
+    "created_at": "2023-01-12T14:59:22.898063Z",
+    "updated_at": "2025-03-27T02:13:57.127906Z",
+    "deleted_at": null,
+    "sha1_hash": "2b2e95ff9dbb1f6aa2fe33cdc68eb4c9488f4138",
+    "title": "2022-03-01 - Elastic protects against data wiper malware targeting Ukraine- HERMETICWIPER",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:53:05Z",
+    "file_modification_date": "2022-05-28T19:53:05Z",
+    "file_size": 2265882,
+    "plain_text": "# Elastic protects against data wiper malware targeting Ukraine: HERMETICWIPER\n\n**[elastic.github.io/security-research/intelligence/2022/03/01.hermeticwiper-targets-ukraine/article/](https://elastic.github.io/security-research/intelligence/2022/03/01.hermeticwiper-targets-ukraine/article/)**\n\n[HERMETICWIPER](https://elastic.github.io/security-research/tags/#hermeticwiper) [Malware](https://elastic.github.io/security-research/tags/#malware)\n\n\n-----\n\n-----\n\n2022-03-01\n\n## Introduction¶\n\n\n-----\n\n[On February 23, 2022, the ESET threat research team disclosed a series of findings pertaining to a Data Wiper malware](https://twitter.com/ESETresearch/status/1496581903205511181)\n[campaign, impacting hundreds of systems across Ukraine, named HERMETICWIPER. Elastic previously published](https://twitter.com/juanandres_gs/status/1496607141888724997)\n[research on Operation Bleeding Bear, a campaign targeted towards Ukrainian assets with similar destructive intentions.](https://elastic.github.io/security-research/malware/2022/01/01.operation-bleeding-bear/article/)\n\nMalware Wipers remain a common tactic of adversaries looking to cause havoc on systems impacted by their payloads.\nTypically this class of malware is designed to wipe the contents of any drives a system may have, rendering the endusers personal data lost. Many more recent examples of this class of payload incorporate tactics that also tamper with the\nboot process, with HERMETICWIPER being no exception.\n\nCustomers leveraging the Elastic Agent version 7.9+, and above are protected against this specific malware, with further\nresearch being undertaken to improve detection efficacy.\n\n## Malware Wipers & Ukrainian Targets¶\n\nUnfortunately, this is not the first time this year that Ukranian systems have been the target of Data-wiping payloads Microsoft [published findings pertaining to similar, observed attacks that impacted systems within Ukraine, however initially](https://therecord.media/microsoft-data-wiping-malware-disguised-as-ransomware-targets-ukraine-again/)\nimpacting a far smaller number of systems. The publication outlined that the targeting of this specific earlier campaign\nwas focused on multiple government agencies, non-profits, and information technology organizations throughout the\ncountry.\n\n## Malware Stage Analysis¶\n\n[HERMETICWIPER is digitally signed by Hermetica Digital Ltd., an organization registered in Cyprus, and embeds 4](https://opencorporates.com/companies/cy/HE419469)\n[legitimate driver files from EaseUS Partition Manager that are compressed using MS-DOS utility ( mscompress ).](https://www.easeus.com/partition-manager)\nHermetica Digital Ltd. has revoked the code-signing certificate.\n\nUpon execution, HERMETICWIPER creates a kernel mode service and interacts with it via `DeviceIoControl API`\nfunction. The main objective is to corrupt any attached physical drive and render the system data unrecoverable.\n\n\n-----\n\nBelow is a summary of the events generated during the installation phase using, Windows events logs and Elastic Agent.\n\nFollowing the installation process, HERMETICWIPER determines the dimensions of each partition by calculating the\nbytes in each sector and sectors in each cluster using the `GetDiskFreeSpaceW Windows API` [function.](https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getdiskfreespacew)\n\n\n-----\n\nThe malware interacts with the IOCTL interface, passing the parameter `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS`\nwith a value of `0x560000 to the device driver in order to retrieve the physical location of the root driver ( \\\\.\\C ). The`\nroot drive corresponds to the volume Windows uses to boot, and its identification is essential to achieve a destructive\nimpact.\n\nThe NTFS/FAT boot sector and random file physical offsets are enumerated for each accessible physical drive, and then\n[overwritten by the output of the CryptGenRandom API function and a series of](https://docs.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-cryptgenrandom) `FSCTL_GET_RETRIEVAL_POINTERS and`\n```\nFSCTL_MOVE_FILE IOCTL s.\n\n```\nOnce the system crashes or restarts, the system is unable to boot and the data is corrupted.\n\n## Interesting Functionality¶\n\nSimilar to different ransomware families, HERMETICWIPER avoids specific critical folders and files during the wiping\nprocess. This ensures the machine is still operable and will not impact the disk wiping/file corrupting process at a later\nstage.\n\n\n-----\n\nAnother interesting technique observed when targeted files are queued for wiping is how they are accessed by\nconcatenating the value `::$INDEX_ALLOCATION to a filename. This documented NTFS trick is an additional method to`\nbypass access-control list (ACL) permissions on targeted files to provide more reliability when accessing these files.\n\nHERMETICWIPER also modifies two registry settings during execution ( ShowCompColor and `ShowInfoTip ), setting`\nthose key values to `0 . Within Windows, when a user chooses to compress NTFS directories/files, there is a setting that`\nallows the user to differentiate them in Windows Explorer showing them as blue representing compressed data or green\nfor encrypted data. This is an attempt by the malware to not set off any suspicious behavior to the user with different\ncoloring on directories/files before the disk corruption occurs on the machine.\n\n\n-----\n\n## Shredding Component Analysis¶\n\nThe malware wipes specific target folders/files writing pre-generated random data at specific disk addresses. It does this\nby setting up 4 different shredding queues in the binary.\n\nEach queue usage and its functionality is undetermined, but are used at different points in the sample. The shredding\nqueue is composed of a linked list of targets which contain random pre-generated data (generated at queuing) of the size\nof the target, the disk number and a linked list of “file” parts with disk addresses and sizes.\n\nHERMETICWIPER Structure for ShredTarget function\n```\nstruct ctf::ShredTarget\n{\nctf::ShredTarget *p_next;\nctf::ShredTarget *p_prev;\nctf::FilePart *p_parts;\nint disk_number;\nuint8_t *p_random_filled_buffer;\nint p_random_filled_buffer_size;\n}\n\n```\n\n-----\n\nHERMETICWIPER Structure for FilePart function\n```\nstruct ctf::FilePart\n{\nctf::FilePart *p_next;\nctf::FilePart *p_prev;\nuint64_t start_address;\nuint64_t size;\n};\n\n```\nHERMETICWIPER targeting file, folder, and disk partitions\n```\nctf::QueueFileShred\nctf::QueueFolderShred\nctf::callback::IfPathContainNtUserQueueFileShred\nctf::callback::QueueNtfsBitmapAndLogAttributeShred\nctf::callback::QueueFileShredIfNotSymlink\nctf::callback::QueuePartitionFirstClusterShred\nctf::callback::QueuePartitionShred\n\n```\nThe malware emphasizes the following items that are targeted for shredding.\n\nThe dropped driver if something goes wrong or after service start:\n\nThe malware process itself if driver launch goes wrong:\n\nThe disk’s partition first cluster (enumerates up to 100):\n\nThe System Volume information direct used to store Windows restore points:\n\nInterestingly if the computer doesn’t belong to a domain controller it will target more assets:\n\n\n-----\n\nAfter queuing the different targets previously described, the sample starts different synchronous/asynchronous shredding\nthreads for each of its queues:\n\nThe thread launcher will then start a new thread for each target.\n\nThe shredding thread will then iterate through the target’s file parts and use the driver for writing at addresses on\nspecified disk.\n\n\n-----\n\n## Driver Analysis¶\n\nThe driver that is loaded by the user mode component is quite similar to the driver that belongs to Eldos Rawdisk and has\n[been leveraged previously by threat actors like Shamoon and Lazarus. The difference is that HERMETICWIPER abuses](https://securelist.com/shamoon-the-wiper-further-details-part-ii/57784/)\na driver ( epmntdrv.sys ) that belongs to EaseUS Partition Master, a legitimate disk partitioning software.\n\nWhen the driver is loaded, it creates a device named `\\\\Device\\\\EPMNTDRV and creates a symbolic link to be exposed`\nto user mode. Then, it initializes the driver object with the following entry points.\n\nLooking at the dispatch function that handles the `IRP_MJ_CREATE requests, we can see that the driver builds the name`\nof the symlink `\\Device\\HarddiskX\\Partition0 and saves a pointer to its file object on the driver’s file object fs`\ncontext. The driver then uses the volume manager device object to obtain a pointer to the highest level device object in\nthe disk device stack.\n\n\n-----\n\nAfter that, it iterates over the stack looking for the Disk driver, that is the Microsoft storage class driver that implements\nfunctionality common to all storage devices. Once found, it saves a pointer to its device object in the `FsContext2 field`\nof the file object structure.\n\nMoving to the function that handles the write requests, we can see that it builds an asynchronous Input Output Request\nPacket (IRP), which is an API used for drivers to communicate with each other, and forwards it the volume manager\n[device. The buffer used in the IRP is described by the Memory Descriptor List (MDL) driver function. Finally, a completion](https://docs.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/ns-wdm-_mdl)\nroutine is provided that will free the MDL and release memory used by the IRP.\n\n\n-----\n\nThe `read requests are similar to the` `write requests in concept, in other words, the`\n\n`IoBuildsynchronousFsdRequest()` [API function uses the](https://docs.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-iobuildsynchronousfsdrequest) `IRP_MJ_READ` [driver function instead of the](https://docs.microsoft.com/en-us/windows-hardware/drivers/ifs/irp-mj-read)\nIRP_MJ_WRITE [driver function when sending the IRP to the driver. Finally, the routine that handles I/O control codes](https://docs.microsoft.com/en-us/windows-hardware/drivers/kernel/irp-mj-write)\nfinds the highest device object in the stack where the volume manager is located and calls\n```\nIoBuildDeviceIoControlRequest() to forward the IRP that contains the I/O control code to the appropriate driver.\n\n```\nNote\n\nAll in all, the driver functionality is very simple. It acts as a proxy between user space and the low level file system drivers,\nallowing raw disk sector manipulation and as a result circumventing Windows operating system security features.\n\n## Prebuilt Detection Engine Alerts¶\n\n[The following existing public detection rules can also be used to detect some of the employed post exploitation](https://github.com/elastic/detection-rules)\n[techniques described by Symantec Threat Intelligence Team and ESET [1][2][3] :](https://symantec-enterprise-blogs.security.com/blogs/threat-intelligence/shuckworm-gamaredon-espionage-ukraine)\n\n## YARA Rules¶\n\n Observables¶\n\n**Observable** **Type** **Reference** **Note**\n\n\n-----\n\n**Observable** **Type** **Reference** **Note**\n\n\n`1bc44eef75779e3ca1eefb8ff5a64807dbc942b1e4a2672d77b9f6928d292591` SHA256\n\n`0385eeab00e946a302b24a91dea4187c1210597b8e17cd9e2230450f5ece21da` SHA256\n\n`3c557727953a8f6b4788984464fb77741b821991acbf5e746aebdd02615b1767` SHA256\n\n`2c10b2ec0b995b88c27d141d6f7b14d6b8177c52818687e4ff8e6ecf53adf5bf` SHA256\n\n## References¶\n\nThe following research was referenced throughout the document:\n\n## Artifacts¶\n\n\nWiper\nmalware\n\nWiper\nmalware\n\nWiper\nmalware\n\nWiper\nmalware\n\n\nHERMETICWIPER\n\n\nArtifacts are also available for download in both ECS and STIX format in a combined zip bundle.\n\n[Download indicators.zip](https://elastic.github.io/security-research/intelligence/2022/03/01.hermeticwiper-targets-ukraine/indicators.zip)\n\nLast update: March 3, 2022\nCreated: March 1, 2022\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-03-01 - Elastic protects against data wiper malware targeting Ukraine- HERMETICWIPER.pdf"
+    ],
+    "report_names": [
+        "2022-03-01 - Elastic protects against data wiper malware targeting Ukraine- HERMETICWIPER.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "81bd7107-6b2d-45c9-9eea-1843d4b9b308",
+            "created_at": "2022-10-25T15:50:23.320841Z",
+            "updated_at": "2025-03-27T02:00:55.441723Z",
+            "deleted_at": null,
+            "main_name": "Gamaredon Group",
+            "aliases": [
+                "Gamaredon Group",
+                "IRON TILDEN",
+                "Primitive Bear",
+                "ACTINIUM",
+                "Armageddon",
+                "Shuckworm",
+                "DEV-0157",
+                "Aqua Blizzard"
+            ],
+            "source_name": "MITRE:Gamaredon Group",
+            "tools": [
+                "QuietSieve",
+                "Pteranodon",
+                "PowerPunch"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "025b7171-98f8-4391-adc2-66333629c715",
+            "created_at": "2023-06-23T02:04:34.120175Z",
+            "updated_at": "2025-03-27T02:02:09.797581Z",
+            "deleted_at": null,
+            "main_name": "Cadet Blizzard",
+            "aliases": [
+                "DEV-0586",
+                "Operation Bleeding Bear",
+                "Ruinous Ursa"
+            ],
+            "source_name": "ETDA:Cadet Blizzard",
+            "tools": [
+                "GO Simple Tunnel",
+                "GOST",
+                "Impacket",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "P0wnyshell",
+                "PAYWIPE",
+                "Ponyshell",
+                "Pownyshell",
+                "WhisperGate",
+                "WhisperKill",
+                "netcat",
+                "reGeorg"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "c28760b2-5ec6-42ad-852f-be00372a7ce4",
+            "created_at": "2022-10-27T08:27:13.172734Z",
+            "updated_at": "2025-03-27T02:00:55.511386Z",
+            "deleted_at": null,
+            "main_name": "Ember Bear",
+            "aliases": [
+                "Ember Bear",
+                "UNC2589",
+                "Bleeding Bear",
+                "DEV-0586",
+                "Cadet Blizzard",
+                "Frozenvista",
+                "UAC-0056"
+            ],
+            "source_name": "MITRE:Ember Bear",
+            "tools": [
+                "P.A.S. Webshell",
+                "CrackMapExec",
+                "ngrok",
+                "WhisperGate",
+                "Saint Bot",
+                "PsExec",
+                "Rclone",
+                "Impacket",
+                "OutSteel"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d5156b55-5d7d-4fb2-836f-861d2e868147",
+            "created_at": "2023-01-06T13:46:38.557326Z",
+            "updated_at": "2025-03-27T02:00:02.861124Z",
+            "deleted_at": null,
+            "main_name": "Gamaredon Group",
+            "aliases": [
+                "Aqua Blizzard",
+                "Actinium",
+                "DEV-0157",
+                "Blue Otso",
+                "G0047",
+                "PRIMITIVE BEAR",
+                "Shuckworm",
+                "Trident Ursa",
+                "UAC-0010",
+                "Winterflounder",
+                "ACTINIUM",
+                "BlueAlpha",
+                "IRON TILDEN"
+            ],
+            "source_name": "MISPGALAXY:Gamaredon Group",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "eecf54a2-2deb-41e5-9857-fed94a53f858",
+            "created_at": "2023-01-06T13:46:39.349959Z",
+            "updated_at": "2025-03-27T02:00:03.057647Z",
+            "deleted_at": null,
+            "main_name": "SaintBear",
+            "aliases": [
+                "UAC-0056",
+                "Nascent Ursa",
+                "Nodaria",
+                "FROZENVISTA",
+                "Storm-0587",
+                "Lorec53",
+                "Lorec Bear",
+                "UNC2589",
+                "TA471",
+                "DEV-0587",
+                "Saint Bear",
+                "EMBER BEAR",
+                "Bleeding Bear"
+            ],
+            "source_name": "MISPGALAXY:SaintBear",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "61940e18-8f90-4ecc-bc06-416c54bc60f9",
+            "created_at": "2022-10-25T16:07:23.659529Z",
+            "updated_at": "2025-03-27T02:02:09.912404Z",
+            "deleted_at": null,
+            "main_name": "Gamaredon Group",
+            "aliases": [
+                "Actinium",
+                "Aqua Blizzard",
+                "Armageddon",
+                "Blue Otso",
+                "BlueAlpha",
+                "Callisto",
+                "DEV-0157",
+                "Iron Tilden",
+                "Operation STEADY#URSA",
+                "Primitive Bear",
+                "SectorC08",
+                "Shuckworm",
+                "Trident Ursa",
+                "UAC-0010",
+                "Winterflounder"
+            ],
+            "source_name": "ETDA:Gamaredon Group",
+            "tools": [
+                "Aversome infector",
+                "BoneSpy",
+                "DessertDown",
+                "DilongTrash",
+                "DinoTrain",
+                "EvilGnome",
+                "FRAUDROP",
+                "Gamaredon",
+                "GammaDrop",
+                "GammaLoad",
+                "GammaSteel",
+                "Gussdoor",
+                "ObfuBerry",
+                "ObfuMerry",
+                "PlainGnome",
+                "PowerPunch",
+                "Pteranodon",
+                "Pterodo",
+                "QuietSieve",
+                "Remote Manipulator System",
+                "Resetter",
+                "RuRAT",
+                "SUBTLE-PAWS",
+                "UltraVNC"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "119c8bea-816e-4799-942b-ff375026671e",
+            "created_at": "2022-10-25T16:07:23.957309Z",
+            "updated_at": "2025-03-27T02:02:10.048343Z",
+            "deleted_at": null,
+            "main_name": "Operation Ghostwriter",
+            "aliases": [
+                "DEV-0257",
+                "Operation Asylum Ambuscade",
+                "PUSHCHA",
+                "Storm-0257",
+                "TA445",
+                "UAC-0051",
+                "UAC-0057",
+                "UNC1151"
+            ],
+            "source_name": "ETDA:Operation Ghostwriter",
+            "tools": [
+                "Agentemis",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "HALFSHELL",
+                "Impacket",
+                "RADIOSTAR",
+                "VIDEOKILLER",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "236a8303-bf12-4787-b6d0-549b44271a19",
+            "created_at": "2024-06-04T02:03:07.966137Z",
+            "updated_at": "2025-03-27T02:05:17.410356Z",
+            "deleted_at": null,
+            "main_name": "IRON TILDEN",
+            "aliases": [
+                "Aqua Blizzard ",
+                "Armageddon",
+                "Blue Otso ",
+                "BlueAlpha ",
+                "Dancing Salome ",
+                "Gamaredon",
+                "Gamaredon Group",
+                "Hive0051 ",
+                "Primitive Bear ",
+                "Shuckworm ",
+                "Trident Ursa ",
+                "UAC-0010 ",
+                "UNC530 ",
+                "WinterFlounder ",
+                "ACTINIUM "
+            ],
+            "source_name": "Secureworks:IRON TILDEN",
+            "tools": [
+                "Pterodo"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535562,
+    "ts_updated_at": 1743041637,
+    "ts_creation_date": 1653767585,
+    "ts_modification_date": 1653767585,
+    "files": {
+        "pdf": "https://archive.orkl.eu/2b2e95ff9dbb1f6aa2fe33cdc68eb4c9488f4138.pdf",
+        "text": "https://archive.orkl.eu/2b2e95ff9dbb1f6aa2fe33cdc68eb4c9488f4138.txt",
+        "img": "https://archive.orkl.eu/2b2e95ff9dbb1f6aa2fe33cdc68eb4c9488f4138.jpg"
+    }
+}

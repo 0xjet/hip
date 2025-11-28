@@ -1,0 +1,42 @@
+{
+    "id": "9abfa5ba-a7d5-479d-84ae-1413339f58c4",
+    "created_at": "2023-01-12T14:59:57.06408Z",
+    "updated_at": "2025-03-27T02:05:27.172874Z",
+    "deleted_at": null,
+    "sha1_hash": "6eb59a79a4fc8234d776b84e1a24d129bba8ffbd",
+    "title": "2021-01-18 - Extracting Shellcode in ICEID .PNG Steganography",
+    "authors": "",
+    "file_creation_date": "2022-05-28T21:51:19Z",
+    "file_modification_date": "2022-05-28T21:51:19Z",
+    "file_size": 370058,
+    "plain_text": "# Extracting Shellcode in ICEID .PNG Steganography\n\n**tccontre.blogspot.com/2021/01/**\n\nIn this past few days I stumble to some new and old variant of ICEID malware that uses .png steganography to hide\nand execute its encrypted shellcode. In this article I will share how the structure of the Iceid png payload look like and\nhow to extract its encrypted shellcode.\n\n## Loader Compression:\n\nsame as the other malware, IceID Loader changes its Crypter to execute its main module in memory. From old variant\nwhere the encrypted code stub and decryption module is place in the RSRC section as a data .rsrc entry (RC4\nencrypted) to applib compression like the figure below.\n\n\n-----\n\nfigure 1: The aplib decompressed module of ICEID\n\n## PNG Header:\n\nBefore we deal with the ICEID PNG steganography, I think it is a good idea to have some preview what PNG file\nheader format is. It will give as a clear preview how ICEID parse the .PNG header and look for its encrypted\nshellcode.\n\nThe PNG file format started with 8-bytes signature header \"89 50 4e 47 0d 0a 1a 0a\". after this header is a chunk\nstructure or series of chunk structures that contains either a \"critical chunks\" like \"IHDR\", \"IDAT\" and etc... or\n**\"Ancillary chunks\" that may contain some attribute related to the color, pixel or metadata of the png file like \"sRGB\",**\n\"gAMA\" and many more.\n\neach PNG chunks layout consist of 4 parts or 4 structure member. the figure below show the 4 parts in IHDR chunk\ntype.\n\nfigure 2: PNG File header Format\n\n## ICEID PNG Module Decryptor:\n\nNow that we have some insight how PNG file format look like, lets dive in to the ICEID PNG decryptor module (\"let's\n**_call it PNG module\") that we already extracted earlier in the memory. This part is really interesting especially in_**\nparsing the header. :)\n\nThe PNG module start by executing a thread that will do the following:\n1. decrypt its data section (C&C url link) using same approach how it decrypt the shellcode in PNG payload file.\n2. it will check the existence of the PNG file in %appdata%<randomname>/, if not\n3. it will try to download it to its C&C server\n4. then it will parse and check the png file to extract and execute its shellcode.\n\n\n-----\n\nThe first task is decrypting the C&C server URL link that are place in data section that are encrypted in RC4 algorithm.\nthe structure of data it used in decrypting this data section can be seen before a call function that will do the\ndecryption part.\n\nfigure 3: Encrypted Data Structure\n\nThe first 8 bytes of the encrypted data section is the RC4 key and the rest is the encrypted data.\n\nfigure 4: decrypting C&C server URL link\n\nNext it will create a random name folder in %appdata% using the \"username\" of the infected machine.\nwith the use of RDTSC command to generate random character. If the module didn't find the png payload in the said\nfolder it will try to contact the C&C server to download it.\n\n\n-----\n\nfigure 5: looking for the PNG payload file\n\n## Parsing PNG Header:\n\nafter reading the PNG and save it in the memory, it will start the checking in offset 0x8 (skipping the PNG header)\nwhich is the \"chunk_data_length\" of the first chunk type in the header which in our case is \"IHDR\". The way how it\nparse the header to look for \"IDAT\" chunk_type structure is by adding:\n\n**next_chunk_type_struct = size(chunk_data) + chunk_data_length (4 bytes) + chunk_type (4byes) +**\n**chunk_crc32 (4 bytes)**\n\nexcept for the start chunk_type structure where you need to include or add the PNG header size which 8 bytes.\n\nfor this topic, I created a simple python script that will parse this header and give you the basic information about the\nheader. it also parse the chunk_data but I place it in the debug.log of this script.\n\n[https://github.com/tccontre/KnowledgeBase/tree/main/malware_re_tools/iceid_stego_shell_decryptor](https://github.com/tccontre/KnowledgeBase/tree/main/malware_re_tools/iceid_stego_shell_decryptor)\n\nfigure 6: parsing the header\n\n## Byte Flag and Decryption Key:\n\nas soon as it found the IDAT chunk_type structure it will check first if the chunk_data_length > 5 then it will skip the\n**chunk_data_length, chunk_type and chunk_crc32 by adding 0x0c to the current pointer of the \"IDAT\" chunk**\nheader. the byte in this position looks like a validity flag of the PNG. If this byte is zero, the PNG module will check\nanother value which is one of the parameter to the function that parse the png header which is also zero, so in this\ncase it will exit the flag.\n\n\n-----\n\nfigure 7: byte flag\n\nafter this byte is the 8 byte RC4 decryption key followed by the encrypted shellcode using this RC4 key. the python\nscript I mentioned earlier will parse the RC4 key, extract the shellcode and check the shellcode header and entrypoint\nby dis-assembling it using capstone python library.\n\n\n-----\n\nfigure 8: script tool parser\n\n## Conclusion:\n\nIn this analysis we learned how PNG file can be used as a weapon to hide the malicious code and how malware\nkeeps on updating their tools to bypassed detection.\n\nAlso thanks to the community for sharing the samples :)\n\n## Samples:\n\nsha1: 9a07f8513844e7d3f96c99024fffe6e891338424\n\n\n-----\n\nsha1: 1ab6006621c354649217a011cd7ca8eb357c3db4\nsha1: c1faa9cb4aa7779028008375e7932051ee786a52\nsha1: 481bc0cbdcae1cd40b70b93388bf4086781b44b4\n\nhttps://www.virustotal.com/gui/file/45520a22cdf580f091ae46c45be318c3bb4d3e41d161ba8326a2e29f30c025d4/details\n\nhttps://www.virustotal.com/gui/file/e6e0adcc94c3c4979ea1659c7125a11aa7cdabe24a36f63bfe1f2aeee2c5d3a1/detection\n\nhttps://www.virustotal.com/gui/file/cc1030c4c7486f5295444acb205fa9c9947ad41427b6b181d74e7e5fe4e6f8a9/details\n\nhttps://www.virustotal.com/gui/file/f6ea81aaf9a07e24a82b07254a8ed4fcf63d5a8e6ea7b57062f4c5baf9ef8bf2/detection\n\n## References:\n\nhttps://en.wikipedia.org/wiki/Portable_Network_Graphics\nhttp://www.libpng.org/pub/png/spec/1.2/PNG-Structure.html\nhttps://blog.malwarebytes.com/threat-analysis/2019/12/new-version-of-icedid-trojan-uses-steganographic-payloads/\nhttps://www.malware-traffic-analysis.net/2020/12/11/index.html\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-01-18 - Extracting Shellcode in ICEID .PNG Steganography.pdf"
+    ],
+    "report_names": [
+        "2021-01-18 - Extracting Shellcode in ICEID .PNG Steganography.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673535597,
+    "ts_updated_at": 1743041127,
+    "ts_creation_date": 1653774679,
+    "ts_modification_date": 1653774679,
+    "files": {
+        "pdf": "https://archive.orkl.eu/6eb59a79a4fc8234d776b84e1a24d129bba8ffbd.pdf",
+        "text": "https://archive.orkl.eu/6eb59a79a4fc8234d776b84e1a24d129bba8ffbd.txt",
+        "img": "https://archive.orkl.eu/6eb59a79a4fc8234d776b84e1a24d129bba8ffbd.jpg"
+    }
+}

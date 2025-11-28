@@ -1,0 +1,181 @@
+{
+    "id": "91970311-1122-45a0-a304-15d23ec2f9ca",
+    "created_at": "2023-01-12T15:03:41.286847Z",
+    "updated_at": "2025-03-27T02:16:05.756894Z",
+    "deleted_at": null,
+    "sha1_hash": "55d4f5b4633075c9980e1a83abff9abbc592815b",
+    "title": "2017-02-09 - Shell Crew Variants Continue to Fly Under Big AV’s Radar",
+    "authors": "",
+    "file_creation_date": "2022-05-28T21:53:40Z",
+    "file_modification_date": "2022-05-28T21:53:40Z",
+    "file_size": 679887,
+    "plain_text": "# Shell Crew Variants Continue to Fly Under Big AV’s Radar\n\n**[threatvector.cylance.com/en_us/home/shell-crew-variants-continue-to-fly-under-big-avs-radar.html](https://threatvector.cylance.com/en_us/home/shell-crew-variants-continue-to-fly-under-big-avs-radar.html)**\n\nThe BlackBerry Cylance Threat Research Team\n\n[RESEARCH & INTELLIGENCE / 02.09.17 /](https://threatvector.cylance.com/en/category/research-and-intelligence) The BlackBerry Cylance Threat Research\nTeam\n\n## Background\n\nCylance SPEAR™ has identified a newer family of samples deployed by Shell Crew that\nhas flown under AV’s radar for more than a year and a half. Simple programmatic\ntechniques continue to be effective in evading signature-based detection.\n\nShell Crew, first named by RSA [in this paper, has been incredibly proficient over time and](https://www.emc.com/collateral/white-papers/h12756-wp-shell-crew.pdf)\nbreached numerous high-value targets. The backdoor provided an alternative foothold in\nseveral observed instances for the group and employed a few tricks like using the Intel SSE\nextended instruction set to avoid emulation and obscure analysis.\n\nMost of the variants Cylance identified were 64-bit; however, a couple of earlier 32-bit\nvariants were created in May 2015.\n\n## Malware Family\n\nCylance dubbed this family of malware StreamEx, based upon a common exported\nfunction used across all samples ‘stream’, combined with the dropper functionality to\nappend ‘ex’ to the DLL file name.\n\n\n-----\n\nThe StreamEx family has the ability to access and modify the user s file system, modify the\nregistry, create system services, enumerate process and system information, enumerate\nnetwork resources and drive types, scan for security tools such as firewall products and\nantivirus products, change browser security settings, and remotely execute commands. The\nmalware documented in this post was predominantly 64-bit, however, there are 32-bit\nversions of the malware in the wild.\n\nA few of the samples were picked up by AV heuristics within the last few months, but newer\nsamples are still coming back with zero detection rates.\n\n## Persistence and Initial Execution Setup\n\nThe droppers for the backdoor use a semi-random name chosen from the existing service\nentries under the ‘netsvcs’ registry key on the machine. Once a suitable service name is\nidentified, the dropper appends ‘ex.dll’ to the file path associated with the service DLL. The\nregistry key, which contains available services that belong to the netsvcs group, is defined\nat:\n\n‘HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\nNT\\CurrentVersion\\Svchost\\netsvcs’\n\nPseudo code to create the service:\n\n\n-----\n\ncreate_service_pcode.png\n\n\n_Figure 1: Pseudo Code Used to Create the Service_\n\nThis initial DLL with ‘ex’ appended to the end of the file name is then saved into the system\ndirectory. The malware is copied from the resource section of the dropper and set in the\nregistry to auto-start as the newly created service. The malware will temporarily be saved\ninto the ‘temporary path’ location on the computer (found using the ‘GetTempPathA’ API\ncall) and then moved into the final location under the system directory.\n\n_“The GetTempPath function checks for the existence of environment variables in the_\n_following order and uses the first path found:_\n\n1. The path specified by the TMP environment variable.\n2. The path specified by the TEMP environment variable.\n3. The path specified by the USERPROFILE environment variable.\n4. The Windows directory.\n\n\n-----\n\nRef: https://msdn.microsoft.com/enus/library/windows/desktop/aa364992%28v=vs.85%29.aspx\n\nThe dropper will find and locate the backdoor as either ‘IDR_PEACH_DLL’ or ‘PEACH_DLL’\nwithin the resource section of the dropper.\n\nDropper – Find resource pseudo code:\n\n\n-----\n\nsave_rsc_to_tmp_path.png\n\n\n-----\n\n_Figure 2: Save RSC to Temp Path_\n\nThe malware relies upon execution as a ServiceDLL to persist on a victim system and thus\nwill utilize the ServiceMain export by default. During execution of ServiceMain, a new DLL is\ncopied into the system directory with a randomized name, starting with the ascii characters\n‘bt’ followed by 6 numeric digits and the extension ‘.dll’ and may display a falsified 'File\nModified' date.\n\nNext, rundll32 will be used to call the exported function ‘stream’ from the newly copied ‘bt’\nDLL. The name of the associated service will be added after ‘stream’ in the command line\nargument that calls the DLL. This control flow starts the primary operation of the DLL.\n\n## String Obfuscation Techniques\n\nSome commands in the code are obfuscated by a simple technique that utilizes statically\nprogrammed fragments of strings when starting the ‘bt’ DLL. The code appends the strings\nin the proper order and then utilizes them in accordance with the part of execution that is\nbeing set up. This technique is fairly common and unsophisticated, but it may possibly help\nprevent rudimentary analysis by making it harder to read the strings seen in the binary.\n\nAn example of this is shown where the code is setting up the command line syntax to start\nrundll32 with the ‘bt’ file name utilizing the stream export:\n\n\n-----\n\nstring_obfuscation.png\n\n\n_Figure 3: Code Snippet Showing String Obfuscation_\n\nUltimately, the code results prints this string (or something similar to it) for use by the\nmalware:\n**C:\\Windows\\system32\\rundll32.exe “C:\\Windows\\system32\\bt123456.dll”,stream**\n**ServiceName.**\n\n## Malware Configuration and Operation\n\nThe malware used a simple one-byte xor against the byte 0x91 to encode its configuration\ndata. Once the configuration information is decoded in the normal execution flow, the\nmalware will attempt to contact the command and control (C&C) server(s) using an HTTP\nGET request. The following python snippet can be used to find and decode the\nconfiguration block from StreamEx samples:\n\n\n-----\n\ndef ex_decode(buf):\n\noffset = buf.find(\"&^%$#\")\n\nconfigblock = buf[offset+5:offset+5+0x3D8]\n\nout = ''\n\nfor byte in configblock:\n\nout += chr(ord(byte)^0x91)\n\nreturn out\n\n_Figure 4: Python Code Snippet to Find and Decode StreamEx Configuration Block_\n\nInterestingly, some of the samples appeared to utilize a log file to record the malware’s\nnetwork operations. After the connection is made with the C&C server, the malware can\nsend and receive data and accept input from the attackers, allowing them to take full\nadvantage of the backdoor’s functionality. The log file that the malware writes to disk is\nlocated here: “%TEMP%\\TT_2015.log”. The data in the log is displayed in the following\nformat (this is where the misspelled string ‘start send requset’ is seen on disk):\n\n[processID threadID] [year-month-day hour:minute:second] start send requset\n\ntag:request\n\nThe log data can be seen in the screenshot of the log file below:\n\n\n-----\n\nlogfile_example.png\n\n\n_Figure 5: Log Data_\n\nPseudo code for the log file data:\n\n\n-----\n\ntt_2015log.png\n\n\n-----\n\n_Figure 6: Pseudo Code for the Log File Data_\n\nAnother simple spelling mistake was also present across all of the identified droppers:\n‘error. OpenSCManager faild’. Once the malware successfully makes a connection to one of\nthe statically programmed domains, the attackers had the ability to instruct the malware to\nconduct various system operations to further their control over the victim’s environment.\n\n## Distribution and Associated Malware\n\nCylance identified several legitimate compromised Korean websites that were used to\ndistribute StreamEx samples over the course of 2016. One of the most recent samples\nSPEAR found was served from the website ‘www(dot)aceactor.co(dot)kr’ and contained a\n[configuration block dated October 16, 2016. A number of unique PlugX samples as well as](https://threatvector.cylance.com/en_us/home/cylanceprotect-vs-plugx)\nanother custom RAT were also served from the same website; they commonly used simple\neasy-to-remember names such as ‘a.exe’ or ‘32.exe’.\n\nAt the end of 2016, the group also took care to use private registration when reregistering\ndomains that were originally purchased from a bulk reseller.\n\n## Mitigation\n\n[If you use our endpoint protection product CylancePROTECT®, you were already protected](https://threatvector.cylance.com/cylance-vs-shell-crew-malware)\nfrom this attack. If you don't have CylancePROTECT, [contact us to learn how our AI-driven](https://threatvector.cylance.com/contact-us)\nsolution can predict and prevent unknown and emerging threats.\n\n\n-----\n\ncylance_score.png\n\n\n_Figure 7: CylancePROTECT Console, Showing the Detection of Shell Crew Samples_\n\n## File Hashes (SHA256):\n\n**StreamEx 64-Bit Backdoors:**\n\n04f69ebca26ee0ab2fc896f803102fdbb0700726074048755c55c891a9243423\n\n37a2ede8de56fe85b4baf4220046dd2923d66ea7d906a5c009751f9f630aec0b\n\n434df165b56c70ff5479ebd3f8d65c1585076c16a19e20bdee750c9f0119e836\n\n50712f13f0ed2cabc264ec62581857468b2670e3a4226d76369c9367648b9ff0\n\n5747de930d6f2dd456765aada5f31b4c2149388625399ae8d0c025cc8509880b\n\n82a7f8c488cf287908f8f80b458bf19410f16ee0df0d8f2eb9f923efc3e0a2fa\n\na20d81fcbdcfe6183eaaba489219c44942da3e5fc86ce383568b63b22e6981dc\n\nd26f914eb9f58f9efeba3ae5362cf605a371f881183da201a8528f9c9b65b5ad\ne5590c6eca821160d02c75025bf9ee30de418269471ae21bff422933fbb46720\n\n\n-----\n\n**StreamEx 32-bit Backdoors:**\n369dc64903c52f052ebe547511977f5d677614855da31c416fe13d8eb8ed1015\n8269c8183fb5e50acf08dea65d8a3d99f406f7febd61dc361622f21b58570396\nbfe4da21398a2ac19b04174a7754acc1c2d1725dac7e0651544ff46df9f9005d\nfd0c9c28781de60ed70f32b9e138ab7d95201a5f08a4bc0230b24493597022d7\n\n**StreamEx Droppers:**\n0f1623511432bac0d8f2a87169952df0b341d90ea1e4218a851b8cdb2b691e2d\n60599a679efb167cc43746e5d58bb8f74b6fe57cb028950fde79bd9fd0e6b48b\n6c80e57f4957d17c80c0fc5e5809e72ac157a70339163579b7e2f3c0d631dd6b\n8171f3ca246c56d85bdac23ab09ffdaea09410165bf32ed72ef279d2ddaf745b\n\n**Domains:**\nwww (dot) aceactor (dot) co.kr - Compromised website\nbackup.microsoftappstore(dot)com\ndataserver.cmonkey3(dot)com\ngoogle-helps(dot)com\nkpupdate.amz80(dot)com\nmail-help(dot)com\nmail-issue(dot)top\nmicrosoftupdating(dot)org\nmicrosoftwww(dot)com\nns1.ccccc(dot)work\nns1.superman0x58(dot)com\nns1.xssr(dot)org\nns2.ccccc.work\nns2.superman0x58(dot)com\nns2.xssr(dot)org\nqr1.3jd90dsj3df(dot)website\nr4.microsoftupdating(dot)org\nrouji.xssr(dot)org\nt2z0n9.microsoftappstore(dot)com\ntemp.mail-issue(dot)top\ntime-service(dot)org\nupdate.microsoftwww(dot)com\nupdatecz.mykorean(dot)net\nuriupdate.newsbs(dot)net\nwwgooglewww(dot)com\nwww.microsoftwww(dot)com\nwwwgooglewww(dot)com\nzy.xssr(dot)org\n\n\n-----\n\n**Suspected:**\nseo777.f3322(dot)net\nsexy.f3322(dot)org\nallmnz(dot)com\nincsteelkor(dot)com\n\n**IP Addresses:**\n103.214.143.44\n104.148.71.127\n106.185.52.7\n107.151.218.149\n107.161.80.22\n118.193.153.5\n119.57.196.30\n122.10.9.154\n158.69.34.129\n167.160.16.242\n173.231.49.141\n174.139.57.26\n174.139.57.27\n174.139.57.30\n211.58.38.100\n220.73.222.120\n220.73.222.86\n221.139.50.134\n31.210.102.210\n43.249.81.209\n43.249.81.210\n50.115.138.215\n88.208.228.56\n92.242.144.2\n\n**PDB Filepath:**\nD:\\pdb\\ht_d6.pdb\n\n**Yara Rule:**\n\nrule StreamEx\n{\nstrings:\n$a = \"0r+8DQY97XGB5iZ4Vf3KsEt61HLoTOuIqJPp2AlncRCgSxUWyebhMdmzvFjNwka=\"\n$b = {34 ?? 88 04 11 48 63 C3 48 FF C1 48 3D D8 03 00 00}\n$bb = {81 86 ?? ?? 00 10 34 ?? 88 86 ?? ?? 00 10 46 81 FE D8 03 00 00}\n$c = \"greendll\"\n\n\n-----\n\n$d = Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko)\nChrome/39.0.2171.95 Safari/537.36\" wide\n$f = {26 5E 25 24 23 91 91 91 91}\n$g = \"D:\\\\pdb\\\\ht_d6.pdb\"\n\ncondition:\n$a or $b or $bb or ($c and $d) or $f or $g\n\nThe BlackBerry Cylance Threat Research Team\n\n## About The BlackBerry Cylance Threat Research Team\n\nThe BlackBerry Cylance Threat Research team examines malware and suspected malware\nto better identify its abilities, function and attack vectors. Threat Research is on the frontline\nof information security and often deeply examines malicious software, which puts us in a\nunique position to discuss never-seen-before threats.\n\nBack\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2017/2017-02-09 - Shell Crew Variants Continue to Fly Under Big AV’s Radar.pdf"
+    ],
+    "report_names": [
+        "2017-02-09 - Shell Crew Variants Continue to Fly Under Big AV’s Radar.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "3fad11c6-4336-4b28-a606-f510eca5452e",
+            "created_at": "2022-10-25T16:07:24.346573Z",
+            "updated_at": "2025-03-27T02:02:10.183211Z",
+            "deleted_at": null,
+            "main_name": "Turbine Panda",
+            "aliases": [
+                "APT 26",
+                "Black Vine",
+                "Bronze Express",
+                "Group 13",
+                "JerseyMikes",
+                "KungFu Kittens",
+                "PinkPanther",
+                "Shell Crew",
+                "Turbine Panda",
+                "WebMasters"
+            ],
+            "source_name": "ETDA:Turbine Panda",
+            "tools": [
+                "Agent.dhwf",
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Derusbi",
+                "Destroy RAT",
+                "DestroyRAT",
+                "FF-RAT",
+                "FormerFirstRAT",
+                "Hurix",
+                "Kaba",
+                "Korplug",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "Mivast",
+                "PlugX",
+                "RbDoor",
+                "RedDelta",
+                "RibDoor",
+                "Sakula",
+                "Sakula RAT",
+                "Sakurel",
+                "Sogu",
+                "StreamEx",
+                "TIGERPLUG",
+                "TVT",
+                "Thoper",
+                "Winnti",
+                "Xamtrav",
+                "cobeacon",
+                "ffrat"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "64ca1755-3883-4173-8e0a-6e5cf92faafd",
+            "created_at": "2022-10-25T15:50:23.636456Z",
+            "updated_at": "2025-03-27T02:00:55.51077Z",
+            "deleted_at": null,
+            "main_name": "Deep Panda",
+            "aliases": [
+                "Deep Panda",
+                "Shell Crew",
+                "KungFu Kittens",
+                "PinkPanther",
+                "Black Vine"
+            ],
+            "source_name": "MITRE:Deep Panda",
+            "tools": [
+                "Mivast",
+                "StreamEx",
+                "Sakula",
+                "Tasklist",
+                "Derusbi"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "46a151bd-e4c2-46f9-aee9-ee6942b01098",
+            "created_at": "2023-01-06T13:46:38.288168Z",
+            "updated_at": "2025-03-27T02:00:02.794118Z",
+            "deleted_at": null,
+            "main_name": "APT19",
+            "aliases": [
+                "Black Vine",
+                "TEMP.Avengers",
+                "PinkPanther",
+                "G0073",
+                "KungFu Kittens",
+                "Group 13",
+                "Shell Crew",
+                "BRONZE FIRESTONE",
+                "G0009",
+                "Sunshop Group",
+                "DEEP PANDA",
+                "Codoso"
+            ],
+            "source_name": "MISPGALAXY:APT19",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "1edcac0b-efd9-47b1-9aca-33827d5bd085",
+            "created_at": "2024-05-01T02:03:07.964773Z",
+            "updated_at": "2025-03-27T02:05:17.273595Z",
+            "deleted_at": null,
+            "main_name": "BRONZE KEYSTONE",
+            "aliases": [
+                "Aurora Panda ",
+                "DeputyDog ",
+                "Group 72 ",
+                "Hidden Lynx ",
+                "Shell Crew",
+                "TG-8153 ",
+                "Tailgater Team",
+                "APT17 "
+            ],
+            "source_name": "Secureworks:BRONZE KEYSTONE",
+            "tools": [
+                " BlackCoffee",
+                " DeputyDog",
+                " Derusbi",
+                " Gh0stHTTPSDropper",
+                " HiKit",
+                " InternalCMD",
+                " PlugX",
+                " PoisonIvy",
+                " ZxShell",
+                "9002"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535821,
+    "ts_updated_at": 1743041765,
+    "ts_creation_date": 1653774820,
+    "ts_modification_date": 1653774820,
+    "files": {
+        "pdf": "https://archive.orkl.eu/55d4f5b4633075c9980e1a83abff9abbc592815b.pdf",
+        "text": "https://archive.orkl.eu/55d4f5b4633075c9980e1a83abff9abbc592815b.txt",
+        "img": "https://archive.orkl.eu/55d4f5b4633075c9980e1a83abff9abbc592815b.jpg"
+    }
+}

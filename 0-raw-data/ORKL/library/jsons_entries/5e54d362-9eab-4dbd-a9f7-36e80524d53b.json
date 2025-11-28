@@ -1,0 +1,55 @@
+{
+    "id": "5e54d362-9eab-4dbd-a9f7-36e80524d53b",
+    "created_at": "2023-01-12T15:09:24.765672Z",
+    "updated_at": "2025-03-27T02:13:34.668713Z",
+    "deleted_at": null,
+    "sha1_hash": "c5fcf7ddd151963789532afd6ae4df9c249dc956",
+    "title": "2021-10-03 - Using Windows Sandbox for Malware Analysis",
+    "authors": "",
+    "file_creation_date": "2022-05-28T02:47:09Z",
+    "file_modification_date": "2022-05-28T02:47:09Z",
+    "file_size": 142051,
+    "plain_text": "# Using Windows Sandbox for Malware Analysis\n\n**[blag.nullteilerfrei.de/2021/10/03/using-windows-sandbox-for-malware-analysis/](https://blag.nullteilerfrei.de/2021/10/03/using-windows-sandbox-for-malware-analysis/)**\n\nrattle\n\n**Disclaimer:** If you are not running Windows on your host, you might not get anything out\nof this post. Sorry Tux. I am convinced that the Windows Sandbox is one of the best\nvirtualization solutions to do dynamic malware analysis (for Windows malware, at least). The\nreason is quite simple: Distinguishing a Windows 10 Sandbox instance from the actual\nunderlying Windows 10 install should be very difficult for malware. Specifically if the host is\nrunning on HyperV with Guarded Host enabled, my current understanding is that there are\nlittle to no differences between the two, but they are neatly isolated from one another. The\nconfiguration options are limited, but you can easily cook up a config that launches a\nWindowsSandbox instance that has all the tools you need for some basic unpacking &\ndynamic analysis. This is what my malware analysis sandbox looks like at launch:\n\nI have successfully executed a number of samples that evade execution in other virtualized\nenvironments. That's a far cry from rigorous testing, so take my praise with a grain of salt.\nStill, it might be worth a try, the setup is really easy. ### My Config The [Windows Sandbox\ndocumentation][WSDOCS] should have everything you need for installation, that bit is fairly\nstraightforward. What the documentation doesn't have is a ready-to-go, copy & paste\nexample configuration. So here it is:\n\n\n-----\n\n```\n<Configuration>\n  <AudioInput>Disable</AudioInput>\n  <ClipboardRedirection>Disable</ClipboardRedirection>\n  <MemoryInMB>4096</MemoryInMB>\n  <Networking>Disable</Networking>\n  <PrinterRedirection>Disable</PrinterRedirection>\n  <ProtectedClient>Enable</ProtectedClient>\n  <vGPU>Enable</vGPU>\n  <VideoInput>Disable</VideoInput>\n  <LogonCommand>\n    <Command>powershell.exe -ep unrestricted\nc:\\\\tooling\\\\newsandbox.ps1</Command>\n  </LogonCommand>\n  <MappedFolders>\n    <MappedFolder>\n      <HostFolder>w:\\vmshare\\tooling</HostFolder>\n      <SandboxFolder>c:\\tooling</SandboxFolder>\n      <ReadOnly>true</ReadOnly>\n    </MappedFolder>\n    <MappedFolder>\n      <HostFolder>w:\\vmshare\\airlock</HostFolder>\n      <SandboxFolder>c:\\airlock</SandboxFolder>\n      <ReadOnly>false</ReadOnly>\n    </MappedFolder>\n  </MappedFolders>\n</Configuration>\n\n```\nYou put this into a file called `malware-analysis.wsb and that's it. The` `.wsb file type`\nshould be associated with the Windows Sandbox executable, so shell-executing the file\n(read: double-clicking it) should launch a new Windows Sandbox instance with that\nconfiguration. Most of the settings are fairly obvious. This configuration is my offline analysis\nsandbox which has no internet connection. I give the VM a decent amount of memory to\navoid being detected based on poor hardware specs. All other settings are configured to lock\ndown the sandbox instance as tightly as possible. I use two shared folders: ```\nw:\\vmshare\\tooling contains [ProcessHacker][], [SysInternals][], and [x64dbg][] with\n\n```\n[OllyDumpEx][] and [ScyllaHide][] plugins installed. - `w:\\vmshare\\airlock is the location`\nwhere the malware goes into the sandbox, and dumps come out. You can have the Windows\nSandbox execute a brief setup script during startup. My script is the following:\n\n\n-----\n\n```\n[CmdletBinding(PositionalBinding $false)]\nParam(\n  [Parameter(Mandatory=$false)]\n  [string] $Src = \"c:\\tooling\"\n)\nSet-ExecutionPolicy Unrestricted -Scope LocalMachine\n$wsh = New-Object -comObject WScript.Shell\n$shortcuts = @(\n  @(\"x32dbg\", \"$Src\\x64dbg\\release\\x32\\x32dbg.exe\"),\n  @(\"x64dbg\", \"$Src\\x64dbg\\release\\x64\\x64dbg.exe\"),\n  @(\"hacker\", \"$Src\\ProcessHacker\\64bit\\ProcessHacker.exe\")\n)\n$copyfile = @(\n  @(\"pm0nitor.exe\", \"$Src\\SysinternalsSuite\\Procmon64.exe\"),\n  @(\"autoruns.exe\", \"$Src\\SysinternalsSuite\\autoruns64.exe\")\n)\n$copyfile | ForEach-Object {\n  $dst = Join-Path \"$Home\\Desktop\" $_[0]\n  Copy-Item $_[1] $dst\n}\n$shortcuts | ForEach-Object {\n  $dst = $_[0]\n  $sc = $wsh.CreateShortcut(\"$Home\\Desktop\\$dst.lnk\")\n  $sc.TargetPath = $_[1]\n  $sc.Save()\n}\n\n```\nAll it does is make PowerShell execute at unrestricted by default and place a few shortcuts\non the desktop to my analysis tooling. You can obviously do more here. ### Caveats I am\nonly recommending the Windows Sandbox for very simple dynamic analysis, mainly for: unpacking packed binaries with [x64dbg][] and [ProcessHacker][] - verifying hypotheses\nformed during static analysis - deobfuscating obfuscated PowerShell, JScript, and VBScript\ndynamically It is not well-suited for more complex scenarios. There was a [very nice piece\nabout Windows Sandbox internals][CPBLOG] which illustrates how you can replace the\nWindows Sandbox base image with your own. The article is very interesting but quite frankly,\nI would rather set up a proper VM than hack a different base image into the Windows\nSandbox. The big advantage for me is that I get an extremely well-hardened virtualization\nsolution with close to zero effort. [WSDOCS]: https://docs.microsoft.com/enus/windows/security/threat-protection/windows-sandbox/windows-sandbox-overview\n\n[CPBLOG]: https://research.checkpoint.com/2021/playing-in-the-windows-sandbox/\n\n[ProcessHacker]: https://processhacker.sourceforge.io/downloads.php [SysInternals]:\nhttps://docs.microsoft.com/en-us/sysinternals/ [x64dbg]: https://x64dbg.com/ [OllyDumpEx]:\nhttps://low-priority.appspot.com/ollydumpex/ [ScyllaHide]:\nhttps://github.com/x64dbg/ScyllaHide\nTags: [dynamic analysis -](https://blag.nullteilerfrei.de/tag/dynamic-analysis/) [hardening -](https://blag.nullteilerfrei.de/tag/hardening/) [malware -](https://blag.nullteilerfrei.de/tag/malware/) [sandbox -](https://blag.nullteilerfrei.de/tag/sandbox/) [unpacking -](https://blag.nullteilerfrei.de/tag/unpacking/) [virtual machine -](https://blag.nullteilerfrei.de/tag/virtual-machine/)\n[virtualization -](https://blag.nullteilerfrei.de/tag/virtualization/) [windows sandbox](https://blag.nullteilerfrei.de/tag/windows-sandbox/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-10-03 - Using Windows Sandbox for Malware Analysis.pdf"
+    ],
+    "report_names": [
+        "2021-10-03 - Using Windows Sandbox for Malware Analysis.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "08c8f238-1df5-4e75-b4d8-276ebead502d",
+            "created_at": "2023-01-06T13:46:39.344081Z",
+            "updated_at": "2025-03-27T02:00:03.056208Z",
+            "deleted_at": null,
+            "main_name": "Copy-Paste",
+            "aliases": [],
+            "source_name": "MISPGALAXY:Copy-Paste",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536164,
+    "ts_updated_at": 1743041614,
+    "ts_creation_date": 1653706029,
+    "ts_modification_date": 1653706029,
+    "files": {
+        "pdf": "https://archive.orkl.eu/c5fcf7ddd151963789532afd6ae4df9c249dc956.pdf",
+        "text": "https://archive.orkl.eu/c5fcf7ddd151963789532afd6ae4df9c249dc956.txt",
+        "img": "https://archive.orkl.eu/c5fcf7ddd151963789532afd6ae4df9c249dc956.jpg"
+    }
+}

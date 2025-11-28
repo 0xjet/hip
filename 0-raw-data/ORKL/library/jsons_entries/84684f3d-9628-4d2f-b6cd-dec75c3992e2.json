@@ -1,0 +1,60 @@
+{
+    "id": "84684f3d-9628-4d2f-b6cd-dec75c3992e2",
+    "created_at": "2023-06-05T02:07:17.892428Z",
+    "updated_at": "2025-03-27T02:17:01.948926Z",
+    "deleted_at": null,
+    "sha1_hash": "42bd150d21636542c2d4ef2f40023f90e6546f77",
+    "title": "2023-05-08 - Extracting DDosia targets from process memory",
+    "authors": "",
+    "file_creation_date": "2023-06-04T12:54:41Z",
+    "file_modification_date": "2023-06-04T12:54:41Z",
+    "file_size": 2689441,
+    "plain_text": "# Extracting DDosia targets from process memory\n\n**[viuleeenz.github.io/posts/2023/05/extracting-ddosia-targets-from-process-memory/](https://viuleeenz.github.io/posts/2023/05/extracting-ddosia-targets-from-process-memory/)**\n\n6 minutes\n\n## Introduction\n\n\nMay 8, 2023\n\n\nThis post is part of an analysis that I have carried out during my spare time, motivated by a\nfriend that asked me to have a look at the DDosia project related to the NoName057(16)\ngroup. The reason behind this request was caused by DDosia client changes for performing\nthe DDos attacks. Because of that, all procedures used so far for monitoring\nNoName057(16) activities did not work anymore.\n\nBefore starting to reverse DDosia Windows sample, I preferred to gather as much\ninformation as possible about NoName057(16) TTPs and a few references to their samples.\n\n[Avast wrote a very detailed article about that project and described thoroughly all changes](https://decoded.avast.io/martinchlumecky/ddosia-project-how-noname05716-is-trying-to-improve-the-efficiency-of-ddos-attacks/)\nobserved in the last few months. Because of that, before proceeding with this post, If you feel\nyou are missing something, I strongly recommend that you read their article.\n\n## Client Setup\n\nAccording to the information retrieved from the Telegram channel of DDosia Project, there\nare a couple of requirements before executing the client. The very first action is to create\nyour id through a dedicated bot that will be used later on for authentication purposes. After\nthat, it’s necessary to put the client_id.txt file (generated from DDosia bot) and the\nexecutable file in the same folder. If everything has been done properly, it should be possible\nto observe that authentication process will be done correctly and the client is going to\ndownload targets from its server:\n\n\n-----\n\nFigure 1: Client authenticated correctly\n\n## Dynamic analysis and process memory inspection\n\nHere we are with the fun part. Because of the issues of analyzing GO binaries statically, I\npreferred to use a dynamic approach supported by Cape sandbox. In fact, executing the\nclient with Cape it was possible to gather behavioral information to speed up our analysis\n[(ref). Since the executable is going to be used for DDoS attacks, it’s easy to expect that most](https://capesandbox.com/analysis/385183/)\nof the functions are related to network routines. One of the most interesting WindowsAPI\nrefers to [WSAStartup. This is interesting for us, because according to Microsoft](https://learn.microsoft.com/en-us/windows/win32/api/winsock/nf-winsock-wsastartup)\ndocumentation, it must be the first function to be used in order to retrieve socket\nimplementation for further network operations:\n\nThe WSAStartup function must be the first Windows Sockets function called by an\napplication or DLL. It allows an application or DLL to specify the version of Windows\nSockets required and retrieve details of the specific Windows Sockets implementation.\nThe application or DLL can only issue further Windows Sockets functions after\nsuccessfully calling WSAStartup.\n\nMoreover, starting to monitor network requests with Wireshark, give us additional information\nabout client-server interactions and targets retrieving procedure:\n\nFigure 2 - Request for target list\n\n\n-----\n\nAs already mentioned on Avast blogspot, the target list is encrypted and retrieved after the\nauthentication process. However, performing DDoS attacks requires a decryption routine to\nmake targets in cleartext and forward them to a proper procedure. With this insight, it’s\npossible to open up a debugger and set a breakpoint of WSAStartup and start exploring the\nprocess flow from that point.\n\nFigure 3 - Exploring DDosia executable control flow\n\nExploring the process execution, it’s possible to observe that WSAStartup API is called two\n**times before starting the attack. The first one has been used from the main thread to**\nperform the authentication process on the server side, instead the second call will be done\nright after retrieving the target file and it will be used from another thread to start the attack\nphase. Since that information we are looking for has been already downloaded and hopefully\ndecrypted (at the time of the second call) we could explore the process memory trying to\nidentify our target list.\n\nFigure 4 - Target stored in cleartext within process memory\n\n\n-----\n\nAs we expected, information is actually decrypted right before being used from threads that\nare in charge to flood the targets. From the cleartext sample, it’s also possible to reconstruct\nthe original json file structure that follow this format:\n```\n{\"target_id\":\"435te3af574b95e395847362\",\"request_id\":\"23cer8c5mmp4434dlad53f2s\",\"host\n\":\"www.tartuhly.ee\",\"ip\":\"90.190.99.85\",\"type\":\"http\",\"method\":\"GET\",\"port\":443,\"use_\nssl\":true,\"path\":\"/otsi/$_1\",\"body\":{\"type\":\"\",\"value\":\"\"},\"headers\":null}\n\n\n```\nAt this point I have shown all procedures to quickly follow the execution flow until the\ndecryption routine is called. From now on, it’s just a matter of looking for those data within\nprocess memory and extracting them for your own purpose. It’s worth noting that information\nwon’t be stored decrypted forever, in fact, as the executable keeps running, the json file is\nactually mangled in a way that is not easy to resemble it properly.\n\n## A little bit of automation\n\nEven if the analysis has been completed and targets are correctly retrieved, I thought that\ngiving a little tool to extract that information would be useful. Instead of doing complex stuff, I\nwrote two simple scripts called targets.js and recover.py. The purpose of these two files is to\nallow analysts from different backgrounds to extract those targets, even performing a simple\nmemory dump. Probably there are easier and smarter techniques out there, but it was also a\n[good chance to put in practice DBI, which I have already covered in a previous post.](https://viuleeenz.github.io/posts/2023/03/dynamic-binary-instrumentation-for-malware-analysis/)\n\n[target.js: Frida script that aims to get a memory dump after the WSAStartup has been](https://github.com/Viuleeenz/Reversing_Notes/blob/main/DynamicBinaryInstrumentation/DDosia_Targets/targets.js)\ncalled for the second time (when payloads are in cleartext in memory).\n\n[recover.py: it’s a simple python script that retrieves structured information from the files](https://github.com/Viuleeenz/Reversing_Notes/blob/main/DynamicBinaryInstrumentation/DDosia_Targets/recover.py)\ndumped. It’s worth noting that I limited my script to look for structured information,\nretrieving IP and Hostname (additional improvements are left to user’s needs).\n\n## Script Testing\n\nIn order to run the mentioned scripts there are two requirements to fulfill:\n\nInstalling frida-tool (pip install frida-tools).\nCreate a folder named “dumps” in the same place where you run the target.js file.\n\nIf all requirements are satisfied it’s just a matter of running those scripts and getting the\nresults. The first step is to run frida.exe, using the targets.js file that contains all the\ninformation to dump the process memory:\n```\nfrida.exe <ddosia_client.exe> -l targets.js\n\n\n```\nIf everything has been done correctly (please keep in mind the requirements), you should be\nable to see a message “[END] Memory dumped correctly” in your console.\n\n\n-----\n\nFigure 5 - Dumping process Memory with Frida\n\nNow you can navigate in dumps folder and run the python script using the following\ncommand line that is going to forward all dumped file from the current directory to the script\nthat is going to print the result in your console:\n```\npython.exe recover.py (Get-Item .\\*dump)\n\n\n```\nFigure 6 - Extracting DDosia targets from dump files\n\n## Final Notes\n\nBefore concluding, It’s worth mentioning that updates on these scripts and new techniques to\ndealing with further improvements of DDosia project are not going to be shown, because it\nrepresents a topic that I’m not following personally and I’m sure that more authoritative\nvoices will keep track of this threat and its evolution.\n\n### References:\n\n[Binary analyzed: d_windows_amd64.exe |](https://www.virustotal.com/gui/file/726c2c2b35cb1adbe59039193030f23e552a28226ecf0b175ec5eba9dbcd336e)\n726c2c2b35cb1adbe59039193030f23e552a28226ecf0b175ec5eba9dbcd336e\n(sha256) | 19/04/2023\n\n1123 Words\n\n2023-05-08 02:00\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2023/2023-05-08 - Extracting DDosia targets from process memory.pdf"
+    ],
+    "report_names": [
+        "2023-05-08 - Extracting DDosia targets from process memory.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "b05a0147-3a98-44d3-9b42-90d43f626a8b",
+            "created_at": "2023-01-06T13:46:39.467088Z",
+            "updated_at": "2025-03-27T02:00:03.100909Z",
+            "deleted_at": null,
+            "main_name": "NoName057(16)",
+            "aliases": [
+                "Nnm05716",
+                "NoName057",
+                "NoName05716",
+                "05716nnm"
+            ],
+            "source_name": "MISPGALAXY:NoName057(16)",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1685930837,
+    "ts_updated_at": 1743041821,
+    "ts_creation_date": 1685883281,
+    "ts_modification_date": 1685883281,
+    "files": {
+        "pdf": "https://archive.orkl.eu/42bd150d21636542c2d4ef2f40023f90e6546f77.pdf",
+        "text": "https://archive.orkl.eu/42bd150d21636542c2d4ef2f40023f90e6546f77.txt",
+        "img": "https://archive.orkl.eu/42bd150d21636542c2d4ef2f40023f90e6546f77.jpg"
+    }
+}

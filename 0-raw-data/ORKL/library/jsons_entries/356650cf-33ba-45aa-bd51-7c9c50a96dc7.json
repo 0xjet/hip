@@ -1,0 +1,82 @@
+{
+    "id": "356650cf-33ba-45aa-bd51-7c9c50a96dc7",
+    "created_at": "2023-01-12T15:09:44.390617Z",
+    "updated_at": "2025-03-27T02:17:16.764354Z",
+    "deleted_at": null,
+    "sha1_hash": "4430871da5b5f0293d4f3da4d99fefa2ff071c66",
+    "title": "2016-08-25 - Unpacking the spyware disguised as antivirus",
+    "authors": "",
+    "file_creation_date": "2022-05-28T04:55:53Z",
+    "file_modification_date": "2022-05-28T04:55:53Z",
+    "file_size": 452068,
+    "plain_text": "# Unpacking the spyware disguised as antivirus\n\n**[blog.malwarebytes.com/threat-analysis/2016/08/unpacking-the-spyware-disguised-as-antivirus/](https://blog.malwarebytes.com/threat-analysis/2016/08/unpacking-the-spyware-disguised-as-antivirus/)**\n\nMalwarebytes Labs August 25, 2016\n\nRecently we got access to several elements of the espionage toolkit that has been captured\nattacking Vietnamese institutions. During the operation, the malware was used to dox\n400,000 members of Vietnam Airlines.\n\n[The payload, distributed disguised as antivirus, is a variant of Korplug RAT (aka PlugX) – a](https://www.malwarebytes.com/antivirus/)\n[spyware with former associations with Chinese APT groups, and known from targeted](https://www.malwarebytes.com/spyware/)\nattacks at important institutions of various countries.\n\nIn this article we will describe the process of extracting the final payload out of it’s cover.\n\n## Analyzed samples\n\nSet #1:\n\n[884d46c01c762ad6ddd2759fd921bf71 – McAfee.exe (harmless:](https://www.virustotal.com/en/file/3124fcb79da0bdf9d0d1995e37b06f7929d83c1c4b60e38c104743be71170efe/analysis/) [reference)](http://systemexplorer.net/file-database/file/mcoemcpy-exe/738062)\n[c52464e9df8b3d08fc612a0f11fe53b2 – McUtil.dll (shellcode loader)](https://www.virustotal.com/en/file/31aee6c1c0d6c249ea2a0a603af877abcd11f41338b2a50b1c80c42eef1faad1/analysis/)\n\n**Execution flow:**\n\nMcAfee.exe -> McUtil.dll -> McUtil.dll.mc -> payload (DLL)\n\n\n-----\n\n## A look at the package\n\nThis [spyware has an interesting, modular package. As a whole, it tries to pretend to be](https://www.malwarebytes.com/spyware/)\nMcAfee antivirus:\n\nIf we take a look at the executable, we see that is has been signed by the original certificate:\n\nIt is not fake – the executable is a legitimate product. However, it is bundled with the DLL that\nis not signed – and this it the point that attackers used in order to hijack the execution.\n\n_Note that the app used in the attacks is very old (compiled in 2008). The current versions of_\n_McAfee Antivirus that we managed to test are no longer vulnerable to this type of abuse._\n\n## Behavioral analysis\n\nAfter being deployed, the application runs silently. We can see the main component\nexecuting svchost.exe, and then terminating itself. It is caused by the fact that the malicious\ncode has been injected into svchost, and will continue operating from there. Looking at the\n\n\n-----\n\ncurrent directory of svchost.exe we can find that it inherits default directory of the malicious\napp:\n\nThe bot makes reconnaissance in the LAN by scanning for other computers. It enumerates\nfull range of local addresses, from the lowest to the highest:\n\n[It also tried to connect with it’s C&C (air.dscvn.org), however, at the moment of tests the](https://www.threatcrowd.org/domain.php?domain=air.dcsvn.org)\ndomain was down:\n\n## Unpacking\n\nThe application have several layers of loaders before it reach the final functionality. The exe\nfile, as well as the DLL are harmless. All the the malicious features lies in the external file,\nthat is a blocks of obfuscated shellcode. Within the shellcode, another DLL is hidden – that is\nthe core spy bot.\n\n\n-----\n\n**Loading the shellcode**\n\nThe payload is loaded in an obfuscated way containing some interesting tricks. The authors\ntook great care that it will not be easy to analyze the modules separately.\n\nExecution starts from the harmless McAfee.exe. Malware utilized the fact that this application\nloads a library called McUtil.dll from the startup directory. It doesn’t make any integrity check,\nso in fact, if we rename any library to the desired name, the executable will just load it:\n\n_McUtil.dll is supposed to deploy the next file: McUtil.dll.mc – however, to make the flow more_\ndifficult to follow, it doesn’t run it directly. Instead, it patches the caller executable\n(McAfee.exe) and makes it execute the function responsible for reading and loading the next\nfile. Below we can see the fragment of code, that writes the hook into the memory:\n\n\n-----\n\nThat s how the above fragment of caller s code looks after patching. Instead of the first two\nlines we can see a jump into the McUtil.dll:\n\nPatching function is in DllMain of the McUtil.dll – so, it is called on load. The patched line is\njust after the call that loaded the library:\n\nSo, the hook will be executed as soon as the loading function returns.\n\nInside the function called by the hook, the external file is open:\n\nIt is read into the memory and then execution is redirected there:\n\n\n-----\n\n**Unpacking the final payload**\n\nThe shellcode is heavily obfuscated:\n\nThis is not the main stage, but an unpacker and loader of the main spyware. It\ndecompresses the following content into a buffer:\n\n\n-----\n\nThen it reserves additional memory and starts remapping this content, chunk by chunk. By\nthe way in which it parses it, we can notice similarity with process of remapping raw PE file\ninto a virtual image. And indeed, the unpacked content is a PE file – only the headers are\ndistorted. Delimiters XV were used to substitute the typical “MZ”.. “PE” values:\n\n\n-----\n\nReconstructing the header is not difficult – we must just substitute back those values by their\nreal meaning:\n\nAfter this small modification, the dumped image can be parsed as a normal PE file\n[(321a2f0abe47977d5c8663bd7a7c7d28). Sections are not named, but all the content is](https://malwr.com/analysis/Mzg4YzZjZTYyYzc3NGY2NTliZWYzNDk2M2VlZTIzODQ/share/242f1813cf9e40c692a3729fa88c112e)\nvalid:\n\nFile characteristics describes the payload as a DLL, however, it doesn’t have any export\ntable, so we cannot read it’s original name.\n\nLooking at the imports loaded by this piece we can suspect that it is the final payload. It\nloads and uses many functions related to the network communication, i.e:\n\n\n-----\n\nWe can also find the fragment responsible for retrieving the local IP of the current machine\nand performing LAN scanning that we observed during behavioral analysis.\n\nAuthors took care so that the payload will not be run independently. That’s why they checks if\nall the elements are called in the expected order. We can find hardcoded names of the main\nelements, used for the check:\n\n## Conclusion\n\n[Malware authors often use fake icons and descriptions in order to disguise as a legitimate](https://www.malwarebytes.com/malware/)\nproduct, but this type of attack is going a step forward. Authors used an original McAfee\napplication and hijacked the DLL that it uses, in order to run the malicious code. To make\ndetection more difficult, they tangled elements with each other. None of them can do\nmalicious actions on it’s own. That’s why, tools that scan each module separately may fail to\ndetect the malicious behavior.\n\nUsers are more vigilant about executables – but this time, neither EXE nor DLL file contained\nthe malicious code – they were just used as loaders of the shellcode.\n\n**_Malwarebytes Anti-Malware detects this threat as ‘Trojan.Korplug’._**\n\n## Appendix\n\n\n-----\n\nhttp://e.gov.vn/theo-doi-ngan-chan-ket-noi-va-xoa-cac-tap-tin-chua-ma-doc-a-NewsDetails37486-14-186.html – info from Vietnamese CERT\n\nhttp://blog.trendmicro.com/trendlabs-security-intelligence/new-wave-of-plugx-targetslegitimate-apps/ – similar attack from 2013\n\nhttp://www.welivesecurity.com/2014/11/12/korplug-military-targeted-attacks-afghanistantajikistan/ – about the Korplug RAT targeting military of Afganistan and Tajikistan\n\nhttps://www.blackhat.com/docs/asia-14/materials/Haruyama/Asia-14-Haruyama-I-Know-YouWant-Me-Unplugging-PlugX.pdf – Korplug RAT analysis (presentation from BlackHat)\n\n[https://www.f-secure.com/documents/996508/1030745/nanhaishu_whitepaper.pdf – about](https://www.f-secure.com/documents/996508/1030745/nanhaishu_whitepaper.pdf)\nNanHaiShu APT\n\n_This was a guest post written by Hasherezade, an independent researcher and programmer_\n_with a strong interest in InfoSec. She loves going in details about malware and sharing threat_\n_[information with the community. Check her out on Twitter @hasherezade and her personal](https://twitter.com/hasherezade)_\n_[blog: https://hshrzd.wordpress.com.](https://hshrzd.wordpress.com/)_\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2016/2016-08-25 - Unpacking the spyware disguised as antivirus.pdf"
+    ],
+    "report_names": [
+        "2016-08-25 - Unpacking the spyware disguised as antivirus.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "83025f5e-302e-46b0-baf6-650a4d313dfc",
+            "created_at": "2024-05-01T02:03:07.971863Z",
+            "updated_at": "2025-03-27T02:05:17.278721Z",
+            "deleted_at": null,
+            "main_name": "BRONZE MOHAWK",
+            "aliases": [
+                "Flaccid Rose ",
+                "GADOLINIUM ",
+                "Kryptonite Panda ",
+                "Leviathan ",
+                "Nanhaishu ",
+                "Pickleworm ",
+                "Temp.Jumper ",
+                "Temp.Periscope ",
+                "APT40 "
+            ],
+            "source_name": "Secureworks:BRONZE MOHAWK",
+            "tools": [
+                " BlackCoffee",
+                " China Chopper",
+                " Cobalt Strike",
+                " Derusbi",
+                " Derusbi Trojan",
+                " FUSIONBLAZE",
+                " GreenCrash",
+                " HOMEFRY",
+                " MURKYTOP",
+                " Metasploit",
+                " Metasploit / Meterpreter",
+                " Nanhaishu",
+                " Orz",
+                " ScanBox",
+                " SeDll",
+                "AIRBREAK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536184,
+    "ts_updated_at": 1743041836,
+    "ts_creation_date": 1653713753,
+    "ts_modification_date": 1653713753,
+    "files": {
+        "pdf": "https://archive.orkl.eu/4430871da5b5f0293d4f3da4d99fefa2ff071c66.pdf",
+        "text": "https://archive.orkl.eu/4430871da5b5f0293d4f3da4d99fefa2ff071c66.txt",
+        "img": "https://archive.orkl.eu/4430871da5b5f0293d4f3da4d99fefa2ff071c66.jpg"
+    }
+}

@@ -1,0 +1,62 @@
+{
+    "id": "3a2c7635-d1c6-41fb-8926-33051a8b85c0",
+    "created_at": "2023-01-12T15:01:40.36789Z",
+    "updated_at": "2025-03-27T02:08:33.273194Z",
+    "deleted_at": null,
+    "sha1_hash": "3af3e618d66283da90f3e6e8cfb422a727f09e99",
+    "title": "2021-03-28 - SunCrypt, PowerShell obfuscation, shellcode and more yara",
+    "authors": "",
+    "file_creation_date": "2022-05-28T05:13:04Z",
+    "file_modification_date": "2022-05-28T05:13:04Z",
+    "file_size": 5318481,
+    "plain_text": "# SunCrypt, PowerShell obfuscation, shellcode and more yara\n\n**[pcsxcetrasupport3.wordpress.com/2021/03/28/suncrypt-powershell-obfuscation-shellcode-and-more-yara/](https://pcsxcetrasupport3.wordpress.com/2021/03/28/suncrypt-powershell-obfuscation-shellcode-and-more-yara/)**\n\nView all posts by pcsxcetrasupport3 → March 28, 2021\n\nThis didn’t start as a blog post. It started as a conversation with Hari Charan @grep_security\nabout something they were looking at called SunCrypt ransomware.\n\n[Looking up the name I ran across a couple of interesting blog post, one by Sapphire here](https://sapphirex00.medium.com/diving-into-the-sun-suncrypt-a-new-neighbour-in-the-ransomware-mafia-d89010c9df83)\n[and one by Acronis here . Seeing that this was obfuscated PowerShell it peaked my interest.](https://www.acronis.com/en-us/blog/posts/suncrypt-adopts-attacking-techniques-netwalker-and-maze-ransomware)\n\nSearching for some samples to work with also revealed that you can do a tag search on\ntri.age of “family: suncrypt” (without the space)\n\nThe PowerShell loader we are going to use here is the one from the Acronis blog post with a\nhash of MD5: d87fcd8d2bf450b0056a151e9a116f72 . There are multiple copies on\n[https://app.any.run/submissions/ for that hash. There are 3 copies on Tri.age](https://app.any.run/submissions/) [here.](https://tria.ge/s?q=md5%3Ad87fcd8d2bf450b0056a151e9a116f72)\n\nHari Charan @grep_security also pointed me to a couple of open source yara rules to\nsearch for the PowerShell loaders.\n\n[This one appears as though it will search for the ransomware binary here and this one will](https://github.com/kevoreilly/community/blob/0de1bf900f78aea160a61caf48d7a525695046fb/data/yara/CAPE/SunCrypt.yar#L1)\n[search for the PowerShell script here .](https://github.com/advanced-threat-research/Yara-Rules/blob/master/ransomware/RANSOM_Suncrypt.yar)\n\nLet’s take a look at some of the encoding.\n\n\n-----\n\nIf we look at this part it takes 3 values, assembles them, then it base64 decodes to byte.\n\nBut it will also do something to the strings before it reassembles them.\n\nWe can see the first string is redirected to a function that will read right to left, basically just\nreverse the string.\n\n\n-----\n\nIf we Look at the second string it is getting a substring of what is there starting at index 16\nand taking 2000 characters.\n\nThe encoded string is actually 2032 characters long before we get the substring.\n\nThe final string is is just another reverse string.\n\nThen we just have a long base 64 string after reassembling the pieces.\n\n\n-----\n\nRemember we still have to convert this to byte and it will get loaded into memory using\nVirtualAlloc.\n\n\n-----\n\nLooking at the bytes in a hex editor we can not see anything that makes any sense.\n\n[The next step is to drop this into CyberChef here and view the assembly.](https://gchq.github.io/CyberChef/#recipe=Disassemble_x86('32','Full%20x86%20architecture',16,0,true,true))\n\n\n-----\n\nThis is also where I hinted on Twitter of a “Somewhat useful tool” which will be on my Github.\n\nIf we look down further we see more API calls.\n\nAnd even further down we see a different type of string building using a “push pop”. I have\nnot made a tool for that yet.\n\n\n-----\n\nAlthough doing this statically we can not tell for sure how this is used it can give some clues\nas to what it will be doing by the API calls.\n\nWhat started all of this was when I was trying to write a yara rule to find more samples to test\nthis tool with and look for any outliers that would break it or not be what I was looking for.\n\nI’m still learning yara and this version just looked for the format of the “MOV BYTE PTR”.\n\nI ended up with over 552 hits for this and many false positives. I knew I need to find\nsomething to rule out some of the values that did not return strings or would return either\nencoded or garbage looking strings.\n\nAfter several hours of trial and error I ended up with this.\n\n\n-----\n\nThat reduced it down to 214 hits. It ended up being shellcode and binary samples that used\nthat format. I’m sure there are a few more samples in that mix that would be false positives\nbut it was good enough for what I wanted.\n\nAfter going thru that exercise I was wanting to try and find a way to let the obfuscated\nPowerShell self decode. So I started by looking for a way to just let it reassemble the base64\nstring and then write that to a file.\n\nThe template part is the path variable and the pipe out to file. But you have to remember to\nremove the “[Byte[]]” part and the “[System.Convert]::FromBase64String” from each one you\nwanted to rebuild and just dump to a text file for further processing of the base64 string.\n\nSo I then went back and searched for how to just output to a binary file since that is what we\nultimately wanted anyway..\n\n\n-----\n\nThe variable for the path can be the same but instead of pipe to write file / text we add the\nline with the System IO and make sure we have the variable name the same as in the\nextracted PowerShell.\n\nMoving on to the large base64 string.\n\nUsing Notepad++ we notice the highlighted area is all 1 section. You may also notice the\nextra parameter name right after the join.\n\n\n-----\n\nSearching for that value we find it all the way up right after the code for the shellcode\nreassembling.\n\nSo when we go to use the self decode trick we need from here all of the way to the end of\nthe highlighted area to be sure we have all of the needed parameters to rebuild the base64\nstring before it gets decoded to hex/binary data.\n\nOnce we drop this into our wrapper and verify we have the proper output name set we can\nthen just input it into the PowerShell ISE and run it and it will output our binary file for the\nnext step.\n\n\n-----\n\nNow the first four bytes of this output appears to be a length of the remaining bytes in the\noutput. These will need to be removed for the next step.\n\n\n-----\n\nHere we see it is a 32 bit binary with a Timestamp of 9/18/2020 although the file was\nassembled today in the created date.\n\nIf we look at the Unicode strings we can see that file extension strings are not obfuscated or\nhashed like the other blog post showed.\n\n\n-----\n\nOne of the next things I was looking for is how to extract the ransom Note.\n\nThe other Blog post gives us clues what we are looking for so lets look at the file in a hex\neditor.\n\n\n-----\n\nThere is a very distinctive string that begins with “11” as it turn out “0x11” is the xor key.\n\nOne of the other samples used 0x13 for the xor key.\n\nIf we scroll down to the end we can see clearly where this section will end.\n\n\n-----\n\n-----\n\nIf we keep scrolling down while we still have multiple “11” values we get to this.\n\nIf we xor that by 0x11 we get this.\n\n\n-----\n\nNext I upped this to Anyrun [here because I could not figure out at the time where the ip was](https://app.any.run/tasks/361a1a77-b3ab-4d91-8bbf-428c16175953/)\ncoming from.\n\nOne of the last pieces of this puzzle is that it does a post request with some encoded data.\n\nIf we look at the data that gets dumped from the packet we see this.\n\n\n-----\n\nSo as a guess I checked to see if it had a single byte xor key and to my surprise it did.\n\nThe same one as the rest to decode with, 0x11.\n\n\n-----\n\nDoes this passed hex value look familiar ? It is from the section where the IP was extracted.\n\nWhat is it? I do not know. If someone does please let me know.\n\nOne other thing while I was not initially able to find the IP, I dropped this into IDA to see if I\ncould figure out how it worked.\n\nSeeing this ..\n\nAnd this..\n\n\n-----\n\nWas still no help to figure out what was passed.\n\nI’m sure the IDA Experts could tease out the information quick but that is something else I\nstill need to learn.\n\nWhile working on this and needing more samples to compare I also wrote a yara rule to\ndetect the obfuscation format. The open source one will detect the base 64 encoding\nmethod.\n\nThis first version will search for substring as a string and only has to be found once since the\nvalue is “11” in the string.\n\n\n-----\n\nThis version will search for the “Substring” string as bytes but allow for multiple possible\nvalues in the start point for the substring.\n\nWell that is pretty much as far I can go on this.\n\nPossible future research.\n\nSet up a vm with Sysmon and PowerShell logging enabled as suggested by Lee Holmes\n[here and run the sample to see what the logs will show me.](https://twitter.com/Lee_Holmes/status/1374054110551404546)\n\nTake a closer look and learn how the encryption works.\n\n## Links:\n\n[Link to Acronis Blog post](https://www.acronis.com/en-us/blog/posts/suncrypt-adopts-attacking-techniques-netwalker-and-maze-ransomware)\n\n[Link to Sapphire Blog post](https://sapphirex00.medium.com/diving-into-the-sun-suncrypt-a-new-neighbour-in-the-ransomware-mafia-d89010c9df83)\n\n[Link to Anyrun for the extracted ransomware](https://app.any.run/tasks/361a1a77-b3ab-4d91-8bbf-428c16175953/)\n\n[Link to Anyrun for PowerShell sample](https://app.any.run/tasks/8a42f254-0299-4f42-9da3-4776957f6c65/)\n\n[Link to tri.age Search](https://tria.ge/s?q=md5%3Ad87fcd8d2bf450b0056a151e9a116f72)\n\n[Link to my Github for Files](https://github.com/PCsXcetra/FilesForSunCryptBlogPost)\n\n[Link for open source yara rule for the binary](https://github.com/kevoreilly/community/blob/0de1bf900f78aea160a61caf48d7a525695046fb/data/yara/CAPE/SunCrypt.yar#L1)\n\n[Link for open source yara rule for finding the PowerShell script](https://github.com/advanced-threat-research/Yara-Rules/blob/master/ransomware/RANSOM_Suncrypt.yar)\n\n[Link for working with CyberChef Assembly](https://gchq.github.io/CyberChef/#recipe=Disassemble_x86('32','Full%20x86%20architecture',16,0,true,true))\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-03-28 - SunCrypt, PowerShell obfuscation, shellcode and more yara.pdf"
+    ],
+    "report_names": [
+        "2021-03-28 - SunCrypt, PowerShell obfuscation, shellcode and more yara.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "5d2bd376-fcdc-4c6a-bc2c-17ebbb5b81a4",
+            "created_at": "2022-10-25T16:07:23.667223Z",
+            "updated_at": "2025-03-27T02:02:09.916086Z",
+            "deleted_at": null,
+            "main_name": "GCHQ",
+            "aliases": [
+                "Government Communications Headquarters",
+                "Operation Socialist"
+            ],
+            "source_name": "ETDA:GCHQ",
+            "tools": [
+                "Prax",
+                "Regin",
+                "WarriorPride"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535700,
+    "ts_updated_at": 1743041313,
+    "ts_creation_date": 1653714784,
+    "ts_modification_date": 1653714784,
+    "files": {
+        "pdf": "https://archive.orkl.eu/3af3e618d66283da90f3e6e8cfb422a727f09e99.pdf",
+        "text": "https://archive.orkl.eu/3af3e618d66283da90f3e6e8cfb422a727f09e99.txt",
+        "img": "https://archive.orkl.eu/3af3e618d66283da90f3e6e8cfb422a727f09e99.jpg"
+    }
+}

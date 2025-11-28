@@ -1,0 +1,62 @@
+{
+    "id": "e88a1615-79c6-4993-8581-bb28005f622f",
+    "created_at": "2023-01-12T15:00:26.54202Z",
+    "updated_at": "2025-03-27T02:09:18.831543Z",
+    "deleted_at": null,
+    "sha1_hash": "e896e7985b590eac0196a79c311a1367bcee9824",
+    "title": "2022-04-19 - Extracting Cobalt Strike from Windows Error Reporting",
+    "authors": "",
+    "file_creation_date": "2022-05-27T21:39:29Z",
+    "file_modification_date": "2022-05-27T21:39:29Z",
+    "file_size": 673419,
+    "plain_text": "# Extracting Cobalt Strike from Windows Error Reporting\n\n**[bmcder.com/blog/extracting-cobalt-strike-from-windows-error-reporting](https://bmcder.com/blog/extracting-cobalt-strike-from-windows-error-reporting)**\n\nApril 19, 2022\n\n[Cobalt StrikeDebuggingWindows Internals](http://10.10.0.46/blog/category/Cobalt+Strike)\n19 Apr\nWritten By [Blake .](http://10.10.0.46/?author=619747b44b867078535168fc)\n\nIntroducing malware into a network can often cause problems. You’re adding an unknown\nsoftware into an unknown environment and while there’s a lot of testing put into preventing\napplication crashes, it cannot be guaranteed. Often during an investigations, we’ll see\nsurges in application crashes following the actors presence due to abnormal behaviours on\nthe network.\n\nWindows Error Reporting is the native control for handling application crashes, leaving\nbehind some handy logging and dumps that can help track an actors presence. This entry\nwill go through how we can extract Cobalt Strike from a Windows Error Reporting process\ndump. This can be a great method of detecting abnormal behaviour after a process\ncrashed.\n\n## What is Windows Error Reporting?\n\nWindows Error Reporting (WER) acts as a debugging layer when an application crashes or\nhangs. Depending on the process specific settings, this can provide some useful\ntroubleshooting information including:\n\n1. A report on the state of the application when it crashed,\n\n2. Process Dump,\n\n3. Digital Certificate and Application Combability references.\n\nThe report is the only guaranteed file created with Windows Error Reporting. These files get\nstored within two paths by default, one for more recent entries and one for more historic\nentries. They have the following paths:\n\n1. C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportQueue\n\n2. C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportArchive\n\n\n-----\n\nThe process dumps can be configured to allow for process specific setting. This can be\nparticularly useful when you know an actor is reliably crashing a specific process, like a web\nshell crashing w3wp. You can access the process specific settings at:\n```\nHKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\Windows Error Reporting\\LocalDumps\\\n\n```\nWithin the LocalDumps key, you can configure:\n\n1. DumpCount: # of dumps to keep before rollover.\n\n2. DumpFolder: Where to output the process dumps.\n\n3. DumpType:\n\n0. Custom Dump\n\n1. Mini Dump\n\n2. Full Dump (Process)\n\n\n-----\n\nEnhancing the data collected for that single process can give you an analytic edge on the\nactors actions, while also ensuring you don’t fill up the hard drive.\n\n## The Scenario\n\nNote: I’ve replicated this scenario from a previous investigation. If you’d like a copy of the\ndump, let me know! :)\n\nDuring an investigation, I had YARA flag some Cobalt Strike rules on an Windows Error\nReporting dump for a native Windows process. This process was set to collect a full\nprocess dump, so we had about 400MB worth of memory to dig through.\n\nLooking at the report.wer, there’s no interesting module loads. This makes sense though, if\nit is Cobalt Strike, it’s going to be reflectively loaded. Once we load the process into windbg,\nwe can cross check the loaded modules in the report.wer against the loaded module\naddresses.\n\n## Windbg\n\n### The Error\n\nFirst command you should run when investigating a crash dump is “!analyze -v”. This will\ngive you some basic analytics around why the command crashed and can give a better\nunderstanding of what the actor was doing.\n\n\n-----\n\nFrom the [NTSTATUS Code 0xC0000005, we know that there was a access violation](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55#:~:text=specified%20information%20class.-,0xC0000005,-STATUS_ACCESS_VIOLATION)\npointing to 0xffffffffffffffff.\n\n### Finding the YARA hit\n\nWe can do a search for the yara strings that hit on the process dump to get a region where\nCobalt Strike might be loaded. Doing a search for three of the strings, we can find they’re all\nlocated within two similar memory regions.\n\nWe can do a search for MZ headers within that memory those MZ address ranges.\n\nWe can pull out the two headers that are just before our strings. Now that we have the\naddress of the DLLs (address minus 0x4e), and surprise surprise, it doesn’t line up with any\nof our loaded modules.\n\nWhen we look at the DLL address in memory panel and instantly see three of our main PE\nexecutable signs:\n\n\n-----\n\n1. MZ header\n\n2. This program cannot be run in DOS mode\n\n3. PE header\n\n### Accessing the PE Header\n\nReading the image DOS header, we can get the address of the PE header location from\n“e_lfanew”. Adding the offset to the address, we can confirm that we have the “PE” header\nusing the display ascii command.\n\n\n-----\n\nParsing that address using the “_IMAGE_NT_HEADERS” shows the contents of the PE\nheader.\n\n\n-----\n\nThe final entry in the above image, “Size of Image”, gives us a rough size of the DLL. If we\nadd the size of image to the base address of the DLL, we can see expected end address for\nthe DLL. Referring back to the YARA string addresses, we can confirm that those strings\nare located within the memory region for our DLL.\n\n\n-----\n\nNow that we’ve confirmed that start and end address, we can export that memory region to\nget a copy of the CobaltStrike module.\n\nNote: It’s worth noting that you won’t get a perfect copy of the DLL. Usually the\nSizeOfImage is inaccurate and will result in garbage being written to the end of the file\nbecause we’ve written too much.\n\n### Parsing the Config\n\n[We can now use a config parser to extract the Cobalt Strike config from the DLL. This gives](https://github.com/Sentinel-One/CobaltStrikeParser)\nus further indicators of compromise to continue searching across the network for.\n\nFrom this, we can see that the default cobalt strike config is being used.\n\n## Wrap Up\n\nWindows Error Reporting is a super valuable artifact. I’ve used it to detect everything\nfrom DLL injection to lateral movement to credential dumping.\n\nIf you know that an actors presence is purposely crashing a process, you can use that\nknowledge to gather more detailed process dumps.\n\n\n-----\n\nQuick one this week, just getting back into blogging after a couple of conference talks. As\nalways, hit me up on twitter with any questions.\n\nBlake .\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-04-19 - Extracting Cobalt Strike from Windows Error Reporting.pdf"
+    ],
+    "report_names": [
+        "2022-04-19 - Extracting Cobalt Strike from Windows Error Reporting.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535626,
+    "ts_updated_at": 1743041358,
+    "ts_creation_date": 1653687569,
+    "ts_modification_date": 1653687569,
+    "files": {
+        "pdf": "https://archive.orkl.eu/e896e7985b590eac0196a79c311a1367bcee9824.pdf",
+        "text": "https://archive.orkl.eu/e896e7985b590eac0196a79c311a1367bcee9824.txt",
+        "img": "https://archive.orkl.eu/e896e7985b590eac0196a79c311a1367bcee9824.jpg"
+    }
+}

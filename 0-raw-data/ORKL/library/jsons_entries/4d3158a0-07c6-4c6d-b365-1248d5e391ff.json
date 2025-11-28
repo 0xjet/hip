@@ -1,0 +1,62 @@
+{
+    "id": "4d3158a0-07c6-4c6d-b365-1248d5e391ff",
+    "created_at": "2023-01-12T15:09:33.682428Z",
+    "updated_at": "2025-03-27T02:09:18.132952Z",
+    "deleted_at": null,
+    "sha1_hash": "e412820806bdacf63707357fdd5d7e872873bfba",
+    "title": "2021-11-03 - Cobalt Strike- Using Process Memory To Decrypt Traffic – Part 3",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:54:17Z",
+    "file_modification_date": "2022-05-28T19:54:17Z",
+    "file_size": 199420,
+    "plain_text": "# Cobalt Strike: Using Process Memory To Decrypt Traffic – Part 3\n\n**blog.nviso.eu/2021/11/03/cobalt-strike-using-process-memory-to-decrypt-traffic-part-3/**\n\n[Blogpost series: Cobalt Strike: Decrypting Traffic](https://blog.nviso.eu/series/cobalt-strike-decrypting-traffic/)\n_We decrypt Cobalt Strike traffic with cryptographic keys extracted from process memory._\n\n\nNovember 3, 2021\n\n\nThis series of blog posts describes different methods to decrypt Cobalt Strike traffic. In [part 1 of this series, we revealed private encryption](https://blog.nviso.eu/2021/10/21/cobalt-strike-using-known-private-keys-to-decrypt-traffic-part-1/)\n[keys found in rogue Cobalt Strike packages. And in part 2, we decrypted Cobalt Strike traffic starting with a private RSA key. In this blog post,](https://blog.nviso.eu/2021/10/27/cobalt-strike-using-known-private-keys-to-decrypt-traffic-part-2/)\nwe will explain how to decrypt Cobalt Strike traffic if you don’t know the private RSA key but do have a process memory dump.\n\n[Cobalt Strike network traffic can be decrypted with the proper AES and HMAC keys. In part 2, we obtained these keys by decrypting the](https://blog.nviso.eu/2021/10/27/cobalt-strike-using-known-private-keys-to-decrypt-traffic-part-2/)\nmetadata with the private RSA key. Another way to obtain the AES and HMAC key, is to extract them from the process memory of an active\nbeacon.\n\n[One method to produce a process memory dump of a running beacon, is to use Sysinternals’ tool procdump. A full process memory dump is](https://docs.microsoft.com/en-us/sysinternals/downloads/procdump)\nnot required, a dump of all writable process memory is sufficient.\n\nExample of a command to produce a process dump of writable process memory: “procdump.exe -mp 1234”, where -mp is the option to dump\nwritable process memory and 1234 is the process ID of the running beacon. The process dump is stored inside a file with extension .dmp.\n\nFor Cobalt Strike version 3 beacons, the unencrypted metadata can often be found in memory by searching for byte sequence 0x0000BEEF.\nThis sequence is the header of the unencrypted metadata. The earlier in the lifespan of a process the process dump is taken, the more likely it\nis to contain the unencrypted metadata.\n\nFigure 1: binary editor view of metadata in process\n\nmemory\n[Tool cs-extract-key.py can be used to find and decode this metadata, like this:](https://github.com/DidierStevens/Beta/blob/master/cs-extract-key.py)\n\n\n-----\n\nFigure 2: extracted and decoded metadata\nThe metadata contains the raw key: 16 random bytes. The AES and HMAC keys are derived from this raw key by calculating the SHA256\nvalue of the raw key. The first half of the SHA256 value is the HMAC key, and the second half is the AES key.\n\n[These keys can then be used to decrypt the captured network traffic with tool cs-parse-http-traffic.py, like explained in Part 2.](https://github.com/DidierStevens/Beta/blob/master/cs-parse-http-traffic.py)\n\nRemark that tool cs-extract-key.py is likely to produce false positives: namely byte sequences that start with 0x0000BEEF, but are not actual\nmetadata. This is the case for the example in figure 2: the first instance is indeed valid metadata, as it contains a recognizable machine name\nand username (look at Field: entries). And the AES and HMAC key extracted from that metadata, have also been found at other positions in\nprocess memory. But that is not the case for the second instance (no recognizable names, no AES and HMAC keys found at other locations).\nAnd thus that is a false positive that must be ignored.\n\nFor Cobalt Strike version 4 beacons, it is very rare that the unencrypted metadata can be recovered from process memory. For these beacons,\nanother method can be followed. The AES and HMAC keys can be found in writable process memory, but there is no header that clearly\nidentifies these keys. They are just 16-byte long sequences, without any distinguishable features. To extract these keys, the method consists of\nperforming a kind of dictionary attack. All possible 16-byte long, non-null sequences found in process memory, will be used to try to decrypt a\npiece of encrypted C2 communication. If the decryption succeeds, a valid key has been found.\n\nThis method does require a process memory dump and encrypted data.\n[This encrypted data can be extracted using tool cs-parse-http-traffic.py like this: cs-parse-http-traffic.py -k unknown capture.pcapng](https://github.com/DidierStevens/Beta/blob/master/cs-parse-http-traffic.py)\n\nWith an unknown key (-k unknown), the tool will extract the encrypted data from the capture file, like this:\n\n\n-----\n\nFigure 3: extracting encrypted data from a capture file\nPacket 103 is an HTTP response to a GET request (packet 97). The encrypted data of this response is 64 bytes long:\nd12c14aa698a6b85a8ed3c3c33774fe79acadd0e95fa88f45b66d8751682db734472b2c9c874ccc70afa426fb2f510654df7042aa7d2384229518f26d\n\nThis is encrypted data, sent by the team server to the beacon: it contains tasks to be executed by the beacon (remark that in these examples,\nwe look at encrypted traffic that has not been transformed, we will cover traffic transformed by malleable instructions in an upcoming blog\npost).\n\nWe can attempt to decrypt this data by providing tool cs-extract-key.py with the encrypted task (option -t) and the process memory dump: csextract-key.py -t\nd12c14aa698a6b85a8ed3c3c33774fe79acadd0e95fa88f45b66d8751682db734472b2c9c874ccc70afa426fb2f510654df7042aa7d2384229518f26d\nrundll32.exe_211028_205047.dmp.\n\nFigure 4: extracting AES and HMAC keys from process memory\nThe recovered AES and HMAC key can then be used to decrypt the traffic (-k HMACkey:AESkey):\n\n\n-----\n\nFigure 5: decrypting traffic with HMAC and AES key provided via option -k\nThe decrypted tasks seen in figure 5, are “data jitter”. Data jitter is a Cobalt Strike option, that sends random data to the beacon (random data\nthat is ignored by the beacon). With the default Cobalt Strike beacon profile, no random data is sent, and data is not transformed using\nmalleable instructions. This means that with such a beacon profile, no data is sent to the beacon as long as there are no tasks to be performed\nby the beacon: the Content-length of the HTTP reply is 0.\n\nSince the absence of tasks results in no encrypted data being transmitted, it is quite easy to determine if a beacon received tasks or not, even\nwhen the traffic is encrypted. An absence of (encrypted) data means that no tasks were sent. To obfuscate this absence of commands (tasks),\nCobalt Strike can be configured to exchange random data, making each packet unique. But in this particular case, that random data is useful\nto blue teamers: it permits us to recover the cryptographic keys from process memory. If no random data would be sent, nor actual tasks, we\nwould never see encrypted data and thus we would not be able to identify the cryptographic keys inside process memory.\n\nData sent by the beacon to the team server contains the results of the tasks executed by the beacon. This data is sent with a POST request\n(default), and is known as a callback. This data too can be used to find decryption keys. In that case, the process is the same as shown above,\nbut the option to use is -c (callback) in stead of -t (tasks). The reason the options are different, is that the way the data is encrypted by the\nteam server is slightly different from the way the data is encrypted by the beacon, and the tool must be told which way to encrypt the data was\nused.\n\n**Some considerations regarding process memory dumps**\n\nFor a process memory dump of maximum 10MB, the “dictionary” attack will take a couple of minutes.\n\nFull process dumps can be used too, but the dictionary attack can take much longer because of the larger size of the dump. Tool cs-extractkey.py reads the process memory dump as a flat file, and thus a larger file means more processing to be done.\n\n[However, we are working on a tool that can parse the data structure of a dump file and extract / decode memory sections that are most likely to](https://github.com/DidierStevens/Beta/blob/master/cs-analyze-processdump.py)\ncontain keys, thus speeding up the key recovery process.\n\nRemark that beacons can be configured to encode their writable memory while they are not active (sleeping): in such cases, the AES and\nHMAC keys are encoded too, and can not be recovered using the methods described here. The dump parsing tool we are working on will\nhandle this situation too.\n\nFinally, if the method explained here for version 3 beacons does not work with your particular memory dump, try the method for version 4\nbeacons. This method works also for version 3 beacons.\n\n**Conclusion**\n\nCryptographic keys are required to decrypt Cobalt Strike traffic. The best situation is to have the corresponding private RSA key. If that is not\nthe case, HMAC and AES keys can be recovered using a process memory dump and capture file with encrypted traffic.\n\n**About the authors**\n\n\n-----\n\nd e Ste e s s a a a e e pe t o g o SO d e s a S S te et Sto Ce te se o a d e a d c oso t, a d as\n[developed numerous popular tools to assist with malware analysis. You can find Didier on Twitter and](https://twitter.com/DidierStevens) [LinkedIn.](https://be.linkedin.com/in/didierstevens)\n\n[You can follow NVISO Labs on Twitter to stay up to date on all our future research and publications.](https://twitter.com/NVISO_Labs)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-11-03 - Cobalt Strike- Using Process Memory To Decrypt Traffic – Part 3.pdf"
+    ],
+    "report_names": [
+        "2021-11-03 - Cobalt Strike- Using Process Memory To Decrypt Traffic – Part 3.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536173,
+    "ts_updated_at": 1743041358,
+    "ts_creation_date": 1653767657,
+    "ts_modification_date": 1653767657,
+    "files": {
+        "pdf": "https://archive.orkl.eu/e412820806bdacf63707357fdd5d7e872873bfba.pdf",
+        "text": "https://archive.orkl.eu/e412820806bdacf63707357fdd5d7e872873bfba.txt",
+        "img": "https://archive.orkl.eu/e412820806bdacf63707357fdd5d7e872873bfba.jpg"
+    }
+}

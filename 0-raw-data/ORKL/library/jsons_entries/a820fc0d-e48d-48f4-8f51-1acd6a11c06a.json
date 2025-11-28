@@ -1,0 +1,94 @@
+{
+    "id": "a820fc0d-e48d-48f4-8f51-1acd6a11c06a",
+    "created_at": "2023-01-12T15:05:41.037282Z",
+    "updated_at": "2025-03-27T02:11:47.739186Z",
+    "deleted_at": null,
+    "sha1_hash": "f40eb078f4b7131bebf0f0e6132716373185b965",
+    "title": "2016-09-04 - BLATSTING Command-and-Control protocol",
+    "authors": "",
+    "file_creation_date": "2022-05-28T04:50:24Z",
+    "file_modification_date": "2022-05-28T04:50:24Z",
+    "file_size": 98486,
+    "plain_text": "# BLATSTING Command-and-Control protocol\n\n**[laanwj.github.io/2016/09/04/blatsting-command-and-control.html](https://laanwj.github.io/2016/09/04/blatsting-command-and-control.html)**\n\n## Laanwj's blog\n\nRandomness\n\n[Blog](https://laanwj.github.io/) [About](https://laanwj.github.io/about)\nIn this installment I’m going to describe the Command-and-Control (or C&C) protocol of\nBLATSTING. This the protocol used in the network traffic between the malware and what is\nused by the person controlling it. I’m also going to see whether this traffic can be detected.\n\n### Setup\n\nTo figure out the details of how the communication works I’ve set up a simulation\nenvironment, which I’ve termed BEECHPONYZOO (named after BLATSTING’s probable\npredecessor), where BLATSTING modules running in a simulation can communicate with the\nListening Post executable `lp running in a VM, in a way isolated from the real network and`\nbare hardware:\n\n\n-----\n\n```\n BEECHPONYZOO\n ╔════════════════════════════╗\n ║ BLATSTING emulator     ║\n ║ ╔════════════════════════╗ ║  ╔════════════════╗\n ║ ║ Emulated modules   ║ ║  ║ Listening Post ║ emulated\n ║ ║ ┌─────────┐ ┌────────┐ ║ ║  ║ RH50 i386 VM  ║ serial\n ║ ║ │ cnc   <┄> hash  │ ║ ║  ║ ┌───────┐   ║ (control)\n ║ ║ │     │ └────────┘ ║ ║  ║ │ lpexe │<━━━━━━━━━━━━\n ║ ║ │ [state] │ ┌────────┐ ║ ║  ║ └───────┘   ║\n ║ ║ │     <┄> crypto │ ║ ║  ║   ↕     ║\n ║ ║ └─────────┘ └────────┘ ║ ║  ║ Linux nw. stck ║\n ║ ╚════^════^══════════════╝ ║  ╚══════^═════════╝\n\n```\n`║   ┆` ┆        ║      ┃\n`║   ┆` ┆        ║      ┃\n```\n ║ ┌────v──┐┌v───────┐ Emu.nw.║      ┃    ═ Neutronium blast barrier    \n ║ │ [stub]││ [stub] │<┄┄┄┄┄┄┄><━━━━━━━━━━┛    ─ Permeable membrane\n ║ │ core ││ network│ Stck  ║ Eth-over-UDP   ━ Emulated physical connection\n ║ └───────┘└────────┘    ║          ┄ Internal connection     \n ╚════════════════════════════╝\n\n```\nSee [the gist for the entire module hierarchy, for the sake of expediency we’re only emulating](https://gist.github.com/laanwj/9e5e404266a8956beabde522f97c421b#file-blatsting-txt-L36)\na part of it right now. But enough about my setup.\n\n### Network protocol\n\nThe implant (fancy spy word for rootkit) communicates with the Listening Post (spy for\nCommand-and-Control program) using UDP datagrams over a IPv4 network. Those hoping\n[to find IRC servers, bots and clients as in this presentation h/t:](http://www.spiegel.de/media/media-35689.pdf) [electrospaces.net) will](https://electrospaces.blogspot.nl/2016/08/is-shadow-brokers-leak-latest-in-series.html)\nunfortunately be disappointed.\n```\n  ╔═══════════════════╗     ╔═══════════╗\n  ║ implant      ║     ║ lp    ║\n  ╟───────────────────╢  UDP  ╟───────────╢\n  ║ ┌──────┐ ┌─┐ ┌─┐ ║ network ║ ┌───────┐ ║\n  ║ │impmod│<╌│c│╌│n│<╌╌╌╌╌╌╌╌╌╌╌>│ lpmod │ ║\n  ║ └──────┘ │n│ │e│ ║     ║ └───────┘ ║\n  ║ ┌──────┐ │c│ │t│ ║     ║ ┌───────┐ ║\n  ║ │impmod│<╌│ │╌│ │<╌╌╌╌╌╌╌╌╌╌╌>│ lpmod │ ║\n  ║ └──────┘ └─┘ └─┘ ║     ║ └───────┘ ║\n  ║  ...       ║     ║  ...  ║\n  ╚═══════════════════╝     ╚═══════════╝\n\n```\nInteresting is that for the initial session setup, the source and destination IP address as well\nas ports do not matter. The only requirements for accepting the initial packets are that the\nsize (including IP and UDP header, excluding Ethernet header) matches 68 or 72 bytes, and\nthat a special checksum computed on the packet matches the one in the packet. This is a\ncustom checksum, illustrated by the following C code:\n\n\n-----\n\n```\n/ cnc mystery packet checksum\n * arg1: 8 bytes, arg2: 4 bytes\n */\nuint32_t cnc_checksum(uint8_t *arg1, uint8_t *arg2)\n{\n  const uint16_t i0 = arg1[0] | (arg1[1] << 8);\n  const uint16_t i1 = arg1[2] | (arg1[3] << 8);\n  const uint16_t i2 = arg1[4] | (arg1[5] << 8);\n  const uint16_t i3 = arg1[6] | (arg1[7] << 8);\n  const uint16_t j0 = arg2[0] | (arg2[1] << 8);\n  const uint16_t j1 = arg2[2] | (arg2[3] << 8);\n  const uint16_t b0 = ((i3 ^ j0) + (i0 ^ j1)) ^ arg1[2] ^ (arg1[7] << 8);\n  const uint16_t b1 = ((i2 ^ j0) + (i1 ^ j1)) ^ arg1[5] ^ (arg1[4] << 8);\n  const uint16_t b2 = ((i1 ^ j0) + (i2 ^ j1)) ^ arg1[0] ^ (arg1[1] << 8);\n  const uint16_t b3 = ((i0 ^ j0) + (i3 ^ j1)) ^ arg1[3] ^ (arg1[6] << 8);\n  return ((b3 ^ b1) << 16) ^ ((b3 * b0) << 5) ^ ((b1 * b2) << 11) ^ b2 ^ b0;\n}\n\n```\nThis checksum is checked for every C&C packet, not just for session setup. `arg1 points to`\nthe IV (more on this later), of which the first 8 bytes are checked. `arg2 is a 32-bit`\nchecksum key, stored internally and not part of the packet, assumed to differ per deployment.\n[After checking, the inner payload is decrypted using RC6 in](https://en.wikipedia.org/wiki/RC6) [OFB mode. The key for RC6 is](https://en.wikipedia.org/wiki/Block_cipher_mode_of_operation#OFB)\neither a pre-shared key, or generated from a session challenge and the pre-shared key. This\nkey is unrelated to the one used to key the checksum. The IV for OFB mode (16 bytes) is\ntaken from the packet.\n\nPacket format:\n```\n   ┌──────────────────┐\n0x00 │ IP hdr (20b)   │\n   ├──────────────────┤\n0x14 │ UDP hdr (8b)   │\n   ├──────────────────┤\n0x1c │ UDP payload   │\n   │ ┌────────────────┤\n0x1c │ │ Checksum (4b) │\n   │ ├────────────────┤\n0x20 │ │ IV/hash (16b) │\n   │ ├────────────────┤\n0x30 │ │  Encrypted  │\n   │ │  payload   │\n   │ │   ...    │\n   │ └────────────────┤\n   └──────────────────┘\n\n```\nAfter decrypting the inner payload, it is hashed using SHA1 and the first 16 bytes of that\nhash are compared against the IV in the packet. If they match, the packet is accepted,\notherwise it is rejected. This is “Authenticate and encrypt” and violates the Cryptographic\n\n\n-----\n\n[Doom Principle but I don t think the attacks described there are applicable. But who knows.](https://moxie.org/blog/the-cryptographic-doom-principle/)\nUsing plain SHA1 of the plaintext means that theoretically some information is leaked. Also\nthe same crypto key is used in both directions.\n\nThe decrypted payload looks like this:\n```\n   ┌───────────────────┐\n0x00 │ Random (8b)    │\n   ├───────────────────┤\n0x08 │ Opcode (1b)    │\n   ├───────────────────┤\n0x09 │ Argsize (1b)   │\n   ├───────────────────┤\n0x0a │ Datasize (2b)   │\n   ├───────────────────┤\n0x0c │ Sequence nr. (2b) │\n   ├───────────────────┤\n0x0e │ 1? (2b)      │\n   ├───────────────────┤\n0x10 │ Args       │\n   │ ... (argsize b)  │\n   ├───────────────────┤\n0x10 │ Data       │\n+arg │ ... (datasize b) │\n size └───────────────────┘\n\n```\nAll values in this inner payload header are little-endian. Sometimes the actual args or data is\nbig-endian, there is some inconsistency with endians at different nesting levels but this by far\nnot the only protocol with this peculiarity.\n\nCommands and replies use the same protocol, and share the same namespace of message\ncodes. These are the various opcodes, helpfully taken from `lpexe debug output:`\n\n**Opcode** **Argsize** **Datasize** **Name**\n\n0x00 4 4 HELLO\n\n0x01 4 / 8 4 / 168 AUTH_RESP\n\n0x02 0 16 CHALLENGE\n\n0x03 ? ? ACK\n\n0x04 ? ? ERROR\n\n0x05 ? ? GOODBYE\n\n0x06 ? ? BF_READ\n\n0x07 ? ? BF_WRITE\n\n\n-----\n\n**Opcode** **Argsize** **Datasize** **Name**\n\n0x08 ? ? MALLOC\n\n0x09 ? ? FREE\n\n0x0a ? ? EXEC\n\n0x0b ? ? BOX_INFO\n\n0x0c ? ? BF_WRITE_STATUS\n\n0x0d ? ? MSG_FRAG\n\n0x0e ? ? MSG_ACK\n\n0x0f ? ? BF_FILE_STATE\n\n0x10 ? ? BF_5i_CALL\n\n0x11 ? ? BF_5i_REPLY\n\n0x12 ? ? BF_5i_REQ_FRAG_PACKET\n\nIn the session negotiation phase, only `HELLO (0) and` `AUTH_RESP (1) will be accepted.`\nAfter a session is established the other calls can be used.\n\nI haven’t looked into detail of all the specific packets here. Some of it looks like the command\nset for a bare-bones post-exploitation shell, where the remote can allocate, read and write\nmemory, inject code and execute it. Not all of the commands are implemented though, and\nthe LP side doesn’t even seem to use them. Maybe a remnant from an earlier protocol. Of\nnote are mostly `BF_5i_CALL,` `BF_5i_REPLY, these are used as a RPC system for`\ncommunicating with loaded modules through their interfaces.\n\n### Detecting BLATSTING C&C packets\n\nNow we get to the interesting part: can we detect BLATSTING C&C packets without knowing\nany secret key data? Remember that the session setup packets received by the implant are\nalways UDP packets of 68 and 72 bytes (including IPv4 header), with arbitrary source and\ndestination ports. The packets going the other way appear to have a fixed size too.\n\nA session starts off like this:\n```\n  LP     implant\n  |------------>|    72 bytes (`HELLO`)\n  |<------------|    80 bytes (`CHALLENGE`)\n  |------------>|    72 bytes (`AUTH_RESP`)\n  |<------------|   240 bytes (`AUTH_RESP`)\n\n```\n\n-----\n\nThat s something that a IDS rule could be configured to look for. Another peculiarity of the\noutgoing packets (from the implant) is that they do not have the UDP checksum set\n(something that is allowed by RFC768). I don’t know how common this is, but at least the\nLinux network stack computes it always.\n\nAlso remember the weird keyed checksum that we started with. It’s not exactly a secure hash\nfunction and it’s possible to check it without knowing the key. This could be done by bruteforce (32-bit key space, but still that’s a lot of overhead per packet) or by solving the\n[equations, or by using a constraint solver such as Z3. I used the latter approach in](https://github.com/Z3Prover/z3)\n[z3_cnc_checksum.py. Given the checksum output and input it can check whether there is](https://laanwj.github.io/assets/2016/09/04/blatsting-command-and-control/z3_cnc_checksum.py)\nany possible key that will make it match the checksum.\n\nUnfortunately this does have a ≈4% false-positive rate. By the way: it turns out that for this\nhash function the coverage of the output space for the same input with different keys is really\nsmall. E.g. for the same 8 byte arg1, trying all 2^32 arg2 possibilities will result in only 65495\ndifferent outputs. Due to (nearly) XORing them together the effect of both halves of `arg2 is`\nvery closely correlated: there is effectively only a 16 bit key space.\n\nThat’s a bit disappointing, but by looking at the sizes of the packets as well as the checksum,\nthe false-positive rate could be brought down. Or maybe by correlating multiple packets.\n\nNone of this helps to decrypt the packets, only detect them; as said before the key for RC6OFB is distinct from the checksum key. The crypto key can only be extracted from the\nimplant itself (safest way would be to dump kernel memory). Even though there are session\nkeys, these do not offer any forward secrecy, so once this key is available all prior traffic can\nbe decrypted.\n\nWritten on September 4, 2016\n\nTags: [eqgrp](https://laanwj.github.io/tags/#eqgrp) [malware](https://laanwj.github.io/tags/#malware)\n[Filed under Reverse-engineering](https://laanwj.github.io/categories/#reverse-engineering)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2016/2016-09-04 - BLATSTING Command-and-Control protocol.pdf"
+    ],
+    "report_names": [
+        "2016-09-04 - BLATSTING Command-and-Control protocol.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d4f7cf97-9c98-409c-8b95-b80d14c576a5",
+            "created_at": "2022-10-25T16:07:24.561104Z",
+            "updated_at": "2025-03-27T02:02:10.281202Z",
+            "deleted_at": null,
+            "main_name": "Shadow Brokers",
+            "aliases": [],
+            "source_name": "ETDA:Shadow Brokers",
+            "tools": [],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "08623296-52be-4977-8622-50efda44e9cc",
+            "created_at": "2023-01-06T13:46:38.549387Z",
+            "updated_at": "2025-03-27T02:00:02.859535Z",
+            "deleted_at": null,
+            "main_name": "Equation Group",
+            "aliases": [
+                "Tilded Team",
+                "EQGRP",
+                "G0020"
+            ],
+            "source_name": "MISPGALAXY:Equation Group",
+            "tools": [
+                "EquationLaser",
+                "EquationDrug",
+                "DoubleFantasy",
+                "TripleFantasy",
+                "GrayFish"
+            ],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "171b85f2-8f6f-46c0-92e0-c591f61ea167",
+            "created_at": "2023-01-06T13:46:38.830188Z",
+            "updated_at": "2025-03-27T02:00:02.929729Z",
+            "deleted_at": null,
+            "main_name": "The Shadow Brokers",
+            "aliases": [
+                "Shadow Brokers",
+                "ShadowBrokers",
+                "The ShadowBrokers",
+                "TSB"
+            ],
+            "source_name": "MISPGALAXY:The Shadow Brokers",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535941,
+    "ts_updated_at": 1743041507,
+    "ts_creation_date": 1653713424,
+    "ts_modification_date": 1653713424,
+    "files": {
+        "pdf": "https://archive.orkl.eu/f40eb078f4b7131bebf0f0e6132716373185b965.pdf",
+        "text": "https://archive.orkl.eu/f40eb078f4b7131bebf0f0e6132716373185b965.txt",
+        "img": "https://archive.orkl.eu/f40eb078f4b7131bebf0f0e6132716373185b965.jpg"
+    }
+}

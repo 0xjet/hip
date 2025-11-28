@@ -1,0 +1,279 @@
+{
+    "id": "9b8f5b7e-e640-4511-a846-999b9db3fba8",
+    "created_at": "2023-01-12T15:06:45.515273Z",
+    "updated_at": "2025-03-27T02:16:47.121343Z",
+    "deleted_at": null,
+    "sha1_hash": "e7ec7acdda261da27a299b579b54718ee166b9ba",
+    "title": "2021-07-14 - LuminousMoth APT- Sweeping attacks for the chosen few",
+    "authors": "",
+    "file_creation_date": "2022-05-28T05:12:41Z",
+    "file_modification_date": "2022-05-28T05:12:41Z",
+    "file_size": 1362807,
+    "plain_text": "# LuminousMoth APT: Sweeping attacks for the chosen few\n\n**securelist.com/apt-luminousmoth/103332/**\n\nAuthors\n\n[Mark Lechtik](https://securelist.com/author/marklechtik/)\n\n[Paul Rascagneres](https://securelist.com/author/paulrascagneres/)\n\nAseel Kayal\n\nAPT actors are known for the frequently targeted nature of their attacks. Typically, they will handpick a set of\ntargets that in turn are handled with almost surgical precision, with infection vectors, malicious implants and\npayloads being tailored to the victims’ identities or environment. It’s not often we observe a large-scale attack\nconducted by actors fitting this profile, usually due to such attacks being noisy, and thus putting the underlying\noperation at risk of being compromised by security products or researchers.\n\nWe recently came across unusual APT activity that exhibits the latter trait – it was detected in high volumes,\nalbeit most likely aimed at a few targets of interest. This large-scale and highly active campaign was observed in\nSouth East Asia and dates back to at least October 2020, with the most recent attacks seen around the time of\nwriting. Most of the early sightings were in Myanmar, but it now appears the attackers are much more active in\nthe Philippines, where there are more than 10 times as many known targets.\n\n\n-----\n\nFurther analysis revealed that the underlying actor, which we dubbed LuminousMoth, shows an affinity to the\nHoneyMyte group, otherwise known as Mustang Panda. This is evident in both network infrastructure\nconnections, and the usage of similar TTPs to deploy the Cobalt Strike Beacon as a payload. In fact, our\n[colleagues at ESET and](https://twitter.com/ESETresearch/status/1400165767488970764) [Avast recently assessed that HoneyMyte was active in the same region. The proximity](https://twitter.com/AvastThreatLabs/status/1404864965584977922)\nin time and common occurrence in Myanmar of both campaigns could suggest that various TTPs of HoneyMyte\nmay have been borrowed for the activity of LuminousMoth.\n\nMost notably though, we observed the capability of the culprit to spread to other hosts through the use of USB\ndrives. In some cases, this was followed by deployment of a signed, but fake version of the popular application\nZoom, which was in fact malware enabling the attackers to exfiltrate files from the compromised systems. The\nsheer volume of the attacks raises the question of whether this is caused by a rapid replication through\nremovable devices or by an unknown infection vector, such as a watering hole or a supply chain attack.\n\nIn this publication we aim to profile LuminousMoth as a separate entity, outlining the infection chain and unique\ntoolset it leverages, the scale and targeting in its campaigns as well as its connections to HoneyMyte through\ncommon TTPs and shared resources.\n\n## What were the origins of the infections?\n\nWe identified two infection vectors used by LuminousMoth: the first one provides the attackers with initial access\nto a system. It consists of sending a spear-phishing email to the victim containing a Dropbox download link. The\nlink leads to a RAR archive that masquerades as a Word document by setting the “file_subpath” parameter to\npoint to a filename with a .DOCX extension.\n\n\n1\n\n2\n\n\nhxxps://www.dropbox[.]com/s/esh1ywo9irbexvd/COVID-19%20Case%2012-11\n2020.rar?dl=0&file_subpath=%2FCOVID-19+Case+12-11-2020%2FCOVID-19+Case+12-11-2020(2).docx\n\n\nThe archive contains two malicious DLL libraries as well as two legitimate executables that sideload the DLL\nfiles. We found multiple archives like this with file names of government entities in Myanmar, for example\n“COVID-19 Case 12-11-2020(MOTC).rar” or “DACU Projects.r01” (MOTC is Myanmar’s Ministry of Transport\nand Communications, and DACU refers to the Development Assistance Coordination Unit of the Foreign\nEconomic Relations Department (FERD) in Myanmar).\n\n\n-----\n\n**_Infection chain_**\n\nThe second infection vector comes into play after the first one has successfully finished, whereby the malware\ntries to spread by infecting removable USB drives. This is made possible through the use of two components:\nthe first is a malicious library called “version.dll” that gets sideloaded by “igfxem.exe”, a Microsoft Silverlight\nexecutable originally named “sllauncher.exe”. The second is “wwlib.dll”, another malicious library sideloaded by\nthe legitimate binary of “winword.exe”. The purpose of “version.dll” is to spread to removable devices, while the\npurpose of “wwlib.dll” is to download a Cobalt Strike beacon.\n\nThe first malicious library “version.dll” has three execution branches, chosen depending on the provided\narguments, which are: “assist”, “system” or no argument. If the provided argument is “assist”, the malware\ncreates an event called “nfvlqfnlqwnlf” to avoid multiple executions and runs “winword.exe” in order to sideload\nthe next stage (“wwlib.dll”). Afterwards, it modifies the registry by adding an “Opera Browser Assistant” entry as\na run key, thus achieving persistence and executing the malware with the “assist” parameter upon system\nstartup.\n\n**_Registry value to run the malware at system startup_**\n\n\n-----\n\nThen, the malware checks if there are any removable drives connected to the infected system. If any are found,\nit enumerates the files stored on the drive and saves the list to a file called “udisk.log”. Lastly, the malware is\nexecuted once again with the “system” parameter.\n\nIf the provided argument is “system”, a different event named “qjlfqwle21ljl” is created. The purpose of this\nexecution branch is to deploy the malware on all connected removable devices, such as USB sticks or external\ndrives. If a drive is found, the malware creates hidden directories carrying non ascii characters on the drive and\nmoves all the victim’s files there, in addition to the two malicious libraries and legitimate executables. The\nmalware then renames the file “igfxem.exe” to “USB Driver.exe” and places it at the root of the drive along with\n“version.dll”. As a result, the victims are no longer able to view their own drive files and are left with only “USB\nDriver.exe”, meaning they will likely execute the malware to regain access to the hidden files.\n\n**_Copying the payload and creating a hidden directory on the removable drive_**\n\nIf no argument is provided, the malware executes the third execution branch. This branch is only launched in the\ncontext of a compromised removable drive by double-clicking “USB Driver.exe”. The malware first copies the\nfour LuminousMoth samples stored from the hidden drive repository to “C:\\Users\\Public\\Documents\\Shared\nVirtual Machines\\”. Secondly, the malware executes “igfxem.exe” with the “assist” argument. Finally,\n“explorer.exe” gets executed to display the hidden files that were located on the drive before the compromise,\nand the user is able to view them.\n\nThe second library, “wwlib.dll”, is a loader. It gets sideloaded by “winword.exe” and emerged two months prior to\n“version.dll”, suggesting that earlier instances of the attack did not rely on replication through removable drives\nbut were probably distributed using other methods such as the spear-phishing emails we observed.\n\n“Wwlib.dll” fetches a payload by sending a GET request to the C2 address at “103.15.28[.]195”. The payload is\na Cobalt Strike beacon that uses the Gmail malleable profile to blend with benign traffic.\n\n**_Downloading a Cobalt Strike beacon from 103.15.28[.]195_**\n\n\n-----\n\n## Older spreading mechanism\n\nWe discovered an older version of the LuminousMoth infection chain that was used briefly before the\nintroduction of “version.dll”. Instead of the usual combination of “version.dll” and “wwlib.dll”, a different library\ncalled “wwlib.dll” is in fact the first loader in this variant and is in charge of spreading to removable drives, while\na second “DkAr.dll” library is in charge of downloading a Cobalt Strike beacon from the C2 server. This variant’s\n“wwlib.dll” offers two execution branches: one triggered by the argument “Assistant” and a second one with no\narguments given. When this library is sideloaded by “winword.exe”, it creates an event called “fjsakljflwqlqewq”,\nadds a registry value for persistence, and runs “PrvDisk.exe” that then sideloads “DkAr.dll”.\n\nThe final step taken by “wwlib.dll” is to copy itself to any removable USB device. To do so, the malware checks if\nthere are any files carrying a .DOC or .DOCX extension stored on the connected devices. If such a document is\nfound, the malware replaces it with the “winword.exe” binary, keeping the document’s file name but appending\n“.exe” to the end. The original document is then moved to a hidden directory. The “wwlib.dll” library is copied to\nthe same directory containing the fake document and the four samples (two legitimate PE files, two DLL\nlibraries) are copied to “[USB_Drive letter]:\\System Volume Information\\en-AU\\Qantas”.\n\nIf the malware gets executed without the “Assistant” argument, this means the execution was started from a\ncompromised USB drive by double-clicking on the executable. In this case, the malware first executes\n“explorer.exe” to show the hidden directory with the original documents of the victim, and proceeds to copy the\nfour LuminousMoth samples to “C:\\Users\\Public\\Documents\\Shared Virtual Machines\\”. Finally, it executes\n“winword.exe” with the “Assistant” argument to infect the new host, to which the USB drive was connected.\n\nSince this variant relies on replacing Word documents with an executable, it is possible that the attackers chose\nthe “winword.exe” binary for sideloading the malicious DLL due to its icon, which raises less suspicions about\nthe original documents being tampered with. However, this means that the infection was limited only to USB\ndrives that have Word documents stored on them, and might explain the quick move to a more pervasive\napproach that infects drives regardless of their content.\n\n## Post exploitation tool: Fake Zoom application\n\nThe attackers deployed an additional malicious tool on some of the infected systems in Myanmar. Its purpose is\nto scan the infected systems for files with predefined extensions and exfiltrate them to a C2 server. Interestingly,\nthis stealer impersonates the popular Zoom video telephony software. One measure to make it seem benign is a\nvalid digital signature provided with the binary along with a certificate that is owned by Founder Technology, a\nsubsidiary of Peking University’s Founder Group, located in Shanghai.\n\n\n-----\n\n**_Valid certificate of the fake Zoom application_**\n\nTo facilitate the exfiltration of data, the stealer parses a configuration file called “zVideoUpdate.ini”. While it is\nunclear how the malware is written to disk by the attackers, it is vital that the .ini file is dropped alongside it and\nplaced in the same directory in order to work. The configuration parameters that comprise this file are as follows:\n\n\n**Parameter**\n**Name**\n\n\n**Purpose**\n\n\nmeeting Undetermined integer value that defaults to 60.\n\nssb_sdk Undetermined integer value that defaults to 60.\n\nzAutoUpdate URL of the C2 server which the stolen data will be uploaded to.\n\nXmppDll Path to the utility used to archive exfiltrated files.\n\nzKBCrypto List of exfiltrated file extensions that are searched in target directories. The extensions of\ninterest are delimited with the ‘;’ character.\n\nzCrashReport Suffix string appended to the name of the staging directory used to host exfiltrated files\nbefore they are archived.\n\nzWebService Path prefix for the exfiltration staging directory.\n\nzzhost Path to the file that will hold a list of hashes corresponding to the files collected for\nexfiltration.\n\nArgName AES key for configuration string encryption.\n\nVersion AES IV for configuration string encryption.\n\n\n-----\n\nzDocConverter Path #1 to a directory to look for files with the extension intended for exfiltration\n\nzTscoder Path #2 to a directory to look for files with the extension intended for exfiltration\n\nzOutLookIMutil Path #3 to a directory to look for files with the extension intended for exfiltration\n\nEach field in the configuration file (with the exception of Version, ArgName and zCrashReport) is encoded with\nBase64. While the authors incorporated logic and parameters that allow the decryption of some of the fields\nspecified above with the AES algorithm, it remains unused.\n\nThe stealer uses the parameters in order to scan the three specified directories (along with root paths of fixed\nand removable drives) and search for files with the extensions given in the zKBCrypto parameter. Matching files\nwill then be copied to a staging directory created by the malware in a path constructed with the following\nstructure: “<zWebService>\\%Y-%m-%d %H-%M-%S<zCrashReport>”. The string format in the directory’s name\nrepresents the time and date of the malware’s execution.\n\nIn addition, the malware collects the metadata of the stolen files. One piece of data can be found as a list of\noriginal paths corresponding to the exfiltrated files that is written to a file named ‘VideoCoingLog.txt’. This file\nresides in the aforementioned staging directory. Likewise, a second file is used to hold the list of hashes\ncorresponding to the exfiltrated files and placed in the path specified in the zzhost parameter.\n\nAfter collection of the targeted files and their metadata, the malware executes an external utility in order to\narchive the staging directory into a .rar file that will be placed in the path specified in the zWebService\nparameter. The malware assumes the existence of the utility in a path specified under the XmppDll parameter,\nsuggesting the attackers have prior knowledge of the infected system and its pre-installed applications.\n\nFinally, the malware seeks all files with a .rar extension within the zWebService directory that should be\ntransmitted to the C2. The method used to send the archive makes use of a statically linked CURL library, which\nsets the parameters specified below when conducting the transaction to the server. The address of the C2 is\ntaken from the zAutoUpdate parameter.\n\n\n-----\n\n**_CURL logic used to issue the archive of exfiltrated files to the C&C_**\n\n## Post exploitation tool: Chrome Cookies Stealer\n\nThe attackers deployed another tool on some infected systems that steals cookies from the Chrome browser.\nThis tool requires the local username as an argument, as it is needed to access two files containing the data to\nbe stolen:\n\n\n1\n\n2\n\n\nC:\\Users\\[USERNAME]\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Cookies\n\nC:\\Users\\[USERNAME]\\AppData\\Local\\Google\\Chrome\\User Data\\Local State\n\n\nThe stealer starts by extracting the encrypted_key value stored in the “Local State” file. This key is base64\nencoded and used to decode the cookies stored in the “Cookies” file. The stealer uses the CryptUnprotectData\nAPI function to decrypt the cookies and looks for eight specific cookie values: SID, OSID, HSID, SSID, LSID,\nAPISID, SAPISID and ACCOUNT_CHOOSER:\n\n\n-----\n\n**_Cookie values the stealer looks for_**\n\nOnce found, the malware simply displays the values of those cookies in the terminal. The Google policy\n[available here explains that these cookies are used to authenticate users:](https://policies.google.com/technologies/cookies/embedded?hl=en-US)\n\n**_Google policy explaining the purpose of the cookies_**\n\nDuring our test, we set up a Gmail account and were able to duplicate our Gmail session by using the stolen\ncookies. We can therefore conclude this post exploitation tool is dedicated to hijacking and impersonating the\nGmail sessions of the targets.\n\n## Command and Control\n\nFor C2 communication, some of the LuminousMoth samples contacted IP addresses directly, whereas others\ncommunicated with the domain “updatecatalogs.com”.\n\n103.15.28[.]195\n202.59.10[.]253\n\nInfrastructure ties from those C2 servers helped reveal additional domains related to this attack that\nimpersonate known news outlets in Myanmar, such as MMTimes, 7Day News and The Irrawaddy. Another\ndomain “mopfi-ferd[.]com” also impersonated the Foreign Economic Relations Department (FERD) of the\nMinistry of Planning, Finance and Industry (MOPFI) in Myanmar.\n\nmmtimes[.]net\nmmtimes[.]org\n7daydai1y[.]com\nirrawddy[.]com\nmopfi-ferd[.]com\n\n\n-----\n\nMopfi ferd[.]com resolved to an IP address that was associated with a domain masquerading as the Zoom API.\nSince we have seen the attackers deploying a fake Zoom application, it is possible this look-alike domain was\nused to hide malicious Zoom traffic, although we have no evidence of this.\n\n**_Potentially related Zoom look-alike domains_**\n\n## Who were the targets?\n\nWe were able to identify a large number of targets infected by LuminousMoth, almost all of which are from the\nPhilippines and Myanmar. We came across approximately 100 victims in Myanmar, whereas in the Philippines\nthe number was much higher, counting nearly 1,400 victims. It seems however that the actual targets were only\na subset of these that included high-profile organizations, namely government entities located both within those\ncountries and abroad.\n\nIt is likely that the high rate of infections is due to the nature of the LuminousMoth attack and its spreading\nmechanism, as the malware propagates by copying itself to removable drives connected to the system.\nNevertheless, the noticeable disparity between the extent of this activity in both countries might hint to an\nadditional and unknown infection vector being used solely in the Philippines. It could, however, simply be that\nthe attackers are more interested in going after targets from this region.\n\n## Connections to HoneyMyte\n\n\n-----\n\nOver the course of our analysis, we noticed that LuminousMoth shares multiple similarities with the HoneyMyte\nthreat group. Both groups have been covered extensively in our private reports, and further details and analysis\nof their activity are available to customers of our private APT reporting service. For more information, contact:\nintelreports@kaspersky.com.\n\nLuminousMoth and HoneyMyte have similar targeting and TTPs, such as the usage of DLL side-loading and\nCobalt Strike loaders, and a similar component to LuminousMoth’s Chrome cookie stealer was also seen in\nprevious HoneyMyte activity. Lastly, we found infrastructure overlaps between the C2 servers used in the\nLuminousMoth campaign and an older one that has been attributed to HoneyMyte.\n\nSome of LuminousMoth’s malicious artifacts communicate with “updatecatalogs[.]com”, which resolves to the\nsame IP address behind “webmail.mmtimes[.]net”. This domain was observed in a campaign that dates back to\nearly 2020, and was even found on some of the systems that were later infected with LuminousMoth. In this\ncampaign, a legitimate binary (“FmtOptions.exe”) sideloads a malicious DLL called “FmtOptions.dll”, which then\ndecodes and executes the contents of the file “work.dat”. This infection flow also involves a service called\n“yerodns.dll” that implements the same functionality as “FmtOptions.dll”.\n\nThe domain “webmail.mmtimes[.]net” previously resolved to the IP “45.204.9[.]70”. This address is associated\nwith another MMTimes look-alike domain used in a HoneyMyte campaign during 2020: “mmtimes[.]org”. In this\ncase, the legitimate executable “mcf.exe” loads “mcutil.dll”. The purpose of “mcutil.dll” is to decode and execute\n“mfc.ep”, a PlugX backdoor that communicates with “mmtimes[.]org”. Parts of this campaign were also covered\nin one of our private reports discussing HoneyMyte’s usage of a watering hole to infect its victims.\n\nTherefore, based on the above findings, we can assess with medium to high confidence that the LuminousMoth\nactivity is indeed connected to HoneyMyte.\n\n\n-----\n\n**_Connection between HoneyMyte and LuminousMoth C2s_**\n\n## Conclusions\n\nLuminousMoth represents a formerly unknown cluster of activity that is affiliated to a Chinese-speaking actor. As\ndescribed in this report, there are multiple overlaps between resources used by LuminousMoth and those\nsighted in previous activity of HoneyMyte. Both groups, whether related or not, have conducted activity of the\nsame nature – large-scale attacks that affect a wide perimeter of targets with the aim of hitting a few that are of\ninterest.\n\nOn the same note, this group’s activity and the apparent connections may hint at a wider phenomenon observed\nduring 2021 among Chinese-speaking actors, whereby many are re-tooling and producing new and unknown\nmalware implants. This allows them to obscure any ties to their former activities and blur their attribution to\nknown groups. With this challenge in mind, we continue to track the activity described in this publication with an\neye to understanding its evolution and connection to previous attacks.\n\n\n-----\n\n## Indicators of Compromise\n\n### Version.dll payloads\n\nHashes Compilation Date\n\n\n[0f8b7a64336b4315cc0a2e6171ab027e](https://opentip.kaspersky.com/0f8b7a64336b4315cc0a2e6171ab027e/?utm_source=SL&utm_medium=SL&utm_campaign=SL)\n\n2d0296ac56db3298163bf3f6b622fdc319a9be23\n\n59b8167afba63b9b4fa4369e6664f274c4e2760a4e2ae4ee12d43c07c9655e0f\n\n[37054e2e8699b0bdb0e19be8988093cd](https://opentip.kaspersky.com/37054e2e8699b0bdb0e19be8988093cd/?utm_source=SL&utm_medium=SL&utm_campaign=SL)\n\n5e45e6e113a52ba420a35c15fbaa7856acc03ab4\n\na934ae0274dc1fc9763f7aa51c3a2ce1a52270a47dcdd80bd5b9afbc3a23c82b\n\n[c05cdf3a29d6fbe4e3e8621ae3173f08](https://opentip.kaspersky.com/c05cdf3a29d6fbe4e3e8621ae3173f08/?utm_source=SL&utm_medium=SL&utm_campaign=SL)\n\n75cd21217264c3163c800e3e59af3d7db14d76f8\n\n869e7da2357c673dab14e9a64fb69691002af5b39368e6d1a3d7fda242797622\n\n[5ba1384b4edfe7a93d6f1166da05ff6f](https://opentip.kaspersky.com/5ba1384b4edfe7a93d6f1166da05ff6f/?utm_source=SL&utm_medium=SL&utm_campaign=SL)\n\n6d18970811821125fd402cfa90210044424e223a\n\n857c676102ea5dda05899d4e386340f6e7517be2d2623437582acbe0d46b19d2\n\n[afb777236f1e089c9e1d33fce46a704c](https://opentip.kaspersky.com/afb777236f1e089c9e1d33fce46a704c/?utm_source=SL&utm_medium=SL&utm_campaign=SL)\n\ncf3582a6cdac3e254c017c8ce36240130d67834a\n\n1ec88831b67e3f0d41057ba38ccca707cb508fe63d39116a02b7080384ed0303\n\n### wwlib.dll payloads\n\n\nDec 24 09:20:16 2020\n\nDec 24 09:19:51 2020\n\nDec 29 11:45:41 2020\n\nJan 07 11:18:38 2021\n\nJan 14 11:18:50 2021\n\n\nHashes Compilation Date\n\n\n[4fbc4835746a9c64f8d697659bfe8554](https://opentip.kaspersky.com/4fbc4835746a9c64f8d697659bfe8554/?utm_source=SL&utm_medium=SL&utm_campaign=SL)\n\nb43d7317d3144c760d82c4c7506eba1143821ac1\n\n95bcc8c3d9d23289b4ff284cb685b741fe92949be35c69c1faa3a3846f1ab947\n\n### Related payloads\n\n\nDec 24 10:25:39 2020\n\n\nHashes Name Compilation\nDate\n\n\n[b31008f6490ffe7ba7a8edb9e9a8c137](https://opentip.kaspersky.com/b31008f6490ffe7ba7a8edb9e9a8c137/?utm_source=SL&utm_medium=SL&utm_campaign=SL)\n\nc1945fd976836ba2f3fbeafa276f60c3f0e9a51c\n\n4a4b976991112b47b6a3d6ce19cc1c4f89984635ed16aea9f88275805b005461\n\n[ac29cb9c702d9359ade1b8a5571dce7d](https://opentip.kaspersky.com/ac29cb9c702d9359ade1b8a5571dce7d/?utm_source=SL&utm_medium=SL&utm_campaign=SL)\n\n577ad54e965f7a21ba63ca4a361a3de86f02e925\n\nd8de88e518460ee7ffdffaa4599ccc415e105fc318b36bc8fe998300ee5ad984\n\n[afe30b5dd18a114a9372b5133768151c](https://opentip.kaspersky.com/afe30b5dd18a114a9372b5133768151c/)\n\n9a6f97300017a09eb4ea70317c65a18ea9ac49bd\n\ncf757b243133feab2714bc0da534ba21cbcdde485fbda3d39fb20db3a6aa6dee\n\n[95991f445d846455b58d203dac530b0b](https://opentip.kaspersky.com/95991f445d846455b58d203dac530b0b/?utm_source=SL&utm_medium=SL&utm_campaign=SL)\n\ncee6afa1c0c8183900b76c785d2989bd1a904ffb\n\nf27715b932fb83d44357dc7793470b28f6802c2dc47076e1bc539553a8bfa8e0\n\n### Post exploitation tools\n\n\nFmtOptions.dll Jan 11\n10:00:42\n2021\n\nyerodns.dll Oct 29\n10:33:20\n2019\n\nmcutil.dll Jun 13\n16:35:46\n2019\n\nmcutil.dll Feb 21\n09:41:11\n2020\n\n\n-----\n\nHashes Name Compilation\nDate\n\n\n[c727a8fc56cedc69f0cfd2f2f5796797](https://opentip.kaspersky.com/c727a8fc56cedc69f0cfd2f2f5796797/?utm_source=SL&utm_medium=SL&utm_campaign=SL)\n\n75d38bf8b0053d52bd5068adf078545ccdac563f\n\n361ccc35f7ff405eb904910de126a5775de831b4229a4fdebfbacdd941ad3c56\n\n### Domains and IPs\n\n103.15.28[.]195\n\n202.59.10[.]253\n\nupdatecatalogs[.]com\n\nmopfi-ferd[.]com\n\nmmtimes[.]net\n\nmmtimes[.]org\n7daydai1y[.]com\n\nirrawddy[.]com\n\n[APT](https://securelist.com/tag/apt/)\n[Browser](https://securelist.com/tag/browser/)\n[Chinese-speaking cybercrime](https://securelist.com/tag/chinese-speaking-cybercrime/)\n[Digital Certificates](https://securelist.com/tag/digital-certificates/)\n[Google Chrome](https://securelist.com/tag/google-chrome/)\n[Malware Descriptions](https://securelist.com/tag/malware-descriptions/)\n[Malware Technologies](https://securelist.com/tag/malware-technologies/)\n[Microsoft Word](https://securelist.com/tag/microsoft-word/)\n[Spear phishing](https://securelist.com/tag/spear-phishing/)\n[Targeted attacks](https://securelist.com/tag/targeted-attacks/)\n\nAuthors\n\n[Mark Lechtik](https://securelist.com/author/marklechtik/)\n\n[Paul Rascagneres](https://securelist.com/author/paulrascagneres/)\n\nAseel Kayal\n\nLuminousMoth APT: Sweeping attacks for the chosen few\n\nYour email address will not be published. Required fields are marked *\n\n\nZoomVideoApp.exe Mar 02\n10:51:31\n2021\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-07-14 - LuminousMoth APT- Sweeping attacks for the chosen few.pdf"
+    ],
+    "report_names": [
+        "2021-07-14 - LuminousMoth APT- Sweeping attacks for the chosen few.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "7c00086d-9535-4552-8201-1dd725e41b12",
+            "created_at": "2023-04-26T02:03:03.128736Z",
+            "updated_at": "2025-03-27T02:00:55.516541Z",
+            "deleted_at": null,
+            "main_name": "LuminousMoth",
+            "aliases": [
+                "LuminousMoth"
+            ],
+            "source_name": "MITRE:LuminousMoth",
+            "tools": [
+                "PlugX",
+                "Cobalt Strike"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "92049df8-7902-48e8-ad17-97398b923698",
+            "created_at": "2022-10-25T16:07:23.81315Z",
+            "updated_at": "2025-03-27T02:02:09.990217Z",
+            "deleted_at": null,
+            "main_name": "LuminousMoth",
+            "aliases": [],
+            "source_name": "ETDA:LuminousMoth",
+            "tools": [
+                "Agentemis",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "1691c25f-1aa4-4168-8ce2-7aa8f23246e7",
+            "created_at": "2024-06-04T02:03:07.724221Z",
+            "updated_at": "2025-03-27T02:05:17.284601Z",
+            "deleted_at": null,
+            "main_name": "BRONZE PRESIDENT",
+            "aliases": [
+                "Mustang Panda ",
+                "Red Lich ",
+                "Temp.Hex ",
+                "HoneyMyte "
+            ],
+            "source_name": "Secureworks:BRONZE PRESIDENT",
+            "tools": [
+                " Cobalt Strike",
+                " ORat",
+                " PlugX",
+                " RCSession",
+                "China Chopper"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "b69037ec-2605-4de4-bb32-a20d780a8406",
+            "created_at": "2023-01-06T13:46:38.790766Z",
+            "updated_at": "2025-03-27T02:00:02.919758Z",
+            "deleted_at": null,
+            "main_name": "MUSTANG PANDA",
+            "aliases": [
+                "TEMP.HEX",
+                "TA416",
+                "TANTALUM",
+                "Twill Typhoon",
+                "Earth Preta",
+                "Stately Taurus",
+                "LuminousMoth",
+                "Polaris",
+                "BRONZE PRESIDENT",
+                "HoneyMyte",
+                "Red Lich"
+            ],
+            "source_name": "MISPGALAXY:MUSTANG PANDA",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "9baa7519-772a-4862-b412-6f0463691b89",
+            "created_at": "2022-10-25T15:50:23.354429Z",
+            "updated_at": "2025-03-27T02:00:55.45162Z",
+            "deleted_at": null,
+            "main_name": "Mustang Panda",
+            "aliases": [
+                "Mustang Panda",
+                "TA416",
+                "RedDelta",
+                "BRONZE PRESIDENT"
+            ],
+            "source_name": "MITRE:Mustang Panda",
+            "tools": [
+                "Cobalt Strike",
+                "RCSession",
+                "NBTscan",
+                "PoisonIvy",
+                "PlugX"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "2ee03999-5432-4a65-a850-c543b4fefc3d",
+            "created_at": "2022-10-25T16:07:23.882813Z",
+            "updated_at": "2025-03-27T02:02:10.0116Z",
+            "deleted_at": null,
+            "main_name": "Mustang Panda",
+            "aliases": [
+                "Bronze President",
+                "Camaro Dragon",
+                "Earth Preta",
+                "HoneyMyte",
+                "Mustang Panda",
+                "Operation SMUGX",
+                "Operation SmugX",
+                "PKPLUG",
+                "Red Lich",
+                "Stately Taurus",
+                "TEMP.Hex"
+            ],
+            "source_name": "ETDA:Mustang Panda",
+            "tools": [
+                "9002 RAT",
+                "AdFind",
+                "Agent.dhwf",
+                "Agentemis",
+                "CHINACHOPPER",
+                "China Chopper",
+                "Chymine",
+                "ClaimLoader",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "DCSync",
+                "DOPLUGS",
+                "Darkmoon",
+                "Destroy RAT",
+                "DestroyRAT",
+                "Farseer",
+                "Gen:Trojan.Heur.PT",
+                "HOMEUNIX",
+                "Hdump",
+                "HenBox",
+                "HidraQ",
+                "Hodur",
+                "Homux",
+                "HopperTick",
+                "Hydraq",
+                "Impacket",
+                "Kaba",
+                "Korplug",
+                "LadonGo",
+                "MQsTTang",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "NBTscan",
+                "NetSess",
+                "Netview",
+                "Orat",
+                "POISONPLUG.SHADOW",
+                "PUBLOAD",
+                "PVE Find AD Users",
+                "PlugX",
+                "Poison Ivy",
+                "PowerView",
+                "QMAGENT",
+                "RCSession",
+                "RedDelta",
+                "Roarur",
+                "SPIVY",
+                "ShadowPad Winnti",
+                "SinoChopper",
+                "Sogu",
+                "TIGERPLUG",
+                "TONEINS",
+                "TONESHELL",
+                "TVT",
+                "TeamViewer",
+                "Thoper",
+                "TinyNote",
+                "WispRider",
+                "WmiExec",
+                "XShellGhost",
+                "Xamtrav",
+                "Zupdax",
+                "cobeacon",
+                "nbtscan",
+                "nmap",
+                "pivy",
+                "poisonivy"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536005,
+    "ts_updated_at": 1743041807,
+    "ts_creation_date": 1653714761,
+    "ts_modification_date": 1653714761,
+    "files": {
+        "pdf": "https://archive.orkl.eu/e7ec7acdda261da27a299b579b54718ee166b9ba.pdf",
+        "text": "https://archive.orkl.eu/e7ec7acdda261da27a299b579b54718ee166b9ba.txt",
+        "img": "https://archive.orkl.eu/e7ec7acdda261da27a299b579b54718ee166b9ba.jpg"
+    }
+}

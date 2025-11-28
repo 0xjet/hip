@@ -1,0 +1,157 @@
+{
+    "id": "d0a6610f-a87f-4462-813c-97ee18c59d63",
+    "created_at": "2023-01-12T14:59:36.929619Z",
+    "updated_at": "2025-03-27T02:16:44.316116Z",
+    "deleted_at": null,
+    "sha1_hash": "9a21a83df681ca019992ca3fe61f4ed09d51d832",
+    "title": "2020-06-24 - DropboxAES Remote Access Trojan",
+    "authors": "",
+    "file_creation_date": "2022-05-28T18:16:46Z",
+    "file_modification_date": "2022-05-28T18:16:46Z",
+    "file_size": 770468,
+    "plain_text": "# DropboxAES Remote Access Trojan\n\n**[secureworks.com/research/dropboxaes-remote-access-trojan](https://www.secureworks.com/research/dropboxaes-remote-access-trojan)**\n\nCounter Threat Unit Research Team\n\nWednesday, June 24, 2020 By: Counter Threat Unit Research Team\nThe following analysis was compiled and published to Threat Intelligence clients in March\n2019. The Secureworks® Counter Threat Unit™ (CTU) research team is publicly sharing\n[insights about BRONZE VINEWOOD and its use of the](https://www.secureworks.com/research/bronze-vinewood-targets-supply-chains) [HanaLoader malware and](https://www.secureworks.com/research/bronze-vinewood-uses-hanaloader-to-target-government-supply-chain)\nDropboxAES RAT, to increase visibility of the threat group’s activities.\n\n\n-----\n\n## Summary\n\nDropboxAES is a simple remote access trojan (RAT) used by the BRONZE\nVINEWOOD (also known as APT31) threat group. The RAT uses the Dropbox file-sharing\nservice for its command and control (C2) communications. The sample analyzed by\nSecureworks® Counter Threat Unit™ (CTU) researchers is executed via DLL search-order\nhijacking. Once executed on a host, DropboxAES RAT enables a threat actor to remotely\nperform the following actions:\n\nUpload files from the infected host to the C2 server\nDownload files from the C2 server to the infected host\nExecute commands on the infected host via a non-interactive command-line based\nreverse shell\nUpload basic system information about the compromised host to the C2 server\nCompletely remove itself from the infected host\n\n## BRONZE VINEWOOD’s tactics\n\nBRONZE VINEWOOD campaigns have targeted legal, consulting, and software\ndevelopment organizations. CTU™ analysis suggests that organizations that are part of\ngovernment or defense supply chains or that provide services to organizations in those\nverticals may be at higher risk of targeting than organizations in other verticals.\n\nIn addition to Dropbox, BRONZE VINEWOOD has used other popular social media and code\nrepository sites to hide malicious activity among legitimate network traffic. CTU researchers\nhave also identified previous BRONZE VINEWOOD campaigns utilizing DLL search-order\n[hijacking to deliver the HanaLoader downloader tool and other malicious payloads.](https://www.secureworks.com/research/bronze-vinewood-uses-hanaloader-to-target-government-supply-chain)\n\n## DropboxAES RAT technical details\n\nDespite BRONZE VINEWOOD naming the malware DropboxAES RAT, the version analyzed\n[by CTU researchers does not use the Advanced Encryption Standard (AES). Rather, it](https://en.wikipedia.org/wiki/Advanced_Encryption_Standard)\n[implements a ChaCha20 stream cipher to encode and decode data. Older versions of the](https://en.wikipedia.org/wiki/Salsa20#ChaCha_variant)\nmalware may have leveraged AES encryption when encrypting data.\n\nThe following sections describe how DropboxAES RAT builds its malicious payload, prepares\nits working environment, establishes persistence, gathers information about the\ncompromised system, and interacts with the Dropbox-based C2 server.\n\n### Decoding and executing the DropboxAES RAT executable\n\nThe analyzed sample starts the infection chain with two files:\n\n\n-----\n\nasOELnch.exe — a legitimate signed Symantec antispam executable\nMSVCR100.dll — a malicious DLL that acts as a sideloader for DropboxAES RAT\n\nWhen executed, asOELnch.exe loads MSVCR100.dll, which results in execution of the\nmalicious sideloader. This sideloader verifies it is running within the context of asOELnch.exe\nand then Base64-decodes a large data blob appended to the end of MSVCR100.dll. The\nBase64-decoded result is decoded again using an RC4 stream cipher, resulting in a fully\ndecoded executable that is the DropboxAES RAT (see Figure 1). The sideloader then\ncreates a suspended instance of the parent executable (asOELnch.exe), injects the decoded\nDropboxAES RAT executable into the suspended instance, and runs the injected executable.\n\n_Figure 1. DropboxAES RAT executable before and after RC4-decoding. (Source:_\n_Secureworks)_\n\n### Startup environment validation\n\nThe decompiled pseudocode of DropboxAES RAT’s main function (see Figure 2) shows\nminimal initial functionality. DropboxAES RAT hashes the current executable’s path and\nfilename (lines 15 and 16) and returns a two-byte hexadecimal value. The hexadecimal value\nis converted to a lowercase string and is used as the mutex name in the CreateMutexA call\n(line 18).\n\n\n-----\n\n_Figure 2. DropboxAES RAT’s decompiled main function pseudocode. (Source: Secureworks)_\n\nAs an example, DropboxAES RAT expects to be executed in memory by its loader.\nTherefore, the executable path and filename should be similar to\nC:\\Users\\Example\\Desktop\\asOELnch.exe. The hashing algorithm uses the path and\nfilename combination results to generate the hash 0x713E. This hash is converted to a\nlowercase string and is used as the Name argument in the call to CreateMutex (see Figure\n3).\n\n_Figure 3. DropboxAES RAT mutex creation using hashed path and filename value as the_\n_Name argument. (Source: Secureworks)_\n\nIf mutex creation is successful, meaning there are no other running instances of\nDropboxAES RAT, then DropboxAES RAT checks its configuration for the name of the\nsubfolder and INI file within a specific subfolder in the %AllUsersProfile% folder. In the\nanalyzed sample, the configuration value was the string “Service” (see Figure 4), so the\nchecked path and filename was “C:\\ProgramData\\Service\\Service.ini”. If the specified INI file\ndoes not exist, DropboxAES RAT sets up its working environment and persistence.\n\n### Working environment and persistence setup\n\nDropboxAES RAT sets up its working environment by first creating a subfolder within\n%AllUsersProfile% using the name “Service” specified in its configuration (see Figure 4). The\nmalware sets the Hidden and System attributes, copies the original executable\n(asOELnch.exe) and DLL (MSVCR100.dll), and creates a file named Service.ini in this\n\n\n-----\n\nsubfolder. The Service.ini file contains a single integer, which is specified at the beginning of\nthe DropboxAES RAT configuration (e.g., 0x3E8 hex = 1000 decimal). CTU researchers\nbelieve this value may be a campaign identifier.\n\n_Figure 4. DropboxAES RAT configuration highlighting the values used in folder/file creation_\n_as well as the integer to be stored within the INI file. (Source: Secureworks)_\n\nFor persistence, DropboxAES RAT first tries to create a Windows Service named with the\nsame “Service” string used for the %AllUsersProfile% subfolder and the INI file (see Figure\n5). The malware sets the executable path to the legitimate executable copied to the\n\n\n-----\n\n%AllUsersProfile%\\Service\\ directory and sets the description of the service to Helps protect\nusers from malware and other potentially unwanted software.” The service description is also\na value derived from the configuration data. Once the malware has created the Windows\nService, it is started.\n\n_Figure 5. Service created by DropboxAES RAT for persistence. (Source: Secureworks)_\n\nIf service creation fails, DropboxAES RAT implements persistence by creating an entry\nnamed “Service” in the registry’s HKCU Run key (see Figure 6). The malware then runs the\nexecutable that it just copied into the configured working directory at\n%AllUsersProfile%\\Service\\ via a call to Kernel32.WinExec.\n\n\n-----\n\n_Figure 6. DropboxAES RAT registry Run key created for persistence. (Source: Secureworks)_\n\nWith the new malware instance running via either Windows Service or a call to WinExec,\nDropboxAES RAT drops and executes a batch script named del.cmd within the\n%AllUsersProfile% path (see Figure 7).This file deletes the executable and DLL files from the\noriginal executed path. DropboxAES RAT’s use of the ‘del’ command potentially allows for\n[the deleted files to be forensically restored as it does not perform a secure delete.](https://www.techadvisor.co.uk/how-to/windows/how-securely-delete-files-in-windows-10-3675546/)\n\n_Figure 7. Contents of del.cmd dropped and executed by DropboxAES RAT. (Source:_\n_Secureworks)_\n\nOnce DropboxAES RAT has set up the working environment, established persistence, and\nremoved the original artifacts from the compromised system, the malware terminates itself in\nfavor of the new running instance launched from the configured working directory.\n\n### Information gathering\n\nDropboxAES RAT gathers basic information about the host prior to establishing\ncommunication with its C2 server. First, it generates a “uuid” value by appending the mutex\nvalue to the lowercase MAC address for the host’s network adapter. For example, if the MAC\n\n\n-----\n\naddress for the host is 00-0C-29-06-65-9F and the mutex value is 713e, the resulting uuid\nvalue is “00-0c-29-06-65-9f-713e”.\n\nNext, DropboxAES RAT obtains the hostname, username, internal IP address, and operating\nsystem version of the infected host. It retrieves an integer value specified in its configuration,\nwhich is also present within the INI file, and formats the data into a JSON data structure:\n```\n{\n\"uuid\":\"00-0d-28-06-65-9f-713e\",\n\"pcname\":\"example-hostname\",\n\"user\":\"example-username\",\n\"ip\":\"10.11.12.13\",\n\"os\":\"Windows 8\",\n\"time\":1000\n}\n\n```\nThe collected data is encoded with the ChaCha20 stream cipher, which is partially identified\nby the constant “expand 32-byte k” within the code (see Figure 8). The resulting encoded\ndata is then Base64-encoded.\n\n_Figure 8. DropboxAES RAT ‘expand 32-byte k’ constant in the ChaCha20 stream cipher_\n_code. (Source: Secureworks)_\n\n### Dropbox authentication and C2 folder\n\nDropboxAES RAT is proxy aware. Prior to establishing C2 communications, it determines if\nthe system is configured to use a proxy by inspecting the contents of the\nHKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\\ProxyServer registry\nkey value. If a proxy is configured, DropboxAES RAT uses these settings in its network\nconfiguration.\n\nDropboxAES RAT needs to successfully authenticate to Dropbox to interact with the filesharing service. To achieve this authentication, the malware obtains the Authorization token\nspecified within its configuration (see Figure 9) and includes the value in the Authorization\nHTTP header. The following is the partially redacted Authorization token in the analyzed\nsample’s configuration:\n```\nZFcL0-4v7MAAAAAAAAAACv<REDACTED>80ulQAuXacLPU-MV7-5I-9S\n\n```\n\n-----\n\nThis token results in the following Authorization HTTP header value:\n```\nAuthorization: Bearer ZFcL0-4v7MAAAAAAAAAACv<REDACTED>80ulQAuXacLPU-MV7-5I-9S\n\n```\nA valid Authorization token value allows DropboxAES RAT to view, download, upload, and\ndelete files located in Dropbox folders owned by the threat actor.\n\nThe name of the remote folder on Dropbox that DropboxAES RAT uses for C2\ncommunications is also specified within the configuration. In the analyzed sample, the folder\nvalue was “dhsludfjdrdgd”.\n\n_Figure 9. Dropbox Authorization token and C2 folder specified in the DropboxAES RAT_\n_configuration. (Source: Secureworks)_\n\n\n-----\n\nBefore uploading the encoded host information, DropboxAES RAT checks if an online file\nfor this host already exists. For example, using the uuid generated from the analyzed\nexample, the online filename would be “online#00-0d-28-06-65-9f-713e#.txt”. If an online\nversion exists, the malware deletes it from the C2 server. The malware then uploads the\nencoded host information to the C2 server using the same “online” filename.\n\nDropboxAES RAT searches the C2 folder on Dropbox for “job” files that contain commands\nissued by the C2 server. The search looks for files that contains the uuid value associated\nwith the infected host. DropboxAES RAT downloads and processes any job files it finds that\nmatch the specific filename format (e.g., job####.txt). A switch statement uses the command\ninteger specified in the job filename to determine which command should be executed (see\nFigure 10).\n\n_Figure 10. Decompiled pseudocode for DropboxAES RAT C2 command switch statement._\n_(Source: Secureworks)_\n\nTable 1 describes the command values supported by DropboxAES RAT and their purpose.\n\n\nCommand\nvalue\n\n\nCommand description\n\n\n2 Run the specified command via a call to kernel32.CreateProcessA\n\n3 Download the specified file from the C2 server\n\n4 Upload the specified file to the C2 server\n\n5 Resend the uuid, hostname, username, IP address, operating system data,\nand the integer found in configuration data to the C2 server\n\n\n-----\n\n6 Remove all traces of DropboxAES RAT from the compromised system,\nincluding deleting the ‘online’ check-in file present on the C2 server, removing\nall persistence mechanisms (registry Run key and Windows Service),\nperforming a shallow deletion of DropboxAES RAT executables via the\ndel.cmd batch script, and terminating the currently running DropboxAES RAT\nexecutable\n\n_Table 1. Valid DropboxAES RAT commands._\n\nAfter DropboxAES RAT executes the command, the result or command output is encoded\nand uploaded to the C2 folder with a ‘back’ filename (e.g., back###.txt). When completed,\nDropboxAES RAT continuously checks for the presence of another job file until the running\nDropboxAES RAT process is terminated. DropboxAES RAT establishes C2 communication\n[using raw sockets via the libcurl library statically compiled into the binary. As it does not rely](https://curl.haxx.se/libcurl/)\non libraries resident on the infected host, traces of DropboxAES RAT’s historical network\nactivity will be minimal or nonexistent.\n\n### DropboxAES RAT C2 files and formats\n\nDropboxAES RAT utilizes the Dropbox online service for C2 communications by uploading\nand downloading documents stored in the configured folder on the Dropbox server. Table 2\nsummarizes all of the files that DropboxAES RAT uses for its C2 communications. They are\nlisted in the order they occur.\n\nFormat Example Description\n\n\nonline##.txt online#00-0c-29-0665-9f-ce8a#.txt\n\njob####.txt job#00-0c-29-06-659fce8a#2#gyK0slzo#.txt\n\n\nUploaded to the C2 server by the compromised host\nat initial check-in. The uuid value is unique and\nassociates all C2 communication for the\ncompromised host. The file contents contain\nChaCha20 and Base64-encoded data about the\ncompromised host.\n\nPlaced on the C2 server by the threat actor.\nDownloaded and processed by the compromised\nhost matching the uuid specified in the filename. In\nthis example, the command order is denoted as the\nnumber 2 between the # symbols in the filename.\nThe file contains arguments for the command and\nmust be Base64 and ChaCha20-decoded before the\narguments can be used by the malware. The\nrandom string at the end of the filename acts as a\njob ID that the threat actor uses to associate\nresponses with issued commands.\n\n\n-----\n\nFormat Example Description\n\n\nback###.txt back#00-0c-29-0665-9fce8a#gyk0slzo#.txt\n\n_Table 2. DropboxAES RAT files._\n\n\nUploaded to the C2 server by the compromised\nhost. Contains the output for the command issued\nby the corresponding job file on the C2 server. The\njob ID appended to the end of the filename matches\nthe job ID specified in the job file that originally\nissued the command. Prior to being uploaded to the\nC2 server, the command output is ChaCha20 and\nBase64-encoded.\n\n\n### DropboxAES RAT configuration values\n\nTable 3 summarizes the key values contained within the DropboxAES RAT configuration.\n\nValue Purpose\n\n0x3E8 (1000) Integer stored in the INI file.\nUsed as the time value in the\nJSON sent to the C2 server\nwithin the online file. CTU\nresearchers believe this value\nto be a campaign or target\nidentifier.\n\nAAert35ioplmnbvcxzasdfghjk&*cvvv Secret key used for ChaCha20\nencoding and decoding.\n\nService String used for:\n\n%AllUsersProfile%\nsubfolder name\nINI filename\nService name used for\npersistence\nRegistry Run key value\nname used for\npersistence\n\n\nHelps protect users from malware and other potentially\nunwanted software\n\nZFcL04v7MAAAAAAAAAACv<REDACTED>80ulQAuXacLPUMV7-5I-9S\n\nHelps protect users from malware and other potentially\nunwanted software\n\n\nDescription of service used for\npersistence\n\nDropbox API Authorization\ntoken\n\nDescription of service used for\npersistence\n\n\n-----\n\ndhsludfjdrdgd Subfolder on Dropbox\ncontaining C2 files\n\n_Table 3. DropboxAES RAT configuration values._\n\n## Threat indicators\n\nThe threat indicators in Table 4 can be used to detect activity related to the DropboxAES\nRAT.\n\nIndicator Type Context\n\n\n76d4866c5ff6d821313e1461b7875544 MD5\nhash\n\n406353b156239ed08b27de0c38d16dfc6d031d88 SHA1\nhash\n\n\nebdf52e13e69435ea7a85c9e38ac1f5045c32fe30d4e5aa66149a5\n\n3054183f7f\n\n\nSHA256\nhash\n\n\n8f0fcb5a80b2bca62d79f0d1cbdc93fb MD5\nhash\n\n9c162e042e0a892924f8415f7d72fe4f966bae7d SHA1\nhash\n\n\nf34725937839ae6c0470596e9c81b4572e2361737fbdb3a13983\n\na25dfabd1c3a\n\n_Table 4. Indicators for this threat._\n\n## Conclusion\n\n\nSHA256\nhash\n\n\nDropboxAES\nRAT loader\nDLL\n\nDropboxAES\nRAT loader\nDLL\n\nDropboxAES\nRAT loader\nDLL\n\nDropboxAES\nRAT\nexecutable\n\nDropboxAES\nRAT\nexecutable\n\nDropboxAES\nRAT\nexecutable\n\n\nDropboxAES RAT is a simple but effective remote access trojan that lets a remote threat\nactor control a compromised host using primitive commands. When these commands are\nutilized together, the malware exhibits great flexibility and capability. The use of Dropbox for\nC2 communications and the generic configurable artifacts on disk make detection and\nprevention of DropboxAES RAT activity extremely difficult, if not impossible. Detection is\nespecially challenging for organizations that use Dropbox for business purposes within their\nenvironments.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-06-24 - DropboxAES Remote Access Trojan.pdf"
+    ],
+    "report_names": [
+        "2020-06-24 - DropboxAES Remote Access Trojan.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aacd5cbc-604b-4b6e-9e58-ef96c5d1a784",
+            "created_at": "2023-01-06T13:46:38.953463Z",
+            "updated_at": "2025-03-27T02:00:02.961301Z",
+            "deleted_at": null,
+            "main_name": "APT31",
+            "aliases": [
+                "JUDGMENT PANDA",
+                "BRONZE VINEWOOD",
+                "Red keres",
+                "Violet Typhoon",
+                "TA412"
+            ],
+            "source_name": "MISPGALAXY:APT31",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "9e6186dd-9334-4aac-9957-98f022cd3871",
+            "created_at": "2022-10-25T15:50:23.357398Z",
+            "updated_at": "2025-03-27T02:00:55.452383Z",
+            "deleted_at": null,
+            "main_name": "ZIRCONIUM",
+            "aliases": [
+                "APT31",
+                "Violet Typhoon"
+            ],
+            "source_name": "MITRE:ZIRCONIUM",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "774f15f7-832e-4cd4-a1fa-ec6a838f2a40",
+            "created_at": "2022-10-25T16:47:55.641406Z",
+            "updated_at": "2025-03-27T02:05:17.29791Z",
+            "deleted_at": null,
+            "main_name": "BRONZE VINEWOOD",
+            "aliases": [
+                "Judgment Panda ",
+                "ZIRCONIUM ",
+                "APT31 "
+            ],
+            "source_name": "Secureworks:BRONZE VINEWOOD",
+            "tools": [
+                " HanaLoader",
+                " Metasploit",
+                " Mimikatz",
+                " Reverse ICMP shell",
+                " Trochilus",
+                "DropboxAES RAT"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "dc7ee503-9494-4fb6-a678-440c68fd31d8",
+            "created_at": "2022-10-25T16:07:23.349177Z",
+            "updated_at": "2025-03-27T02:02:09.748159Z",
+            "deleted_at": null,
+            "main_name": "APT 31",
+            "aliases": [
+                "APT 31",
+                "Bronze Vinewood",
+                "Judgment Panda",
+                "Red Keres",
+                "RedBravo",
+                "TA412",
+                "Violet Typhoon",
+                "Zirconium"
+            ],
+            "source_name": "ETDA:APT 31",
+            "tools": [
+                "9002 RAT",
+                "Agent.dhwf",
+                "AngryRebel",
+                "CHINACHOPPER",
+                "China Chopper",
+                "Destroy RAT",
+                "DestroyRAT",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "GrewApacha",
+                "HOMEUNIX",
+                "HiKit",
+                "HidraQ",
+                "Homux",
+                "Hydraq",
+                "Kaba",
+                "Korplug",
+                "McRAT",
+                "MdmBot",
+                "Moudour",
+                "Mydoor",
+                "PCRat",
+                "PlugX",
+                "RedDelta",
+                "Roarur",
+                "Sakula",
+                "Sakula RAT",
+                "Sakurel",
+                "SinoChopper",
+                "Sogu",
+                "TIGERPLUG",
+                "TVT",
+                "Thoper",
+                "Trochilus RAT",
+                "Xamtrav"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535576,
+    "ts_updated_at": 1743041804,
+    "ts_creation_date": 1653761806,
+    "ts_modification_date": 1653761806,
+    "files": {
+        "pdf": "https://archive.orkl.eu/9a21a83df681ca019992ca3fe61f4ed09d51d832.pdf",
+        "text": "https://archive.orkl.eu/9a21a83df681ca019992ca3fe61f4ed09d51d832.txt",
+        "img": "https://archive.orkl.eu/9a21a83df681ca019992ca3fe61f4ed09d51d832.jpg"
+    }
+}

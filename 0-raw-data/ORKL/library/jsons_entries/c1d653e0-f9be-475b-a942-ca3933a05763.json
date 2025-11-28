@@ -1,0 +1,218 @@
+{
+    "id": "c1d653e0-f9be-475b-a942-ca3933a05763",
+    "created_at": "2022-10-25T16:48:23.286564Z",
+    "updated_at": "2025-03-27T02:16:57.942815Z",
+    "deleted_at": null,
+    "sha1_hash": "98775eb539a512859a786f6292cc6f6db04916b2",
+    "title": "CARBANAK Week Part Three: Behind the CARBANAK Backdoor",
+    "authors": "FireEye",
+    "file_creation_date": "2019-09-18T02:53:29Z",
+    "file_modification_date": "0001-01-01T00:00:00Z",
+    "file_size": 2062501,
+    "plain_text": "# CARBANAK Week Part Three: Behind the CARBANAK Backdoor\n\n**[fireeye.com/blog/threat-research/2019/04/carbanak-week-part-three-behind-the-backdoor.html](https://www.fireeye.com/blog/threat-research/2019/04/carbanak-week-part-three-behind-the-backdoor.html)**\n\n[We covered a lot of ground in Part One and Part Two of our CARBANAK Week blog series.](https://www.fireeye.com/blog/threat-research/2019/04/carbanak-week-part-one-a-rare-occurrence.html)\nNow let's take a look back at some of our previous analysis and see how it holds up.\n\nIn June 2017, we published a blog post sharing novel information about the CARBANAK\nbackdoor, including technical details, intel analysis, and some interesting deductions about\nits operations we formed from the results of automating analysis of hundreds of CARBANAK\nsamples. Some of these deductions were claims about the toolset and build practices for\nCARBANAK. Now that we have a snapshot of the source code and toolset, we also have a\nunique opportunity to revisit these deductions and shine a new light on them.\n\n## Was There a Build Tool?\n\nLet’s first take a look at our deduction about a build tool for CARBANAK:\n\n_“A build tool is likely being used by these attackers that allows the operator to configure details_\n_such as C2 addresses, C2 encryption keys, and a campaign code. This build tool encrypts the_\n_binary’s strings with a fresh key for each build.”_\n\nWe came to this deduction from the following evidence:\n\n_“Most of CARBANAK’s strings are encrypted in order to make analysis more difficult. We have_\n_observed that the key and the cipher texts for all the encrypted strings are changed for each_\n_sample that we have encountered, even amongst samples with the same compile time. The RC2_\n\n\n-----\n\n_key used for the HTTP protocol has also been observed to change among samples with the same_\n_compile time. These observations paired with the use of campaign codes that must be configured_\n_denote the likely existence of a build tool.”_\n\nFigure 1 shows three keys used to decode the strings in CARBANAK, each pulled from a\ndifferent CARBANAK sample.\n\nFigure 1: Decryption keys for strings in CARBANAK are unique for each build\n\nIt turns out we were spot-on with this deduction. A build tool was discovered in the\nCARBANAK source dump, pictured with English translations in Figure 2.\n\n\n-----\n\nFigure 2: CARBANAK build tool\n\nWith this build tool, you specify a set of configuration options along with a template\nCARBANAK binary, and it bakes the configuration data into the binary to produce the final\nbuild for distribution. The Prefix text field allows the operator to specify a campaign code.\nThe Admin host text fields are for specifying C2 addresses, and the Admin password text\nfield is the secret used to derive the RC2 key for encrypting communication over\nCARBANAK’s pseudo-HTTP protocol. This covers part of our deduction: we now know for a\nfact that a build tool exists and is used to configure the campaign code and RC2 key for the\nbuild, amongst other items. But what about the encoded strings? Since this would be\nsomething that happens seamlessly behind the scenes, it makes sense that no evidence of\nit would be found in the GUI of the build tool. To learn more, we had to go to the source\ncode for both the backdoor and the build tool.\n\n[Figure 3 shows a preprocessor identifier named ON_CODE_STRING defined in the](https://en.wikipedia.org/wiki/C_preprocessor)\nCARBANAK backdoor source code that when enabled, defines macros that wrap all strings\nthe programmer wishes to encode in the binary. These functions sandwich the strings to be\nencoded with the strings “BS” and “ES”. Figure 4 shows a small snippet of code from the\nheader file of the build tool source code defining BEG_ENCODE_STRING as “BS” and\nEND_ENCODE_STRING as “ES”. The build tool searches the template binary for these “BS”\nand “ES” markers, extracts the strings between them, encodes them with a randomly\ngenerated key, and replaces the strings in the binary with the encoded strings. We came\n\n\n-----\n\nacross an executable named bot.dll that happened to be one of the template binaries to be\nused by the build tool. Running strings on this binary revealed that most meaningful strings\nthat were specific to the workings of the CARBANAK backdoor were, in fact, sandwiched\nbetween “BS” and “ES”, as shown in Figure 5.\n\nFigure 3: ON_CODE_STRING parameter enables easy string wrapper macros to prepare\nstrings for encoding by build tool\n\n\n-----\n\nFigure 4: builder.h macros for encoded string markers\n\nFigure 5: Encoded string markers in template CARBANAK binary\n\n\n-----\n\n## Operators’ Access To Source Code\n\nLet’s look at two more related deductions from our blog post:\n\n_“Based upon the information we have observed, we believe that at least some of the operators of_\n_CARBANAK either have access to the source code directly with knowledge on how to modify it or_\n_have a close relationship to the developer(s).”_\n\n_“Some of the operators may be compiling their own builds of the backdoor independently.”_\n\nThe first deduction was based on the following evidence:\n\n_“Despite the likelihood of a build tool, we have found 57 unique compile times in our sample set,_\n_with some of the compile times being quite close in proximity. For example, on May 20, 2014, two_\n_builds were compiled approximately four hours apart and were configured to use the same C2_\n_servers. Again, on July 30, 2015, two builds were compiled approximately 12 hours apart.”_\n\nTo investigate further, we performed a diff of two CARBANAK samples with very close\ncompile times to see what, if anything, was changed in the code. Figure 6 shows one such\ndifference.\n\nFigure 6: Minor differences between two closely compiled CARBANAK samples\n\n\n-----\n\nThe POSLogMonitorThread function is only executed in Sample A, while the blizkoThread\nfunction is only executed in Sample B (Blizko is a Russian funds transfer service, similar to\nPayPal). The POSLogMonitorThread function monitors for changes made to log files for\nspecific point of sale software and sends parsed data to the C2 server. The blizkoThread\nfunction determines whether the user of the computer is a Blizko customer by searching for\nspecific values in the registry. With knowledge of these slight differences, we searched the\nsource code and discovered once again that preprocessor parameters were put to use.\nFigure 7 shows how this function will change depending on which of three compile-time\nparameters are enabled.\n\nFigure 7: Preprocessor parameters determine which functionality will be included in a\ntemplate binary\n\nThis is not definitive proof that operators had access to the source code, but it certainly\nmakes it much more plausible. The operators would not need to have any programming\nknowledge in order to fine tune their builds to meet their needs for specific targets, just\nsimple guidance on how to add and remove preprocessor parameters in Visual Studio.\n\nEvidence for the second deduction was found by looking at the binary C2 protocol\nimplementation and how it has evolved over time. From our previous blog post:\n\n_“This protocol has undergone several changes over the years, each version building upon the_\n_previous version in some way. These changes were likely introduced to render existing network_\n_signatures ineffective and to make signature creation more difficult.”_\n\n\n-----\n\nFive versions of the binary C2 protocol were discovered amongst our sample set, as shown\nin Figure 8. This figure shows the first noted compile time that each protocol version was\nfound amongst our sample set. Each new version improved the security and complexity of\nthe protocol.\n\nFigure 8: Binary C2 protocol evolution shown through binary compilation times\n\nIf the CARBANAK project was centrally located and only the template binaries were\ndelivered to the operators, it would be expected that sample compile times should fall in\nline with the evolution of the binary protocol. Except for one sample that implements what\nwe call “version 3” of the protocol, this is how our timeline looks. A probable explanation for\nthe date not lining up for version 3 is that our sample set was not wide enough to include\nthe first sample of this version. This is not the only case we found of an outdated protocol\nbeing implemented in a sample; Figure 9 shows another example of this.\n\n\n-----\n\nFigure 9: CARBANAK sample using outdated version of binary protocol\n\nIn this example, a CARBANAK sample found in the wild was using protocol version 4 when a\nnewer version had already been available for at least two months. This would not be likely\nto occur if the source code were kept in a single, central location. The rapid-fire fine tuning\nof template binaries using preprocessor parameters, combined with several samples of\nCARBANAK in the wild implementing outdated versions of the protocol indicate that the\nCARBANAK project is distributed to operators and not kept centrally.\n\n## Names of Previously Unidentified Commands\n\nThe source code revealed the names of commands whose names were previously\nunidentified. In fact, it also revealed commands that were altogether absent from the\nsamples we previously blogged about because the functionality was disabled. Table 1 shows\nthe commands whose names were newly discovered in the CARBANAK source code, along\nwith a summary of our analysis from the blog post.\n\n|Hash|Prior FireEye Analysis|Name|\n|---|---|---|\n|0x749D968|(absent)|msgbox|\n\n\n-----\n\n0x6FD593 (absent) ifobs\n\n0xB22A5A7 Add/update klgconfig updklgcfg\n\n0x4ACAFC3 Upload files to the C2 server findfiles\n\n0xB0603B4 Download and execute shellcode tinymet\n\nTable 1: Command hashes previously not identified by name, along with description from\nprior FireEye analysis\n\nThe msgbox command was commented out altogether in the CARBANAK source code, and\nis strictly for debugging, so it never appeared in public analyses. Likewise, the ifobs\ncommand did not appear in the samples we analyzed and publicly documented, but likely\nfor a different reason. The source code in Figure 10 shows the table of commands that\nCARBANAK understands, and the ifobs command (0x6FD593) is surrounded by an #ifdef,\npreventing the ifobs code from being compiled into the backdoor unless the ON_IFOBS\npreprocessor parameter is enabled.\n\n|0xB22A5A7|Add/update klgconfig|updklgcfg|\n|---|---|---|\n|0x4ACAFC3|Upload files to the C2 server|findfiles|\n|0xB0603B4|Download and execute shellcode|tinymet|\n\n\n-----\n\nFigure 10: Table of commands from CARBANAK tasking code\n\nOne of the more interesting commands, however, is tinymet, because it illustrates how\nsource code can be both helpful and misleading.\n\n## The tinymet Command and Associated Payload\n\n\n-----\n\nAt the time of our initial CARBANAK analysis, we indicated that command 0xB0603B4\n(whose name was unknown at the time) could execute shellcode. The source code reveals\nthat the command (whose actual name is tinymet) was intended to execute a very specific\npiece of shellcode. Figure 12 shows an abbreviated listing of the code for handling the\ntinymet command, with line numbers in yellow and selected lines hidden (in gray) to show\nthe code in a more compact format.\n\nFigure 11: Abbreviated tinymet code listing\n\nThe comment starting on line 1672 indicates:\n\n\n-----\n\ntinymet command\nCommand format: tinymet {ip:port | plugin_name} [plugin_name]\nRetrieve meterpreter from specified address and launch in memory\n\nOn line 1710, the tinymet command handler uses the single-byte XOR key 0x50 to decode\nthe shellcode. Of note, on line 1734 the command handler allocates five extra bytes and line\n1739 hard-codes a five-byte mov instruction into that space. It populates the 32-bit\nimmediate operand of the mov instruction with the socket handle number for the server\nconnection that it retrieved the shellcode from. The implied destination operand for this\nmov instruction is the edi register.\n\nOur analysis of the tinymet command ended here, until the binary file named met.plug was\ndiscovered. The hex dump in Figure 12 shows the end of this file.\n\nFigure 12: Hex dump of met.plug\n\n\n-----\n\nThe end of the file is misaligned by five missing bytes, corresponding to the dynamically\nassembled mov edi preamble in the tasking source code. However, the single-byte XOR key\n0x50 that was found in the source code did not succeed in decoding this file. After some\nconfusion and further analysis, it was realized that the first 27 bytes of this file are a\n[shellcode decoder that looked very similar to call4_dword_xor. Figure 13 shows the](https://github.com/zhiwenuil/msf3/blob/941b97a0bc2cc6197ce069c4918d81b4df6e63cc/modules/encoders/x86/call4_dword_xor.rb)\nshellcode decoder and the beginning of the encoded metsrv.dll. The XOR key the shellcode\nuses is 0xEF47A2D0 which fits with how the five-byte mov edi instruction, decoder, and\nadjacent metsrv.dll will be laid out in memory.\n\nFigure 13: Shellcode decoder\n\nDecoding yielded a copy of metsrv.dll starting at offset 0x1b. When shellcode execution\n[exits the decoder loop, it executes Metasploit’s executable DOS header.](https://github.com/rapid7/metasploit-framework/blob/master/lib/msf/core/payload/windows/reflectivedllinject.rb#L43)\n\nIronically, possessing source code biased our binary analysis in the wrong direction,\nsuggesting a single-byte XOR key when really there was a 27-byte decoder preamble using a\nfour-byte XOR key. Furthermore, the name of the command being tinymet suggested that\n[the TinyMet Meterpreter stager was involved. This may have been the case at one point, but](https://github.com/SherifEldeeb/TinyMet/)\nthe source code comments and binary files suggest that the developers and operators have\nmoved on to simply downloading Meterpreter directly without changing the name of the\ncommand.\n\n## Conclusion\n\nHaving access to the source code and toolset for CARBANAK provided us with a unique\nopportunity to revisit our previous analysis. We were able to fill in some missing analysis\nand context validate our deductions in some cases and provide further evidence in other\n\n\n-----\n\ncases, strengthening our confidence in them but not completely proving them true. This\nexercise proves that even without access to the source code, with a large enough sample set\nand enough analysis, accurate deductions can be reached that go beyond the source code.\nIt also illustrates, such as in the case of the tinymet command, that sometimes, without the\nproper context, you simply cannot see the full and clear purpose of a given piece of code.\nBut some source code is also inconsistent with the accompanying binaries. If Bruce Lee had\nbeen a malware analyst, he might have said that source code is like a finger pointing away\nto the moon; don’t concentrate on the finger, or you will miss all that binary ground truth.\nSource code can provide immensely rich context, but analysts must be cautious not to\nmisapply that context to binary or forensic artifacts.\n\n[In the next and final blog post, we share details on an interesting tool that is part of the](https://www.fireeye.com/blog/threat-research/2019/04/carbanak-week-part-four-desktop-video-player.html)\nCARBANAK kit: a video player designed to play back desktop recordings captured by the\nbackdoor.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "d63ae2b7-445f-460d-965d-2676dacdb6de",
+            "created_at": "2022-10-25T15:59:19.552139Z",
+            "updated_at": "2022-10-25T15:59:19.552139Z",
+            "deleted_at": null,
+            "name": "APTnotes",
+            "url": "https://github.com/aptnotes/data",
+            "description": "APTnotes data",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://app.box.com/s/rel5slouyleepdl3u7xilbmzsuk091n3"
+    ],
+    "report_names": [
+        "Fireeye_CARBANAK-Week-3-Behind-CARBANAK-Backdoor(04-24-2019)"
+    ],
+    "threat_actors": [
+        {
+            "id": "c9617bb6-45c8-495e-9759-2177e61a8e91",
+            "created_at": "2022-10-25T15:50:23.405039Z",
+            "updated_at": "2025-03-27T02:00:55.462193Z",
+            "deleted_at": null,
+            "main_name": "Carbanak",
+            "aliases": [
+                "Carbanak",
+                "Anunak"
+            ],
+            "source_name": "MITRE:Carbanak",
+            "tools": [
+                "Carbanak",
+                "Mimikatz",
+                "PsExec",
+                "netsh"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "faa4a29b-254a-45bd-b412-9a1cbddbd5e3",
+            "created_at": "2022-10-25T16:07:23.80111Z",
+            "updated_at": "2025-03-27T02:02:09.985067Z",
+            "deleted_at": null,
+            "main_name": "LookBack",
+            "aliases": [
+                "FlowingFrog",
+                "LookBack",
+                "LookingFrog",
+                "TA410",
+                "Witchetty"
+            ],
+            "source_name": "ETDA:LookBack",
+            "tools": [
+                "FlowCloud",
+                "GUP Proxy Tool",
+                "SodomMain",
+                "SodomMain RAT",
+                "SodomNormal"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "f4f16213-7a22-4527-aecb-b964c64c2c46",
+            "created_at": "2024-06-19T02:03:08.090932Z",
+            "updated_at": "2025-03-27T02:05:17.387119Z",
+            "deleted_at": null,
+            "main_name": "GOLD NIAGARA",
+            "aliases": [
+                "Carbanak",
+                "Carbon Spider ",
+                "FIN7 ",
+                "Navigator ",
+                "Sangria Tempest ",
+                "TelePort Crew ",
+                "Calcium "
+            ],
+            "source_name": "Secureworks:GOLD NIAGARA",
+            "tools": [
+                " Carbanak",
+                " Cobalt Strike",
+                " DICELOADER",
+                " DRIFTPIN",
+                " GGLDR",
+                " GRIFFON",
+                " JSSLoader",
+                " Meterpreter",
+                " OFFTRACK",
+                " PILLOWMINT",
+                " POWERTRASH",
+                " SUPERSOFT",
+                " TAKEOUT",
+                " TinyMet",
+                "Bateleur"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "bb8702c5-52ac-4359-8409-998a7cc3eeaf",
+            "created_at": "2023-01-06T13:46:38.405479Z",
+            "updated_at": "2025-03-27T02:00:02.82533Z",
+            "deleted_at": null,
+            "main_name": "FIN7",
+            "aliases": [
+                "JokerStash",
+                "ATK32",
+                "G0046",
+                "Coreid",
+                "Carbanak",
+                "Sangria Tempest",
+                "CARBON SPIDER",
+                "GOLD NIAGARA",
+                "G0008",
+                "ELBRUS",
+                "Carbon Spider"
+            ],
+            "source_name": "MISPGALAXY:FIN7",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "ed3810b7-141a-4ed0-8a01-6a972b80458d",
+            "created_at": "2022-10-25T16:07:23.443259Z",
+            "updated_at": "2025-03-27T02:02:09.801771Z",
+            "deleted_at": null,
+            "main_name": "Carbanak",
+            "aliases": [
+                "Anunak",
+                "Carbanak",
+                "Carbon Spider",
+                "ELBRUS",
+                "Gold Waterfall",
+                "Sangria Tempest"
+            ],
+            "source_name": "ETDA:Carbanak",
+            "tools": [
+                "AVE_MARIA",
+                "Agentemis",
+                "AmmyyRAT",
+                "Antak",
+                "Anunak",
+                "Ave Maria",
+                "AveMariaRAT",
+                "BABYMETAL",
+                "BIRDDOG",
+                "Backdoor Batel",
+                "Batel",
+                "Bateleur",
+                "BlackMatter",
+                "Boostwrite",
+                "Cain & Abel",
+                "Carbanak",
+                "Cl0p",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "DNSMessenger",
+                "DNSRat",
+                "DNSbot",
+                "DRIFTPIN",
+                "DarkSide",
+                "FOXGRABBER",
+                "FlawedAmmyy",
+                "HALFBAKED",
+                "JS Flash",
+                "KLRD",
+                "MBR Eraser",
+                "Mimikatz",
+                "Nadrac",
+                "Odinaff",
+                "POWERPIPE",
+                "POWERSOURCE",
+                "PsExec",
+                "SQLRAT",
+                "Sekur",
+                "Sekur RAT",
+                "SocksBot",
+                "SoftPerfect Network Scanner",
+                "Spy.Agent.ORM",
+                "TEXTMATE",
+                "TeamViewer",
+                "TiniMet",
+                "TinyMet",
+                "Toshliph",
+                "VB Flash",
+                "WARPRISM",
+                "avemaria",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716503,
+    "ts_updated_at": 1743041817,
+    "ts_creation_date": 1568775209,
+    "ts_modification_date": 0,
+    "files": {
+        "pdf": "https://archive.orkl.eu/98775eb539a512859a786f6292cc6f6db04916b2.pdf",
+        "text": "https://archive.orkl.eu/98775eb539a512859a786f6292cc6f6db04916b2.txt",
+        "img": "https://archive.orkl.eu/98775eb539a512859a786f6292cc6f6db04916b2.jpg"
+    }
+}

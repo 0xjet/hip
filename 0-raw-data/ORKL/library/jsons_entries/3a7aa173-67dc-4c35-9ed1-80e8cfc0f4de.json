@@ -1,0 +1,140 @@
+{
+    "id": "3a7aa173-67dc-4c35-9ed1-80e8cfc0f4de",
+    "created_at": "2023-01-12T15:07:27.889542Z",
+    "updated_at": "2025-03-27T02:16:25.605489Z",
+    "deleted_at": null,
+    "sha1_hash": "613e5f6da4dbb305d4e5dd733626ee63aaa95e05",
+    "title": "2021-09-20 - Defeating macOS Malware Anti-Analysis Tricks with Radare2",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:56:12Z",
+    "file_modification_date": "2022-05-28T19:56:12Z",
+    "file_size": 3280992,
+    "plain_text": "# Defeating macOS Malware Anti-Analysis Tricks with Radare2\n\n**[sentinelone.com/labs/defeating-macos-malware-anti-analysis-tricks-with-radare2/](https://www.sentinelone.com/labs/defeating-macos-malware-anti-analysis-tricks-with-radare2/)**\n\nPhil Stokes\n\nIn this second post in our series on intermediate to advanced macOS malware reversing, we\nstart our journey into tackling common challenges when dealing with macOS malware\nsamples. Last time out, we took a look at [how to use radare2 for rapid triage, and we’ll](https://www.sentinelone.com/labs/6-pro-tricks-for-rapid-macos-malware-triage-with-radare2/)\ncontinue using r2 as we move through these various challenges. Along the way, we’ll pick up\ntips on both how to beat obstacles put in place by malware authors and how to use r2 more\nproductively.\n\nAlthough we can achieve a lot from static analysis, sometimes it can be more efficient to\nexecute the malware in a controlled environment and conduct dynamic analysis. Malware\nauthors, however, may have other ideas and can set up various roadblocks to stop us doing\nexactly that. Consequently, one of the first challenges we often have to overcome is working\naround these attempts to prevent execution in our safe environment.\n\nIn this post, we’ll look at how to circumvent the malware author’s control flow to avoid\nexecuting unwanted parts of their code, learning along the way how to take advantage of\n[some nice features of the r2 debugger! We’ll be looking at a sample of EvilQuest (password:](https://objective-see.com/downloads/malware/EvilQuest.zip)\ninfect3d), so fire up your VM and download it before reading on.\n\n\n-----\n\n_A note for the unwary: if you re using Safari in your VM to download the file and you see_\n“decompression failed”, go to Safari Preferences and turn off the ‘Open “safe” files after\ndownloading’ option in the General tab and try the download again.\n\n## Getting Started With the radare2 Debugger\n\n[Our sample hit the headlines in July 2020, largely because at first glance it appeared to be a](https://www.sentinelone.com/blog/evilquest-a-new-macos-malware-rolls-ransomware-spyware-and-data-theft-into-one/)\nrare example of macOS ransomware. SentinelLabs quickly analyzed it and produced a\ndecryptor to help any potential victims, but it turned out the malware was not very effective in\nthe wild.\n\nIt may well have been a PoC, or a project still in early development stages, as the code and\nfunctionality have the look and feel of someone experimenting with how to achieve various\nattacker objectives. However, that’s all good news for us, as EvilQuest implements several\nanti-analysis features that will serve us as good practice.\n\nThe first thing you will want to do is remove any extended attributes and codesigning if the\nsample has a revoked signature. In this case, the sample isn’t signed at all, but if it were we\ncould use:\n```\n% sudo codesign --remove-signature <path to bundle or file>\n\n```\nIf we need the sample to be codesigned for execution, we can also sign it (remember your\nVM needs to have installed the Xcode command line tools via `xcode-select --install )`\nwith:\n```\n% sudo codesign -fs - <path to bundle or file> --deep\n\n```\nWe’ll remove the extended attributes to bypass Gatekeeper and Notarization checks with\n```\n% xattr -rc <path to bundle or file>\n\n```\nAnd we’ll attempt to attach to the radare2 debugger by adding the `-d switch to our`\ninitialization command:\n```\n% r2 -AA -d patch\n\n```\nUnfortunately, our first attempt doesn’t go well. We already removed the extended attributes\nand codesigning isn’t the issue here, but the radare2 debugger fails to attach.\n\n\n-----\n\nFailing to attach the debugger.\nThat `ptrace: Cannot Attach: Invalid argument looks ominous, but actually the error`\nmessage is misleading. The problem is that we need elevated privileges to debug, so a\nsimple `sudo should get us past our current obstacle.`\n\nThe debugger needs elevated privileges\nYay, attach success! Let’s take a look around before we start diving further into the debugger.\n\n## A Faster Way of Finding XREFS and Interesting Code\n\n\n-----\n\nLet s run `afll as we did when analyzing OSX.Calisto previously, but this time we ll output`\nthe function list to file so that we can sort it and search it more conveniently without having to\nkeep running the command or scrolling up in the Terminal window.\n```\n> afll > functions.txt\n\n```\nLooking through our text file, we can see there are a number of function names that could be\nrelated to some kind of anti-analysis.\n\nSome of EvilQuest’s suspected anti-analysis functions\nWe can see that some of these only have a single cross-reference, and if we dig into these\nusing the `axt commmand, we see the cross-reference (XREF) for the` `is_virtual_mchn`\nfunction happens to be `main(), so that looks a good place to start.`\n\nGetting help on radare2’s `axt command`\n```\n> axt sym._is_debugging\nmain 0x10000be5f [CALL] sys._is_virtual_mchn\n\n```\n\n-----\n\nMany commands in r2 support tab expansion\nHere’s a useful powertrick for those already comfortable with r2. You can run any command\non a for-each loop using `@@ . For example, with`\n```\naxt @@f:<search term>\n\n```\nwe can get the XREFS to any function containing the search term in one go.\n\nIn this case I tell r2 to give me the XREFS for every function that contains “_is_”. Then I do\nthe same with “get”. Try `@@? to see more examples of what you can do with` `@@ .`\n\nUsing a for-each in radare2\nSince we see that `is_virtual_mchn is called in` `main, we should start by disassembling`\nthe entire `main function to see what’s going on, but first I’m going to change the r2 color`\ntheme to something a bit more reader-friendly with the `eco command (try` `eco and hit the`\n```\ntab key to see a list of available themes).\neco focus\npdf @ main\n\n## Visual Graph Mode and Renaming Functions with Radare2\n\n```\n\n-----\n\nAs we scroll back up to the beginning of the function, we can see the disassembly provides\npretty interesting reading. At the beginning of `main, we can see some unnamed functions`\nare called. We’re going to jump into Visual Graph mode and start renaming code as this will\ngive us a good idea of the malware’s execution flow and indicate what we need to do to beat\nthe anti-analysis.\n\nHit `VV to enter Visual Graph mode. I will try to walk you through the commands, but if you`\nget lost at any point, don’t feel bad. It happens to us all and is part of the r2 learning curve!\nYou can just quit out and start again if needs be (part of the beauty of r2’s speed; you can\nalso save your project: type uppercase `P? to see project options).`\n\nI prefer to view the graph as a horizontal, left-to-right flow; you can toggle between horizontal\nand vertical by pressing the `@ key.`\n\n\n-----\n\nViewing the sample’s visual graph horizontally\nHere’s a quick summary of some useful commands (there are many more as you’ll see if you\nplay around):\n\nhjkl(arrow keys) – move the graph around\n-/+0 – reduce, enlarge, return to default size\n‘ – toggle graph comments\ntab/shift-tab – move to next/previous function\ndr – rename function\nq – back to visual mode\nt/f – follow the true/false execution chain\nu – go back\n? – help/available options\n\nHit `‘ once or twice make sure graph comments are on.`\nUse the tab key to move to the first function after `main() (the border will be highlighted),`\nwhere we can see an unnamed function and a reference in square brackets that begins with\nthe letter ‘o’ (for example, `[ob], though it may be different in your sample). Type the letters`\n(without the square brackets) to go to that function. Type `p to rotate between different`\ndisplay modes till you see something similar to the next image.\n\n\n-----\n\nAs we can see, this function call is actually a call to the standard C library function\n```\nstrcmp(), so let’s rename it.\n\n```\nType `dr and at the prompt type in the name you want to use and hit ‘enter’. Unsurprisingly,`\nI’m going to call it `strcmp .`\n\nTo return to the main graph, type `u and you should see that all references to that previously`\nunnamed function now show `strcmp, making things much clearer.`\n\nIf you scroll through the graph (hjkl, remember) you will see many other unnamed functions\nthat, once you explore them in the same way, are just relocations of standard C library calls\nsuch as `exit,` `time,` `sleep,` `printf,` `malloc,` `srandom and more. I suggest you`\nrepeat the above exercise and rename as many as you can. This will both make the\nmalware’s behaviour easier to understand and build up some valuable muscle-memory for\nworking in r2!\n\n## Beating Anti-Analysis Without Patching\n\n\n-----\n\nThere are two approaches you can take to interrupt a program s designed logic. One is to\nidentify functions you want to avoid and patch the binary statically. This is fairly easy to do in\nr2 and there’s quite a few tutorials on how to patch binaries already out there. We’re not\ngoing to look at patching today because our entire objective is to run the sample dynamically,\nso we might as well interact with the program dynamically as well. Patching is really only\nworth considering if you need to create a sample for repeated use that avoids some kind of\nunwanted behaviour.\n\nWe basically have two easy options in terms of affecting control flow dynamically. We can\neither execute the function but manipulate the returned value (like put 0 in rax instead of 1)\nor skip execution of the function altogether.\n\nWe’ll see just how easy it is to do each of these, but we should first think about the different\nconsequences of each choice based on the malware we’re dealing with.\n\nIf we NOP a function or skip over it, we’re going to lose any behaviour or memory states\ninvoked by that function. If the function doesn’t do anything that affects the state of our\nprogram later on, this can be a good choice.\n\nBy the same token, if we execute the function but manipulate the value it returns, we may be\nallowing execution of code buried in that function that might trip us up. For example, if our\nfunction contains jumps to subroutines that do further anti-analysis tests, then we might get\nblocked before the parent function even returns, so this strategy wouldn’t help us. Clearly\nthen, we need to take a look around the code to figure out which is the best strategy in each\nparticular case.\n\nLet’s take a look inside the `_is_virtual_mchn function to see what it would do and work`\nout our strategy.\n\nIf you’re still in Visual Graph mode, hit `q to get back to the r2 prompt. Regardless of where`\nyou are, you can disassemble a function with `pdf and the` `@ symbol and provide a flag or`\naddress. Remember, you can also use tab expansion to get a list of possible symbols.\n\n\n-----\n\nIt seems this function subtracts the sleep interval from the second timestamp, then compares\nit against the first timestamp. Jumping back out to how this result is consumed in `main, it`\nseems that if the result is not ‘0’, the malware calls `exit() with ‘-1’.`\n\nThe is_virtual_mchn function causes the malware to exit unless it returns ‘0’\nThe function appears to be somewhat misnamed as we don’t see the kind of tests that we\nwould normally expect for VM detection. In fact, it looks like an attempt to evade automated\n[sandboxes that patch the sleep function, and we’re not likely to fall foul of it just by executing](https://www.lastline.com/labsblog/not-so-fast-my-friend-using-inverted-timing-attacks-to-bypass-dynamic-analysis/)\n\n\n-----\n\nin our VM. However, we can also see that the next function, `user_info, also exits if it`\ndoesn’t return the expected value, so let’s practice both the techniques discussed above so\nthat we can learn how to use the debugger whichever one we need to use.\n\n## Manipulating Execution with the radare2 Debugger\n\nIf you are at the command prompt, type `Vp to go into radare2 visual mode (yup, this is`\nanother mode, and not the last!).\n\nThe Visual Debugger in radare2\nOoh, this is nice! We get registers at the top, and source code underneath. The current line\nwhere we’re stopped in the debugger is highlighted. If you don’t see that, hit uppercase `S`\nonce (i.e., `shift-s ), which steps over one source line, and – in case you lose your way –`\nalso brings you back to the debugger view.\n\nLet’s step smartly through the source with repeated uppercase `S commands (by the way, in`\nvisual mode, lowercase ‘s’ steps in, whereas uppercase ‘S’ steps over). After a dozen or so\nrapid step overs, you should find yourself inside this familiar code, which is `main() .`\n\n\n-----\n\nmain() in Visual Debugger mode\nNote the highlighted dword, which is holding the value of `argc . It should be ‘2’, but we can`\nsee from the register above that `rdi is only 1. The code will jump over the next function`\ncall, which if you hit the ‘1’ key on the keyboard you can inspect (hit `u to come back) and`\nsee this is a string comparison. Let’s continue stepping over and let the jump happen, as it\ndoesn’t appear to block us. We’ll stop just short of the `is_virtual_mchn function.`\n\n\n-----\n\nSeek and break locations are two different things!\nWe know from our earlier discussion what’s going to happen here, so let’s see how to take\neach of our options.\n\nThe first thing to note is that although the highlighted address is where the debugger is,\nthat’s not where you are if you enter an r2 command prompt, unless it’s a debugger\ncommand. To see what I mean, hit the colon key to enter the command line.\n\nFrom there, print out one line of disassembly with this command:\n```\n > pd 1\n\n```\nNote that the line printed out is r2’s current seek position, shown at the top of the visual view.\nThis is good. It means you can move around the program, seek to other functions and run\nother r2 commands without disturbing the debugger.\n\nOn the other hand, if you execute a debugger command on the command line it will operate\non the source code where the debugger is currently parked, not on the current seek at the\ntop of your view (unless they happen to be the same).\n\nOK, let’s entirely skip execution of the `_is_virtual_mchn function by entering the`\ncommand line with `: and then:`\n```\n > dss 2\n\n```\nHit ‘return’ twice. As you can see, the `dss command skips the number of source lines`\nspecified by the integer you gave it, making it a very easy way to bypass unwanted code\nexecution!\n\n\n-----\n\nAlternatively, if we want to execute the function then manipulate the register, stop the\ndebugger on the line where the register is compared, and enter the command line again.\nThis time, we can use `dr to both inspect and write values to our chosen register.`\n```\n> dr eax // see eax’s current value\n> dr eax = 0 // set eax to 0\n> drr // view all the registers\n> dro // see the previous values of the registers\n\n```\nViewing and changing register values\nAnd that, pretty much, is all you need to defeat anti-analysis code in terms of manipulating\nexecution. Of course, the fun part is finding the code you need to manipulate, which is why\nwe spent some time learning how to move around in radare2 in both visual graph mode and\nvisual mode. Remember that in either mode you can get back to the regular command\nprompt by hitting `q . As a bonus, you might play around with hitting` `p and` `tab when in`\nthe visual modes.\n\nAt this point, what I suggest you do is go back to the list of functions we identified at the\nbeginning of the post and see what they do, and whether it’s best to skip them or modify their\nreturn values (or whether either option will do). You might want to look up the built-in help for\nlisting and setting breakpoints (from a command prompt, try `db? ) to move quickly through`\nthe code. By the time you’ve done this a few times, you’ll be feeling pretty comfortable about\ntackling other samples in radare2’s debugger.\n\n\n-----\n\n## Conclusion\n\nIf you’re starting to see the potential power of r2, I strongly suggest you read the free online\nradare2 book, which will be well worth investing the time in. By now you should be starting to\nget the feel of r2 and exploring more on your own with the help of the `? and other`\nresources. As we go into further challenges, we’ll be spending less time going over the r2\nbasics and digging more into the actual malware code.\n\nIn the [next part of our series, we’re going to start looking at one of the major challenges in](https://www.sentinelone.com/labs/techniques-for-string-decryption-in-macos-malware-with-radare2/)\nreversing macOS malware that you are bound to face on a regular basis: dealing with\n[encrypted and obfuscated strings. I hope you’ll join us there and practice your r2 skills in the](https://www.sentinelone.com/labs/techniques-for-string-decryption-in-macos-malware-with-radare2/)\nmeantime!\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-09-20 - Defeating macOS Malware Anti-Analysis Tricks with Radare2.pdf"
+    ],
+    "report_names": [
+        "2021-09-20 - Defeating macOS Malware Anti-Analysis Tricks with Radare2.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "2d06d270-acfd-4db8-83a8-4ff68b9b1ada",
+            "created_at": "2022-10-25T16:07:23.477794Z",
+            "updated_at": "2025-03-27T02:02:09.824281Z",
+            "deleted_at": null,
+            "main_name": "Cold River",
+            "aliases": [
+                "Blue Callisto",
+                "BlueCharlie",
+                "Calisto",
+                "Cobalt Edgewater",
+                "Nahr Elbard",
+                "Nahr el bared",
+                "Seaborgium",
+                "Star Blizzard",
+                "TA446",
+                "TAG-53",
+                "UNC4057"
+            ],
+            "source_name": "ETDA:Cold River",
+            "tools": [
+                "Agent Drable",
+                "AgentDrable",
+                "DNSpionage",
+                "SPICA"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "3a057a97-db21-4261-804b-4b071a03c124",
+            "created_at": "2024-06-04T02:03:07.953282Z",
+            "updated_at": "2025-03-27T02:05:17.406598Z",
+            "deleted_at": null,
+            "main_name": "IRON FRONTIER",
+            "aliases": [
+                "BlueCharlie ",
+                "CALISTO ",
+                "COLDRIVER ",
+                "Callisto Group ",
+                "Gossamer Bear ",
+                "Gossamer Bear ",
+                "SEABORGIUM ",
+                "Star Blizzard ",
+                "TA446 ",
+                "Blue Callisto "
+            ],
+            "source_name": "Secureworks:IRON FRONTIER",
+            "tools": [
+                " Galileo RCS",
+                " SPICA",
+                "Evilginx2"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536047,
+    "ts_updated_at": 1743041785,
+    "ts_creation_date": 1653767772,
+    "ts_modification_date": 1653767772,
+    "files": {
+        "pdf": "https://archive.orkl.eu/613e5f6da4dbb305d4e5dd733626ee63aaa95e05.pdf",
+        "text": "https://archive.orkl.eu/613e5f6da4dbb305d4e5dd733626ee63aaa95e05.txt",
+        "img": "https://archive.orkl.eu/613e5f6da4dbb305d4e5dd733626ee63aaa95e05.jpg"
+    }
+}

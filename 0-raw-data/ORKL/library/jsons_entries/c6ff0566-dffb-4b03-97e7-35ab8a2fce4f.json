@@ -1,0 +1,162 @@
+{
+    "id": "c6ff0566-dffb-4b03-97e7-35ab8a2fce4f",
+    "created_at": "2023-01-12T15:02:02.512356Z",
+    "updated_at": "2025-03-27T02:05:37.737661Z",
+    "deleted_at": null,
+    "sha1_hash": "1bea9f09efaa7bdf4bcb345bde8d4ac9854488ec",
+    "title": "2015-12-15 - Newcomers in the Derusbi family",
+    "authors": "",
+    "file_creation_date": "2022-05-28T17:32:32Z",
+    "file_modification_date": "2022-05-28T17:32:32Z",
+    "file_size": 280405,
+    "plain_text": "# Newcomers in the Derusbi family\n\n**web.archive.org/web/20151216071054/http://blog.airbuscybersecurity.com/post/2015/11/Newcomers-in-the-Derusbi-**\nfamily\n\nBy Fabien Perigaud on 2015/12/15, 13:30 - [Reverse engineering -](https://web.archive.org/web/20151216071054/http://blog.airbuscybersecurity.com/category/Reverse-engineering) [Permalink](https://web.archive.org/web/20151216071054/http://blog.airbuscybersecurity.com/post/2015/11/Newcomers-in-the-Derusbi-family)\n\nDerusbi is a well-known RAT family, used in various APT attacks since at least 2008. Many\n[papers (1,2,3) have described two known variants of this malware: a client version, acting as](https://web.archive.org/web/20151216071054/https://www.novetta.com/wp-content/uploads/2014/11/Derusbi.pdf)\nany other RAT by contacting its C&C server, as well as a server version, which just listens for\nincoming connections from a client.\n\nThis RAT seems to be continuously evolving, as enlightened by Sekoia which recently\n[described a new way for Derusbi to bypass Windows drivers signature enforcement.](https://web.archive.org/web/20151216071054/http://www.sekoia.fr/blog/windows-driver-signing-bypass-by-derusbi/)\n\nIn this blog post, we'll present the analysis of two new variants we encountered: a driver for\n**x64 Windows, and a Linux library.**\n\n## Windows x64 driver\n\n**Installation**\n\nWe found various samples of this driver, all signed by legitimate, stolen certificates. One has\nbeen revoked, another one is expired, and the last one is still perfectly valid. However, we\ndidn't find any installer delivering the driver, which might mean it is installed manually, for\n[example along with the installation of the HD Root bootkit, as multiple evidences link to](https://web.archive.org/web/20151216071054/https://securelist.com/analysis/publications/72275/i-am-hdroot-part-1/)\nDerusbi.\n\nAccording to the samples we found, the driver filename is either wd.sys or udfs.sys.\n\nThe following malicious certificates are used to sign the drivers:\n\n**Name** **Serial Number** **Status**\n\n**Fuqing Dawu Technology**\n**Co.,Ltd.** **4c0b2e9d2ef909d15270d4dd7fa5a4a5** **Revoked**\n\n**XL Games Co.,Ltd.** **7bd55818c5971b63dc45cf57cbeb950b** **Expired**\n\n\n-----\n\n**Name** **Serial Number** **Status**\n\n**Wemade Entertainment co.Ltd** **476bf24a4b1e9f4bc2a61b152115e1fe** **Valid**\n\n**Rootkit & Evasion capabilities**\n\nIn the 4 different samples we found, only one was using VMProtect to obfuscate its imports.\nThe other ones were not packed.\n\nDuring the initialization phase, the driver tries to disable the kernel debugger by calling\n**nt!KdDisableDebugger to prevent dynamic analysis.**\n\nAs for the previous client versions (also using a kernel driver for rootkit features), the drivers\nfilters both the filesystem and the network to hide the RAT activities..\n\nNetwork rootkit\n\nDepending on the Windows versions, hooks are performed either on \\\\Device\\Tcp or\n**\\\\Driver\\nsiproxy. Whenever a specific IOCTL is performed on the device (0x120003 or**\n0x12001b respectively), the hook function hides network connections using ports between\n**1025 and 1777.**\n\nFilesystem rootkit\n\nThe filesystem rootkit is installed by hooking the IRP_MJ_DIRECTORY_CONTROL major\nfunction of \\\\Filesystem\\Ntfs, and hides the presence of the driver file (which is grabbed by\nreading the service ImagePath registry value).\n\n**Embedded DLL loading**\n\nTo perform all its RAT capabilities, the driver relies on a userland component, which is\ndynamically injected in memory from the kernel. This ensures a better stealthiness, as the\nuserland component is never written to the disk.\n\nThis userland component is a DLL, located in the .data section and ciphered using the\nclassical Derusbi ciphering (which simply consists in a 4-bytes XOR).\n\nThe DLL is injected in one of the svchost.exe processes running as SYSTEM or\n_LocalSystem, using the following steps:_\n\nAllocation and copy of 2 shellcodes in the process memory\n\n\n-----\n\nAllocation and copy of an array containing:\n\nPointers to LoadLibraryA / GetProcAddress\nName of the DLL export to call (“Func” in our samples)\nContent of the DLL\nUsage of nt!KeInitializeApc and nt!KeInsertQueueApc to make the process execute\nthe first shellcode, with address of the second shellcode and of the array as arguments\n\nFirst shellcode is simply:\n\nSecond shellcode is a custom DLL loader, which directly loads the DLL in memory without\nwriting it to the disk. The export is then called, with a randomly generated integer as\nparameter.\n\nThe randomly generated integer is used to build a named pipe called \\\\.\\pipe\\usbpcex%d.\nThis pipe is then used for the communication between the driver and the userland DLL.\n\nOnce loaded, the DLL writes the machine IP address to the registry key\n**HKLM\\SYSTEM\\CurrentControlSet\\Control\\WMI\\lpstatus.**\n\n**Configuration**\n\nThe configuration is stored just after a string made of 15 \"X”. It is obfuscated using a simple\nXOR loop:\n\n\n-----\n\nThe configuration has the following structure:\n\nOffset 0x44: Timer\nOffset 0x48-0x50: Two hour values, only authorize communication between these\nhours\nOffset 0x50: URL for additional C&C retrieval\nOffset 0x150: 8 C&C structures, 0x6c bytes each\n\nThe C&C structure is:\n\nOffset 0x0: protocol\nOffset 0x4: IP/domain address\nOffset 0x24: port\n\nThe rest of the configuration is filled with garbage.\n\n\n-----\n\n```\n00000000: 0100 0000 0048 c75f 409d 51b9 d2c8 f30c .....H._@.Q.....\n00000010: 566a 1e47 12b4 3735 638d b549 fd06 76aa Vj.G..75c..I..v.\n00000020: 6200 617f a41c 427c 5ee4 e2ad f137 6682 b.a...B|^....7f.\n00000030: fcfa ea1c 1efd 5ed7 ef2b a018 3cf6 da58 ......^..+..<..X\n00000040: 8301 1f71 2100 0000 0000 0000 0000 0000 ...q!...........\n00000050: 0000 0000 0000 0000 0000 0000 0000 0000 ................\n*\n00000150: 2000 0000 7761 7265 2e6e 6963 6574 7279  ...ware.XXXXXXX\n00000160: 2e62 697a 007c e4ee 3c09 a2a8 d427 f51e .biz.|..<....'..\n00000170: 504e 9d65 bb01 0000 0025 e96e 4d1a 9eb6 PN.e.....%.nM...\n00000180: 58b9 c133 c719 8c5e 3359 d429 9911 6f0a X..3...^3Y.)..o.\n00000190: d9f9 c548 6ed8 b485 0000 0000 0028 fd5e ...Hn........(.^\n000001a0: b139 8e77 771d 9f66 6b75 f18c 00b9 2133 .9.ww..fku....!3\n000001b0: 00e5 45d4 d062 c2a2 e532 715a 2000 0000 ..E..b...2qZ ...\n000001c0: 7761 7265 2e6e 6963 6574 7279 2e62 697a ware.XXXXXXX.biz\n000001d0: 006a 55a0 6f17 cffa 9003 766f 3e9a 34a1 .jU.o.....vo>.4.\n000001e0: 5000 0000 00be e79c 7e6d c95b 77a4 139f P.......~m.[w...\n000001f0: 0be1 2e45 c4d1 94a5 677c f161 2baf 7b6e ...E....g|.a+.{n\n00000200: 3caa 8e60 0000 0000 00fa f5f6 2b96 c211 <..`........+...\n00000210: dea0 065a 4766 c8bd 00f3 1bcb 8575 7fcc ...ZGf.......u..\n\n```\n**Network Communications**\n\nThe malware configuration can embed up to 8 C&C addresses. A configuration update\nmechanism is also available, by requesting the URL in the configuration. The resulting web\npage is then parsed, looking for tags $$$--Hello and Wrod--$$$ surrounding a base64\nstring, which is the new encoded configuration blob.\n\nUp to 3 different protocols are supported:\n\nRaw TCP\nRaw UDP\nHTTP\n\nOnce a C&C has been reached, its information is stored in the following registry key, xored\nwith 0x51: HKLM\\SYSTEM\\CurrentControlSet\\Control\\WMI\\Level10.\n\nThe DNS Server to use for DNS requests is stored in value Level01, xored with 0x51.\nSource port for the DNS requests is randomly chosen between 1025 and 1777.\n\nProxy settings are stored in registry values Level02 to Level05, xored with 0x51.\n\nDNS server IP address and proxy settings are retrieved by the userland DLL, by setting up a\nraw socket to sniff all outcoming traffic and parsing:\n\nDNS requests\nHTTP requests to look for a Proxy-Authorization: Basic header and the proxy address\n\n\n-----\n\nThese two settings are then written to the registry.\n\nAll network communications are performed by the kernel driver. Each received packet is\ndecoded and sent to the userland in the pipe, and each data received through the pipe is\nencoded and sent back on the network.\n\nPackets have a 0x1c bytes clear header, followed by encrypted/compressed data. The\nheader has the following structure:\n```\nstruct packetHeader {\n  DWORD random;\n  DWORD moduleID;\n  DWORD rawPacketSize;\n  DWORD checkSum;\n  DWORD xorKey;\n  DWORD bCompressed;\n  DWORD uncompressedSize;\n};\n\n```\nThe ciphering is a simple XOR with the 4-bytes key, packet might be compressed with LZO\nand checkSum is a CRC32.\n\n**Userland component**\n\nThe userland component is in charge of the network communications decoding and\ncommands interpretation. It receives, from the kernel module, the moduleID and the\ndeciphered/uncompressed data from the network packet.\n\nModules\n\nThis part of the malware seems modular, and each module is associated to a module ID.\nPrevious papers described some of those modules, but our samples contained two new\nmodules. Here is the list of all the modules compiled in the DLL:\n\n**Module ID** **Class Name** **Description**\n\n**0x80** **PCC_SYS** **Various commands related to processes and services**\n\n**0x81** **PCC_CMD** **Execute commands**\n\n**0x82** **PCC_PROXY** **Network proxy**\n\n**0x83** **PCC_GUI** **Remote Desktop**\n\n**0x84** **PCC_FILE** **Files manipulation**\n\n**0xC0** **PCC_VPN** **VPN feature**\n\n\n-----\n\n**Module ID** **Class Name** **Description**\n\n**0xF0** **-** **Uninstall, Disconnect, GetLastError, etc.**\n\nThe two new modules are PCC_GUI and PCC_VPN.\n\nEmbedded PE files\n\nThe userland DLL embeds 5 PE files, all stored in .data section and ciphered with a 4-bytes\nXOR key.\n\nEmbedded PE #1\n\nThis one is a 64-bits DLL (export \"Func\") for the PCC_GUI module. It is injected in\n\"winlogon.exe\" directly in memory, with the custom DLL loader. Communication with the main\nDLL is performed through a named pipe called \\\\.\\pipe\\usbpcg%d.\n\nEmbedded PE #2\n\nThis is a 64-bits DLL (export \"R32\") used for commands execution (PCC_CMD module). It is\ndropped in %Systemroot%\\web\\safemedo.html, and executed with rundll32.exe.\n\nCommunication with the main DLL is performed through named pipes \\\\.\\pipe\\usb%si and\n**\\\\.\\pipe\\usb%so, where “%s” is GetTickCount output in decimal.**\n\nProcess is created with its IO redirected to the pipes. It can be run under a logged-in user, or\nby specifying user credentials.\n\nEmbedded PE #3\n\nThis is a 64-bits DLL (export \"Func\") for keylogging capabilities via the GetAsyncKeyState\nAPI. It is directly injected in \"explorer.exe\" process, and a mutex\n_Microsoft.Windows.Common-Controls_6595b64144ccf1df_6.0.3790.4770-ww_05FDF087 is_\ncreated.\n\nData is saved to %tmp%\\Ziptmp$$__.1.\n\nEmbedded PE #4\n\nThis one is another 64-bits DLL (export \"Func\") for keylogging capabilities, this time via the\n_SetWindowsHook API. It is dropped in %Systemroot%\\web\\safemode.html, executed with_\nrundll32.exe, and a mutex Microsoft.Windows.Common_Controls_6595b64144ccf1df_6.0.3790.4770-x_05FDF087 is created._\n\nData is saved to %tmp%\\Ziptmp$$__.2.\n\nEmbedded PE #5\n\nThis is a 64-bits NDIS driver for the VPN feature. It is dropped in %SystemRoot%\\Drivers\\\n**{1D24B7E2-869D-49D8-B4EB-1424B36C42B6}.sys, and is signed with the XL Games**\nCo.,Ltd. (7bd55818c5971b63dc45cf57cbeb950b) certificate.\n\n\n-----\n\n**Overall Architecture**\n\nThe architecture of this new Derusbi variant is distributed amongst various drivers and\nprocesses, each one being responsible of a specific task. This avoids having a single\nprocess performing all the malicious tasks, and prevents security software from raising\nalerts.\n\n## Linux Library\n\nWe recently noticed that the group behind HD Root bootkit was interested in compromising\n[Linux systems as well. A very interesting Chinese article describes the features of the Linux](https://web.archive.org/web/20151216071054/http://translate.wooyun.io/2015/10/23/27.html)\nversion of the bookit. Focusing on the payload loading part, we can see that a userland\nlibrary is loaded into a /usr/bin/sshd process using LD_PRELOAD.\n\n\n-----\n\nInterestingly, we discovered a Linux library exporting all the classical PAM exports, with an\nadded CTOR leading to a PccMain() function exposing the Derusbi server behaviour. This\nlibrary could be the perfect payload for the Linux HD Root, comforting us in the assumption\nof a strong link between the bootkit and the RAT.\n\nThe sample we found included all debug symbols, helping the understanding and the naming\nof each feature.\n\n**Lock**\n\nWhen started, the malware creates a lock in /dev/shm/.shmfs.lock.\n\n**Network Communications**\n\nThe sample listens on port 40101 for incoming connections. The communication protocol is\nthe same than the Windows version. All the network I/O are handled by the BD_SOCK and\n**PCC_SOCK classes.**\n\n**Modules**\n\nAs for the Windows versions, various modules are embedded in the library, each one\ndedicated to a specific task:\n\n**Module ID** **Class Name** **Description**\n\n**0x80** **PCC_SYS** **Various commands related to processes and services**\n\n**0x81** **PCC_CMD** **Execute commands**\n\n**0x82** **PCC_PROXY** **Network proxy**\n\n**0x84** **PCC_FILE** **Files manipulation**\n\n**0xF0** **-** **Uninstall, Deconnect, GetLastError, etc.**\n\n\n-----\n\nThe PCC_CMD module spawns a new process, which argv[0] is replaced by [diskio]. The\nfollowing PS1 variable is set:\n```\nRK# \\u@\\h:\\w \\$ \n\n```\n**Development framework**\n\nRegarding the debugging information still present in the library, it seems that the authors\nreused code from the Windows version of their RAT, and implemented wrappers for the\noriginal Windows API. Source file name is Win32APIWarp.cpp. We found various functions\ncorresponding to Windows API, such as:\n\nCreateThread(void *, unsigned int, void *(__cdecl *start_routine)(void *), void *,\nunsigned int, unsigned int *)\nGetFileAttributesW(wchar_t *)\nGetTickCount(void)\nWSAGetLastError(void)\n\n**Dropped kernel module**\n\nA kernel module is embedded in the .data section, ciphered using the classical 4-bytes XOR\nalgorithm. Its goal is to perform rootkit features, by accepting all packets to port 40101 and\nhiding network communications corresponding to the RAT.\n\nTechnically, it sets hooks in the netfilter stack by using the nf_register_hook function, and\naccept all packets matching the RAT communication. For the hiding part, a hook is set on\nspecial file /proc/net/tcp which hides connections using ports between 40101 and 40500.\n\nThe driver is first patched to insert proper .modinfo and dropped in /tmp/.secure. It is then\nloaded by simply calling insmod. The correct version information inserted in .modinfo is\nretrieved by trying to read various hardcoded kernel modules which should be present on\nLinux machines. After loading, the module file is deleted.\n\n## Conclusion\n\nDerusbi seems to be a trendy malware, evolving on several fields. The interest of APT actors\nin the Linux systems should encourage the community to improve and develop forensics and\nmalware investigation tools for these platforms.\n\n\n-----\n\n## Annex\n\n**Hashes**\n\n1b449121300b0188ff9f6a8c399fb818d0cf53fd36cf012e6908a2665a27f016\n50174311e524b97ea5cb4f3ea571dd477d1f0eee06cd3ed73af39a15f3e6484a\n6cdb65dbfb2c236b6d149fd9836cb484d0608ea082cf5bd88edde31ad11a0d58\ne27fb16dce7fff714f4b05f2cef53e1919a34d7ec0e595f2eaa155861a213e59\n75c3b22899e39333c0313e80c4e6958d6612381c535d70b691f5f42afc8c214f\n\n**Yara rules**\n```\nrule derusbi_kernel\n{\n  meta:\n    description = \"Derusbi Driver version\"\n    date = \"2015-12-09\"\n    author = \"Airbus Defence and Space Cybersecurity CSIRT - Fabien Perigaud\"\n  strings:\n     $token1 = \"$$$--Hello\"   \n     $token2 = \"Wrod--$$$\"  \n     $cfg = \"XXXXXXXXXXXXXXX\"\n     $class = \".?AVPCC_BASEMOD@@\"\n     $MZ = \"MZ\"\n  condition:\n    $MZ at 0 and $token1 and $token2 and $cfg and $class\n}\nrule derusbi_linux\n{\n  meta:\n    description = \"Derusbi Server Linux version\"\n    date = \"2015-12-09\"\n    author = \"Airbus Defence and Space Cybersecurity CSIRT - Fabien Perigaud\"\n  strings:\n     $PS1 = \"PS1=RK# \\\\u@\\\\h:\\\\w \\\\$\"\n     $cmd = \"unset LS_OPTIONS;uname -a\"\n     $pname = \"[diskio]\"\n     $rkfile = \"/tmp/.secure\"\n     $ELF = \"\\x7fELF\"\n  condition:\n    $ELF at 0 and $PS1 and $cmd and $pname and $rkfile\n}\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2015/2015-12-15 - Newcomers in the Derusbi family.pdf"
+    ],
+    "report_names": [
+        "2015-12-15 - Newcomers in the Derusbi family.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535722,
+    "ts_updated_at": 1743041137,
+    "ts_creation_date": 1653759152,
+    "ts_modification_date": 1653759152,
+    "files": {
+        "pdf": "https://archive.orkl.eu/1bea9f09efaa7bdf4bcb345bde8d4ac9854488ec.pdf",
+        "text": "https://archive.orkl.eu/1bea9f09efaa7bdf4bcb345bde8d4ac9854488ec.txt",
+        "img": "https://archive.orkl.eu/1bea9f09efaa7bdf4bcb345bde8d4ac9854488ec.jpg"
+    }
+}

@@ -1,0 +1,162 @@
+{
+    "id": "8b05888b-649c-4734-9ff4-428adb80a92f",
+    "created_at": "2023-01-12T15:02:45.608133Z",
+    "updated_at": "2025-03-27T02:05:37.267626Z",
+    "deleted_at": null,
+    "sha1_hash": "fe74286314b82337d185d592b0d41591169c0271",
+    "title": "2022-03-16 - Quick revs- Pandora Ransomware - The Box has been open for a while...",
+    "authors": "",
+    "file_creation_date": "2022-05-28T01:29:25Z",
+    "file_modification_date": "2022-05-28T01:29:25Z",
+    "file_size": 1272904,
+    "plain_text": "# Quick revs: Pandora Ransomware - The Box has been open for a while...\n\n**dissectingmalwa.re/blog/pandora/**\n\nHey there, I’m finally getting around to introducing the new post category “Quick revs”,\nwhich will feature short write-ups of various malware analysis and reverse engineering\ntopics. This will allow me to post more frequently, since I don’t always have to time to write\ndeep-dive reports in my limited free time.\n\nToday we are going to be looking at “Pandora Ransomware”, a novel Ransomware strain\n[that has been monitored for a couple of days, e.g. by MalwareHunterTeam, but at first no](https://twitter.com/malwrhunterteam/status/1501857263493001217)\nsample was available.\n\nAt the time of writing Pandora is claiming on their Leak site to have compromised four\ncompanies, one of which is the japanese automotive OEM Denso, which has been covered\n[extensively in the media. I’m bringing up Denso here, because they were compromised by](https://www.zdnet.com/article/automotive-giant-denso-reveals-hack-pandora-ransomware-group-takes-credit/)\n_Rook Ransomware a few months earlier, which beggs the question if the attackers_\n\n\n-----\n\nsomehow were able to maintain access and just rebranded from Rook to Pandora. Of\ncourse this is just speculation on my part and I don’t consider signifficant similarities in the\nransomware samples of both strains as sufficient proof either, but in my opinion one could\nshed light on this relation by investigating their TTPs and other details of the intrusions.\n\n[On the 14th of March 2022 the Pandora sample below was obtained by vx-underground:](https://twitter.com/vxunderground/status/1503204578258472962)\n\n**Pandora Ransomware (packed)**\n```\nOriginal file names: \"1vfrk1jrt.dll\", \"M3DO2.exe\" \nFile size: 223232 bytes\nArchitecture: x64\nMD5: 0c4a84b66832a08dccc42b478d9d5e1b\nSHA-1: 160320b920a5ef22ac17b48146152ffbef60461f\nSHA-256: 5b56c5d86347e164c6e571c86dbf5b1535eae6b979fede6ed66b01e79ea33b7b\n\n```\n**Download:** [vx-underground |](https://samples.vx-underground.org/samples/Families/PandoraRansomware/Samples/) [Malware Bazaar |](https://bazaar.abuse.ch/sample/5b56c5d86347e164c6e571c86dbf5b1535eae6b979fede6ed66b01e79ea33b7b/) [VirusTotal](https://www.virustotal.com/gui/file/5b56c5d86347e164c6e571c86dbf5b1535eae6b979fede6ed66b01e79ea33b7b)\n\n[I already tweeted about this sample, but since I got a few questions regarding the](https://twitter.com/f0wlsec/status/1503357444054999043)\nunpacking process and similarities to other ransomware strains (specifically Rook and\nNightSky) I thought I should write it down in a blog post.\n\n## Unpacking\n\nAfter the initial assessment of the sample with Detect it Easy a signature for UPX Version 3\nwas found. Packer detections in Detect it Easy should always be taken with a grain of salt,\nbut it gives us a first hint as to what to look for in the next steps.\n\n\n-----\n\nLooking at the Entropy graph we can see that we have one section ( cccc ) with a very high\nvalue, which indicates it contains packed code and a `.rsrc section with a significantly`\nlower value.\n\nSwitching over to pestudio Pro since its section layout is a lot cleaner than the one in Detect\n_it easy we can see that there is another section called_ `pppp which is virtualized and`\ntherefore has a raw-size of 0 bytes. This section layout closely resembles the one used by\nUPX. UPX0 ( pppp in this case) is the empty section where the compressed contents of\nUPX1 ( cccc ) will be decompressed to by the unpacking program stub. At this point I am\nfairly confident to say that is packer is based on UPX, but looking at the section names they\nlikely messed around with their UPX version.\n\n\n-----\n\nA very simple way to test if we are dealing with a modified version of UPX is to just try to\ndecompress the sample with the vanilla UPX utility. As you can see below it does not\ndecompress! UPX is even telling us that the file was likely messed with. I was able to\nidentify the following modifications to the UPX packer:\n\naltered section names (as we noticed before)\nold version of UPX / altered version number in the leading header\nmissing/overwritten 12-byte trailing header\n\n[Alright, as the simple approach does not work and retdec also falls through for now, we’ll](https://github.com/avast/retdec/issues/1069)\nhave to unpack it manually. First of all I’ll switch to the Memory Map view and Follow in\n_Dump on the_ `pppp section (UPX0) to monitor it.`\n\n\n-----\n\nUp next I m placing a Hardware Breakpoint on Access on the `pppp section, so we can see`\nwhen the data is decompressed into it. Hit this breakpoint once or twice to check that it is\nworking and we’ll continue onto the next step.\n\nScroll down until you see the end of the stub with the two jumps followed by junk\ninstructions for padding. The last jump instruction is the so-called tail jump, which will\ntransfer to the Original Entrypoint (OEP). I’ll place a breakpoint on the tail jump to make\nsure Pandora doesn’t run away and potentially encrypt the VM :D Once we hit this\nbreakpoint we can check in the dump of `pppp that the section should be filled now, so let’s`\njump in!\n\nAfter following the tail jump we can scroll down a bit again to find the OEP ( push rbp ) and\nplace a breakpoint there. Get ready to dump it like it’s hot 🔥\n\n\n-----\n\nFire up Scylla and make sure that the correct process is selected (1). After that we’ll run the\n_IAT Autosearch (2) and Get Imports (3) to show them in the textbox above (notice that they_\nsignificantly differ from the functions imported by the UPX unpacking stub). Finally dump the\nprocess to disk (4) and fix the dump (5) to complete the unpacking process. Congratulations\nto the ones playing along at home, you are now able to manually unpack UPX (and it works\nfor x86 binaries as well).\n\nIf you want to skip this step of the analysis you can also download my unpacked sample\nbelow:\n\n**Pandora Ransomware (unpacked)**\n\n\n-----\n\n```\nFile size: 509440 bytes\nArchitecture: x64\nMD5: 511501033ca23754113686ac70f629db \nSHA-1: 26a02a149aca6a8a43e2dca5c75a6360cfe54c50 \nSHA-256: 2c940a35025dd3847f7c954a282f65e9c2312d2ada28686f9d1dc73d1c500224 \n\n```\n**Download:** [Malshare |](https://malshare.com/sample.php?action=detail&hash=2c940a35025dd3847f7c954a282f65e9c2312d2ada28686f9d1dc73d1c500224) [VirusTotal](https://www.virustotal.com/gui/file/2c940a35025dd3847f7c954a282f65e9c2312d2ada28686f9d1dc73d1c500224)\n\n## Similarities with Rook Ransomware\n\n[According to the automated analysis by Intezer the Pandora sample from above is related](https://analyze.intezer.com/analyses/f8c9c4d8-37a9-4aed-868f-01e98fb63e89)\nto Rook Ransomware. Since Rook is based on the leaked source code of Babuk\nRansomware so is Pandora probably.\n\nAs I already mentioned I’m not planning to do a deep-dive analysis of the features of\nPandora, so we’ll just try to do a high-level comparison between Pandora and Rook. If you\nare looking for a very in-depth analysis of Rook Ransomware, check out Chuong Dong’s\n[post about it.](https://chuongdong.com/reverse%20engineering/2022/01/06/RookRansomware/)\n\n**Rook Ransomware**\n```\nOriginal file names: \"unknown\", \"7NM2J.txt\"\nFile size: 174080 bytes\nArchitecture: x64\nMD5: bec9b3480934ce3d30c25e1272f60d02\nSHA-1: 104d9e31e34ba8517f701552594f1fc167550964 \nSHA-256: f87be226e26e873275bde549539f70210ffe5e3a129448ae807a319cbdcf7789\n\n```\n**Download:** [vx-underground |](https://samples.vx-underground.org/samples/Families/RookRansomware/Samples/) [Malware Bazaar |](https://bazaar.abuse.ch/sample/f87be226e26e873275bde549539f70210ffe5e3a129448ae807a319cbdcf7789/) [VirusTotal](https://www.virustotal.com/gui/file/f87be226e26e873275bde549539f70210ffe5e3a129448ae807a319cbdcf7789)\n\nSince this sample of Rook Ransomware is also packed with a modified version of UPX\n(which differs from the one used for Pandora though) I manually unpacked this sample as\nwell using the process described above. You can download the unpacked sample here:\n\n**Rook Ransomware (unpacked)**\n```\nFile size: 415744 bytes\nArchitecture: x64\nMD5: afdf739eb186e2ec8088b008797d1f6d \nSHA-1: f611c2976ebb080214eddd905d30628230f2280d \nSHA-256: ebfdee6e5fe2aa5699280248a5e7b714ca18e5bfd284cac0ba4fb88ccbcec5b6 \n\n```\n**Download:** [Malshare |](https://malshare.com/sample.php?action=detail&hash=ebfdee6e5fe2aa5699280248a5e7b714ca18e5bfd284cac0ba4fb88ccbcec5b6) [VirusTotal](https://www.virustotal.com/gui/file/ebfdee6e5fe2aa5699280248a5e7b714ca18e5bfd284cac0ba4fb88ccbcec5b6)\n\n\n-----\n\nComparing the imported Windows functions of Pandora and Rook we can see the following\nchanges in Pandora (+ = added, - = removed):\n```\nadvapi32.dll:\n  - EnumDependentServicesA\n  - CloseServiceHandle\n  - OpenSCManagerA\n  - ControlService\n  - QueryServiceStatusEx\n  - OpenServiceA\nkernel32.dll:\n  + GetQueuedCompletionStatus\n  + PostQueuedCompletionStatus\n  + SetPriorityClass\n  + CreateIoCompletionPort\n  + SetThreadAffinityMask\n  + ResumeThread\n  + VirtualFree\n  + CreateFileMappingW\n  + MapViewOfFile\n  + VirtualAlloc\n  + UnmapViewOfFile\n  + LoadLibraryW\n  + VirtualProtect\n  + VirtualProtectEx\n  + WriteProcessMemory\n  - GetTickCount\n  - GetModuleFileNameW\n  - ExitThread\n  - SetFileInformationByHandle\n  - ReleaseSemaphore\n  - CreateSemaphoreA\n  - RaiseException\n  - Process32FirstW\n  - Process32NextW\n  - Sleep\n  - CreateToolhelp32Snapshot\nmpr.dll:\n  - WNetGetConnectionW\nshell32.dll:\n  - CommandLineToArgvW\nshlwapi.dll:\n  - PathFileExistsW\nuser32.dll:\n  - wsprintfA\n\n```\nFrom this comparison we can deduct that there have been changes in file handling and\nthread/process control.\n\n\n-----\n\nComparing the strings in both samples I found that Pandora removed the debug messages\nwhich are present in the Babuk source and the Rook sample. Additionally the Ransomnote\nof Pandora Ransomware has been obfuscated whereas the Rook contained it in plain text.\n\nOf course I can’t wrap this post up before trying out a new tool, which kind of has become a\ntradition here. Since the code similarities detected by Intezer are a black box for us we can\ntry and replicate this analysis with `binlex :`\n\nBinlex allows us to extract basic blocks and functions from to samples we feed it as socalled traits. In the case of Pandora and Rook these traits contain the re-used code and,\nwith some careful filtering, we can use some of them to build a Pandora-Rook Yara rule.\nUnfortunately I currently don’t have the time to sift through all the extracted traits manually (I\ndon’t have a Goodware/Malware Traits Corpus yet to discard traits based on that), but I will\nget back to this in a few weeks. The long-boi bash command below shows my testing\napproach in this case, which extracted over 1700 unique (but unfiltered) shared traits from\nthe Pandora and Rook samples.\n```\nfind sim/ -type f | while read i; do binlex -m pe:x86_64 -i $i | jq -r '.[] |\nselect(.type == \"block\" and .size < 32 and .size > 8) | .bytes' | sort | uniq; done\n| sort | uniq -c | sort -rn\n\n```\nOne example were I successfully used binlex for a Yara rule a couple of weeks earlier is for\n[my BlackMatter Ransomware ESXi rule, which you can find here.](https://github.com/f0wl/yara_rules/blob/main/other/ESXi/blackmatter_linux_encryptor.yar)\n\nIf you would like to give binlex a try I recommend to watch the excellent demo below, which\nis a recording of a live cooperation between c3rb3ru5d3d53c and OALabs. binlex is very\neasy to install and well documented, so you should definitely give it a try.\n\nAlright, that should conclude this first look into Pandora Ransomware. I’m sure there will be\nmore in-depth reports about the ransomware itself and the modus operandi of the attackers\nin the coing days and weeks. As I already mentioned I do not consider the relation “Pandora\n== Rook” proven based on the findings of this post, but a connection is certainly plausible.\nAlso Pandora will most likely not be the last Ransomware variant based on the Babuk\nsource, since with the leak the metaphorical box cannot be closed again.\n\nI included a small Yara rule for the modified UPX packer below, happy hunting!\n\nThanks for reading this post and if you have any questions feel free to send me a message\n:)\n\n### Modified UPX Hunting rule\n\n\n-----\n\n```\nimport pe \nrule upx_packer_modified_pandora : Packer {\nmeta:\n  author = \"Marius 'f0wL' Genheimer <hello@dissectingmalwa.re>\"\n  description = \"Detects modified UPX packer used by Pandora Ransomware\"\n  reference = \"https://dissectingmalwa.re/blog/pandora/\"\n  date = \"2022-03-16\"\n  tlp = \"WHITE\"\n  hash = \"5b56c5d86347e164c6e571c86dbf5b1535eae6b979fede6ed66b01e79ea33b7b\"\nstrings:\n  $header = {33 2E 30 30 00 55 50 58 21} // 3.00.UPX!\ncondition:\n  uint16(0) == 0x5a4d\n  and pe.imphash() == \"51a8b4c9f41b0c0ca57db63e21505b0d\"\n  and $header\n  and for any i in (0..pe.number_of_sections):(\n    pe.sections[i].name == \"pppp\" and \n    pe.sections[i+1].name == \"cccc\")\n  and filesize > 112KB // Size on Disk/2\n  and filesize < 1MB // Size of Image*2\n}\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-03-16 - Quick revs- Pandora Ransomware - The Box has been open for a while....pdf"
+    ],
+    "report_names": [
+        "2022-03-16 - Quick revs- Pandora Ransomware - The Box has been open for a while....pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535765,
+    "ts_updated_at": 1743041137,
+    "ts_creation_date": 1653701365,
+    "ts_modification_date": 1653701365,
+    "files": {
+        "pdf": "https://archive.orkl.eu/fe74286314b82337d185d592b0d41591169c0271.pdf",
+        "text": "https://archive.orkl.eu/fe74286314b82337d185d592b0d41591169c0271.txt",
+        "img": "https://archive.orkl.eu/fe74286314b82337d185d592b0d41591169c0271.jpg"
+    }
+}

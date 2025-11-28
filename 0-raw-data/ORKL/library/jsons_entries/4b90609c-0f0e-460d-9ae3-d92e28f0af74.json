@@ -1,0 +1,232 @@
+{
+    "id": "4b90609c-0f0e-460d-9ae3-d92e28f0af74",
+    "created_at": "2023-01-12T15:04:33.036849Z",
+    "updated_at": "2025-03-27T02:15:41.641492Z",
+    "deleted_at": null,
+    "sha1_hash": "7ef22513d4e25140de739e513f47012072ca06a6",
+    "title": "2020-09-08 - APT GROUP系列——DARKHOTEL之窃密与RAT篇",
+    "authors": "",
+    "file_creation_date": "2022-05-28T17:02:07Z",
+    "file_modification_date": "2022-05-28T17:02:07Z",
+    "file_size": 836225,
+    "plain_text": "# APT Group系列——Darkhotel之窃密与RAT篇\n\n**blog.nsfocus.net/darkhotel-3-0908/**\n\n伏影实验室\n\n## 一、手法简述\n\nDarkhotel使用过的RAT与窃密工具类型多种多样。作为攻击链的末端，这些程序复杂性不\n一，其通信协议随着时间推移变化较大，使用的通信加密算法方式也没有统一标准，迭代较\n快。有的组件的行为丰富多样，甚至不惜安装驱动来达到目的，而组件功能相对更简单，主要\n进行文件与执行相关操作。\n\n## 二、窃密组件Nemim\n\n### 2.1 功能性质\n\n2014年，Darkhotel使用了一类针对Windows XP用户的Nemim窃密组件，在搜集用户系统信\n息的同时，还会加载驱动以记录用户击键内容，写入本地文件。\n\n### 2.2 安装驱动\n\n若当前系统为Win9X、XP或2000，该组件会在当前目录下释放ndiskpro.inf文件以安装驱动。\n\n对于Vista及更高版的Windows，组件将释放键盘记录驱动至C:\\Windows\\system32\\drivers，\n并注册为系统级设备驱动：\n```\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\Ndiskpro\n\n```\n然而之后相关线程就退出了，无法搜集任何信息，故此次事件中针对的是较低Windows版本的\n使用者。\n\n### 2.3 收集系统信息\n\n该组件会在当前目录生成日志文件，来加密保存搜集的信息，文件后缀为tmp，名称为”ffffz”加\n上时间戳。每次写日志时，若当前时间距当前时间超过1小时，则以新的时间戳为名称创建新\n的日志文件。\n\n收集的信息分为两类，首先是只收集一次的内容，包括进程信息和用户正在操作的窗口信息。\n\n1.收集进程的模块路径、PID和所属用户名。\n\n2.访问下方注册表路径，以搜集安装程序的名称、版本号、发布者和安装目录：\n```\nHKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\n\n```\n搜集后信息在未加密时内容如下例所示：\n\n\n-----\n\n其次是持续收集的内容，包括击键信息和顶层窗口信息，并记录时间。\n\n首先是当前顶层窗口的标题、PID和模块路径，若顶层窗口为IE浏览器，则获取其输入栏文\n本，以记录用户浏览的网址。\n\n持续收集的内容还包括用户击键信息，通过安装的驱动组件收集。该组件首先向驱动设备发送\n控制码0x220004以清空驱动的击键信息内存，接着持续发送控制码0x220000来收集击键内\n容，解析后写入日志并加密。\n\n### 2.4 Rootkit收集击键内容\n\nDarkhotel的驱动组件设置了I/O读写断点，并Hook了int 0x1的中断处理回调和IofCallDriver，\n从而获取到PS/2键盘和USB键盘的击键信息。\n\n**2.4.1 获得PS/2键盘击键内容**\n\n该驱动则按CPU个数创建定时器，并设置DPC回调。\n\n在DPC回调中，该驱动将键盘读写端口0x60和0x64分别写入dr0和dr1寄存器，并将dr7的对应\n位改为二进制10，以设置I/O硬件读写断点。同时为了防止断点在任务切换时失效，驱动设置\n了dr7的GD位，使得任何访问或修改调试寄存器的操作都会触发1号中断。\n\n\n-----\n\n接着将1号中断处理函数改为自己的函数。当I/O读写命中硬件断点时，会触发单步调试异常，\n从而进入1号中断回调函数。\n\n在1号中断Hook函数中，检查当前异常是否由读写调试寄存器触发，若为写操作则重置调试寄\n存器为初始断点状态，防止I/O断点因任务切换而失效。\n\n若该函数由I/O断点触发而进入，则获取触发异常的I/O指令。由于含立即数和不含立即数的I/O\n指令长度不同，需减去对应长度来获取到I/O指令的首地址。\n\n\n-----\n\n设置回传的内容，包括：\n\n1. 键盘码或状态码\n2. I/O指令第一个字节\n3. I/O端口号\n4. 读写标志，0代表读端口，1代表写端口\n5. I/O指令汇编字符串（其OUT指令写法存在错误）\n\n\n-----\n\n**2.4.2 获得Hid-USB键盘击键内容**\n\n驱动对IofCallDriver做了内联Hook，先调用Hook函数，再调用原始IofCallDriver。在Hook函数\n中，过滤出所属驱动名为”\\Driver\\usbhub”的USB设备，并将新遇到的Hid-USB设备保存在列表\n中。\n\n同时，驱动开启一个线程，持续遍历加入列表的所有设备，通过函数\nis_keyboard_report_des_exist判断该设备是否为USB键盘设备，若是则设置其USB标志为1。\n\n\n-----\n\n对于列表中的每个设备，该驱动特制一个内部IRP并传入URB来获得USB接口的报告描述，以\n检查该设备是否属于USB键盘。内部IRP为IRP_MJ_INTERNAL_DEVICE_CONTROL，功能\n码为IOCTL_INTERNAL_USB_SUBMIT_URB。Hook的IofCallDriver遇到该内部自制IRP会率\n先返回，把数据交给原始IofCallDriver去处理。\n\n驱动为列表中的当前设备创建内部IRP，而IofCallDriver的Hook函数则会过滤驱动名称并检查\n自制IRP：\n\n\n-----\n\n接着程序检查获得的报告描述是否为键盘相关：\n\n此后，当Hook的IofCallDriver函数再次遇到某USB设备时，则在列表中查找其属性，\n\n若为Hid-USB键盘，则设置自己的完成过程函数，并在函数中将获取的击键信息回传至用户层\n组件。\n\n驱动在MJ_DEVICE_CONTROL回调中接收用户态组件下发的控制码。如前文所述，若控制码\n为0x220000，则将收集的击键信息回传至用户态组件。若控制码为0x220004，则清空对应缓\n存。\n\n## 三、凭据窃密组件\n\n### 3.1 功能\n\n该组件由WinRar SFX自解压文件释放并运行，会窃取知名浏览器、本地邮件客户端、通讯工\n具的凭据，回传到C&C。\n\n### 3.2 收集系统基本信息\n\n收集计算机名称、用户名、本机IP、MAC地址及其Hash。\n\n访问注册表，收集CPU信息、计算机语言和操作系统名称版本。\n\n这里的收集方式与Karba下载器非常相似。\n\n\n-----\n\n```\nHKEY_LOCAL_MACHINE\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0\\\nProcessorNameString\nIdentifier\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Nls\\Language\\InstallLanguage\nHKEY_LOCAL_MACHINE\\SOFTWARE\\MICROSOFT\\WINDOWS NT\\CurrentVersion\\\nCSDVersion\nProductName\nCurrentVersion\n\n```\n这些信息随后被格式并进行加密和Base64编码。\n\n### 3.3 盗窃各类凭据\n\n以版本为7及以上的IE浏览器为例，该组件使用COM组件的IUrlHistoryStg2接口获得其浏览器\n历史记录中各个域名。\n\n之后访问如下注册表路径：\n```\nHKEY_CURRENT_USER\\Software\\Microsoft\\Internet Explorer\\IntelliForms\\Storage2\n\n```\n此处加密保存了自动填写的网站口令，需要借助对应URL来解密。\n\n考虑到用户可能删除历史记录，导致当前历史记录中缺少某些URL，故该组件在获取当前历史\n记录的同时，还自备了一批网站列表，如下所示：\n\n[http://twitter.com](http://twitter.com/)\n\n[http://facebook.com](http://facebook.com/)\n\n[http://passport.yandex.ru/passport](http://passport.yandex.ru/passport)\n\n[http://www.yandex.ru](http://www.yandex.ru/)\n\n\n-----\n\n[http://qip.ru](http://qip.ru/)\n\n[http://mail.qip.ru](http://mail.qip.ru/)\n\n[https://login.nifty.com/service/login](https://login.nifty.com/service/login)\n\n[http://e.mail.ru/cgi-bin/login](http://e.mail.ru/cgi-bin/login)\n\n[http://mail.ru](http://mail.ru/)\n\n[http://mail.126.com](http://mail.126.com/)\n\n[http://secure.zapak.com/mail/zapakmail.php](http://secure.zapak.com/mail/zapakmail.php)\n\n[https://lavabit.com/apps/webmail/src/login.php](https://lavabit.com/apps/webmail/src/login.php)\n\n[http://www.bigstring.com](http://www.bigstring.com/)\n\n[http://www.gmx.com](http://www.gmx.com/)\n\n[http://passport.sohu.com/indexaction.action](http://passport.sohu.com/indexaction.action)\n\n[http://www.sohu.com](http://www.sohu.com/)\n\n[https://www.zoho.com/login.html](https://www.zoho.com/login.html)\n\n[http://mail.sina.com.cn](http://mail.sina.com.cn/)\n\n[http://members.sina.com/index.php](http://members.sina.com/index.php)\n\n[http://www.care2.com/passport/login.html](http://www.care2.com/passport/login.html)\n\n[http://www.mail.com/int](http://www.mail.com/int)\n\n[https://fastmail.fm/mail](https://fastmail.fm/mail)\n\n[https://www.inbox.com/login.aspx](https://www.inbox.com/login.aspx)\n\n[http://www.gawab.com](http://www.gawab.com/)\n\n[http://mail.163.com](http://mail.163.com/)\n\n[http://registration.lycos.com/login.php](http://registration.lycos.com/login.php)\n\n[http://www.mail.lycos.com](http://www.mail.lycos.com/)\n\n[https://my.screenname.aol.com/_cqr/login/login.psp](https://my.screenname.aol.com/_cqr/login/login.psp)\n\n[https://edit.bjs.yahoo.com/config/login](https://edit.bjs.yahoo.com/config/login)\n\n\n-----\n\n[https://login.yahoo.co.jp/config/login](https://login.yahoo.co.jp/config/login)\n\n[https://login.yahoo.com/config/login_verify2](https://login.yahoo.com/config/login_verify2)\n\n[https://login.live.com/login.srf](https://login.live.com/login.srf)\n\n[https://www.google.com/accounts/servicelogin](https://www.google.com/accounts/servicelogin)\n\n可见，其中除了一些国际知名网站外，还包括国内的网易、搜狐和新浪相关站点，可见其攻击\n目标包含中国。\n\n对于谷歌浏览器，该组件首先访问目录…\\AppData\\Local\\Google\\Chrome\\Application，在该\n目录下找到如下图所示目录来确定版本号。\n\n该组件根据不同版本访问谷歌浏览器的sqlite数据库，解密得到自动登录账号。\n\n6.0及其以上 \\Google\\Chrome\\User Data\\Default\\Login Data\n\n6.0以下 \\Google\\Chrome\\User Data\\Default\\Web Data\n\n此外，该组件还收集以下客户端的凭据：\n\n火狐浏览器\nOutlook\nWindows Mail\nWindows Live Mail\nMSN\nGmail\nGoogle Desktop\nGoogle Talk\n\n### 3.4 收集近期文件和安装软件信息\n\n该组件会遍历Windows Recent目录和C:\\Program Files目录，以收集用户近期处理文件和常用\n软件信息。组件对自制的命令行进行解析，其中ddir便代表遍历目录。\n\n获取的内容包括命令行、当前时间、文件创建时间、文件大小和文件名。\n\n\n-----\n\n此外，该组件还收集主机上的文档文件，并在通信第二阶段上传到C&C。涉及类型包括：\n\ndoc, docx, xls, xlsx, ppt, pptx, gul, eml, pdf, ktx, ifa, if3, rtf\n\n### 3.5 与C&C的通信\n\n组件连接C&C，将收集的信息发回C&C，分两个阶段。\n\n第一阶段，向C&C回传收集的系统版本信息，使用分号分割。第二阶段，回传之前获得的最近\n文件、软件目录和窃取的凭据内容，均经过加密和编码。\n\n格式如下：\n\n\n-----\n\n之后连接C&C回传数据，返回的HTTP内容需包含字符串“minmei”方可有效，否则继续连接\nC&C。对每个C&C发起最多3次连接，若均失败则更换新的C&C。\n\n## 四、RAT 2015\n\n### 4.1 功能性质\n\n该RAT组件与C&C通信，并根据C&C指令执行信息搜集、文件、进程等操作。\n\n### 4.2 环境检测\n\n2015年的Darkhotel最终载荷显示出极强的针对性，会检测用户名，若为以下用户，则不会执\n行后续流程：\n\nantonie\nAntony\njanettedoe\nmakrorechner\nDave\nHanuele Baser\nAdministrator\nUser\n\n### 4.3 C&C指令\n\n该组件与C&C的通信指令如下：\n\n\n-----\n\n值得一提的是，以上通讯均通过Dropbox Api完成，与APT37的组件类似。C&C下发内容均经\n过LZNT1压缩并使用3DES加密。数据上传前同样经过LZNT1压缩，与xor加密。\n\n此外，该组件会下载执行升级版或其他程序。\n\n## 五、RAT kbxxxxUpd.dll\n\n### 5.1 功能性质\n\n该DLL由攻击者使用的lnk社工文件释放的下载器下载得来，属于最终阶段RAT程序，会与C&C\n进行加密通信，并根据C&C指令执行文件、进程、注册表操作。\n\n该RAT与前文所述2015年的RAT有相似之处，但通信协议变化较大。\n\n### 5.2 初始化\n\n该dll程序的主要运行参数通过读取解密配置信息得到。配置信息可能保存在程序二进制文件的\n0x1DCC8~0x1E270位置处，或是程序运行目录下长度为0x5A8的文件内（可由dll程序与C&C\n通信获得）。\n\n配置信息内容包括：\n\nC&C域名和请求路径\n缓存文件保存位置\n二进制文件保存名称\n加密后的通信键等\n\n随后，程序使用异或算法，对配置信息再次解密后从中中获取C&C地址并尝试连接：\n\n### 5.3 加密通信\n\n木马通过使用windows api与自制的包结构实现与C&C的加密通信。\n\n原始流量包使用异或加密，异或键为首字节：\n\n异或解密后，使用数据部分的指定参数进行第二次解密：\n\n\n-----\n\n第二次解密流程如下：\n\n1. 使用sha1算法，将8字节硬编码数值07 8F 63 D4 60 39 74 EB转换为hashkey;\n2. 使用3DES算法，由hashkey生成第一个解密键dec_key_1st;\n3. 使用RSA算法和解密键dec_key_1st，将600字节原始数据（由[encrypt type]指定来源）\n\n解密后得到第二个解密键dec_key_2nd;\n4. 使用RSA算法和解密键dec_key_2nd，将加密流量中140字节[encrypt key]解密后得到最\n\n终的解密键dec_key_final;\n5. 使用[encrypt type]指定的算法、[encrypt IV]指定的IV值和解密键dec_key_final，对\n\n[encrypt data]进行解密。\n\n[encrypt type]字段的值与含义如下：\n\n第二次解密完毕后，程序缓存解密后信息，根据命令的不同可能保存在三个位置：\n\n配置文件指定的目录\n命令指定的目录\n程序原始目录\n\n### 5.4 C&C指令\n\n程序读取解密后[encrypt data]中的值，执行其所代表的命令。\n\n每一条命令都分为两个部分，cmdcode与cmdbuf，对应的各指令作用如下：\n\n[主指令]-cmdcode\n\n当cmdcode满足001??00的二进制序列形式时，程序进一步将cmdbuf解析为cmdkey-content\n的字典序列，通过cmdkey的值执行对应的扩展功能：\n\n[扩展指令]-cmdkey\n\n\n-----\n\n## 六、RAT 2018\n\n2018年，Darkhotel使用RAT针对我国贸易高管展开定向攻击。\n\n### 6.1 持久性\n\nRAT首先将自身复制至以下路径：\n\nC:\\Users\\%USER%\\AppData\\Roaming\\Microsoft\\Windows\\Templates\\mscleaner.exe\n\n之后通过powershell命令设置定时任务，启动复制后的样本。\n\n\n-----\n\n样本启动后，注册定时器并在定时事件的回调函数中实现与C2的通信功能，通过触发定时事\n件调用事件回调函数实现与C2的定期通信。\n\n### 6.2 C&C通信与指令\n\n\n-----\n\n步骤1，该RAT向C&C发送命令请求，使用HTTP协议向C2发送请求，方法为GET, URL\n为/maro[数字]/article//[MAC地址]/article_service.html。\n\n步骤2，RAT向C&C发送握手信息。方法为POST，URL为/maro[数字]/live[数字].php，内容为\ntitle=111&dirname=[MAC地址的base64编码]\n\n步骤3，之后接收并解析C2下发的命令，命令格式如下：\n\n??[命令]##[参数1]&&[参数2]%%[参数3]@@\n\n指令种类如下：\n\n步骤四，命令执行完成后，使用与同样方法再次向C2发送握手信息。\n\n在捕获到的变种中，在执行完原版的通信步骤之外，样本会继续向C2发送消息。其格式与步\n骤2、4类似，在’title’与’dirname’的字段基础上，新增加了‘value’字段；该字段使用统一的公钥\n加密。\n\n## 七、总结\n\nDarkhotel的窃密组件与RAT工具经过攻击链层层下载和释放得到，手法已经非常成熟老练。\n某些工具对操作系统版本或用户名有着特殊要求，有着明显的定向性。这些工具不断在通信、\n加密、行为上不断迭代更新，几乎每一年都会出现新版本或完全迥异的版本，反映出\nDarkhotel在满足自身需求和提升组织识别难度方面一直在不断地挥力，对安全从业人员提出\n了新的要求。\n\n\n-----",
+    "language": "ZH",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-09-08 - APT GROUP系列——DARKHOTEL之窃密与RAT篇.pdf"
+    ],
+    "report_names": [
+        "2020-09-08 - APT GROUP系列——DARKHOTEL之窃密与RAT篇.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "1dadf04e-d725-426f-9f6c-08c5be7da159",
+            "created_at": "2022-10-25T15:50:23.624538Z",
+            "updated_at": "2025-03-27T02:00:55.508759Z",
+            "deleted_at": null,
+            "main_name": "Darkhotel",
+            "aliases": [
+                "Darkhotel",
+                "DUBNIUM",
+                "Zigzag Hail"
+            ],
+            "source_name": "MITRE:Darkhotel",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "bbe36874-34b7-4bfb-b38b-84a00b07042e",
+            "created_at": "2022-10-25T15:50:23.375277Z",
+            "updated_at": "2025-03-27T02:00:55.457787Z",
+            "deleted_at": null,
+            "main_name": "APT37",
+            "aliases": [
+                "APT37",
+                "InkySquid",
+                "ScarCruft",
+                "Group123",
+                "TEMP.Reaper",
+                "Ricochet Chollima"
+            ],
+            "source_name": "MITRE:APT37",
+            "tools": [
+                "BLUELIGHT",
+                "CORALDECK",
+                "KARAE",
+                "SLOWDRIFT",
+                "ROKRAT",
+                "SHUTTERSPEED",
+                "POORAIM",
+                "HAPPYWORK",
+                "Final1stspy",
+                "Cobalt Strike",
+                "NavRAT",
+                "DOGCALL",
+                "WINERACK"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "552ff939-52c3-421b-b6c9-749cbc21a794",
+            "created_at": "2023-01-06T13:46:38.742547Z",
+            "updated_at": "2025-03-27T02:00:02.906537Z",
+            "deleted_at": null,
+            "main_name": "APT37",
+            "aliases": [
+                "ScarCruft",
+                "Venus 121",
+                "Moldy Pisces",
+                "Group 123",
+                "APT 37",
+                "Group123",
+                "Operation Daybreak",
+                "Operation Erebus",
+                "Red Eyes",
+                "TA-RedAnt",
+                "InkySquid",
+                "Reaper Group",
+                "Ricochet Chollima",
+                "ATK4",
+                "G0067"
+            ],
+            "source_name": "MISPGALAXY:APT37",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "b13c19d6-247d-47ba-86ba-15a94accc179",
+            "created_at": "2024-05-01T02:03:08.149923Z",
+            "updated_at": "2025-03-27T02:05:17.422065Z",
+            "deleted_at": null,
+            "main_name": "TUNGSTEN BRIDGE",
+            "aliases": [
+                "DUBNIUM ",
+                "DarkHotel ",
+                "CTG-1948 "
+            ],
+            "source_name": "Secureworks:TUNGSTEN BRIDGE",
+            "tools": [
+                "Nemim"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "2b4eec94-7672-4bee-acb2-b857d0d26d12",
+            "created_at": "2023-01-06T13:46:38.272109Z",
+            "updated_at": "2025-03-27T02:00:02.790029Z",
+            "deleted_at": null,
+            "main_name": "DarkHotel",
+            "aliases": [
+                "DUBNIUM",
+                "Fallout Team",
+                "Luder",
+                "Tapaoux",
+                "Shadow Crane",
+                "APT-C-06",
+                "SIG25",
+                "Karba",
+                "Nemim",
+                "Nemin",
+                "G0012",
+                "ATK52",
+                "T-APT-02",
+                "TUNGSTEN BRIDGE",
+                "Zigzag Hail"
+            ],
+            "source_name": "MISPGALAXY:DarkHotel",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f0bccc3d-ad77-49c4-8dfd-8a8a8d6fba26",
+            "created_at": "2024-05-01T02:03:08.134022Z",
+            "updated_at": "2025-03-27T02:05:17.415028Z",
+            "deleted_at": null,
+            "main_name": "NICKEL FOXCROFT",
+            "aliases": [
+                "Group 123 ",
+                "Moldy Pisces ",
+                "RICOCHET CHOLLIMA ",
+                "Reaper ",
+                "ScarCruft ",
+                "APT37 "
+            ],
+            "source_name": "Secureworks:NICKEL FOXCROFT",
+            "tools": [
+                "ROKRAT"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "c0cedde3-5a9b-430f-9b77-e6568307205e",
+            "created_at": "2022-10-25T16:07:23.528994Z",
+            "updated_at": "2025-03-27T02:02:09.847683Z",
+            "deleted_at": null,
+            "main_name": "DarkHotel",
+            "aliases": [
+                "APT-C-06",
+                "ATK 52",
+                "CTG-1948",
+                "Dubnium",
+                "Fallout Team",
+                "Higaisa",
+                "Luder",
+                "Operation DarkHotel",
+                "Operation Daybreak",
+                "Operation Inexsmar",
+                "Operation PowerFall",
+                "Operation The Gh0st Remains the Same",
+                "SIG25",
+                "Shadow Crane",
+                "T-APT-02",
+                "Tungsten Bridge",
+                "Zigzag Hail"
+            ],
+            "source_name": "ETDA:DarkHotel",
+            "tools": [
+                "Asruex",
+                "DarkHotel",
+                "DmaUp3.exe",
+                "GreezeBackdoor",
+                "Karba",
+                "Nemain",
+                "Nemim",
+                "Ramsay",
+                "Retro",
+                "Tapaoux",
+                "Trojan.Win32.Karba.e",
+                "Virus.Win32.Pioneer.dx",
+                "igfxext.exe",
+                "msieckc.exe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535873,
+    "ts_updated_at": 1743041741,
+    "ts_creation_date": 1653757327,
+    "ts_modification_date": 1653757327,
+    "files": {
+        "pdf": "https://archive.orkl.eu/7ef22513d4e25140de739e513f47012072ca06a6.pdf",
+        "text": "https://archive.orkl.eu/7ef22513d4e25140de739e513f47012072ca06a6.txt",
+        "img": "https://archive.orkl.eu/7ef22513d4e25140de739e513f47012072ca06a6.jpg"
+    }
+}

@@ -1,0 +1,42 @@
+{
+    "id": "f44eec8c-239a-4072-9fe5-41a5fdcb9e02",
+    "created_at": "2023-01-12T15:07:11.330735Z",
+    "updated_at": "2025-03-27T02:06:01.330048Z",
+    "deleted_at": null,
+    "sha1_hash": "99c98b69e62bd38bf80231511966b3409b1d3fa0",
+    "title": "2021-04-11 - IcedID on my neck Im the coolest",
+    "authors": "",
+    "file_creation_date": "2022-05-25T14:31:28Z",
+    "file_modification_date": "2022-05-25T14:31:28Z",
+    "file_size": 701002,
+    "plain_text": "# IcedID on my neck I’m the coolest\n\n**4rchib4ld.github.io/blog/IcedIDOnMyNeckImTheCoolest**\n\nApril 11, 2021 4 minute read\n\n## Introduction\n\n\nApril 11, 2021\n\n\n[With the takedown of Emotet with the Operation Ladybird, there is now room for a new](https://www.wired.com/story/emotet-botnet-takedown/)\nchallenger to take the throne of the “Yeah, it’s me who delivers the bad stuff”. This past few days I\nsaw a new campaign of IcedID and decided to take a closer look.\n\nThe goal of this post is to unpack IcedID and recover the C2 url as quickly as possible.\n\n## Getting our hands dirty\n\nFirst, we have to find a sample. For this my go-to place is https://bazaar.abuse.ch.\n\n[The sample used during this post can be found here.](https://bazaar.abuse.ch/sample/0a0b3d91698a46d409791d4dd866e56ddd70f91a3f1d4557a0cb2899bda1e524/)\n\nThe tools we will use are :\n\nAs you may have notice, the file is a dll and not a .exe file, meaning that just running it in the\ndebugger won’t work. We need the help of `rundll32 for this. So first we got to open it with`\nx64dbg and change the commandline to : `\"C:\\Windows\\System32\\rundll32.exe\"`\n```\nPathToSample\\0a0b3d91698a46d409791d4dd866e56ddd70f91a3f1d4557a0cb2899bda1e524.bin,\nDllRegisterServer\n\n```\n\n-----\n\n💡 : Rundll32.exe needs to be specified a function for running. DllRegisterServer is the function\ntriggered in the MalDoc and is the EntryPoint of the malicious behavior. If you are using DllMain\nas an entrypoint, nothing will happens.\n\nHitting F9 (Run) or clicking on the right arrow places us in the Rundll process\n\nGoing to the breakpoint tab, right clicking gives this menu. You can add a “dll breakpoint”, so\nwhen the debugger enter the dll, it stops\n\n💡 : The expected name is the same as the filename\n\nExecuting a couple of time until we hit the entrypoint of our dll\n\n\n-----\n\n[We can now set as many breakpoints that we want. For unpacking this sample, only VirtualAlloc](https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualalloc)\n[is needed, but do not hesitate to add breakpoints on CreateThread or](https://docs.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createthread) [GetProcAddress if you want](https://docs.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-getprocaddress)\nto go deeper.\n\n[VirtualAlloc will be hit 3 times by the sample :](https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualalloc)\n\n1. Memory allocation for the payload (decrypted 2nd stage)\n2. Memory allocation for data in .data (encrypted 2nd stage)\n3. Memory allocation for the creation of a new thread (execution of the 2nd stage)\n\n[Upon hitting our first breakpoint on VirtualAlloc:](https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualalloc)\n\nLet’s hit the “Execute until return” button. The value stored in RAX after this is the address of the\nallocated memory region. In my case it’s 0x01B0000. Following it in dump :\n\n\n-----\n\nNow let’s pretend we don’t know what coming. A good way I found is to set breakpoint on the\nallocated region for access.\n\n💡 : Making a breakpoint on “write” is also a good idea, but for whatever reason I didn’t really\nwork in my case\n\n_right click on the memory region in dump_\n\nSomething that looks like junk is written to the first allocated region of memory\n\n\n-----\n\nCan you guess what will this become ?\n\nSounds familiar isn’t it ? That’s actually the 2nd stage which is responsible of the C2\ncommunication and that’s where we will find the C2 config. Now we just got to dump the\nmemory to a file\n\nOpening it with PeStudio :\n\n\n-----\n\nAll imports are resolved, no need to remap of anything\n\n\n-----\n\nOpening it with IDA, we only got a small set of functions\n\nNothing is obfuscated and you can quite easily find the function responsible for the C2\ncommunication :\n\n\n-----\n\nYou can also notice the making of the cookie that will be sent to the C2 :\n\nHere we are interested in the config, so let’s see how this is stored and decrypted. First it loads\nthe address of an array located in the .data section. Then the array is decrypted in a for loop with\na xor. Translating this in python gives :\n```\ndecrypted = \"\"\n for i in range(32):\n     decrypted += chr(payload[i+64] ^ payload[i])\n\n```\nI guess we are lucky because that’s not that difficult. Even more simple for you, I made a script\n[that extract the payload and decode the config, you can find it here](https://gist.github.com/4rchib4ld/98ca1b860c301afbba63b9617d4a00d8)\n\n[You can also got the domain name easily by setting a breakpoint on “WinHttpConnect” and](https://docs.microsoft.com/en-us/windows/win32/api/winhttp/nf-winhttp-winhttpconnect)\nlooking at the RDX register value\n\n\n-----\n\n💡 : There is two call to this API, the first one is to “aws.amazon.com” in order to check if there is\nan internet connection (and also an anti sandbox)\n\n## Cleaning our hands\n\n\n-----\n\n[To be honest I wanted to have a fully automated script with Qiling but due to the emulation and](https://github.com/qilingframework/qiling)\n[all of the calculation done my script takes literally hours to hit the VirtualAlloc call, so that’s](https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualalloc)\npretty useless. If you got any idea on how to extract the payload quicker, do not hesitate to hit me\n[up on Twitter.](https://twitter.com/4rchib4ld)\n\nI didn’t make a deep dive on every routine and functions of the two executable because I don’t\nthink this is really interesting as this is something pretty common and I would like my posts to\ngive as much value as possible and not enumerating everything if it doesn’t help in our mission.\n\nWith this, you can extract the C2 domain in less than 3 minutes, which is not that bad no ?\n\nAs always, thanks for taking the time to read this, hope you learned something ! 😇\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-04-11 - IcedID on my neck Im the coolest.pdf"
+    ],
+    "report_names": [
+        "2021-04-11 - IcedID on my neck Im the coolest.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673536031,
+    "ts_updated_at": 1743041161,
+    "ts_creation_date": 1653489088,
+    "ts_modification_date": 1653489088,
+    "files": {
+        "pdf": "https://archive.orkl.eu/99c98b69e62bd38bf80231511966b3409b1d3fa0.pdf",
+        "text": "https://archive.orkl.eu/99c98b69e62bd38bf80231511966b3409b1d3fa0.txt",
+        "img": "https://archive.orkl.eu/99c98b69e62bd38bf80231511966b3409b1d3fa0.jpg"
+    }
+}

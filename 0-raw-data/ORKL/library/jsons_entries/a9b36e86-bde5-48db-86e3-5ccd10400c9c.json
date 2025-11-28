@@ -1,0 +1,239 @@
+{
+    "id": "a9b36e86-bde5-48db-86e3-5ccd10400c9c",
+    "created_at": "2023-01-12T15:10:26.092699Z",
+    "updated_at": "2025-03-27T02:16:23.238219Z",
+    "deleted_at": null,
+    "sha1_hash": "99aad647c5e5ac86d569d2fd5b0b4e7b4ec860ad",
+    "title": "2021-11-15 - Uncovering MosesStaff techniques- Ideology over Money",
+    "authors": "",
+    "file_creation_date": "2022-05-28T18:13:52Z",
+    "file_modification_date": "2022-05-28T18:13:52Z",
+    "file_size": 1362456,
+    "plain_text": "# Uncovering MosesStaff techniques: Ideology over Money\n\n**[research.checkpoint.com/2021/mosesstaff-targeting-israeli-companies/](https://research.checkpoint.com/2021/mosesstaff-targeting-israeli-companies/)**\n\nNovember 15, 2021\n\nNovember 15, 2021\n\n## Introduction\n\nIn September 2021, the hacker group MosesStaff began targeting Israeli organizations,\n[joining a wave of attacks which was started about a year ago by the Pay2Key and](https://research.checkpoint.com/2020/ransomware-alert-pay2key/)\nBlackShadow attack groups. Those actors operated mainly for political reasons in attempt to\ncreate noise in the media and damage the country’s image, demanding money and\nconducting lengthy and public negotiations with the victims.\n\nMosesStaff behaves differently. The group openly states that their motivation in attacking\nIsraeli companies is to cause damage by leaking the stolen sensitive data and encrypting the\nvictim’s networks, with no ransom demand. In the language of the attackers, their purpose is\nto “Fight against the resistance and expose the crimes of the Zionists in the occupied\nterritories.”\n\n\n-----\n\nFigure 1: Screenshot from a computer encrypted by MosesStaff.\n\nIn this article, we share our investigation of several incidents involving the MosesStaff group.\nWe provide their tactics, techniques and procedures (TTPs), analyze their two main tools\n```\nPyDCrypt and DCSrv, describe their encryption scheme and its possible flaws, and\n\n```\nprovide several keys for attribution.\n\n## Key Findings\n\nMosesStaff carries out targeted attacks against Israeli companies, leaks their data, and\nencrypts their networks. There is no ransom demand and no decryption option; their\nmotives are purely political.\nInitial access to victims’ networks is presumably achieved through exploiting known\nvulnerabilities in publicly facing infrastructure such as Microsoft Exchange Servers.\nThe lateral movement within the infected networks is made using basic tools: PsExec,\nWMIC, and Powershell.\n[The attacks utilize the open-source library DiskCryptor to perform volume encryption](https://github.com/DavidXanatos/DiskCryptor)\nand lock the victims’ computers with a bootloader that won’t allow the machines to boot\nwithout the correct password.\nThe group’s current encryption method may be reversible under certain circumstances.\n\n## Infection Chain\n\nTo get initial access, the attackers exploited known vulnerabilities in an external-facing\ninfrastructure. As a result, a webshell was dropped to the following path:\n\n```\nC:\\inetpub\\wwwroot\\aspnet client\\system web\\IISpool.aspx\n\n```\n\n-----\n\nIt s a basic password-protected shell, where the MD5 of the entered password is compared\nwith the hardcoded value `52a04efc6a0e7facf34dcc36a6d1ce6f (MD5 hash of`\n```\njoker123 ). The webshell is obfuscated and based on one of webshells available in Github.\n\n```\nFigure 2: Obfuscated Webshell password authentication code.\n\nFigure 3: Screenshot of obfuscated webshell after a successful authentication.\n\nThe actors also uploaded several additional tools to the same folder:\n\nMultiple batch scripts which can enable SMB or disable the Windows firewall on\nspecific remote machines.\nA copy of `PsExec, a portable tool from Microsoft that allows running processes`\nremotely with any user’s credentials.\n```\n   OICe.exe, a small Go executable which receives a command via its command-line\n\n```\narguments, and executes it. This tool might be used on the compromised server in the\nearly steps of the attack to avoid executing suspicious child processes like cmd or\nPowerShell.\n\nAfter the attackers are inside the victims’ network, they collect information on the machines\nin the network and combine it into a `victim_info list. This contains a domain name,`\nmachine names, and administrator credentials that are later used to compile a speciallycrafted `PyDCrypt malware.`\n\nThis malware is usually run from the `C:\\Users\\Public\\csrss.exe path and is responsible`\nfor replicating itself inside the network and unleashing the main encryption payload, `DCSrv .`\n\n\n-----\n\nFigure 4: Infection Chain.\n\n## Technical Analysis\n\n**PyDCrypt**\n\nThe main goals of `PyDCrypt are to infect other computers and to make sure the main`\npayload, `DCSrv, is executed properly. The executable is written in Python and compiled`\nwith PyInstaller with encryption, using the `--key flag during the build phase. As we`\nmentioned previously, the attackers build a new sample for each infected organization, and\nhardcode the parameters collected from the victim’s environment:\n\nFigure 5: A dictionary hardcoded in the `PyDCrypt sample shows what information the`\nattackers collect from victims’ environment at the reconnaissance stage.\n```\nPyDCrypt can receive 2 or 3 arguments.\n\n```\n\n-----\n\nThe first argument expected is 113. The malware checks and if the argument is different, it\ndoes not proceed to the execution and removes itself.\n\nThe second argument can be 0 or 1, indicating if `PyDCrypt has already run previously.`\n\nThe third argument is optional. If provided, it is used as the encryption key that is later\npassed to `DCSrv as a parameter.`\n\nThe main workflow of the malware:\n\nCreate a lock file to prevent multiple instances of malware from running at the same\ntime.\nDecrypt and drop `DCSrv (named` `C:\\Users\\Public\\svchost.exe ) to the disk and`\nexecute it. The encryption algorithm is based on XOR and multiple Base64 encoding\noperations, provided in Appendix A.\n\nFigure 6: Deobfuscated code of `PyDCrypt responsible for` `DCSrv execution.`\n\nDecrypt and drop `PSExec (named ps.exe). The decoding method is the same as for`\n```\n   DCSrv .\n\n```\nModify firewall rules to allow incoming SMB, Netbios and RPC connections using\n```\n   netsh.exe on remote machines:\nnetsh advfirewall firewall add rule name=SMB dir=in action=allow\nprotocol=TCP localport=445\nnetsh advfirewall firewall add rule name=NETBIOS dir=in action=allow\nprotocol=TCP localport=135\n\n```\n\n-----\n\n```\nnetsh advfirewall firewall add rule name=FileShare1 dir=in action=allow\nprotocol=TCP localport=139\nnetsh advfirewall firewall add rule name=FileShare2 dir=in action=allow\nprotocol=TCP localport=138\n\n```\nIterate over machines in the network and infect each of them: the malware attempts to\ncopy and execute `csrss.exe ( PyDCrypt ) remotely with` `Powershell,` `PSExec, or`\n```\n   WMIC (whatever is available), using compromised administrator credentials. Probing\n\n```\nfor each method is done by running `whoami or` `echo 1233dsfassad on the`\ndestination machines.\nRemove all created artifacts such as the `ps.exe binary and the` `PyDCrypt`\nexecutable.\n\nFigure 7: Example of Forensics report for single execution tree of `PyDCrypt .`\n\n**DCSrv**\n\nThis malicious process masquerades as a legitimate `svchost.exe process and has a`\nsingle purpose: to encrypt all computer volumes, and deny any access to the computer.\n\nIt contains several resources:\n\nResource `1 – Contains an encrypted configuration, and depending on the code, can`\nalso contain a hardcoded encryption key. Some of the configuration values are:\n\nBoot loader custom message: `Hacked By <https://moses-staff.se> ! Join`\n\n```\nUs in Telegram : <https://t.me/moses_staff>\n\n```\n\n-----\n\nTime to wait before restarting the computer after installing the DiskCryptor driver.\nTime to wait before restarting the computer after encrypting the volumes.\nDetonation time – The exact minute when the encryption should start.\nResource `2 – Signed` `DCDrv.sys driver for 64 bit.`\nResource `3 – Signed` `DCDrv.sys driver for 32 bit.`\nResource `4 – Encrypted DLL for installing the boot loader.`\n\nIn addition to the configuration, the execution flow can also be controlled by the command\nline parameters received for this tool, and it can take from 0 to 2 parameters.\n\nIf the first one exists, it is the encryption key, and if the second one exists, it is an identifier\nthat is also compared with the string saved in the malware configuration. An example for it\nwould be string “ 113 ” which was used in both the `DCSrv and` `PyDCrypt parameters.`\nHowever, the standard execution chain, as we mentioned previously, is `PyDCrypt passing`\nits parameters (including the encryption key) to `DCSrv .`\n\nThe complete encryption tool is based on a powerful 3rd party open-source tool called\n[DiskCryptor. MosesStaff used several parts of that tool, primarily the signed driver and](https://github.com/DavidXanatos/DiskCryptor)\ncustom boot loaders.\n\nThe execution flow of this tool can be divided into three parts: driver installation, volume\n**encryption, and boot loader installation.**\n\n**Installing the driver**\n\nThe first action is to create two services named `DCUMSrv and` `DCDrv . Each of these has`\ndifferent purposes.\n```\nDCUMSrv  is used solely for the persistence mechanism to run the same executable,\nsvchost.exe, on startup with the originally provided parameters. DCDrv  runs the\n\n```\nsupplied filter driver `DCDrv.sys . For the installation, it extracts the embedded driver from`\nresources 2 or 3 (depending on whether it is running on a 32-bit system or 64-bit), and writes\nits content into `C:\\windows\\system32\\drivers\\DCDrv.sys . It then configures its registry`\nparameters the same way the DiskCryptor open-source project did.\n\n\n-----\n\nFigure 8: Service used for persistence mechanism.\n\nFigure 9: Installation of `DCSrv.sys filter driver.`\n\nDue to the valid signature of the drivers, as we can see below, the DSE (Driver Signature\nEnforcement) feature does not stop its installation.\n\nFigure 10: DCDrv.sys valid signature.\n\nWhen the malware finishes installing the driver, it performs a reboot after a few minutes to\nmake the driver operational.\n\n**Encrypting the volumes**\n\n\n-----\n\nOn the second run, the malware waits for the exact time given in the configuration before it\ndetonates its encryption mechanism. This is yet another proof that the payloads are targeted\nand created per victim.\n\nFigure 11: Code that checks the current time and compares it with the value provided in the\nconfiguration.\n\nWhen the specific time arrives, the program iterates over all available drives, from `C: to`\n```\nZ:, and encrypts them simultaneously using several threads.\n\n```\nAs we mentioned previously, the core encryption mechanism is based on the DiskCryptor\ndriver. Therefore, all it has to do is to initiate the right IOCTL messages with the proper\nparameters which are packaged into `dc_ioctl` [struct:](https://github.com/DavidXanatos/DiskCryptor/blob/40c949a50e67a30f28813f89ee6ef2ef8dbdc101/DCrypt/driver/include/driver.h)\n```\ntypedef struct _dc_ioctl {\n dc_pass passw1;   /* password */\n dc_pass passw2;   /* new password (for changing pass) */\n wchar_t device[MAX_DEVICE + 1];\n u32 flags;     /* mount/unmount flags */\n int status;     /* operation status code */\n int n_mount;    /* number of mounted devices */\n crypt_info crypt;\n} dc_ioctl;\n\n```\nThere are several communication methods between user-mode applications and kernelmode drivers. The most popular method is to send special codes called IO Control Codes\n(IOCTL) using the Windows API `DeviceIoControl .`\n\nIn our case, the relevant IOCTL codes for encrypting the drives are\n```\nDC_CTL_ENCRYPT_START and DC_CTL_ENCRYPT_STEP, and the parameters are: the key\n\n```\nfrom the command line in `passw1 field, the iterated device in` `device field, and` `CF_AES`\nencryption mode in `crypt field.`\n\nThis process could take a while, so the malware has a two hour sleep period before\nrebooting with the custom boot loaders.\n\n\n-----\n\n**Installing DiskCryptor bootloader**\n\nThis is usually done before the encryption process but depending on the configuration\nvalues, can also wait for it to end. The incentive for overwriting the boot-loader beforehand is\nclear, as even if the encryption wasn’t finished, the damage to the organization is done by\nlocking their computers.\n\nThe bootloader installer is embedded as resource `4 in the executable and is decrypted`\nbefore it is dropped as `<executable_directory>/<executable_name>.dll . This DLL file`\nhas two export functions named `IsEFI and` `InstallLoader and their names pretty much`\ndescribe their functionality.\n\nThe malware dynamically loads the dropped library and calls `InstallLoader with the boot`\nloader text message as a parameter:\n\nFigure 12: Loading of the bootloader installer.\n\nWe didn’t find any custom malicious changes introduced into the bootloader itself. Therefore,\nit contains the exact functionality we expect to see in volume disk encryption software with a\nbootloader to decrypt the main volume.\n\n**Encryption scheme**\n\nThe most notorious ransomware gangs (e.g. Conti, Revil, Lockbit etc.), almost without\nexception, always ensure that their encryption system is well-designed and unassailable.\nThey do their due diligence and at the very least, dutifully copy the hybrid approach of\nsymmetric and asymmetric encryption that has been the staple of well-designed ransomware\nsince the mid-10’s; they know a serious mistake can end up costing them hundreds of\nthousands of dollars in potential revenue. For whatever reasons, including non-financial\nmotivation, lack of experience with ransomware, or amateur coding skills, the MosesStaff\ngroup didn’t make as much of an effort.\n\nWhen we add the fact that MosesStaff didn’t negotiate for money, we can assume that this\nmalware strain isn’t ransomware, but an attempt to cause irreversible damage for Israelis\norganizations.\n\n\n-----\n\nUsing this knowledge, let us dig deeper into their method of key generation, and how can we\npotentially reverse it.\n\n**Key Generation**\n\nMosesStaff uses three methods for generating the symmetric keys used by the encryption\nmechanism:\n\nAs a command-line parameter generated automatically by `PyDCrypt .`\nAs a command-line parameter given by the user.\nIf a certain bit in the configuration is turned on, the key is hardcoded in the executable.\n\nThe most common method is running `PyDCrypt, and sending exclusive encryption keys`\nper hostname, based on MD5 hash, and crafted salt. The code which generates the keys\nlooks like this:\n```\nfrom hashlib import md5\n# Salt may vary between samples ('Facebook5' and '4Skype4' strings)\ndef custom_hash_func(hostname, ring=10):\n m1 = 'Facebook5' + md5(hostname.encode()).hexdigest() + '4Skype4'\n for x in range(ring):\n  m1 = md5(m1.encode()).hexdigest()\n return m1[0:31]\n\n## Decryption Process\n\n```\nAs we mentioned previously, simple symmetric-key-based encryption is usually not sufficient\nto make a bulletproof, hard-to-reverse encryption scheme. By using the analysis above, we\ndo have several options to potentially reverse the encryption.\n\nThe first and foremost option is to look at the EDR product logs if they were installed in the\nenvironment. A properly designed EDR records all process creations, together with their\ncommand line parameters, which are the keys in our case.\n\n\n-----\n\nFigure 13: Screenshot from an EDR solution replicating the attack with `svchost.exe`\nparameters used for decryption.\n\nThe second option is to extract and reverse the `PyDCrypt malware which attacked the`\nvictim in the first place. This method is a little trickier due to the code deleting itself after\nfinishing running. From the `PyDCrypt sample, we can extract the crafted hashing function`\nwhich generates the keys per computer.\n\nBy using the extracted keys from each of these methods, we can insert them into the boot\nlogin screen, and unlock the computer. This way we can restore access to the operating\nsystem, but the disks remain encrypted and the DiskCryptor boot loader is active on every\nrestart. This can be solved by creating a simple program that initiates proper IOCTL to the\nDiskCryptor driver, and eventually, removes it from the system.\n\n## Attribution\n\nAttributing politically motivated cyberattacks is always complicated. Currently, with all the\ninformation we have available, we can’t draw any definitive conclusions. However, a couple\nof artifacts caught our attention:\n\nOne of the tools used in the attack, `OICe.exe, was submitted to VT from Palestine a`\nfew months before the group began an active phase (encryption and public leaks) of\ntheir activity.\n\nFigure 14: Screenshot of VT submission of command proxy tool left by attackers on the\ncompromised server.\n\nAlthough this is not a strong indication, it might betray the attackers’ origins; sometimes they\ntest the tools in public services like VT to make sure they are stealthy enough.\n\nThe background and logo PNG image files used on the site `moses-staff[.]se (all of`\nwhom had metadata available) were created and/or modified a few days after the\ndomain was registered on the machine with the time zone `GMT+3 . That is the time`\nzone of Israel and the Palestinian territories at that time of the year.\n\n\n-----\n\nFigure 15: Example of metadata of the images from MosesStaff site.\n\n### Conclusion\n\nAs we described above, MosesStaff has a specific modus operandi of exploiting\nvulnerabilities in public-facing servers, then using a combination of unique tools and livingoff-the-land maneuvers to leave the targeted network encrypted, with encryption used solely\nfor destruction purposes. Like the Pay2Key and BlackShadow gangs before them, the\nMosesStaff group is motivated by politics and ideology to target Israeli organizations. Unlike\nthose predecessors, however, they made an outright mistake when they put together their\nown encryption scheme, which is honestly a surprise in today’s landscape where every twobit cybercriminal seems to know at least the basics of how to put together functioning\nransomware.\n\nMosesStaff are still active, pushing provocative messages and videos in their social network\naccounts. As the saying goes, “a clever person solves a problem, a wise person avoids it.”\nThe vulnerabilities exploited in the group’s attacks are not zero days, and therefore all\npotential victims can protect themselves by immediately patching all publicly-facing systems.\n\nCheck Point [products block this attack with the following signatures:](https://www.checkpoint.com/infinity-vision/zero-day-protection/)\n```\nRansomware.Wins.DCSrv.A, Ransomware.Win.MosesStaff.A,\nRansomware.Win.MosesStaff.B, Ransomware.Win.MosesStaff.C .\n\n### IOCs\n\n```\n**Hashes**\n\nHash Description Name\n\n680ce7d56fc427ee2fbedb5baea59d68 MosesStaff Webshell V1 IISpool.aspx\n\n1094aa25e2d637e7f5795edd6c0f60e4 MosesStaff Webshell V2 IISpool.aspx\n\n5ffc255557796512798617ae61c4274d MosesStaff Webshell V2 IISpool.aspx\n\n\n-----\n\n3dde69212234c98b503081d64b9beb52 MosesStaff Webshell V2 IISpool.aspx\n\na44775e7568b790505bbcaadbd61c993 MosesStaff Webshell V2 IISpool.aspx\n\n3649c106c6edd7ef47acd46586c74d8e MosesStaff Webshell V2 warn.aspx\n\nc1bc20a9bbebbbdd19869999b9cec03b MosesStaff Webshell V2 IISpool.aspx\n\na06c125e6da566be67aacf6c4e44005e CMD wrapper OICe.exe\n\ne776c4e24c00fa3eeba68cde38ae24f3 PyDCrypt csrss.exe\n\n3dfb7626dbe46136bc19404b63c6d1dc PyDCrypt csrss.exe\n\n7be30062c1a2c42a7061dfbfec364588 DCSrv svchost.exe\n\n93c19436e6e5207e2e2bed425107f080 DCSrv svvhost.exe\n\n2372c7639e70820f253a098dfcaf5060 Bootloader Installer svchost.dll\n\n**File paths**\n\n```\nc:\\users\\public\\svchost.exe\n\n```\n```\nc:\\users\\public\\svvhost.exe\n\n```\n```\nc:\\users\\public\\svchost.dll\n\n```\n```\nc:\\users\\public\\svchost.bat\n\n```\n```\nc:\\users\\public\\csrss.exe\n\n```\n```\nc:\\users\\public\\ps.exe\n\n```\n```\nc:\\users\\dc1\\dcl.txt\n\n```\n```\nc:\\users\\public\\account\n\n```\n```\nc:\\users\\public\\systemserial\n\n```\n```\nc:\\windows\\system32\\drivers\\dcdrv.sys\n\n```\n```\nC:\\inetpub\\wwwroot\\aspnet_client\\system_web\\IISpool.aspx\n\n```\n\n### Appendix A – PyDCrypt Payload Decryption Script\n\n\n-----\n\n```\nfrom base64 import b64encode, urlsafe_b64decode, b64decode\nfrom itertools import cycle, izip\ndef decrypt_string(key, file_bytes):\n  file_bytes = urlsafe_b64decode(file_bytes.encode())\n  return ''.join((chr(ord(c) ^ ord(k)) for c, k in izip(file_bytes, cycle(key))))\n# ring may differ between payloads\ndef decrypt_payload(file_bytes, ring=3, key):\n  mk = decrypt_string(key, file_bytes)\n  for x in range(ring):\n    mk = b64decode(mk)\n  return mk\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-11-15 - Uncovering MosesStaff techniques- Ideology over Money.pdf"
+    ],
+    "report_names": [
+        "2021-11-15 - Uncovering MosesStaff techniques- Ideology over Money.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "527e04ee-7f5f-49aa-8653-f893b43730bd",
+            "created_at": "2022-10-25T16:07:24.512541Z",
+            "updated_at": "2025-03-27T02:02:10.266333Z",
+            "deleted_at": null,
+            "main_name": "Moses Staff",
+            "aliases": [
+                "Abraham's Ax",
+                "Cobalt Sapling",
+                "DEV-0500",
+                "Marigold Sandstorm",
+                "Vengeful Kitten",
+                "White Dev 95"
+            ],
+            "source_name": "ETDA:Moses Staff",
+            "tools": [
+                "DCSrv",
+                "DCrSrv",
+                "PyDCrypt",
+                "StrifeWater",
+                "StrifeWater RAT"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "21e01940-3851-417f-9e90-1a4a2da07033",
+            "created_at": "2022-10-25T16:07:23.299369Z",
+            "updated_at": "2025-03-27T02:02:09.725295Z",
+            "deleted_at": null,
+            "main_name": "Agrius",
+            "aliases": [
+                "AMERICIUM",
+                "Agonizing Serpens",
+                "BlackShadow",
+                "DEV-0227",
+                "Pink Sandstorm",
+                "SharpBoys"
+            ],
+            "source_name": "ETDA:Agrius",
+            "tools": [
+                "ASPXSpy",
+                "ASPXTool",
+                "Agrius",
+                "BFG Agonizer",
+                "BFG Agonizer Wiper",
+                "DEADWOOD",
+                "DETBOSIT",
+                "Detbosit",
+                "IPsec Helper",
+                "Moneybird",
+                "MultiLayer Wiper",
+                "PW",
+                "PartialWasher",
+                "PartialWasher Wiper",
+                "SQLShred",
+                "Sqlextractor"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "89c0c674-c35d-47a6-bd7c-1e6c1b6beacc",
+            "created_at": "2024-05-01T02:03:08.042533Z",
+            "updated_at": "2025-03-27T02:05:17.3236Z",
+            "deleted_at": null,
+            "main_name": "COBALT SHADOW",
+            "aliases": [
+                "AMERICIUM ",
+                "Agrius",
+                "BlackShadow",
+                "DEV-0227 ",
+                "Malek Team",
+                "Pink Sandstorm ",
+                "Agonizing Serpens "
+            ],
+            "source_name": "Secureworks:COBALT SHADOW",
+            "tools": [
+                " DEADWOOD",
+                " Fantasy wiper",
+                " Host2IP",
+                " IPsec Helper",
+                " Jennlog Loader",
+                " MiniDump",
+                " Moneybird ransomware",
+                " PSexec",
+                " Plink",
+                " Sandals",
+                " SecretsDump",
+                " SoftPerfect Network Scanner",
+                "Apostle"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "ba5bc606-8b26-416a-881d-76cdefc6c75c",
+            "created_at": "2024-06-04T02:03:07.777739Z",
+            "updated_at": "2025-03-27T02:05:17.322164Z",
+            "deleted_at": null,
+            "main_name": "COBALT SAPLING",
+            "aliases": [
+                "Moses Staff",
+                "Abraham's Ax"
+            ],
+            "source_name": "Secureworks:COBALT SAPLING",
+            "tools": [
+                " PyDcrypt",
+                " StrifeWater RAT",
+                "DCSrv"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "bef06c82-0f51-44ba-8451-049cd4ad8a52",
+            "created_at": "2023-01-06T13:46:39.325635Z",
+            "updated_at": "2025-03-27T02:00:03.05159Z",
+            "deleted_at": null,
+            "main_name": "MosesStaff",
+            "aliases": [
+                "Moses Staff",
+                "Marigold Sandstorm",
+                "DEV-0500"
+            ],
+            "source_name": "MISPGALAXY:MosesStaff",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "4023e661-f566-4b5b-a06f-9d370403f074",
+            "created_at": "2024-02-02T02:00:04.064685Z",
+            "updated_at": "2025-03-27T02:00:03.304692Z",
+            "deleted_at": null,
+            "main_name": "Pink Sandstorm",
+            "aliases": [
+                "Agonizing Serpens",
+                "AMERICIUM",
+                "BlackShadow",
+                "DEV-0022",
+                "Agrius"
+            ],
+            "source_name": "MISPGALAXY:Pink Sandstorm",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c4d0e4e1-5ad3-4455-8291-ce72a1e09e46",
+            "created_at": "2022-10-27T08:27:13.055675Z",
+            "updated_at": "2025-03-27T02:00:55.458634Z",
+            "deleted_at": null,
+            "main_name": "Moses Staff",
+            "aliases": [
+                "Moses Staff",
+                "DEV-0500",
+                "Marigold Sandstorm"
+            ],
+            "source_name": "MITRE:Moses Staff",
+            "tools": [
+                "PyDCrypt",
+                "PsExec",
+                "DCSrv",
+                "StrifeWater"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "7d982d5b-3428-483c-8804-c3ab774f1861",
+            "created_at": "2024-11-01T02:00:52.70975Z",
+            "updated_at": "2025-03-27T02:00:55.517246Z",
+            "deleted_at": null,
+            "main_name": "Agrius",
+            "aliases": [
+                "Agrius",
+                "Pink Sandstorm",
+                "AMERICIUM",
+                "Agonizing Serpens",
+                "BlackShadow"
+            ],
+            "source_name": "MITRE:Agrius",
+            "tools": [
+                "NBTscan",
+                "Mimikatz",
+                "IPsec Helper",
+                "Moneybird",
+                "MultiLayer Wiper",
+                "DEADWOOD",
+                "BFG Agonizer",
+                "ASPXSpy"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536226,
+    "ts_updated_at": 1743041783,
+    "ts_creation_date": 1653761632,
+    "ts_modification_date": 1653761632,
+    "files": {
+        "pdf": "https://archive.orkl.eu/99aad647c5e5ac86d569d2fd5b0b4e7b4ec860ad.pdf",
+        "text": "https://archive.orkl.eu/99aad647c5e5ac86d569d2fd5b0b4e7b4ec860ad.txt",
+        "img": "https://archive.orkl.eu/99aad647c5e5ac86d569d2fd5b0b4e7b4ec860ad.jpg"
+    }
+}

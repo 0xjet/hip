@@ -1,0 +1,146 @@
+{
+    "id": "c64519eb-18f5-4556-81f4-aeb529d04bf0",
+    "created_at": "2023-01-12T14:59:04.535194Z",
+    "updated_at": "2025-03-27T02:06:09.127176Z",
+    "deleted_at": null,
+    "sha1_hash": "96feb33ffdfb94b0efef3319a4aae1c314c96a05",
+    "title": "2018-04-04 - Hunting down Dofoil with Windows Defender ATP",
+    "authors": "",
+    "file_creation_date": "2022-05-28T21:56:35Z",
+    "file_modification_date": "2022-05-28T21:56:35Z",
+    "file_size": 1281729,
+    "plain_text": "# Hunting down Dofoil with Windows Defender ATP\n\n**[cloudblogs.microsoft.com/microsoftsecure/2018/04/04/hunting-down-dofoil-with-windows-defender-atp/](https://cloudblogs.microsoft.com/microsoftsecure/2018/04/04/hunting-down-dofoil-with-windows-defender-atp/)**\n\nApril 4, 2018\n\n[Dofoil is a sophisticated threat that attempted to install coin miner malware on hundreds of thousands of](https://cloudblogs.microsoft.com/microsoftsecure/2018/03/07/behavior-monitoring-combined-with-machine-learning-spoils-a-massive-dofoil-coin-mining-campaign/)\ncomputers in March, 2018. In previous blog posts we detailed how behavior monitoring and machine learning in\n[Windows Defender AV protected customers from a](https://docs.microsoft.com/en-us/windows/security/threat-protection/windows-defender-antivirus/windows-defender-antivirus-in-windows-10?ocid=cx-blog-mmpc) [massive Dofoil outbreak that we traced back to a](https://cloudblogs.microsoft.com/microsoftsecure/2018/03/07/behavior-monitoring-combined-with-machine-learning-spoils-a-massive-dofoil-coin-mining-campaign/) software\nupdate poisoning campaign several weeks prior. Notably, customers of [Windows 10 S, a special Windows 10](https://www.microsoft.com/en-us/windows/windows-10-s?ocid=cx-blog-mmpc)\nconfiguration that provides streamlined Microsoft-verified security, were not affected by the Dofoil outbreak.\n\nIn this blog post, we will expound on Dofoil’s anti-debugging and anti-analysis tactics, and demonstrate how the\n[rich detection libraries of Windows Defender Advanced Threat Protection and](https://www.microsoft.com/en-us/windowsforbusiness/windows-atp?ocid=cx-blog-mmpc) [Windows Defender Exploit Guard](https://cloudblogs.microsoft.com/microsoftsecure/2018/03/07/behavior-monitoring-combined-with-machine-learning-spoils-a-massive-dofoil-coin-mining-campaign/)\ncan help during investigation.\n\nWe found that Dofoil was designed to be elusive to analysis. It checks its environment and stops running in\nvirtual machine environments. It also checks for various analysis tools and kills them right away. This can make\nmalware analysis and assessment challenging.\n\nThe following diagram shows the multi-stage malware execution process, which includes checks for traits of\nanalysis environments during some stages.\n\n_Figure 1. Dofoil multi-stage shellcode and payload execution flow_\n\nThe table below describes the purpose of each stage. The first five stages have at least one or two different\ntechniques that can deter dynamic or static malware analysis.\n\n**STAGES** **DESCRIPTION**\n\n\n-----\n\n**1. Obfuscated wrapper code** Anti-heuristics\nAnti-emulation\n\n**2. Bootstrap module** Performs self-process hollowing to load the next module\n\n**3. Anti-debugging module** Performs anti-debugging operation\n\n**4. Trojan downloader module** Performs system environment checks\nPerforms anti-VM operation\n\nInjects itself to explorer.exe through process hollowing\n\n\n**5. Trojan downloader module**\n**in explorer.exe**\n\n**6. Payload downloader module**\n**in explorer.exe**\n\n\nContacts C&C server to download trojan and run it using process hollowing\ntechnique\n\nContacts C&C server to download the main payload\n\n\n**7. Trojan module** Steals credentials from various application settings and sends stolen into to\nthe C&C server over HTTP channel\n\n**8. CoinMiner.D** Mines digital currencies\n\n_Table 1. Dofoil’s multi-stage modules_\n\n## Initial stages\n\nThe first three stages (i.e., obfuscated wrapper code, bootstrap module, anti-debugging module) use the\nfollowing techniques to avoid analysis and identification.\n\n**ANTI-**\n**ANALYSIS**\n**TECHNIQUES** **DESCRIPTION**\n\n\n**Benign code**\n**insertion**\n\n**Anti-**\n**emulation**\n\n**Self-process**\n**hollowing**\n\n**Debugger**\n**checks**\n\n\nInserts a huge benign code block to confuse heuristics and manual inspection\n\nEnumerates an arbitrary registry key (HKEY_CLASSES_ROOT\\Interface\\{3050F557-98B5_11CF-BB82-00AA00BDCE0B}) and compares the data with an expected value_\n(DispHTMLCurrentStyle) to check if the malware runs inside an emulator\n\nUses the process hollowing technique on the current process, making analysis extra difficult\ndue to the altered code mapping\n\nChecks for debuggers, and modifies code to crash. This can add additional layer of confusion\nto researchers, who are bound to investigate the cause of the crashes. It checks for the\n_PEB.BeingDebugged and PEB.NtGlobalFlag fields in the PEB structure. For example,_\n_PEB.BeingDebugged is set to 1 and PEB.NtGlobalFlag is set to_\n_FLG_HEAP_ENABLE_TAIL_CHECK|FLG_HEAP_ENABLE_FREE_CHECK|_\n_FLG_HEAP_VALIDATE_PARAMETERS when a debugger is attached to the process._\n\n\n_Table 2. Anti-analysis techniques_\n\nThe first stage contains some benign-looking code before the actual malicious code. This can give the\nexecutable a harmless appearance. It can also make the emulation of the code difficult because emulating\nvarious API calls that are not present in many malware codes can be challenging.\n\n\n-----\n\nThe first stage code also performs a registry key enumeration to make sure it has the expected value. When all\nchecks are passed, it decodes the second-stage shellcode and runs it on the allocated memory. This shellcode\nun-maps the original main module’s memory, and then decodes the third-stage shellcode into that memory – this\n[is known as a self-process hollowing technique.](https://cloudblogs.microsoft.com/microsoftsecure/2018/03/07/behavior-monitoring-combined-with-machine-learning-spoils-a-massive-dofoil-coin-mining-campaign/)\n\n_Figure 2. Self-modification based on PEB.BeingDebugged value_\n\nWindows Defender ATP’s process tree can help with investigation by exposing these anti-debugging techniques.\n\n_Figure 3. Windows Defender ATP process tree showing anti-debugging techniques_\n\n## Trojan downloader module\n\n\n-----\n\nThe trojan downloader module performs various environment checks, including virtual environment and analysis\ntool checks, before downloading the payload.\n\n**ANTI-**\n**ANALYSIS**\n**TECHNIQUES** **DESCRIPTION**\n\n\n**Check**\n**module name**\n\n**Check**\n**volume serial**\n\n**Check**\n**modules**\n\n**Check disk-**\n**related**\n**registry keys**\n\n**Process**\n**check**\n\n**Windows**\n**class name**\n**check**\n\n\nChecks if the main executable name contains the string “sample”\n\nChecks if current volume serial number is 0xCD1A40 or 0x70144646\n\nChecks the presence of DLLs related to debuggers\n\nChecks the value of the registry key HKLM\\System\\CurrentControlSet\\Services\\Disk\\Enum\nagainst well-known disk name patterns for virtual machines (qemu, virtual, vmware, xen,\n_ffffcce24)_\n\nChecks running processes and kills those with processes names associated with analysis\ntools (procexp.exe, procexp64.exe, procmon.exe, procmon64.exe, tcpview.exe,\n_wireshark.exe, processhacker.exe, ollydbg.exe, idaq.exe, x32dbg.exe)_\n\nChecks the current Windows class names and exits when some well-known names are found\n(Autoruns, PROCEXPL, PROCMON_WINDOW_CLASS, TCPViewClass, ProcessHacker,\n_OllyDbg, WinDbgFrameClass)_\n\n\n_Table 3. Anti-analysis technique of Dofoil’s trojan downloader module_\n\nThe list of target process names and Windows class names exist in custom checksum form. The checksum\nalgorithm looks like the following:\n\n_Figure 4. Shift and XOR custom checksum algorithm_\n\nThe purpose of this checksum is to prevent malware researchers from quickly figuring out what analysis tools it\ndetects, making analysis more time-consuming.\n\n**STRING** **CHECKSUM**\n\n**Autoruns** 0x0E5C1C5D\n\n**PROCEXPL** 0x1D421B41\n\n**PROCMON_WINDOW_CLASS** 0x4B0C105A\n\n**TCPViewClass** 0x1D4F5C43\n\n**ProcessHacker** 0x571A415E\n\n**OllyDbg** 0x4108161D\n\n**WinDbgFrameClass** 0x054E1905\n\n\n-----\n\n**procexp.exe** 0x19195C02\n\n**procexp64.exe** 0x1C0E041D\n\n**procmon.exe** 0x06185D0B\n\n**procmon64.exe** 0x1D07120A\n\n**tcpview.exe** 0x060B5118\n\n**wireshark.exe** 0x550E1E0D\n\n**processhacker.exe** 0x51565C47\n\n**ollydbg.exe** 0x04114C14\n\n**x32dbg.exe** 0x5F4E5C04\n\n**idaq.exe** 0x14585A12\n\n_Table 4. String checksum table used for process names and Windows class names_\n\n## Process hollowing\n\n[Dofoil heavily uses the process hollowing technique. Its main target for process hollowing is explorer.exe. The](https://cloudblogs.microsoft.com/microsoftsecure/2018/03/07/behavior-monitoring-combined-with-machine-learning-spoils-a-massive-dofoil-coin-mining-campaign/)\nDofoil shellcode launches a new instance of explorer.exe, allocates shellcode in heap region, and then modifies\nthe entry point code to jump into the shellcode. This way, the malware avoids using CreateRemoteThread API,\nbut can still achieve code injection.\n\n\n-----\n\n_Figure 5. Modification of explorer.exe entry point code_\n\nWindows Defender ATP can detect the process hollowing behavior with advanced memory signals. The following\nprocess tree shows that the malware injects itself into explorer.exe using the process hollowing technique.\n\n_Figure 6. Windows Defender ATP alert process tree showing the first process hollowing_\n\nWhen the shellcode downloads another layer of payload, it spawns another explorer.exe to inject the payload into\nusing process hollowing. Windows Defender ATP can save analysis time on these cases by pinpointing the\nmalicious actions, eliminating the need for guessing what these newly spawned Windows system processes are\ndoing.\n\n_Figure 7. Windows Defender ATP alert process tree showing the second process hollowing_\n\n[The process hollowing behavior can be detected through Exploit protection in Windows Defender Exploit Guard.](https://docs.microsoft.com/en-us/windows/security/threat-protection/windows-defender-exploit-guard/exploit-protection-exploit-guard)\nThis can be done by enabling the Export Address Filter (EAF) mitigation against explorer.exe. The detection\nhappens when the shellcode goes through the export addresses of the modules to find the export address of the\nLoadLibraryA and GetProcAddress functions.\n\n_Figure 8. Export Address Filter (EAF) event exposed in Event viewer_\n\nWindows Defender Exploit Guard events are also exposed in the Windows Defender ATP portal:\n\n\n-----\n\n_Figure 9. Windows Defender ATP view of the Windows Defender Exploit Guard event_\n\nAdding Windows Defender Exploit Guard EAF audit/block policy to common system processes like explorer.exe,\ncmd.exe, or verclsid.exe can be useful in finding and blocking process hollowing or process injection techniques\ncommonly used by malware. This policy can impact third-party apps that may behave like shellcode, so we\nrecommend testing Windows Defender Exploit Guard with audit mode enabled before enforcement.\n\n## Command-and-control (C&C) and NameCoin domains\n\nDofoil’s C&C connection is very cautious. The trojan code first tries to connect to well-known web pages and\nverifies that the malware has proper and real Internet connection, not simulated as in test environments. After it\nmakes sure it has a real Internet connection, the malware makes HTTP connections to the actual C&C servers.\n\n_Figure 10. Access to known servers to confirm Internet connectivity_\n\nThe malware uses NameCoin domain name servers. NameCoin is a decentralized name server system that\nprovides extra privacy backed by blockchain technology. Except for the fact that the DNS client needs to use\nspecific sets of NameCoin DNS servers, the overall operation is very similar to a normal DNS query. Because\nNameCoin uses blockchain technology, you can query the history of the domain name changes through blocks.\n\n\n-----\n\n_[Figure 11. Malicious hostname DNS entry changes over time (https://namecha.in/name/d/vrubl)](https://namecha.in/name/d/vrubl)_\n\nWindows Defender ATP can provide visibility into the malware’s network activities. The following alert process\ntree shows the malware’s .bit domain resolution activity and, after that, the connections to the resolved C&C\nservers. You can also view other activities from the executable, for example, its connections to other servers\nusing SMTP ports.\n\n\n-----\n\n_Figure 12. Windows Defender ATP alert process tree showing C&C server connection through NameCoin server_\n_name resolution_\n\nThe Windows Defender ATP [advanced hunting feature, which is currently in preview, can be used to hunt down](https://techcommunity.microsoft.com/t5/What-s-New/Unleash-the-Hunter-in-You/m-p/173202#M23)\nmore malware samples that possibly abuse NameCoin servers. For example, the following advanced hunting\nquery finds recent connections to Dofoil C&C servers from your network. This can lead to extra insights on other\nthreats that use the same NameCoin servers.\n\n\n-----\n\n_Figure 13. Advanced hunting for other threats using the same NameCoin servers_\n\nThe purpose of using NameCoin is to prevent easy sinkholing of the domains. Because there are no central\nauthorities on the NameCoin domain name records, it is not possible for the authorities to change the domain\nrecord. Also, malware abusing NameCoin servers use massive numbers of NameCoin DNS servers to make full\nshutdown of those servers very difficult.\n\n## Conclusion\n\nDofoil is a very evasive malware. It has various system environment checks and tests Internet connectivity to\nmake sure it runs on real machines, not in analysis environments or virtual machines. This can make the analysis\ntime-consuming and can mislead malware analysis systems.\n\n[In attacks like the Dofoil outbreak, Windows Defender Advanced Threat Protection (Windows Defender ATP) can](https://www.microsoft.com/en-us/WindowsForBusiness/windows-atp?ocid=cx-blog-mmpc)\nhelp network defenders analyze the timeline from the victim machine and get rich information on process\n[execution flow, C&C connections, and process hollowing activities. With the new advanced hunting capabilities in](https://techcommunity.microsoft.com/t5/What-s-New/Unleash-the-Hunter-in-You/m-p/173202#M23)\npreview, you [can run powerful custom queries and pivot freely to different sets of possible targets, malicious](https://github.com/Microsoft/WindowsDefenderATP-Hunting-Queries/blob/master/Campaigns/DofoilNameCoinServerTraffic.txt)\n\n\n-----\n\nentities, and suspicious activity. Windows Defender ATP can also be used as an analysis platform with fine tuned\nvisibility into system activities when set up in a lab environment. This can save time and resource during malware\ninvestigation.\n\nIn addition, [Windows Defender Exploit Guard can be useful in finding malicious shellcodes that traverse export](https://blogs.technet.microsoft.com/mmpc/2017/10/23/windows-defender-exploit-guard-reduce-the-attack-surface-against-next-generation-malware/?ocid=cx-blog-mmpc)\naddress tables. Windows Defender Exploit Guard can be an excellent tool for finding and blocking malware and\nexploit activities.\n\nWindows Defender Exploit Guard events are surfaced in the Windows Defender ATP portal, which integrates\n[protections from other Microsoft solutions, including Windows Defender AV and](https://www.microsoft.com/en-us/windows/windows-defender?ocid=cx-blog-mmpc) Windows Defender Application\nGuard. This integrated security management experience makes Windows Defender ATP a comprehensive\nsolution for detecting and responding to a wide range of malicious activities across the network.\n\n[Windows 10 S, a special configuration of Windows 10, locks down devices against Dofoil and other attacks by](https://www.microsoft.com/en-us/windows/windows-10-s?ocid=cx-blog-mmpc)\nworking exclusively with apps from the Microsoft Store and using Microsoft Edge as the default browser. This\nstreamlined, Microsoft-verified platform seals common malware entry points.\n\nTo test how Windows Defender ATP can help your organization detect, investigate, and respond to advanced\nattacks, **[sign up for a free trial.](https://www.microsoft.com/en-us/WindowsForBusiness/windows-atp?ocid=cx-blog-mmpc)**\n\n_Matt Oh, Stefan Sellmer, Jonathan Bar Or, Mark Wodrich_\n**_Windows Defender ATP Research_**\n\n## Indicators of compromise (IoCs)\n\n**TrojanDownloader:Win32/Dofoil.AB:**\n\nd191ee5b20ec95fe65d6708cbb01a6ce72374b309c9bfb7462206a0c7e039f4d\n\neaa63f6b500afedcaeb8d5b18a08fd6c7d95695ea7961834b974e2a653a42212\n\ncded7aedca6b54a6d4273153864a25ccad35cba5cafeaec828a6ad5670a5973a\n\n**Trojan:Win32/Dofoil.AB:**\n\n070243ad7fb4b3c241741e564039c80ca65bfdf15daa4add70d5c5a3ed79cd5c\n\n5f3efdc65551edb0122ab2c40738c48b677b1058f7dfcdb86b05af42a2d8299C\n\n28ce9763a808c4a7509e9bf92d9ca80212a241dfa1aecd82caedf1f101eac692\n\n5d7875abbbf104f665a0ee909c372e1319c5157dfc171e64ac2bc8b71766537f\n\n**Trojan:Win32/CoinMiner.D**\n\n2b83c69cf32c5f8f43ec2895ec9ac730bf73e1b2f37e44a3cf8ce814fb51f12\n\n**C&C URLs:**\n\nhxxp://levashov.bit/15022018/\n\nhxxp://vrubl.bit/15022018/\n\n**C&C server:**\n\nvinik.bit\n\n\n-----\n\n**Related .bit domains (updated in same block as C&C server):**\n\nhenkel.bit\n\nmakron.bit\n\nmakronwin.bit\n\n**NameCoin servers used by Dofoil:**\n\n139.59.208.246\n\n130.255.73.90\n\n31.3.135.232\n\n52.174.55.168\n\n185.121.177.177\n\n185.121.177.53\n\n62.113.203.55\n\n144.76.133.38\n\n169.239.202.202\n\n5.135.183.146\n\n142.0.68.13\n\n103.253.12.18\n\n62.112.8.85\n\n69.164.196.21\n\n107.150.40.234\n\n162.211.64.20\n\n217.12.210.54\n\n89.18.27.34\n\n193.183.98.154\n\n51.255.167.0\n\n91.121.155.13\n\n87.98.175.85\n\n185.97.7.7\n\n\n-----\n\n**Talk to us**\n\n[Questions, concerns, or insights on this story? Join discussions at the Microsoft community and](https://answers.microsoft.com/en-us/protect) Windows\nDefender Security Intelligence.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2018/2018-04-04 - Hunting down Dofoil with Windows Defender ATP.pdf"
+    ],
+    "report_names": [
+        "2018-04-04 - Hunting down Dofoil with Windows Defender ATP.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "7ea1e0de-53b9-4059-802f-485884180701",
+            "created_at": "2022-10-25T16:07:24.04846Z",
+            "updated_at": "2025-03-27T02:02:10.090459Z",
+            "deleted_at": null,
+            "main_name": "Patchwork",
+            "aliases": [
+                "APT-C-09",
+                "ATK 11",
+                "Capricorn Organisation",
+                "Chinastrats",
+                "Dropping Elephant",
+                "Maha Grass",
+                "Quilted Tiger",
+                "TG-4410",
+                "Thirsty Gemini",
+                "Zinc Emerson"
+            ],
+            "source_name": "ETDA:Patchwork",
+            "tools": [
+                "AndroRAT",
+                "Artra Downloader",
+                "ArtraDownloader",
+                "AutoIt backdoor",
+                "BADNEWS",
+                "BIRDDOG",
+                "Bahamut",
+                "Bozok",
+                "Bozok RAT",
+                "Brute Ratel",
+                "Brute Ratel C4",
+                "CinaRAT",
+                "Crypta",
+                "ForeIT",
+                "JakyllHyde",
+                "Loki",
+                "Loki.Rat",
+                "LokiBot",
+                "LokiPWS",
+                "NDiskMonitor",
+                "Nadrac",
+                "PGoShell",
+                "PowerSploit",
+                "PubFantacy",
+                "Quasar RAT",
+                "QuasarRAT",
+                "Ragnatela",
+                "Ragnatela RAT",
+                "SocksBot",
+                "TINYTYPHON",
+                "Unknown Logger",
+                "WSCSPL",
+                "Yggdrasil"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "2b29dd16-a06f-4830-81a1-365443bc54b8",
+            "created_at": "2023-01-06T13:46:38.460047Z",
+            "updated_at": "2025-03-27T02:00:02.839173Z",
+            "deleted_at": null,
+            "main_name": "QUILTED TIGER",
+            "aliases": [
+                "ATK11",
+                "G0040",
+                "Orange Athos",
+                "Chinastrats",
+                "Sarit",
+                "Dropping Elephant",
+                "APT-C-09",
+                "Thirsty Gemini",
+                "ZINC EMERSON"
+            ],
+            "source_name": "MISPGALAXY:QUILTED TIGER",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535544,
+    "ts_updated_at": 1743041169,
+    "ts_creation_date": 1653774995,
+    "ts_modification_date": 1653774995,
+    "files": {
+        "pdf": "https://archive.orkl.eu/96feb33ffdfb94b0efef3319a4aae1c314c96a05.pdf",
+        "text": "https://archive.orkl.eu/96feb33ffdfb94b0efef3319a4aae1c314c96a05.txt",
+        "img": "https://archive.orkl.eu/96feb33ffdfb94b0efef3319a4aae1c314c96a05.jpg"
+    }
+}

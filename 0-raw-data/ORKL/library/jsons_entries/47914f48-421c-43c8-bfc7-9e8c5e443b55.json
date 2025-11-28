@@ -1,0 +1,62 @@
+{
+    "id": "47914f48-421c-43c8-bfc7-9e8c5e443b55",
+    "created_at": "2023-01-12T15:01:39.849075Z",
+    "updated_at": "2025-03-27T02:09:18.3322Z",
+    "deleted_at": null,
+    "sha1_hash": "3dab8b441cb396461ba07bdcb7459ba2225749ea",
+    "title": "2022-05-12 - Taking a look at Bumblebee loader",
+    "authors": "",
+    "file_creation_date": "2022-05-28T00:50:54Z",
+    "file_modification_date": "2022-05-28T00:50:54Z",
+    "file_size": 96674,
+    "plain_text": "# Bumblebee Loader\n\n**[research.openanalysis.net/bumblebee/malware/loader/unpacking/2022/05/12/bumblebee_loader.html](https://research.openanalysis.net/bumblebee/malware/loader/unpacking/2022/05/12/bumblebee_loader.html)**\n\nOALABS Research May 12, 2022\n\n## Overview\n\nAccording to Google's Threat Analysis Group...\n\nThe loader can be recognized by its use of a unique user-agent “bumblebee” which both variants share. The malware, hence\ndubbed BUMBLEBEE.\n\nThis loader has been observed downloading payloads such as cobalt strike and is often delivered itself via an ISO file. The sample\nwe are strating with today is an ISO.\n\n### References\n\n Sample\n\n[0d740a348362171814cb314a48d763e336407904a36fa278eaf390c5743ec33b](https://bazaar.abuse.ch/download/0d740a348362171814cb314a48d763e336407904a36fa278eaf390c5743ec33b/)\n\n## Triage\n\nThe ISO contains two files `desk.dll and` `New Folder.Lnk . We can right click` `properties on the lnk file to take a look at its`\ncommand. The lnk file is used to launch the dll with the following command.\n```\nC:\\Windows\\System32\\rundll32.exe desk.dll,aCmHmjrptS\n\n## Unpacking\n\n```\nload rundll32.exe in x64dbg and change the command line to pass `desk.dll,#1`\nenable break on dll load\nonce `desk.dll is loaded locate export we want to debug ( aCmHmjrptS ord 1) and add a hardware breakpoint`\nremove the break on dll load and run until the export is bp is hit\nwe initially tried watching for allocated memory via `VirutalAllocEx but didn't see anything interesting`\ninstead we eneabled break on exit and just ran the dll\nwhen the break on exit was hit we searched memory for the PE header DOS string and located a mapped PE\nwe unmapped the PE to reveal the payload\n\n## Payload\n\nUnpacked and unmapped payload `abaa83ab368cbd3bbdaf7dd844251da61a571974de9fd27f5dbaed945b7c38f6 available on`\n[malshare.](https://malshare.com/sample.php?action=detail&hash=abaa83ab368cbd3bbdaf7dd844251da61a571974de9fd27f5dbaed945b7c38f6)\n\n### Build Artifacts\n\nThere is a build artifact that may be useful for hunting other samples.\n```\nZ:\\hooker2\\Common\\md5.cpp\n\n```\n[We searched for this on VirusTotal using the search term](https://www.virustotal.com/gui/search/content%253A%257B5a003a005c0068006f006f006b006500720032005c00%257D/files)\n```\nhttps://www.virustotal.com/gui/search/content%253A%257B5a003a005c0068006f006f006b006500720032005c00%257D/files\n\n```\nand found other sample but nothing too interesting.\n\n### Anti-Analysis\n\n[There are many anti-analysis checks some of which have been directly copied from the open source project al-khaser. To get some](https://github.com/LordNoteworthy/al-khaser)\n[free work we compiled al-khaser and created and IDB using a build version with symbols. We when used bindiff to match the al-](https://www.zynamics.com/bindiff.html)\nkhaser IDB with the payload. This allowed us to import all of the symbols from al-khaser.\n\n**IDA Filtering**\n\n\n-----\n\nWhile using BinDiff we ran into some issues with the IDA filter not working correcte (we were trying to filter out std and internal\nfunctions). To get the filter to work correctly we needed use a specific order shown below.\n\n### Config\n\nInstead of a config the payload contains a series of encrypted strings in the `.data section. These strings include the campaign`\nname and a C2 list. The encryption is RC4 and the key is a hard-coded plaintext string (also in the `.data section). In our sample`\nthe key was `BLACK .`\n\n**Decrypted Config String**\n```\ndef unhex(hex_string):\n  import binascii\n  if type(hex_string) == str:\n    return binascii.unhexlify(hex_string.encode('utf-8'))\n  else:\n    return binascii.unhexlify(hex_string)\ndef tohex(data):\n  import binascii\n  if type(data) == str:\n    return binascii.hexlify(data.encode('utf-8'))\n  else:\n    return binascii.hexlify(data)\ndef rc4crypt(data, key):\n  #If the input is a string convert to byte arrays\n  if type(data) == str:\n    data = data.encode('utf-8')\n  if type(key) == str:\n    key = key.encode('utf-8')\n  x = 0\n  box = list(range(256))\n  for i in range(256):\n    x = (x + box[i] + key[i % len(key)]) % 256\n    box[i], box[x] = box[x], box[i]\n  x = 0\n  y = 0\n  out = []\n  for c in data:\n    x = (x + 1) % 256\n    y = (y + box[x]) % 256\n    box[x], box[y] = box[y], box[x]\n    out.append(c ^ box[(box[x] + box[y]) % 256])\n  return bytes(out)\n\n```\n\n-----\n\n```\nb'\\x47\\xCB\\xD6\\x45\\x96\\xAD\\x39\\x36\\x82\\x64\\xA3\\x68\\xBB\\x80\\x5C\\x8F\\x4F\\x86\\x35\\x73\\xFD\\xE9\\x2E\\x6D\\x8C\\x70\\xB2\\xE5\\xEE\\xD3\\\nkey = 'BLACK'\nout = rc4crypt(data, key)\nprint(out)\nb'142.11.222.79:443,23.254.224.200:443,103.175.16.52:443,199.195.252.30:443\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\ndata1 =\n'47CED45EC69C1704B0568D5F82BA68BB7CAA0740D3DB1B59A24280D1C0E1F6215A962659A8F26249124408134E69C4616B46849D9BDDA8F6BC6D3D52F8\nout = rc4crypt(unhex(data1), key)\nprint(out)\nb'1105a\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\ndata1 =\n'42CBD06BA79C1704B0568D5F82BA68BB7CAA0740D3DB1B59A24280D1C0E1F6215A962659A8F26249124408134E69C4616B46849D9BDDA8F6BC6D3D52F8\nout = rc4crypt(unhex(data1), key)\nprint(out)\nb'444\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-05-12 - Taking a look at Bumblebee loader.pdf"
+    ],
+    "report_names": [
+        "2022-05-12 - Taking a look at Bumblebee loader.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535699,
+    "ts_updated_at": 1743041358,
+    "ts_creation_date": 1653699054,
+    "ts_modification_date": 1653699054,
+    "files": {
+        "pdf": "https://archive.orkl.eu/3dab8b441cb396461ba07bdcb7459ba2225749ea.pdf",
+        "text": "https://archive.orkl.eu/3dab8b441cb396461ba07bdcb7459ba2225749ea.txt",
+        "img": "https://archive.orkl.eu/3dab8b441cb396461ba07bdcb7459ba2225749ea.jpg"
+    }
+}

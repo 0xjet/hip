@@ -1,0 +1,76 @@
+{
+    "id": "7cea7251-f233-432a-8e62-c3b35b45dd86",
+    "created_at": "2023-01-12T15:05:48.91993Z",
+    "updated_at": "2025-03-27T02:12:11.139491Z",
+    "deleted_at": null,
+    "sha1_hash": "f3e4de6544095407d94fdecb0ee988fad9d467b5",
+    "title": "2021-01-27 - TeamTNT delivers malware with new detection evasion tool",
+    "authors": "",
+    "file_creation_date": "2022-05-27T22:17:11Z",
+    "file_modification_date": "2022-05-27T22:17:11Z",
+    "file_size": 1230653,
+    "plain_text": "# TeamTNT delivers malware with new detection evasion tool\n\n**[cybersecurity.att.com/blogs/labs-research/teamtnt-delivers-malware-with-new-detection-evasion-tool](https://cybersecurity.att.com/blogs/labs-research/teamtnt-delivers-malware-with-new-detection-evasion-tool)**\n\n[1. AT&T Cybersecurity](https://cybersecurity.att.com/)\n[2. Blog](https://cybersecurity.att.com/blogs)\n\nJanuary 27, 2021 | [Ofer Caspi](https://cybersecurity.att.com/blogs/author/ofer-caspi)\n\n## Executive Summary\n\n[AT&T Alien Labs™ has identified a new tool from the TeamTNT adversary group, which has](https://cybersecurity.att.com/alien-labs)\nbeen previously observed targeting exposed Docker infrastructure for cryptocurrency mining\npurposes and credential theft. The group is using a new detection evasion tool, copied from\nopen source repositories.\n\nThe purpose of this blog is to share new technical intelligence and provide detection and\nanalysis options for defenders.\n\n## Background\n\n[AT&T Alien Labs previously reported on TeamTNT cryptomining malware using a new](https://cybersecurity.att.com/blogs/labs-research/malware-using-new-ezuri-memory-loader)\nmemory loader based on Ezuri and written in GOlang. Since then, TeamTNT has added\nanother tool to their list of capabilities.\n\n\n-----\n\n## Analysis\n\nThe objective of the new tool is to hide the malicious process from process information\nprograms such as `ps` and `lsof`, effectively acting as a defense evasion technique.\n\n[The tool, named libprocesshider, is an open source tool from 2014 located on Github,](https://web.archive.org/web/20201112000744/https:/github.com/gianlucaborello/libprocesshider)\ndescribed as \"hide a process under Linux using the ld preloader.'' Preloading allows the\nsystem to load a custom shared library before other system libraries are loaded. If the\ncustom shared library exports a function with the same signature of one located in the\nsystem libraries, the custom version will override it.\n\nThe tool implements the function readdir() which is being used by processes such as `ps` to\nread the /proc directory to find running processes and to modify the return value in case\nthere is a match between the processes found and the process needed to hide.\n\nThe new tool arrives within a base64 encoded script hidden in the TeamTNT cryptominer\nbinary or ircbot (figure 1):\n\nFigure 1. base64 encoded script, via Alien Labs analysis.\n\nUpon binary execution, the bash script will run through a multitude of tasks. Specifically, the\nscript will:\n\nModify the network DNS configuration.\nSet persistence through systemd.\nDrop and activate the new tool as service.\nDownload the latest IRC bot configuration.\nClear evidence of activities to complicate potential defender actions.\n\nAfter decoding, we can observe the bash script functionality and how some malicious activity\noccurs before the shared library is created (figure 2):\n\n\n-----\n\nFigure 2. Decoded bash script, via Alien Labs analysis.\n\nThe new tool is first dropped as a hidden tar file on disk, the script decompresses it, writes it\nto '/usr/local/lib/systemhealt.so', and then adds it preload via '/etc/ld.so.preload'. This will be\nused by the system to preload the file before other system libraries, allowing the attacker to\noverride some common functions (figure 3/4).\n\n\n-----\n\nFigure 3/4. bash script features, via Alien Labs analysis.\n\nThe main purpose of the tool is to hide the TeamTNT bot from process viewer tools, which\nuse the file '/usr/bin/sbin' as you can see in Figure 3 and 4 (SETUP_IRCBOT function).\n\nAs final step, the malware will remove traces by deleting bash history:\n\nFigure 5. bash script cleanup, via Alien Labs analysis.\n\n## Conclusion\n\nThrough the use of libprocesshider, TeamTNT once again expands their capabilities based\non the available open source tools. While the new functionality of libprocesshider is to evade\ndetection and other basic functions, it acts as an indicator to consider when hunting for\nmalicious activity on the host level. Alien Labs will continue to monitor the threat and report\non any noteworthy activity.\n\n## Appendix A. Detection Methods\n\nThe following associated detection methods are in use by Alien Labs. They can be used by\nreaders to tune or deploy detections in their own environments or for aiding additional\nresearch.\n\n\nSURICATA IDS SIGNATURES\n\n\n-----\n\nAV TROJAN TeamTNT CoinMiner Payload Download to clean up other Coinminers\n\nAV TROJAN TeamTNT Mining Worm Credential Exfiltration\n\nAV TROJAN TeamTNT CoinMiner Downloader\n\nET TROJAN Observed TrojanSpy.SH.HADGLIDER.A Exfil Domain in DNS Query\n\n\nYARA RULES\n\n```\nrule teamTNT_hideproc\n{\n  meta:\n    sha256 = \"02cde4109a12acb499953aa8c79917455b9f49837c7c1dbb13cbcf67e86a1555\"\n  strings:\n    $code1 = {48 8B 15 ?? ?? 00 00 48 8B 85 ?? ?? FF FF 48 89 C7 FF D2 48 89\n[2-5] 48 [3-6] 00 74 ?? 48 8D 8D F0 FD FF FF 48 8B 85 ?? FD FF FF BA 00 01 00 00 48\n89 CE 48 89 C7 E8 ?? FD FF FF 85 C0 74 ?? 48 8D 85 F0 FD FF FF 48 8D 35 ?? ?? 00 00\n48 89 C7 E8 ?? ?? FF FF 85 C0 75 ?? 48 8B [2-5] 48 8D 50 13 48 8D 85 F0 FE FF FF 48\n89 C6 48 89 D7 E8 ?? ?? FF FF 85 C0 74 22 48 8B 15 ?? ?? 00 00 48 8D 85 F0 FE FF FF\n48 89 D6 48 89 C7 E8 ?? ?? FF FF 85 C0 }\n    $s1 = \"readdir64\"\n    $s2 = \"dlsym\"\n    $s3 = \"_ITM_deregisterTMCloneTable\"\n    $s4 = \"frame_dummy\"\n  condition:\n    uint16(0) == 0x457f and\n    filesize < 25000 and\n    all of them\n}\n\n```\n\nAGENT SIGNATURES\n\n\n-----\n\n\"detection_suspicious_ld_preload_environment_variable\": {\"platform\": \"linux\",\n\"description\": \"Detects usage of the ld_preload env variable \", \"query\": \"SELECT\nprocess_envs.pid as source_process_id, process_envs.key as environment_variable_key,\nprocess_envs.value as environment_variable_value, processes.name as source_process,\nprocesses.path as file_path, processes.cmdline as source_process_commandline,\nprocesses.cwd as current_working_directory, 'T1055' as event_attack_id, 'Process\nInjection' as event_attack_technique, 'Defense Evasion, Privilege Escalation' as\nevent_attack_tactic FROM process_envs join processes USING (pid) WHERE key =\n'LD_PRELOAD';\", \"interval\": \"60\",\"removed\": \"false\"}\n\n\n## Appendix B. Associated Indicators (IOCs)\n\nThe following technical indicators are associated with the reported intelligence. A list of\n[indicators is also available in the OTX Pulse. Please note, the pulse may include other](https://otx.alienvault.com/pulse/5fc7e6165ab5e91b7c87aea3)\nactivities related but out of the scope of the blog.\n\nTYPE INDICATOR\n\nSHA256 73dec430b98ade79485f76d405c7a9b325df7492b4f97985499a46701553e34a\n\nSHA256 cb013be7b5269c035495222198ec708c026c8db838031af60fd0bd984f34226f\n\nSHA256 02cde4109a12acb499953aa8c79917455b9f49837c7c1dbb13cbcf67e86a1555\n\nSHA256 b666cd08b065132235303727f2d77997a30355ae0e5b557cd08d41c9ade7622d\n\nDomain [kaiserfranz[.]cc](https://otx.alienvault.com/indicator/hostname/irc.kaiserfranz.cc)\n\n## Feedback\n\nAT&T Alien Labs welcomes feedback about this blog. Please contact the Alien Labs blog\nauthor or contact labs@alienvault.com.\n\n\n-----\n\n### Share this with others\n\nTags: [malware research,](https://cybersecurity.att.com/blogs/tag/malware+research) [teamtnt](https://cybersecurity.att.com/blogs/tag/teamtnt)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-01-27 - TeamTNT delivers malware with new detection evasion tool.pdf"
+    ],
+    "report_names": [
+        "2021-01-27 - TeamTNT delivers malware with new detection evasion tool.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f809bfcb-b200-4988-80a8-be78ef6a52ef",
+            "created_at": "2023-01-06T13:46:39.186988Z",
+            "updated_at": "2025-03-27T02:00:03.016358Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "Adept Libra"
+            ],
+            "source_name": "MISPGALAXY:TeamTNT",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c3ca592f-0669-49bd-ab5c-310007ab2fb4",
+            "created_at": "2022-10-25T15:50:23.334495Z",
+            "updated_at": "2025-03-27T02:00:55.445098Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "TeamTNT"
+            ],
+            "source_name": "MITRE:TeamTNT",
+            "tools": [
+                "Peirates",
+                "MimiPenguin",
+                "LaZagne",
+                "Hildegard"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535948,
+    "ts_updated_at": 1743041531,
+    "ts_creation_date": 1653689831,
+    "ts_modification_date": 1653689831,
+    "files": {
+        "pdf": "https://archive.orkl.eu/f3e4de6544095407d94fdecb0ee988fad9d467b5.pdf",
+        "text": "https://archive.orkl.eu/f3e4de6544095407d94fdecb0ee988fad9d467b5.txt",
+        "img": "https://archive.orkl.eu/f3e4de6544095407d94fdecb0ee988fad9d467b5.jpg"
+    }
+}

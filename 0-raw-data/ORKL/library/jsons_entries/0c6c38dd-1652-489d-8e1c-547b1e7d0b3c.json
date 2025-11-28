@@ -1,0 +1,72 @@
+{
+    "id": "0c6c38dd-1652-489d-8e1c-547b1e7d0b3c",
+    "created_at": "2022-10-25T16:48:14.96877Z",
+    "updated_at": "2025-03-27T02:11:47.733153Z",
+    "deleted_at": null,
+    "sha1_hash": "f6d34d11a7ff08fe70d0597bc5c9170c6bd0d1a0",
+    "title": "DarkPulsar",
+    "authors": "",
+    "file_creation_date": "2018-10-20T15:23:32Z",
+    "file_modification_date": "0001-01-01T00:00:00Z",
+    "file_size": 824795,
+    "plain_text": "# DarkPulsar\n\n**securelist.com/darkpulsar/88199/**\n\nBy Andrey Dolgushev, Dmitry Tarakanov, Vasily Berdnikov on October 19, 2018. 10:00 am\n\nIn March 2017, the ShadowBrokers published a chunk of stolen data that included two\nframeworks: DanderSpritz and FuzzBunch.\n\nDanderSpritz consists entirely of plugins to gather intelligence, use exploits and examine\nalready controlled machines. It is written in Java and provides a graphical windows\ninterface similar to botnets administrative panels as well as a Metasploit-like console\ninterface. It also includes its own backdoors and plugins for not-FuzzBunch-controlled\nvictims.\n\n_DanderSprit interface_\n\nFuzzbunch on the other hand provides a framework for different utilities to interact and\nwork together. It contains various types of plugins designed to analyze victims, exploit\nvulnerabilities, schedule tasks, etc. There are three files in the plugin set from the\nFuzzBunch framework:\n\n%pluginName%-version.fb\n\nThis is the utility file of the framework. It duplicates the header from XML and includes the\nplugin’s ID.\n\n%pluginName%-version.exe\n\nThis executable file is launched when FuZZbuNch receives the command to do so.\n\n%pluginName%-version.xml\n\n\n-----\n\nname, its type and description of what it’s responsible for; all of these can be shown in\nFuzzBunch as a prompt. This file also contributes a lot to the framework’s usability, as it\nsupports the specification of default parameters.\n\nOne of the most interesting Fuzzbunch’s categories is called ImplantConfig and includes\nplugins designed to control the infected machines via an implant at the post-exploitation\nstage. DarkPulsar is a very interesting administrative module for controlling a passive\nbackdoor named ‘sipauth32.tsp’ that provides remote control, belonging to this category.\n\nIt supports the following commands:\n\nBurn\nRawShellcode\nEDFStagedUpload\nDisableSecurity\nEnableSecurity\nUpgradeImplant\nPingPong\n\n_Burn, RawShellcode, UpgradeImplant,_ and PingPong remove the implant, run arbitrary code,\nupgrade the implant and check if the backdoor is installed on a remote machine,\nrespectively. The purpose of the other commands is not that obvious and, to make it\nworse, the leaked framework contained only the administrative module to work with\nDarkPulsar’s backdoor, but not the backdoor itself.\n\nWhile analyzing the administrative module, we noticed several constants that are used to\nencrypt the traffic between the C&C and the implant:\n\n\n-----\n\nWe thought that probably these constants should also appear in the backdoor, so we\ncreated a detection for them. Several months later we found our mysterious DarkPulsar\nbackdoor. We later were able to find both 32- and 64-bit versions.\n\nWe found around 50 victims located in Russia, Iran and Egypt, typically infecting Windows\n2003/2008 Server. Targets were related to nuclear energy, telecommunications, IT,\naerospace and R&D.\n\n## DarkPulsar technical highlights\n\nThe DarkPulsar implant is a dynamic library whose payload is implemented in exported\nfunctions. These functions can be grouped as follows:\n\n1. Two nameless functions used to install the backdoor in the system.\n2. Functions with names related to TSPI (Telephony Service Provider Interface)\n\noperations that ensure the backdoor is in the autorun list and launched\nautomatically.\n3. A function with a name related to SSPI (Security Support Provider Interface)\n\noperations. It implements the main malicious payload.\n\nThe implementations of the SSPI and TSPI interfaces are minimalistic: the functions that\nare exported by DarkPulsar have the same names as the interface functions; however,\nthey include malicious code instead of the phone service.\n\nThe implant is installed in the system by the nameless exported function. The backdoor is\n\n\n-----\n\nand to call its exported function SpLsaModeInitialize used by DarkPulsar to initialize the\nbackdoor. In this way AddSecurityPackage is used to inject code into lsass.exe. It also\nadds its library name at\nHKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Telephony\\Providers\n\nThis is loaded at start by the Telephony API (TapiSrv) launched alongside the Remote\nAccess Connection Manager (RasMan) service, setting startup type as “Automatic”. When\nloading the telephony service provider’s library, TapiSrv calls\n_TSPI_lineNegotiateTSPIVersion which contains the AddSecurityPackage call to make the_\ninject into lsass.exe.\n\nDarkPulsar implements its payload by installing hooks for the SpAcceptLsaModeContext\n– function responsible for authentication. Such injects are made in several system\nauthentication packets within the process lsass.exe and allow Darkpulsar to control\nauthentication process based on the following protocols:\n\nMsv1_0.dll – for the NTLM protocol,\nKerberos.dll – for the Kerberos protocol,\nSchannel.dll – for the TLS/SSL protocols,\nWdigest.dll – for the Digest protocol, and\nLsasrv.dll –for the Negotiate protocol.\n\nAfter this, Darkpulsar gets ability to embed malware traffic into system protocols. Since\nthis network activity takes place according to standard system charts, it will only be\nreflected in the System process – it uses the system ports reserved for the above\nprotocols without hindering their normal operation.\n\n\n-----\n\n_Network traffic during successful connection to DarkPulsar implant_\n\nThe second advantage of controlling authentication processes is ability to bypass entering\na valid username and password for obtaining access to objects that require authentication\nsuch as processes list, remote registry, file system through SMB. After Darkpulsar’s\nDisableSecurity command is sent, backdoor’s hooks on the victim side will always returns\nin the SpAcceptLsaModeContext function that passed credentials are valid. Getting that,\nsystem will provide access to protected objects to client.\n\n## Working with DarkPulsar\n\nDarkpulsar-1.1.0.exe is the administrative interface working under the principle of “one\ncommand – one launch”. The command to be executed must be specified either in the\nconfiguration file Darkpulsar-1.1.0.9.xml or as command line arguments, detailing at least:\n\nwhether the target machine uses a 32-bit or 64-bit system;\nprotocol (SMB, NBT, SSL, RDP protocols are supported) to deliver the command and\nport number\nprivate RSA key to decrypt the session AES key\n\nDarkpulsar-1.1.0 was not designed as a standalone program for managing infected\n\n\n-----\n\nin Fuzzbunch looks like:\n\nBelow is an example of Processlist after DisableSecurity, allowing to execute any plugin\nwithout valid credentials and operating via regular system functions (remote registry\nservice):\n\n\n-----\n\n## DanderSpritz\n\nDanderSpritz is the framework for controlling infected machines, different from\nFuZZbuNch as the latter provides a limited toolkit for the post-exploitation stage with\nspecific functions such as DisableSecurity and EnableSecurity for DarkPulsar.\n\nFor DanderSpritz works for a larger range of backdoors, using PeedleCheap in the victim\nto enable operators launching plugins. PeddleCheap is a plugin of DanderSpritz which can\nbe used to configure implants and connect to infected machines. Once a connection is\nestablished all DanderSpritz post-exploitation features become available.\n\nThis is how DarkPulsar in EDFStagedUpload mode provides the opportunity to infect the\nvictim with a more functional implant: PCDllLauncher (Fuzzbunch’s plugin) deploys the\nPeddleCheap implant on the victim side, and DanderSpritz provides a user-friendly postexploitation interface. Hence, the full name of PCDllLauncher is ‘PeddleCheap DLL\nLauncher’.\n\nThe complete DanderSpritz usage scheme with the plugin PeddleCheap via FuZZbuNch\n\nith th l i D kP l d PCDllL h i t f f t\n\n\n-----\n\nIn DanderSpritz, run command pc_prep (PeedelCheap Preparation) to prepare the\npayload and the library to be launched on the implant side.\n\nIn DanderSpritz, run command pc_old (which is the alias of command pc_listen -reuse nolisten -key Default) – this sets it to wait for a socket from Pcdlllauncher.\n\nLaunch Pcdlllauncher via FuZZbuNch and specify the path to the payload that has been\nprepared with the command pc_prep in the ImplantFilename parameter.\n/ol>\n\n_DanderSpritz_\n\n_File System plugin_\n\n## Conclusions\n\n\n-----\n\nfunctionality and compatibility with other tools. Each of them consists of a set of plugins\ndesigned for different tasks: while FuzzBunch plugins are responsible for reconnaissance\nand attacking a victim, plugins in the DanderSpritz framework are developed for managing\nalready infected victims.\n\nThe discovery of the DarkPulsar backdoor helped in understanding its role as a bridge\nbetween the two leaked frameworks, and how they are part of the same attacking platform\ndesigned for long-term compromise, based on DarkPulsar’s advanced abilities for\npersistence and stealthiness. The implementation of these capabilities, such as\nencapsulating its traffic into legitimate protocols and bypassing entering credentials to\npass authentication, are highly professional.\n\nOur product can completely remove the related to this attack malware.\n\n### Detecting malicious network activity\n\nWhen EDFStagedUpload is executed in an infected machine, a permanent connection is\nestablished, which is why traffic via port 445 appears. A pair of bound sockets also\nappears in lsass.exe:\n\nWhen DanderSpritz deploys PeddleCheap’s payload via the PcDllLauncher plugin, network\nactivity increases dramatically:\n\nWhen a connection to the infected machine is terminated, network activity ceases, and\nonly traces of the two bound sockets in lsass.exe remain:\n\n\n-----\n\n## IOCs\n\nimplant – 96f10cfa6ba24c9ecd08aa6d37993fe4\nFile path – %SystemRoot%\\System32\\sipauth32.tsp\nRegistry – HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Telephony\\Providers\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2018/2018.10.19.DarkPulsar/DarkPulsar.pdf"
+    ],
+    "report_names": [
+        "DarkPulsar"
+    ],
+    "threat_actors": [
+        {
+            "id": "d4f7cf97-9c98-409c-8b95-b80d14c576a5",
+            "created_at": "2022-10-25T16:07:24.561104Z",
+            "updated_at": "2025-03-27T02:02:10.281202Z",
+            "deleted_at": null,
+            "main_name": "Shadow Brokers",
+            "aliases": [],
+            "source_name": "ETDA:Shadow Brokers",
+            "tools": [],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "171b85f2-8f6f-46c0-92e0-c591f61ea167",
+            "created_at": "2023-01-06T13:46:38.830188Z",
+            "updated_at": "2025-03-27T02:00:02.929729Z",
+            "deleted_at": null,
+            "main_name": "The Shadow Brokers",
+            "aliases": [
+                "Shadow Brokers",
+                "ShadowBrokers",
+                "The ShadowBrokers",
+                "TSB"
+            ],
+            "source_name": "MISPGALAXY:The Shadow Brokers",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716494,
+    "ts_updated_at": 1743041507,
+    "ts_creation_date": 1540049012,
+    "ts_modification_date": 0,
+    "files": {
+        "pdf": "https://archive.orkl.eu/f6d34d11a7ff08fe70d0597bc5c9170c6bd0d1a0.pdf",
+        "text": "https://archive.orkl.eu/f6d34d11a7ff08fe70d0597bc5c9170c6bd0d1a0.txt",
+        "img": "https://archive.orkl.eu/f6d34d11a7ff08fe70d0597bc5c9170c6bd0d1a0.jpg"
+    }
+}

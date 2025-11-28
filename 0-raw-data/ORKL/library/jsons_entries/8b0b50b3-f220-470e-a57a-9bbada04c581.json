@@ -1,0 +1,76 @@
+{
+    "id": "8b0b50b3-f220-470e-a57a-9bbada04c581",
+    "created_at": "2023-01-12T14:59:51.931284Z",
+    "updated_at": "2025-03-27T02:05:18.158334Z",
+    "deleted_at": null,
+    "sha1_hash": "6ccf76cc00f07dea08a4a44c14e938c0e387cbcd",
+    "title": "2022-02-17 - Technical Analysis of Code-Signed Blister Malware Campaign Part 2",
+    "authors": "",
+    "file_creation_date": "2022-05-25T17:59:27Z",
+    "file_modification_date": "2022-05-25T17:59:27Z",
+    "file_size": 3601548,
+    "plain_text": "# Technical Analysis of Code-Signed “Blister” Malware Campaign (Part 2)\n\n**[cloudsek.com/technical-analysis-of-code-signed-blister-malware-campaign-part-2](https://cloudsek.com/technical-analysis-of-code-signed-blister-malware-campaign-part-2/)**\n\nAnandeshwar Unnikrishnan February 17, 2022\n\nThe blister is a code-signed malware that drops a malicious DLL file on the victim’s system,\nwhich is then executed by the loader via rundll32.exe, resulting in the deployment of a RAT/\nC2 beacon, thus allowing unauthorized access to the target system over the internet. Blister\nMalware campaigns have been active since 15 September 2021.\n\n[Part I of CloudSEK’s analysis provides a detailed understanding of how the loader functions.](https://cloudsek.com/technical-analysis-of-code-signed-blister-malware-campaign-part-1/)\nPart 2 will delve into the details of this campaign’s second stage, which is the .dll payload,\nand its internal working.\n\n## Dissecting the Malicious DLL – Blister Malware\n\nAs discussed in Part 1, the Blister dropper drops the malicious `.dll file in the` `Temp`\n```\ndirectory of the user, inside a newly created folder. This malicious .dll then carries out\n\n```\nthe second stage of the campaign, in which a RAT/ agent is deployed on the system to gain\nunauthorized access and steal data.\n\nThe Blister dropper calls the function `LaunchColorCpl, which is one of the functions`\nexported by the .dll, via `rundll32.exe.`\n\n\n-----\n\n_Functions exported by the malicious DLL_\n\n### Staging\n\nThe exported function `LaunchColorCpl` retrieves the staging code from the resource\nsection of the PE file. This staging code is protected by a simple XOR encoding scheme.\n\n_Code responsible for decoding the staging code_\n\n_Encoded staging code in the resource section of the PE file_\n\nAfter the iterative decoding of the staging code, the control is transferred to decoded\ncode in the memory.\nThe control flow is transferred to the staging code by calling the address in the EAX\nregister.\n\n\n-----\n\n_Calling the address in the EAX register_\n\n### Anti-Analysis\n\nThe staging code is heavily obfuscated, and has a logic similar to a spaghetti code, to\nhinder analysis. All the calls to Windows APIs are obscured and dynamically resolved.\nThe first thing that the staging code does is to make the malware go to sleep by calling\nthe Sleep Windows API. This is a typical strategy used by most malicious codes to\nbypass security sandboxes and dynamic testing of security products.\n\nThe hex value “927C0” is passed to\n\n```\nkernel32.759F9010 i.e the Sleep function.\n\n```\nThis value (927C0) translates to “600000” in\ndecimal. Since the Sleep API takes\narguments in milliseconds (ms), the 600000 _Stackframe before the malware calls the_\nms get converted to 10 minutes. _Sleep Windows API_\nWhen the malware resumes from sleep, it\nfetches the final payload from the resource section of the PE file.\n\n_Snippet of the protected payload stored in the memory_\n\nIn the memory, the protected payload is decoded. The presence of a DOS header, in the\npayload bytes, confirms that the payload is in PE format and not a shellcode.\n\n\n-----\n\n_Decrypted payload stored in the memory_\n\nAn interesting observation from this analysis, is the addition of MZ byte after the\ndecryption process. In the above image, the initial byte is not MZ, rather the MZ byte is\nlater added at the beginning of the payload separately. This behavior is primarily for\noperational security.\n\n_Addition of the MZ byte after the decryption process_\n\n### Process Hollowing\n\nIn general, process hollowing allows an attacker to change the content of a legitimate process\nfrom genuine code to malicious code before it is executed by carving out the code logic within\nthe target process.\n\nAfter decrypting the final payload, the malware prepares for execution.\nThis is done by creating a new process to deploy the extracted code and then\nperforming process hollowing to execute the payload in the remote process. The staging\ncode retrieves the Rundll32.exe location from the compromised system.\n\n_Retrieval of the location of rundll32.exe_\n\n\n-----\n\nA new process of Rundll32.exe is created via the CreateProcessInternalW API in the\nsuspended state.\n\n_Creation of the new rendll32.exe_\n\nThe malware uses the following Win32 APIs for process hollowing:\n\nZwUnmapViewOfSection\nZwReadVirtualMemory\nZwWriteVirtualMemory\nZwGetContextThread\nZwSetContextThread\nNtResumeThread\n_ZwWriteVirtualMemory is used to write malicious code into the target process._\nTo make the thread of the new process point to newly written code, the attacker alters\nthe entry point of the current thread via ZwGetContextThread and\n_ZwSetContextThread._\nThese functions are used to perform processor housekeeping activities on the data\nstructure that stores the current context of the running thread. Process hollowing takes\nadvantage of these features to make the process thread run the attacker code.\n\n### Step by Step Working of the DLL\n\nThe staging code allocates a new memory via ZwAllocateVirtualMemory to transfer the\npreviously decrypted final payload.\n\n_Allocation of new memory via ZwAllocateVirtualMemory_\n\n\n-----\n\nThe payload is then copied to a newly created buffer.. Based on CloudSEK s testing on\nthe extracted payload, one of the analyzed samples contained the Raccoon stealer as\nthe final stage payload. However, other samples used Cobalt Strike beacon and BitRAT\nto compromise the target and gain unauthorized access.\n\n_Moving the payload to a newly created buffer_\n\nThe staging code then injects the code into the newly created remote process i.e\n_Rundll32.exe._\n\nCode injections into the newly created rendll32.exe\n\nLater, the memory protections are changed to appropriate ones for the execution of the\nresiding code via NTProtectVirtualMemory.\n\n_Alteration of the memory protections_\n\nThe thread context is retrieved via ZwGetContextThread API to change the entry point\nof the thread to execute the payload injected into the remote process.\n\n_Addition of the MZ byte after the decryption process_\n\n\n-----\n\nTheZwSetContextThread is used to modify the thread entry point to that of the newly\ncopied PE file.\n\nModification of the thread entry point to the copied PE file\n\nAt the final stage of process hollowing, the suspended thread of the `Rundll32.exe is`\nresumed via `NtResumeThread . Then the` `Rundll32.exe process starts executing the`\nmalicious code hollowed into it by the malware.\n\n_Resuming the suspended thread_\n\nIn the clean-up process, the staging code uses NtFreeVirtualMemory to release the\nallocated memory, which holds the payload assembly, one by one.\n\n_Clean-up process releasing the allocated memory_\n\nThe current process used for staging is terminated via the `NtTerminateProcess .`\n\n_Termination of the current process_\n\n\n-----\n\n## Blister Malware – Maintaining Persistence\n\nThe Blister malware achieves persistence on the target system by creating an “lnk” file\nnamed proamingsGames in the `C:\\Users\\`\n```\n   <username>\\AppData\\Roaming\\Microsft\\Windows\\Start Menu\\Startup directory.\n\n```\nWhenever the user logs in, `explorer.exe executes any file in the` `Startup folder.`\nAs a result, when the user signs into the account, following the boot process, the\nmalware runs as a child process of `explorer.exe .`\n\n_Ink file produced in the Startup directory_\n\nThe target for the lnk file is set as\n```\n   C:\\ProgramData\\proamingsGames\\proamingsGames.dll,LaunchColorCpl . Here,\n\n```\nthe malware copies the `Rundll32.exe` as `proamingsGames.exe and the malicious`\n.dll (initially into `C:\\ProgramData\\proamingsGames directory ) is dropped in the`\n```\n   Temp folder.\n\n```\n_Contents of the proamingsGames.dll file_\n\nEvery time that the system powers up and the user logs in, the lnk file runs a malicious\n\n`.dll` through a renamed instance of `Rundll32.exe .`\n\n## Conclusion\n\nGiven that threat actors are actively using valid code-signing certificates in Windows\nsystems, to avoid detection by antivirus software, it is essential for network and endpoint\nsecurity products to be updated with the malwares’ latest Indicators of Compromise (IoCs).\n[The latest IoCs for the Blister Malware are enumerated in Part 1 of the technical analysis.](https://cloudsek.com/technical-analysis-of-code-signed-blister-malware-campaign-part-1/)\n\n[Anandeshwar Unnikrishnan](https://cloudsek.com/author/anadeshwar-unnikrishnan/)\n[Threat Intelligence Researcher, CloudSEK](https://cloudsek.com/)\nAnandeshwar is a Threat Intelligence Researcher at CloudSEK. He is a strong advocate of\noffensive cybersecurity. He is fuelled by his passion for cyber threats in a global context. He\n\n\n-----\n\ndedicates much of his time on Try Hack Me/ Hack The Box/\nOffensive Security Playground. He believes that “a strong\nmind starts with a strong body.” When he is not gymming, he\nfinds time to nurture his passion for teaching. He also likes to\ntravel and experience new cultures.\n\n[Hansika Saxena](https://cloudsek.com/author/hansika-saxena/)\nTotal Posts: 2\nHansika joined CloudSEK’s Editorial team as a Technical\nWriter and is a B.Sc (Hons) student at the University of\nDelhi. She was previously associated with Youth India\nFoundation for a year.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-02-17 - Technical Analysis of Code-Signed Blister Malware Campaign Part 2.pdf"
+    ],
+    "report_names": [
+        "2022-02-17 - Technical Analysis of Code-Signed Blister Malware Campaign Part 2.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d9b39228-0d9d-4c1e-8e39-2de986120060",
+            "created_at": "2023-01-06T13:46:39.293127Z",
+            "updated_at": "2025-03-27T02:00:03.042341Z",
+            "deleted_at": null,
+            "main_name": "BelialDemon",
+            "aliases": [
+                "Matanbuchus"
+            ],
+            "source_name": "MISPGALAXY:BelialDemon",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535591,
+    "ts_updated_at": 1743041118,
+    "ts_creation_date": 1653501567,
+    "ts_modification_date": 1653501567,
+    "files": {
+        "pdf": "https://archive.orkl.eu/6ccf76cc00f07dea08a4a44c14e938c0e387cbcd.pdf",
+        "text": "https://archive.orkl.eu/6ccf76cc00f07dea08a4a44c14e938c0e387cbcd.txt",
+        "img": "https://archive.orkl.eu/6ccf76cc00f07dea08a4a44c14e938c0e387cbcd.jpg"
+    }
+}

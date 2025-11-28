@@ -1,0 +1,98 @@
+{
+    "id": "95814a82-8818-49d3-94bb-cba53b443a6e",
+    "created_at": "2023-01-12T15:08:46.991483Z",
+    "updated_at": "2025-03-27T02:12:03.937834Z",
+    "deleted_at": null,
+    "sha1_hash": "e8431ca30b3f07ab368f6b92babe1f27fe88531d",
+    "title": "2021-03-10 - Azure Sentinel and Sysmon 4 B!ue T3amer$",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:31:04Z",
+    "file_modification_date": "2022-05-28T19:31:04Z",
+    "file_size": 1290769,
+    "plain_text": "# Azure Sentinel and Sysmon 4 B!ue T3amer$\n\n**eshlomo.us/azure-sentinel-and-sysm0n-4-blue-teamers/**\n\nElli Shlomo March 10, 2021\n\nRecently, there have been massive cyberattacks against cloud providers and on-premises\nenvironments, the most recent of which is the attack and exploitation of vulnerabilities\n[against Exchange servers – The HAFNIUM. This post focus on Azure Sentinel and Sysmon](https://www.microsoft.com/security/blog/2021/03/02/hafnium-targeting-exchange-servers/)\n4 B!ue T3amer$.\n\nRecent attacks require us to increase attention alongside tools to provide us with advanced\nvisibility and investigative options. The recent attack on Exchange servers has shown that\nthe richer information we have, the more advanced investigation we can achieve.\n\nEvent Viewer alone cannot provide us the relevant information. We must expand how we\ncollect logs and if it is advanced event log management or PowerShell advanced logging and\nothers.\n\nIn the recent blog post, we saw how PowerShell advanced logging could provide us useful\ninformation. With this blog post, we can see how Sysmon can offer more capabilities to the\nincident response with Azure Sentinel.\n\n## Sysmon in a nutshell\n\nSysinternal System Monitor (Sysmon) is a Windows system service and device driver that\nremains resident across system reboots to monitor and log system activity to the Windows\nevent log once installed on a system. It provides detailed information about process\ncreations, network connections, and changes to file creation time.\n\nBy collecting the events it generates using Windows Event Collection or SIEM agents and\nsubsequently analyzing them, you can identify malicious or anomalous activity and\nunderstand how intruders and malware operate on your network.\n\nMore about [Sysmon – Windows Sysinternals | Microsoft Docs](https://docs.microsoft.com/en-us/sysinternals/downloads/sysmon)\n\nWhat are the Capabilities of Sysmon? In a nutshell, readable and useful process information.\nYou can get valuable details that are not found in the raw Windows log, but most significantly,\nthese fields, for example:\n\nProcess id\nParent process-id\nFile image names\nHash of file image\nProcess command line\n\n\n-----\n\nParent process command line\n\nSysmon installs as a device driver and service. Its key advantage is that it takes log entries\nfrom multiple log sources, correlates the information, and places the resulting entries into\none folder in the Event Viewer.\n\nFor example, this particular command line should trigger some suspicions. Using cmd.exe to\nrun another command, then while redirecting the output to a strangely named file, is the stuff\nof some C2. It’s a way to create a shell using specific services.\n\n**Sysmon Highlights**\n\nSysmon includes the ability to filter events before they are written to the Event Log.\nYou can build (or download) configuration files.\nThey make it easier to deploy a preset configuration and filter captured events.\nYou can log network events from processes named “specific.exe” or locate in C:\\Temp,\ndrivers not signed by Microsoft, etc.\nIt’s up to you to determine how much data you want to include.\nSysmon configuration file\n\ninstall: sysmon -i -accepteula c:\\SysmonConfig.xml\nupdate: sysmon -c c:\\SysmonConfig.XML\nuse Psexec or PowerShell during an IR\nEach event is specified using its tag\n\n\n-----\n\nTo see all tags, dump the full configuration schema:\n\nsysmon -s\non the match can be “include” or “exclude.”\nInclude and exclude refer to filter effect\n\n**Sysmon Event ID Numbers**\n\n## Install Sysmon\n\nThe first thing is to install Sysmon on relevant servers, such as Domain Controllers,\nExchange servers, Application server, and whether it’s on a VM on Azure or any cloud\nprovider. Once Sysmon is installed, we can configure Azure Sentinel to collect information\nfrom the relevant servers.\n\nThe way to achieve Sysmon with Azure Sentinel is straightforward and can be done by the\nfollowing actions.\n\n[Download Sysmon and install it on the relevant servers](https://download.sysinternals.com/files/Sysmon.zip)\nMake sure the Sysmon services are up and running and writing logs to the event\nviewer\n\n\n-----\n\nMake sure to update the configuration of an installed Sysmon with the command:\nSysmon64.exe -c c:\\Windows\\sysmonconfig.XML\n\n_[TIP: Download the Sysmon config file from here and monitor additional apps and exe](https://github.com/eshlomo1/Azure-Sentinel-4-SecOps-IR/blob/master/Sysmon/SysmonConfig.xml)_\n\n## Azure Sentinel and Sysmon Configuration\n\nConnecting servers to Azure Sentinel occurs via dedicated agents (non-Azure Windows\nMachine). We need to install the Agent together with the workspace ID and its primary key\non the server-side.\n\n\n-----\n\nIf you re working with the Security Event, the agent can be downloaded via the Security\nEvent connector.\n\n_TIP: It’s recommended to work with common Security Events alongside the Sysmon_\n\n### Azure Sentinel Sysmon Queries\n\n\n-----\n\nOnce Sysmon is installed and configured on the Windows servers and configured on the\nAzure Sentinel, we can run queries for Sysmon. The query can be run with the commands\nbelow:\n\nCheck basic Sysmon event.\n\n_Event_\n_| where Source == “Microsoft-Windows-Sysmon”_\n\nCheck for important events.\n\n_Event_\n_| where Source == “Microsoft-Windows-Sysmon”_\n_| where EventID in (11, 12, 17)_\n_| project TimeGenerated, Computer, EventID, RenderedDescription_\n\nYou might notice that not all information is available right away in the form of columns.\nInstead, the real important data is stored inside of the two columns “ParameterXml” and\n“EventData”:\n\nKQL queries can parse those columns via the query below:\n\n\n-----\n\n_Event_\n_| where Source == “Microsoft-Windows-Sysmon”_\n_| extend RenderedDescription = tostring(split(RenderedDescription, “:”)[0])_\n_| extend EventData = parse_xml(EventData).DataItem.EventData.Data_\n_| mv-expand bagexpansion=array EventData_\n_| evaluate bag_unpack(EventData)_\n_| extend Key=tostring([‘@Name’]), Value=[‘#text’]_\n_| evaluate pivot(Key, any(Value), TimeGenerated, Source, EventLog, Computer,_\n_EventLevel, EventLevelName, EventID, UserName, RenderedDescription, MG,_\n_ManagementGroupName, Type, _ResourceId)_\n_| parse RuleName with * ‘technique_id=’ TechniqueId ‘,’ * ‘technique_name=’_\n_TechniqueName_\n_| order by TimeGenerated desc_\n\n[The Sysmon prase query](https://github.com/eshlomo1/Azure-Sentinel-4-SecOps-IR/blob/master/Sysmon/ParseSysmon.txt)\n\n## Sysmon IR\n\n**Sysmon Events**\n\nThe service logs events immediately.\nThe driver installs as a boot-start driver to capture activity from early in the boot\nprocess.\nSysmon does not replace your existing event logs.\n\n**Important events for Incident Response**\n\nEvent ID 11: FileCreate – Useful for monitoring autostart locations and available places\nmalware drops during initial infection.\n\n\n-----\n\nEvent ID 12: RegistryEvent – Useful for monitoring changes to Registry autostart\nlocations or specific malware registry modifications.\nEvent ID 17: PipeEvent – Malware usually uses named pipes for inter-process\ncommunication.\n\n**The Events – 4688**\n\nSysmon events can detect new EXEs and DLLs.\nCan detect ransomware such as Petya or Wannacry, which used SMB to spread.\nLog event is produced every time an EXE loads as a new process.\nKnown EXE and compare each 4688 against that list and identify new actions, like\nPetya’s EXEs, that run on your network.\nThe only problem with using 4688 is it’s based on the EXE name and including the\npath.\nWhat happens if the attacker uses a name similar to that of a known file\nSysmon event ID 1 is logged simultaneously as 4688, but it also provides the EXE\nhash.\nIf an attacker replaces a known EXE, the hash will change.\nComparison against known hashes will fail, and detecting a new EXE executing for the\nfirst time in your environment.\nLogs process creation with a full command line for both current and parent processes\nRecords the hash of process image files using SHA1, MD5 or SHA256\nIncludes a process GUID in process create events to allow for correlation of events\neven when Windows reuses process IDs\nOptionally logs network connections, including each connection’s source process, IP\naddresses, port numbers, hostnames, and port names.\n\n**Use Cases**\n\nThe main use cases with Sysmon hunting:\n\nProductivity App (e.g., Word, Excel, PowerPoint, Outlook) launches cmd.exe or\npowershell.exe\nAbnormal parent of svchost.exe\nWhoami.exe running\nnet.exe use\nWebshell\nData exfiltration\nMimikatz\nProcess injection\n\n## Sysmon Simulation\n\n\n-----\n\nYou can simulate to check how the Sysmon event logs are working with many tools, and with\nthis example, I’m using the DeepBlueCLI.\n\nThe DeepBlueCLI can be downloaded from GitHub > sans-blue-team/DeepBlueCLI\n(github.com), and once you’ve downloaded it, you can run with the scenarios below.\n\nWhen I ran the DeepBlueCLI tool with many scenarios, I received much useful information\nfrom Azure Sentinel. Once I started with the hunting phases, I saw many indicators with File\ncreated, Process Create, and Network connection detected, including C2 connections.\n\n\n-----\n\n-----\n\n### Azure Sentinel Incident\n\nLike any attack, we must create an incident and raise an alert when the attack appears on\nservers and provide a way to investigate with all indicators from Sysmon. With this example,\nthe query includes the Sysmon parse query and the new entity mapping for account, host,\nand files.\n\n\n-----\n\nMore about [Azure Sentinel](https://www.eshlomo.us/category/azure-sentinel/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-03-10 - Azure Sentinel and Sysmon 4 B!ue T3amer$.pdf"
+    ],
+    "report_names": [
+        "2021-03-10 - Azure Sentinel and Sysmon 4 B!ue T3amer$.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "529c1ae9-4579-4245-86a6-20f4563a695d",
+            "created_at": "2022-10-25T16:07:23.702006Z",
+            "updated_at": "2025-03-27T02:02:09.93109Z",
+            "deleted_at": null,
+            "main_name": "Hafnium",
+            "aliases": [
+                "Red Dev 13",
+                "Silk Typhoon"
+            ],
+            "source_name": "ETDA:Hafnium",
+            "tools": [],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "7c969685-459b-4c93-a788-74108eab6f47",
+            "created_at": "2023-01-06T13:46:39.189751Z",
+            "updated_at": "2025-03-27T02:00:03.017103Z",
+            "deleted_at": null,
+            "main_name": "HAFNIUM",
+            "aliases": [
+                "ATK233",
+                "G0125",
+                "Operation Exchange Marauder",
+                "Red Dev 13",
+                "Silk Typhoon"
+            ],
+            "source_name": "MISPGALAXY:HAFNIUM",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "2704d770-43b4-4bc4-8a5a-05df87416848",
+            "created_at": "2022-10-25T15:50:23.306305Z",
+            "updated_at": "2025-03-27T02:00:55.43633Z",
+            "deleted_at": null,
+            "main_name": "HAFNIUM",
+            "aliases": [
+                "HAFNIUM",
+                "Operation Exchange Marauder",
+                "Silk Typhoon"
+            ],
+            "source_name": "MITRE:HAFNIUM",
+            "tools": [
+                "Tarrask",
+                "ASPXSpy",
+                "Impacket",
+                "PsExec",
+                "China Chopper"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536126,
+    "ts_updated_at": 1743041523,
+    "ts_creation_date": 1653766264,
+    "ts_modification_date": 1653766264,
+    "files": {
+        "pdf": "https://archive.orkl.eu/e8431ca30b3f07ab368f6b92babe1f27fe88531d.pdf",
+        "text": "https://archive.orkl.eu/e8431ca30b3f07ab368f6b92babe1f27fe88531d.txt",
+        "img": "https://archive.orkl.eu/e8431ca30b3f07ab368f6b92babe1f27fe88531d.jpg"
+    }
+}

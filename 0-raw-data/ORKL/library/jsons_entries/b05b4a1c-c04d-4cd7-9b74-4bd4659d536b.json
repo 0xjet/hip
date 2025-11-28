@@ -1,0 +1,112 @@
+{
+    "id": "b05b4a1c-c04d-4cd7-9b74-4bd4659d536b",
+    "created_at": "2023-01-12T15:02:28.662749Z",
+    "updated_at": "2025-03-27T02:17:02.398498Z",
+    "deleted_at": null,
+    "sha1_hash": "a2d807215fe6fb8fb44f404f2a883414a76a3836",
+    "title": "2022-05-25 - Hunting a Global Telecommunications Threat- DecisiveArchitect and Its Custom Implant JustForFun",
+    "authors": "",
+    "file_creation_date": "2022-06-01T12:23:24Z",
+    "file_modification_date": "2022-06-01T12:23:24Z",
+    "file_size": 1271939,
+    "plain_text": "# How to Hunt for DecisiveArchitect and Its JustForFun Implant\n\n**[crowdstrike.com/blog/how-to-hunt-for-decisivearchitect-and-justforfun-implant/](https://www.crowdstrike.com/blog/how-to-hunt-for-decisivearchitect-and-justforfun-implant/)**\n\nJamie Harries May 25, 2022\n\nThe security landscape is constantly developing to provide easier ways to establish endpoint\n[visibility across networks through the use of endpoint detection and response (EDR) utilities.](https://www.crowdstrike.com/cybersecurity-101/endpoint-security/endpoint-detection-and-response-edr/)\nHowever, certain challenges still remain, particularly as a result of many organizations’ need\nfor systems running legacy or proprietary operating systems, such as Solaris. If such\nsystems are not adequately protected using other security controls or unless they can only\nbe accessed by systems with appropriate endpoint-based detection/prevention capabilities,\nthis can cause a gap in visibility for an organization that an adversary could abuse.\n\nOn multiple occasions dating back to 2019, the CrowdStrike Services Incident Response\nteam, CrowdStrike Intelligence team and Falcon OverWatch™ team have encountered an\nadversary targeting global entities, in particular telecommunications companies, to obtain\ntargeted personal user information — for example, call detail records (CDRs) or information\nrelating to specific phone numbers.\n\n\n-----\n\n[Similar to the activity cluster reported as LightBasin, this adversary primarily focuses on](https://www.crowdstrike.com/blog/an-analysis-of-lightbasin-telecommunications-attacks/)\nLinux and Solaris systems using a custom-built implant tracked by CrowdStrike Intelligence\nas JustForFun (also publicly known as BPFDoor). While this adversary does interact with\nWindows systems, mostly during the early stages of an intrusion, CrowdStrike has not yet\nidentified any custom implants geared toward Windows systems. Instead, the adversary\nrelies on publicly available tools, such as ldapdomaindump, or the post-exploitation\nframework Impacket, to target Windows systems from previously compromised Linux\nsystems.\n\nCrowdStrike Intelligence is currently tracking these intrusions under the DecisiveArchitect\nactivity cluster (also publicly known as Red Menshen); however, this activity is not currently\nattributed by CrowdStrike to a specific country-nexus. While CrowdStrike has primarily\nobserved the adversary targeting telecommunications companies, other isolated incidents\ntargeting organizations such as logistics entities have also been observed.\n\nDecisiveArchitect exhibits a high degree of operational security as part of their tactics to\nmake it more difficult for defenders to identify and investigate their activity through the use of\nvarious defense evasion techniques. While other publicly available research highlights how\nthe implant operates, this blog focuses on methods to hunt for this implant, or implants that\nmay operate in a similar manner, while also highlighting techniques of interest across Solaris\nsystems.\n\n## Spoofed Command Lines\n\nDecisiveArchitect utilizes a custom implant tracked by CrowdStrike as JustForFun, which is\ntypically persisted using SysVinit scripts. When executed, the implant overwrites the process\ncommand line within the process environment by randomly selecting a new command line\nfrom one of ten hard-coded options, listed in Figure 1.\n```\n/sbin/udevd -d\n/sbin/mingetty /dev/tty6\n/usr/sbin/console-kit-daemon --no-daemon\nhald-addon-acpi: listening on acpi kernel interface /proc/acpi/event\ndbus-daemon --system\nhald-runner\npickup -l -t fifo -u\navahi-daemon: chroot helper\n/sbin/auditd -n\n/usr/lib/systemd/systemd-journald\n\n```\nFigure 1. Hard-coded options for command-line spoofing in JustForFun\n\nWhen DecisiveArchitect interacts with the implants to establish an interactive shell on a\nsystem, the `bash` process spawned by the implant process displays the following\ncommand line instead. This makes it appear as if the Postfix queue manager is executing as\na way to hide itself from analysts and system administrators:\n\n\n-----\n\n```\nqmgr -l -t fifo -u\n\n```\n\nOn Solaris systems, though the executable itself exhibits no mechanism for similar\ncommand-line spoofing, DecisiveArchitect achieves similar functionality through the use of\n```\nLD_PRELOAD, such as the following example identified within a SysVinit script:\n\n```\n```\nLD_PRELOAD=/lib/librbtinfo.so.1 /usr/lib/vtdaemon -c 16\n\n```\n\nWhen executed, the process only shows the command line `/usr/lib/vtdaemon -c 16,`\nwhere the actual JustForFun implant is the file `/lib/librbtinfo.so.1 .`\n\nAs recently as April 2022, CrowdStrike observed further variations with regard to\nDecisiveArchitect’s tactics, techniques and procedures (TTPs), with the actor using the\n```\nLD_PRELOAD environment variable across Linux systems as well, loading the JustForFun\n\n```\nimplant, `/lib64/libcaac.so.1, within the legitimate process` `/sbin/agetty . This`\nhighlights a deviation from the standard list of spoofed command lines in Figure 1, likely as\npart of a further effort to remain undetected and emphasizing the importance of behavioralbased hunting and detection methods.\n\nThe spoofed command line appears in commands such as `ps that may be used to`\ninvestigate suspicious activity on the host. The spoofed command line makes it less likely\nthat the process will be treated as suspicious.\n\n## Solaris Privilege Escalation Vulnerability Exploitation\n\nDecisiveArchitect targets Solaris systems via publicly available exploit code for CVE-20193010, a vulnerability in `xscreensaver . Binaries used to exploit this vulnerability have`\nusually been observed within a few minutes of the JustForFun implant deployment. CVE2019-3010 is a logic bug that utilizes the `LD_PRELOAD` technique to facilitate local privilege\nescalation to the root user on Solaris 11 systems. Proof-of-concept (POC) code is publicly\navailable and was not modified by DecisiveArchitect. Table 1 lists two files observed across1\nSolaris systems related to this privilege escalation activity.\n\n**File Path** **Purpose**\n\n/tmp/getuid.so CVE-2019-3010 exploit binary\n\n/usr/lib/secure/getuid.so CVE-2019-3010 exploit binary or log file\n\nTable 1. Solaris exploitation file details\n\n## Persistence\n\n\n-----\n\nThe way in which DecisiveArchitect achieves persistence across Linux systems involves the\nusage of SysVinit scripts (i.e., rc.d/init.d scripts). Instead of simply creating a new script that\nreferences the JustForFun implants, DecisiveArchitect uses a more operational securityconscious approach by modifying existing SysVinit scripts to reference a small script file,\nwhich then finally references the JustForFun implant. The following highlights an example,\nincluding the lines added to the legitimate SysVinit script `/etc/rc.d/init.d/pcscd and`\nthe script `/etc/sysconfig/pcscd referencing the JustForFun implant,`\n\n```\n/etc/rc.d/init.d/pcscd:\n\n```\n\n**Line 41:** `if [ -f /etc/sysconfig/pcscd ] ; then`\n**Line 42:** `/etc/sysconfig/pcscd`\n\n```\n/etc/sysconfig/pcscd:\n\n```\n```\n# Source config\nif [ -f /etc/sysconfig/pcscd.conf ] ; then\n  /etc/sysconfig/pcscd.conf\nfi\n\n```\nWith this method of nested persistence, if an analyst simply reviews a set of SysVinit scripts\nby themselves, identifying the malicious line associated with the JustForFun implant would\nlikely prove difficult without subsequently reviewing all of the files referenced within the\nscripts. Additionally, as part of DecisiveArchitect’s continued commitment to operational\nsecurity, the adversary modifies different legitimate SysVinit scripts across systems, and\nuses different file names/paths for the implant and associated persistence-related scripts,\nmaking it difficult to search across other systems for indicators identified through analysis of\na single system.\n\n## Detection and Hunting\n\nOne of the best ways to detect or hunt for this activity is to utilize EDR technology across\nsupported Linux systems, with machine learning capabilities to detect and prevent the\nmalicious implants, and with hunting capabilities to identify anomalous usage of common\nLinux system administration utilities or processes running with spoofed command lines (such\nas the `bash process running with the command line showing the Postfix queue manager`\ncommand line instead). Figures 2 and 3 highlight the CrowdStrike Falcon platform’s®\nmachine learning capabilities and Falcon OverWatch detections associated with the\nJustForFun implant and JustForFun command-line tool.\n\n**_Please note: The examples in the following scenario have CrowdStrike Falcon_**\n**_configured with DETECTIONS ONLY and PREVENTIONS off. A properly configured_**\n**_Falcon instance, as noted previously, would prevent the activity presented here._**\n\n\n-----\n\nFigure 2. JustForFun implant detection (Click to enlarge)\n\nFigure 3. JustForFun command-line tool detections (Click to enlarge)\n\nBut, even if an organization has a significant number of legacy or proprietary systems,\nalready has the adversary burrowed into their network, or simply does not have EDR\nsoftware deployed across Linux systems, all is not lost.\n\n## Hunting for Traffic Signaling Implants\n\nGiven the fact the JustForFun implant opens a raw socket in order to wait for the magic\npacket, the built-in Linux utility `lsof can be used to identify running processes with a raw`\nsocket open:\n\n```\nlsof -RPnl | grep SOCK_RAW | grep IP\n\n```\n\nEven though this command alone cannot solely determine whether the implant is present —\nas there are legitimate reasons for processes to have raw sockets open — analysts can\nhighlight processes of interest for further investigation. Of particular importance is that\nDecisiveArchitect’s use of spoofed command lines means that the `lsof` command will\nreport the spoofed command line, as opposed to the actual malicious file, which may make it\n\n\n-----\n\ndifficult to determine whether the process is malicious or not through this alone. However, by\nrunning the `lsof` command against the process ID without any of the `grep filtering, an`\nanalyst can list any open files associated with that process, which should reveal the binary.\nAn example of a true positive can be seen below, with the start of the line (i.e., the command\nline) displaying the start of one of the spoofed command lines listed in Figure 1. It should be\nnoted that DecisiveArchitect can quite easily change these spoofed command lines, so\nanalysts should be conscious of other processes beyond those listed:\n\n```\ndbus-daem 1215 0 root 3u pack 11912 0t0 IP type=SOCK_RAW\n\n```\n\nWhile the `lsof command is not part of a default Solaris installation, similar commands`\nexist for obtaining additional details from processes:\n```\nfor _PIDno in /proc/*; do line=$(pfiles \"${_PIDno}\"); echo $_PIDno $line | grep bpf;\ndone\nfor _PIDno in /proc/*; do line=$(pmap \"${_PIDno}\"); echo $_PIDno $line | grep\nlibpcap; done\nfor _PIDno in /proc/*; do line=$(pldd \"${_PIDno}\"); echo $_PIDno $line | grep\nlibpcap; done\n\n```\nThe three commands above loop through every process, with the first command looking for a\nstring indicative of a process running with a packet filter, and the other two searching for\nprocesses with the `libpcap library loaded. As with the` `lsof command, this alone cannot`\nsolely determine whether the implant is present, so an analyst would need to further\ninvestigate the specific process to confirm the presence of the implant. DecisiveArchitect’s\ncapability to spoof command lines across Solaris systems also needs to be taken into\naccount when investigating these processes.\n\nWhen investigating any of these entries, one of the key questions to ask is whether the\nprocess in question has any reason to have a raw socket open, to be using a packet filter or\nto be utilizing the `libpcap library. One of the most common false positives relates to`\nsystems running processes such as `tcpdump or other packet capture utilities.`\n\nWhile these hunting techniques provide a relatively simple method for identifying\nDecisiveArchitect activity based on activity observed across multiple intrusions, CrowdStrike\nexpects that DecisiveArchitect will continue development of their implant across both Linux\nand Solaris platforms, while also improving their techniques regarding operational security of\ntheir intrusions to further hinder the ability of a defender to identify or investigate their activity,\nwhich might include identifying ways to combat these hunting techniques.\n\n## Conclusion\n\nDecisiveArchitect’s operations present a clear and present threat to telecommunications\ncompanies, as well as other organizations such as logistics entities. This blog highlights\nimportant details about DecisiveArchitect’s implant, their abilities to operate on Solaris\n\n\n-----\n\nsystems, and ways to hunt down the adversary s implants to help organizations identify\nwhether they have fallen victim to this campaign.\n\n### Endnotes\n\n1. https[:]//github[.]com/0xdea/exploits/blob/master/solaris/raptor_xscreensaver\n\n## Indicators of Compromise (IOCs)\n\n**Indicator** **Platform** **Purpose**\n\n```\n/run/lock/kdumpflush\n/run/lock/kdumpcab\n/var/lock/kdumpcab\n/var/lock/kdumpcache\n/dev/shm/kdmtmpflush\n/dev/shm/kdevtmpfls\n/dev/shm/ff\n/etc/avahi/avahi.conf\n/etc/cups/cups\n/etc/cups/cups.conf\n/etc/gofer/gofor.conf\n/etc/gss/gss.conf\n/etc/jvm/jvm.conf\n/etc/ntp/ntpd\n/etc/opt/opt.conf\n/etc/pm/pm.conf\n/etc/pulp/agent.conf\n/etc/ssl/ssl.conf\n/etc/sysconfig/kdumplog\n/etc/sysconfig/nfs.conf\n/etc/sysconfig/pcscd.conf\n/etc/xdg/xdg.conf\n/usr/java/jdk1.8.0_181amd64/.java/init.d/jexecd\n/usr/local/mysql/bin/myisambug\n/lib64/libcaac.so.1\n/lib/librbtinfo.so.1\n/usr/lib/autofs/mountd\n/opt/VRTSvcs/bin/IP/online_Agent\n\n```\n\nLinux JustForFun implant pathnames\n(temporary – running process)\n\nLinux JustForFun implant pathnames\n(persistent – on disk)\n\n\nSolaris JustForFun implant pathnames\n\n```\n/run/lock/lvv\n/run/lock/lvm/lv\n/var/run/lvm/vm\n/dev/shm/sem\n/tmp/getuid.so\n/usr/lib/secure/getuid.so\n\n```\n\nLinux JustForFun CLI utility pathnames\n\nSolaris CVE-2019-3010 exploitationrelated files (not unique to\nDecisiveArchitect)\n\n\n-----\n\n```\n/usr/local/bin/GetADUsers.py\n/usr/local/bin/GetNPUsers.py\n/usr/local/bin/GetUserSPNs.py\n/usr/local/bin/atexec.py\n/usr/local/bin/dcomexec.py\n/usr/local/bin/dpapi.py\n/usr/local/bin/esentutl.py\n/usr/local/bin/getArch.py\n/usr/local/bin/getPac.py\n/usr/local/bin/getST.py\n/usr/local/bin/getTGT.py\n/usr/local/bin/goldenPac.py\n/usr/local/bin/ifmap.py\n/usr/local/bin/karmaSMB.py\n/usr/local/bin/lookupsid.py\n/usr/local/bin/mimikatz.py\n/usr/local/bin/mqtt_check.py\n/usr/local/bin/mssqlclient.py\n/usr/local/bin/mssqlinstance.py\n/usr/local/bin/netview.py\n/usr/local/bin/nmapAnswerMachine.py\n/usr/local/bin/ntfs-read.py\n/usr/local/bin/ntlmrelayx.py\n/usr/local/bin/opdump.py\n/usr/local/bin/ping.py\n/usr/local/bin/ping6.py\n/usr/local/bin/psexec.py\n/usr/local/bin/raiseChild.py\n/usr/local/bin/rdp_check.py\n/usr/local/bin/reg.py\n/usr/local/bin/registry-read.py\n/usr/local/bin/rpcdump.py\n/usr/local/bin/sambaPipe.py\n/usr/local/bin/samrdump.py\n/usr/local/bin/secretsdump.py\n/usr/local/bin/services.py\n/usr/local/bin/smbclient.py\n/usr/local/bin/smbexec.py\n/usr/local/bin/smbrelayx.py\n/usr/local/bin/smbserver.py\n/usr/local/bin/sniff.py\n/usr/local/bin/sniffer.py\n/usr/local/bin/split.py\n/usr/local/bin/ticketer.py\n/usr/local/bin/wmiexec.py\n/usr/local/bin/wmipersist.py\n/usr/local/bin/wmiquery.py\n/usr/local/bin/ldapdomaindump\n/usr/local/bin/ldd2bloodhound\n\n```\n\nLinux Impacket post-exploitation\nframework scripts (not unique to\nDecisiveArchitect)\n\nLinux ldapdomaindump binaries used\nfor Active Directory\nreconnaissance (not unique to\nDecisiveArchitect)\n\nWindows Unknown scripts\n\n```\nc:\\users\\use.bat\nc:\\users\\one.ps1\n\n```\n\n-----\n\n**Additional Resources**\n\n_Read about another threat that targets the telecommunications sector in this blog:_\n_[LightBasin: A Roaming Threat to Telecommunications Companies.](https://www.crowdstrike.com/blog/an-analysis-of-lightbasin-telecommunications-attacks/)_\n_[Download the CrowdStrike 2022 Global Threat Report for insights into adversaries](https://www.crowdstrike.com/resources/reports/global-threat-report/)_\n_tracked by CrowdStrike Intelligence in 2020._\n_[Get a full-featured free trial of CrowdStrike Falcon Prevent™ and learn how true next-](https://go.crowdstrike.com/try-falcon-prevent.html)_\n_gen AV performs against today’s most sophisticated threats._\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-05-25 - Hunting a Global Telecommunications Threat- DecisiveArchitect and Its Custom Implant JustForFun.pdf"
+    ],
+    "report_names": [
+        "2022-05-25 - Hunting a Global Telecommunications Threat- DecisiveArchitect and Its Custom Implant JustForFun.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "ece64b74-f887-4d58-9004-2d1406d37337",
+            "created_at": "2022-10-25T16:07:23.794442Z",
+            "updated_at": "2025-03-27T02:02:09.981874Z",
+            "deleted_at": null,
+            "main_name": "LightBasin",
+            "aliases": [
+                "DecisiveArchitect",
+                "Luminal Panda",
+                "TH-239",
+                "UNC1945"
+            ],
+            "source_name": "ETDA:LightBasin",
+            "tools": [
+                "CordScan",
+                "EVILSUN",
+                "FRP",
+                "Fast Reverse Proxy",
+                "Impacket",
+                "LEMONSTICK",
+                "LOGBLEACH",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "OKSOLO",
+                "OPENSHACKLE",
+                "ProxyChains",
+                "Pupy",
+                "PupyRAT",
+                "SIGTRANslator",
+                "SLAPSTICK",
+                "SMBExec",
+                "STEELCORGI",
+                "Tiny SHell",
+                "pupy",
+                "tsh"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "31c0d0e1-f793-4374-90aa-138ea1daea50",
+            "created_at": "2023-11-30T02:00:07.29462Z",
+            "updated_at": "2025-03-27T02:00:03.256081Z",
+            "deleted_at": null,
+            "main_name": "LightBasin",
+            "aliases": [
+                "UNC1945",
+                "CL-CRI-0025"
+            ],
+            "source_name": "MISPGALAXY:LightBasin",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "9c8a7541-1ce3-450a-9e41-494bc7af11a4",
+            "created_at": "2023-01-06T13:46:39.358343Z",
+            "updated_at": "2025-03-27T02:00:03.06082Z",
+            "deleted_at": null,
+            "main_name": "Red Menshen",
+            "aliases": [
+                "Red Dev 18"
+            ],
+            "source_name": "MISPGALAXY:Red Menshen",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535748,
+    "ts_updated_at": 1743041822,
+    "ts_creation_date": 1654086204,
+    "ts_modification_date": 1654086204,
+    "files": {
+        "pdf": "https://archive.orkl.eu/a2d807215fe6fb8fb44f404f2a883414a76a3836.pdf",
+        "text": "https://archive.orkl.eu/a2d807215fe6fb8fb44f404f2a883414a76a3836.txt",
+        "img": "https://archive.orkl.eu/a2d807215fe6fb8fb44f404f2a883414a76a3836.jpg"
+    }
+}

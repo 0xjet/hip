@@ -1,0 +1,132 @@
+{
+    "id": "9c89d97e-539d-476b-a4fe-e0979b41777e",
+    "created_at": "2023-01-12T15:09:30.632732Z",
+    "updated_at": "2025-03-27T02:06:03.874183Z",
+    "deleted_at": null,
+    "sha1_hash": "b07afa7c646420aed72334815767e738ebdfc795",
+    "title": "2018-02-21 - Olympic Destroyer- A new Candidate in South Korea",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:26:10Z",
+    "file_modification_date": "2022-05-28T19:26:10Z",
+    "file_size": 1429071,
+    "plain_text": "# Olympic Destroyer: A new Candidate in South Korea\n\n**lastline.com/labsblog/olympic-destroyer-south-korea/**\n\nFebruary 21, 2018\n\nPosted by [Alexander Sevtsov and](https://www.lastline.com/author/alexander/) [Stefano Ortolani ON FEB 21, 2018](https://www.lastline.com/author/stefano/)\n[Authored by: Alexander Sevtsov](https://www.lastline.com/author/alexander/)\n\nEdited by: [Stefano Ortolani](https://www.lastline.com/author/stefano/)\n\nA new malware has recently made the headlines, targeting several computers during the\n[opening ceremony of the Olympic Games Pyeongchang 2018. While Cisco Talos group, and](http://blog.talosintelligence.com/2018/02/olympic-destroyer.html)\nlater [Endgame, have recently covered it, we noticed a couple of interesting aspects not](https://www.endgame.com/blog/technical-blog/stopping-olympic-destroyer-new-process-injection-insights)\npreviously addressed, we would like to share: its taste for hiding its traces, and the peculiar\ndecryption routine. We also would like to pay attention on how the threat makes use of\nmultiple components to breach the infected system. This knowledge allows us to improve our\nsandbox to be even more effective against emerging advanced threats, so we would like to\nshare some of them.\n\n### The Olympic Destroyer\n\nThe malware is responsible for destroying (wiping out) files on network shares, making\ninfected machines irrecoverable, and propagating itself with the newly harvested credentials\nacross compromised networks.\n\n\n-----\n\nTo achieve this, the main executable file (sha1:\n[26de43cc558a4e0e60eddd4dc9321bcb5a0a181c) drops and runs the following components,](https://www.virustotal.com/#/file/edb1ff2521fb4bf748111f92786d260d40407a2e8463dcd24bb09f908ee13eb9/detection)\nall originally encrypted and embedded in the resource section:\n\na browsers credential stealer (sha1: 492d4a4a74099074e26b5dffd0d15434009ccfd9),\na system credential stealer (a Mimikatz-like DLL – sha1:\ned1cd9e086923797fe2e5fe8ff19685bd2a40072 (for 64-bit OS), sha1:\n21ca710ed3bc536bd5394f0bff6d6140809156cf (for 32-bit OS)),\na wiper component (sha1: 8350e06f52e5c660bb416b03edb6a5ddc50c3a59).\na legitimate signed copy of the PsExec utility used for the lateral movement (sha1:\ne50d9e3bd91908e13a26b3e23edeaf577fb3a095)\n\n### A wiper deleting data and logs\n\nThe wiper component is responsible for wiping the data from the network shares, but also\ndestroying the attacked system by deleting backups, disabling services (Figure 1), clearing\nevent logs using wevtutil, thereby making the infected machine unusable. The very similar\nbehaviors have been previously observed in other Ransomware/Wiper attacks, including the\n[infamous ones such as BadRabbit and NotPetya.](https://www.lastline.com/blog/notpetya-ransomware-attack/)\n\n\n-----\n\nFigure 1. Disabling Windows services\n\nAfter wiping the files, the malicious component sleeps for an hour (probably, to be sure that\n[the spawned thread managed to finish its job), and calls the InitiateSystemShutdownExW](https://msdn.microsoft.com/en-us/library/windows/desktop/aa376874(v=vs.85).aspx)\nAPI with the system failure reason code (SHTDN_REASON_MAJOR_SYSTEM,\n0x00050000) to shut down the system.\n\n### An unusual decryption to extract the resources\n\nAs mentioned before, the executables are stored encrypted inside the binary’s resource\nsection. This is to prevent static extraction of the embedded files, thus slowing down the\n[analysis process. Another reason of going “offline” (compared with e.g. the Smoke Loader) is](https://www.lastline.com/labsblog/smoke-loader-campaign/)\nto bypass any network-based security solutions (which, in turn, decreases the probability of\n[detection). When the malware executes, they are loaded via the LoadResource API, and](https://msdn.microsoft.com/en-us/library/windows/desktop/ms648046(v=vs.85).aspx)\ndecrypted via the MMX/SSE instructions sometimes used by malware to bypass code\nemulation, this is what we’ve observed while debugging it. In this case, however, the\ninstructions are used to implement AES encryption and MD5 hash function (instead of using\n\n\n-----\n\n[standard Windows APIs, such as CryptEncrypt and](https://msdn.microsoft.com/en-us/library/windows/desktop/aa379924(v=vs.85).aspx) [CryptCreateHash) to decrypt the](https://msdn.microsoft.com/en-us/library/windows/desktop/aa379908(v=vs.85).aspx)\nresources. The MD5 algorithm is used to generate the symmetric key, which is equal to MD5\nof a hardcoded string “123”, and multiplied by 2.\n\nThe algorithms could be also identified by looking at some characteristic constants of\n\n1. The [Rcon array used during the AES key schedule (see figure 2) and,](https://en.wikipedia.org/wiki/Rijndael_key_schedule#Rcon)\n2. The MD5 [magic initialization constants.](https://www.ietf.org/rfc/rfc1321.txt)\n\nThe decrypted resources are then dropped in temporary directory and finally, executed.\n\n\n-----\n\nFigure 2. AES key setup routine for resources decryption\n\n### Hunting\n\n[An interesting aspect of the decryption is its usage of the SSE instructions. We exploited this](https://en.wikipedia.org/wiki/Streaming_SIMD_Extensions)\npeculiarity and hunted for other samples sharing the same code by searching for the\nassociated codehash, for example. The later is a normalized representation of the code\nmnemonics included in the function block (see Figure 3) as produced by the Lastline\n[sandbox, and exported as a part of the process snapshots).](https://www.lastline.com/labsblog/exploit-analysis-via-process-snapshotting/)\n\nAnother interesting sample found during our investigation was (sha1:\n84aa2651258a702434233a946336b1adf1584c49) with the harvested system credentials\n[belonging to the Atos company, a technical provider of the Pyeongchang games (see here](https://www.cyberscoop.com/atos-olympics-hack-olympic-destroyer-malware-peyongchang/)\nfor more details).\n\n\n-----\n\nFigure 3. Hardcoded credentials of an Olympic Destroyer targeted the ATOS company\n\n### A Shellcode Injection Wiping the Injector\n\nAnother peculiarity of the Olympic Destroyer is how it deletes itself after execution. While\nself-deletion is a common practice among malware, it is quite uncommon to see the injected\nshellcode taking care of it: the shellcode, once injected in a legitimate copy of notepad.exe,\nwaits until the sample terminates, and then deletes it.\n\n\n-----\n\nFigure 4. Checking whether the file is terminated or still running\n\nThis is done first by calling CreateFileW API and checking whether the sample is still running\n(as shown in Figure 4); it then overwrites the file with a sequence of 0x00 byte, deletes it via\nDeleteFileW API, and finally exits the process.\n\nThe remainder of the injection process is very common and it is similar to what we have\n[described in one of our previous blog posts: the malware first spawns a copy of notepad.exe](https://www.lastline.com/labsblog/uncovering-nation-specific-targeted-attacks-without-knowing-korean/)\nby calling the CreateProcessW function; then allocates memory in the process by calling\nVirtualAllocEx, and writes shellcode in the allocated memory through WriteProcessMemory.\nFinally, it creates a remote thread for its execution via CreateRemoteThread.\n\n\n-----\n\nFigure 5. Shellcode injection in a copy of notepad.exe\n\n### Lastline Analysis Overview\n\nFigure 6 shows how the analysis overview looks like when analyzing the sample discussed\nin this article:\n\nFigure 6. Analysis overview of the Olympic Destroyer\n\n## Conclusion\n\nIn this article, we analyzed a variant of the Olympic Destroyer, a multi-component malware\nthat steals credentials before making the targeted machines unusable by wiping out data on\nthe network shares, and deleting backups. Additionally, the effort put into deleting its traces\nshows a deliberate attempt to hinder any forensic activity. We also have shown how Lastline\nfound similar samples related to this attack based on an example of the decryption routine,\nand how we detect them. This is a perfect example of how the threats are continuously\nimproving making them even stealthier, more difficult to extract and analyze.\n\n### Appendix: IoCs\n\n\n-----\n\n**Olympic Destroyer**\n\n**26de43cc558a4e0e60eddd4dc9321bcb5a0a181c (sample analyzed in this article)**\n\n21ca710ed3bc536bd5394f0bff6d6140809156cf\n\n492d4a4a74099074e26b5dffd0d15434009ccfd9\n\n84aa2651258a702434233a946336b1adf1584c49\n\nb410bbb43dad0aad024ec4f77cf911459e7f3d97\n\nc5e68dc3761aa47f311dd29306e2f527560795e1\n\nc9da39310d8d32d6d477970864009cb4a080eb2c\n\nfb07496900468529719f07ed4b7432ece97a8d3d\n\nAbout\nLatest Posts\n\n### Alexander Sevtsov\n\nAlexander Sevtsov is a Malware Reverse Engineer at Lastline. Prior to joining Lastline, he\nworked for Kaspersky Lab, Avira and Huawei, focusing on different methods of automatic\nmalware detection. His research interests are modern evasion techniques and deep\ndocument analysis.\n\n**[Latest posts by Alexander Sevtsov (see all)](https://www.lastline.com/author/alexander/)**\n\n[Evasive Monero Miners: Deserting the Sandbox for Profit - June 20, 2018](https://www.lastline.com/labsblog/evasive-monero-miners/)\n[I Hash You: A Simple But Effective Trick to Evade Dynamic Analysis - April 10, 2018](https://www.lastline.com/labsblog/evasive-malware-tricks/)\n[Olympic Destroyer: A new Candidate in South Korea - February 21, 2018](https://www.lastline.com/labsblog/olympic-destroyer-south-korea/)\n\nAbout\nLatest Posts\n\n\n-----\n\n### Stefano Ortolani\n\nStefano Ortolani is Director of Threat Intelligence at Lastline. Prior to that he was part of the\nresearch team in Kaspersky Lab in charge of fostering operations with CERTs, governments,\nuniversities, and law enforcement agencies. Before that he earned his Ph.D. in Computer\nScience from the VU University Amsterdam.\n\n**[Latest posts by Stefano Ortolani (see all)](https://www.lastline.com/author/stefano/)**\n\n[Evolution of Excel 4.0 Macro Weaponization - June 2, 2020](https://www.lastline.com/labsblog/evolution-of-excel-4-0-macro-weaponization/)\n[InfoStealers Weaponizing COVID-19 - May 11, 2020](https://www.lastline.com/labsblog/infostealers-weaponizing-covid-19/)\n[Nemty Ransomware Scaling UP: APAC Mailboxes Swarmed by Dual Downloaders -](https://www.lastline.com/labsblog/nemty-ransomware-scaling-up-apac-mailboxes-swarmed-dual-downloaders/)\nFebruary 18, 2020\n\nTags:\n\n[Advanced Malware,](https://www.lastline.com/tag/advanced-malware/) [browser stealer,](https://www.lastline.com/tag/browser-stealer/) [code similarity,](https://www.lastline.com/tag/code-similarity/) [codehash,](https://www.lastline.com/tag/codehash/) [Lastline Sandbox,](https://www.lastline.com/tag/lastline-sandbox/) [Mimikatz,](https://www.lastline.com/tag/mimikatz/)\n[Olympic Destroyer,](https://www.lastline.com/tag/olympic-destroyer/) [PsExec,](https://www.lastline.com/tag/psexec/) [Ransomware,](https://www.lastline.com/tag/ransomware/) [shellcode injection,](https://www.lastline.com/tag/shellcode-injection/) [Wiper](https://www.lastline.com/tag/wiper/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2018/2018-02-21 - Olympic Destroyer- A new Candidate in South Korea.pdf"
+    ],
+    "report_names": [
+        "2018-02-21 - Olympic Destroyer- A new Candidate in South Korea.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "ce10c1bd-4467-45f9-af83-28fc88e35ca4",
+            "created_at": "2022-10-25T15:50:23.458833Z",
+            "updated_at": "2025-03-27T02:00:55.475188Z",
+            "deleted_at": null,
+            "main_name": "APT34",
+            "aliases": null,
+            "source_name": "MITRE:APT34",
+            "tools": [
+                "netstat",
+                "Systeminfo",
+                "PsExec",
+                "SEASHARPEE",
+                "Tasklist",
+                "Mimikatz",
+                "POWRUNER",
+                "certutil"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "cffb3c01-038f-4527-9cfd-57ad5a035c22",
+            "created_at": "2022-10-25T15:50:23.38055Z",
+            "updated_at": "2025-03-27T02:00:55.459558Z",
+            "deleted_at": null,
+            "main_name": "OilRig",
+            "aliases": [
+                "COBALT GYPSY",
+                "IRN2",
+                "APT34",
+                "Helix Kitten",
+                "Evasive Serpens",
+                "Hazel Sandstorm",
+                "EUROPIUM",
+                "ITG13"
+            ],
+            "source_name": "MITRE:OilRig",
+            "tools": [
+                "ISMInjector",
+                "RDAT",
+                "Systeminfo",
+                "QUADAGENT",
+                "OopsIE",
+                "Tasklist",
+                "certutil",
+                "ZeroCleare",
+                "POWRUNER",
+                "netstat",
+                "ipconfig",
+                "LaZagne",
+                "BONDUPDATER",
+                "SideTwist",
+                "PsExec",
+                "SEASHARPEE",
+                "Mimikatz",
+                "RGDoor",
+                "ftp"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "67709937-2186-4a32-b64c-a5693d40ac77",
+            "created_at": "2023-01-06T13:46:38.495593Z",
+            "updated_at": "2025-03-27T02:00:02.848206Z",
+            "deleted_at": null,
+            "main_name": "OilRig",
+            "aliases": [
+                "IRN2",
+                "Hazel Sandstorm",
+                "EUROPIUM",
+                "TA452",
+                "Earth Simnavaz",
+                "Cobalt Gypsy",
+                "Crambus",
+                "Helix Kitten",
+                "APT 34",
+                "APT34",
+                "ATK40",
+                "G0049",
+                "Evasive Serpens",
+                "Twisted Kitten"
+            ],
+            "source_name": "MISPGALAXY:OilRig",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536170,
+    "ts_updated_at": 1743041163,
+    "ts_creation_date": 1653765970,
+    "ts_modification_date": 1653765970,
+    "files": {
+        "pdf": "https://archive.orkl.eu/b07afa7c646420aed72334815767e738ebdfc795.pdf",
+        "text": "https://archive.orkl.eu/b07afa7c646420aed72334815767e738ebdfc795.txt",
+        "img": "https://archive.orkl.eu/b07afa7c646420aed72334815767e738ebdfc795.jpg"
+    }
+}

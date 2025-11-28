@@ -1,0 +1,145 @@
+{
+    "id": "a762c895-7f60-4d0a-bead-7494da693fdb",
+    "created_at": "2023-01-12T15:07:49.091838Z",
+    "updated_at": "2025-03-27T02:15:35.469325Z",
+    "deleted_at": null,
+    "sha1_hash": "5477bbd5c27cd6be35be749d6f7c288267578eb5",
+    "title": "2020-08-06 - Bypassing MassLogger Anti-Analysis — a Man-in-the-Middle Approach",
+    "authors": "",
+    "file_creation_date": "2022-05-28T02:50:02Z",
+    "file_modification_date": "2022-05-28T02:50:02Z",
+    "file_size": 129541,
+    "plain_text": "# Bypassing MassLogger Anti-Analysis — a Man-in-the- Middle Approach\n\n**[fireeye.com/blog/threat-research/2020/08/bypassing-masslogger-anti-analysis-man-in-the-middle-approach.html](https://www.fireeye.com/blog/threat-research/2020/08/bypassing-masslogger-anti-analysis-man-in-the-middle-approach.html)**\n\nThreat Research\n\nNhan Huynh\n\nAug 06, 2020\n\n16 mins read\n\nMalware\n\nThreat Research\n\n\n-----\n\nThe FireEye Front Line Applied Research & Expertise (FLARE) Team attempts to always\nstay on top of the most current and emerging threats. As a member of the FLARE Reverse\nEngineer team, I recently received a request to analyze a fairly new credential stealer\nidentified as MassLogger. Despite the lack of novel functionalities and features, this sample\nemploys a sophisticated technique that replaces the Microsoft Intermediate Language (MSIL)\n[at run time to hinder static analysis. At the time of this writing, there is only one publication](https://cert-agid.gov.it/wp-content/uploads/2020/06/CERT-AGID_MassLogger-20200609.pdf)\ndiscussing the MassLogger obfuscation technique in some detail. Therefore, I decided to\nshare my research and tools to help analyze MassLogger and other malware using a similar\ntechnique. Let us take a deep technical dive into the MassLogger credential stealer and the\n.NET runtime.\n\n**Triage**\n\nMassLogger is a .NET credential stealer. It starts with a launcher\n(6b975fd7e3eb0d30b6dbe71b8004b06de6bba4d0870e165de4bde7ab82154871) that uses\nsimple anti-debugging techniques which can be easily bypassed when identified. This first\nstage loader eventually XOR-decrypts the second stage assembly which then decrypts,\nloads and executes the final MassLogger payload\n(bc07c3090befb5e94624ca4a49ee88b3265a3d1d288f79588be7bb356a0f9fae) named Bin123.exe. The final payload can be easily extracted and executed independently. Therefore,\nwe will focus exclusively on this final payload where the main anti analysis technique is used.\n\nBasic static analysis doesn’t reveal anything too exciting. We notice some interesting strings,\nbut they are not enough to give us any hints about the malware’s capabilities. Executing the\npayload in a controlled environment shows that the sample drops a log file that identifies the\nmalware family, its version, and most importantly some configuration options. A sample log\nfile is described in Figure 1. We can also extract some interesting strings from memory as\nthe sample runs. However, basic dynamic analysis is not sufficient to extract all host-based\nindicators (HBIs), network-based indicators (NBIs) and complete malware functionality. We\nmust perform a deeper analysis to better understand the sample and its capabilities.\n\nUser Name: user\n\nIP: 127.0.0.1\n\nLocation: United States\n\nOS: Microsoft Windows 7 Ultimate 32bit\n\nCPU: Intel(R) Core(TM) i7-6820HQ CPU @ 2.70GHz\n\nGPU: VMware SVGA 3D\n\nAV: NA\n\nScreen Resolution: 1438x2460\n\nCurrent Time: 6/17/2020 1:23:30 PM\n\nMassLogger Started: 6/17/2020 1:23:21 PM\n\nInterval: 2 hour\n\nMassLogger Process: C:\\Users\\user\\Desktop\\Bin-123.exe\n\nMassLogger Melt: false\n\nMassLogger Exit after delivery: false\n\nAs Administrator: False\n\n\n-----\n\nProcesses:\nName:cmd, Title:Administrator: FakeNet-NG - fakenet\nName:iexplore, Title:FakeNet-NG - Internet Explorer\nName:dnSpy-x86, Title:dnSpy v6.0.5 (32-bit)\nName:cmd, Title:Administrator: C:\\Windows\\System32\\cmd.exe\nName:ProcessHacker, Title:Process Hacker [WIN-R23GG4KO4SD\\user]+ (Administrator)\n\n### WD Exclusion ###\nDisabled\n\n### USB Spread ###\nDisabled\n\n### Binder ###\nDisabled\n\n### Window Searcher ###\nDisabled\n\n### Downloader ###\nDisabled\n\n### Bot Killer ###\nDisabled\n\n### Search And Upload ###\nDisabled\n\n### Telegram Desktop ###\nNot Installed\n\n### Pidgin ###\nNot Installed\n\n### FileZilla ###\nNot Installed\n\n### Discord Tokken ###\nNot Installed\n\n### NordVPN ###\nNot Installed\n\n### Outlook ###\nNot Installed\n\n### FoxMail ###\nNot Installed\n\n### Thunderbird ###\nNot Installed\n\n### QQ Browser ###\nNot Installed\n\n\n-----\n\n### FireFox ###\nNot Installed\n\n### Chromium Recovery ###\nNot Installed\n\n### Keylogger And Clipboard ###\n\n[20/06/17] [Welcome to Chrome - Google Chrome]\n\n[ESC]\n\n[20/06/17] [Clipboard]\nVewgbprxvhvjktmyxofjvpzgazqszaoo\n\nFigure 1: Sample MassLogger log\n\n**Just Decompile It**\n\nLike many other .NET malwares, MassLogger obfuscates all of its methods names and even\nthe method control flow. We can use de4dot to automatically deobfuscate the MassLogger\npayload. However, looking at the deobfuscated payload, we quickly identify a major issue:\nMost of the methods contain almost no logic as shown in Figure 2.\n\n\n-----\n\ndnSpy showing empty methods\n\n\nFigure 2: dnSpy showing empty methods\nLooking at the original MassLogger payload in dnSpy’s Intermediate Language (IL) view\nconfirms that most methods do not contain any logic and simply return nothing. This is\nobviously not the real malware since we already observed with dynamic analysis that the\nsample indeed performs malicious activities and logging to a log file. We are left with a few\nmethods, most notably the method with the token 0x0600049D called first thing in the main\nmodule constructor.\n\n\n-----\n\ndnSpy IL view showing the method s details\n\n\nFigure 3: dnSpy IL view showing the method's details\nMethod 0x0600049D control flow has been obfuscated into a series of switch statements.\nWe can still somewhat follow the method’s high-level logic with the help of dnSpy as a\ndebugger. However, fully analyzing the method would be very time consuming. Instead,\nwhen first analyzing this payload, I chose to quickly scan over the entire module to look for\nhints. Luckily, I spot a few interesting strings I missed during basic static analysis: clrjit.dll,\nVirtualAlloc, VirtualProtect and WriteProcessMemory as seen in Figure 4.\n\n\n-----\n\nInteresting strings scattered throughout the module\n\n\nFigure 4: Interesting strings scattered throughout the module\nA quick internet search for “clrjit.dll” and “VirtualProtect” quickly takes us to [a](https://xoofx.com/blog/2018/04/12/writing-managed-jit-in-csharp-with-coreclr/) [few](https://georgeplotnikov.github.io/articles/just-in-time-hooking.html) [publications](http://antonioparata.blogspot.com/2018/02/analyzing-nasty-net-protection-of.html)\ndescribing a technique commonly referred to as Just-In-Time Hooking. In essence, JIT\nHooking involves installing a hook at the compileMethod() function where the JIT compiler is\nabout to compile the MSIL into assembly (x86, x64, etc). With the hook in place, the malware\ncan easily replace each method body with the real MSIL that contains the original malware\nlogic. To fully understand this process, let’s explore the .NET executable, the .NET methods,\nand how MSIL turns into x86 or x64 assembly.\n\n**.NET Executable Methods**\n\nA .NET executable is just another binary following the Portable Executable (PE) format.\n[There are plenty of resources describing the PE](https://bytepointer.com/resources/pietrek_peering_inside_pe.htm) [file](https://docs.microsoft.com/en-us/archive/msdn-magazine/2002/february/inside-windows-win32-portable-executable-file-format-in-detail) [format, the](https://docs.microsoft.com/en-us/windows/win32/debug/pe-format?redirectedfrom=MSDN) [.NET metadata and the .NET](https://www.ntcore.com/files/dotnetformat.htm)\ntoken tables in detail. I recommend our readers to take a quick detour and refresh their\n\n\n-----\n\nmemory on those topics before continuing. This post won t go into further details but will\nfocus on the .NET methods instead.\n\nEach .NET method in a .NET assembly is identified by a token. In fact, everything in a .NET\nassembly, whether it’s a module, a class, a method prototype, or a string, is identified by a\ntoken. Let’s look at method identified by the token 0x0600049D, as shown in Figure 5. The\nmost-significant byte (0x06) tells us that this token is a method token (type 0x06) instead of a\nmodule token (type 0x00), a TypeDef token (type 0x02), or a LocalVarSig token (type 0x11),\nfor example. The three least significant bytes tell us the ID of the method, in this case it’s\n0x49D (1181 in decimal). This ID is also referred to as the Method ID (MID) or the Row ID of\nthe method.\n\n\nMethod details for method 0x0600049D\n\n\nFigure 5: Method details for method 0x0600049D\n\n\n-----\n\nTo find out more information about this method, we look within the tables of the #~ stream\nof the .NET metadata streams in the .NET metadata directory as show in Figure 6. We\ntraverse to the entry number 1181 or 0x49D of the Method table to find the method metadata\nwhich includes the Relative Virtual Address (RVA) of the method body, various flags, a\npointer to the name of the method, a pointer to the method signature, and finally, an pointer\nto the parameters specification for this method. Please note that the MID starts at 1\n**instead of 0.**\n\n\nMethod details from the PE file header\n\n\nFigure 6: Method details from the PE file header\nFor method 0x0600049D, the RVA of the method body is 0xB690. This RVA belongs to the\n.text section whose RVA is 0x2000. Therefore, this method body begins at 0x9690 (0xB690 –\n0x2000) bytes into the .text section. The .text section starts at 0x200 bytes into the file\naccording to the section header. As a result, we can find the method body at 0x9890 (0x9690\n+ 0x200) bytes offset into the file. We can see the method body in Figure 7.\n\n\n-----\n\nMethod 0x0600049D body in a hex editor\n\n\nFigure 7: Method 0x0600049D body in a hex editor\n\n**.NET Method Body**\n\nThe .NET method body starts with a method body header, followed by the MSIL bytes. There\nare two types of .NET methods: a tiny method and a fat method. Looking at the first byte of\nthe method body header, the two least-significant bits tell us if the method is tiny (where the\nlast two bits are 10) or fat (where the last two bits are 11).\n\n_.NET Tiny Method_\n\nLet’s look at method 0x06000495. Following the same steps described earlier, we check the\nrow number 0x495 (1173 in decimal) of the Method table to find the method body RVA is\n0x7A7C which translates to 0x5C7C as the offset into the file. At this offset, the first byte of\nthe method body is 0x0A (0000 1010 in binary).\n\n\n-----\n\nMethod 0x06000495 metadata and body\n\n\nFigure 8: Method 0x06000495 metadata and body\nSince the two least-significant bits are 10, we know that 0x06000495 is a tiny method. For a\ntiny method, the method body header is one byte long. The two least-significant bits are\n10 to indicate that this is the tiny method, and the six most-significant bits tell us the size\nof the MSIL to follow (i.e. how long the MSIL is). In this case, the six most-significant bits are\n000010, which tells us the method body is two bytes long. The entire method body for\n0x06000495 is 0A 16 2A, followed by a NULL byte, which has been disassembled by dnSpy\nas shown in Figure 9.\n\n\n-----\n\nMethod 0x06000495 in dnSpy IL view\n\n\nFigure 9: Method 0x06000495 in dnSpy IL view\n_.NET Fat Method_\n\nComing back to method 0x0600049D (entry number 1181) at offset 0x9890 into the file (RVA\n0xB690), the first byte of the method body is 0x1B (or 0001 1011 in binary). The two leastsignificant bits are 11, indicating that 0x0600049D is a fat method. The fat method body\nheader is 12-byte long whose structure is beyond the scope of this blog post. The field we\nreally care about is a four-byte field at offset 0x04 byte into this fat header. This field\nspecifies the length of the MSIL that follows this method body header. For method\n0x0600049D, the entire method body header is “1B 30 08 00 A8 61 00 00 75 00 00 11” and\nthe length of the MSIL to follow is “A8 61 00 00” or 0x61A8 (25000 in decimal) bytes.\n\n\n-----\n\nMethod 0x0600049D body in a hex editor\n\n\nFigure 10: Method 0x0600049D body in a hex editor\n\n**JIT Compilation**\n\nWhether a method is tiny or fat, it does not execute as is. When the .NET runtime needs to\nexecute a method, it follows exactly the process described earlier to find the method body\nwhich includes the method body header and the MSIL bytes. If this is the first time the\nmethod needs to run, the .NET runtime invokes the Just-In-Time compiler which takes the\nMSIL bytes and compiles them into x86 or x64 assembly depending on whether the current\nprocess is 32- or 64-bit. After some preparation, the JIT compiler eventually calls the\ncompileMethod() function. The entire .NET runtime project is open-sourced and available on\nGitHub. We can easily find out that the compileMethod() function has the following prototype\n(Figure 11):\n\n\n-----\n\nCorJitResult __stdcall compileMethod (\n\nICorJitInfo            *comp,        /* IN */\n\nCORINFO_METHOD_INFO        *info,        /* IN */\n\nunsigned /* code:CorJitFlag */  flags,        /* IN */\n\nBYTE               **nativeEntry,    /* OUT */\n\nULONG               *nativeSizeOfCode  /* OUT */\n\n);\n\nFigure 11: compileMethod() function protype\n\nFigure 12 shows the CORINFO_METHOD_INFO structure.\n\nstruct CORINFO_METHOD_INFO\n\n{\nCORINFO_METHOD_HANDLE    ftn;\n\nCORINFO_MODULE_HANDLE    scope;\n\nBYTE *           ILCode;\n\nunsigned          ILCodeSize;\n\nunsigned          maxStack;\n\nunsigned          EHcount;\n\nCorInfoOptions       options;\n\nCorInfoRegionKind      regionKind;\n\nCORINFO_SIG_INFO      args;\n\nCORINFO_SIG_INFO      locals;\n\n};\n\nFigure 12: CORINFO_METHOD_INFO structure\n\nThe ILCode is a pointer to the MSIL of the method to compile, and the ILCodeSize tells us\nhow long the MSIL is. The return value of compileMethod() is an error code indicating\nsuccess or failure. In case of success, the nativeEntry pointer is populated with the address\nof the executable memory region containing the x86 or the x64 instruction that is compiled\nfrom the MSIL.\n\n**MassLogger JIT Hooking**\n\nLet’s come back to MassLogger. As soon as the main module initialization runs, it first\ndecrypts MSIL of the other methods. It then installs a hook to execute its own version of\ncompileMethod() (method 0x06000499). This method replaces the ILCode and ILCodeSize\nfields of the info argument to the original compileMethod() with the real malware’s MSIL\nbytes.\n\nIn addition to replacing the MSIL bytes, MassLogger also patches the method body header\nat module initialization time. As seen from Figure 13, the method body header of method\n0x060003DD on disk (at file offset 0x3CE0) is different from the header in memory (at RVA\n\n\n-----\n\n0x5AE0). The only two things remaining quite consistent are the least significant two bits\nindicating whether the method is tiny or fat. To successfully defeat this anti-analysis\ntechnique, we must recover the real MSIL bytes as well as the correct method body headers.\n\nSame method body with different headers when resting on disk vs. loaded in\nmemory\n\n\nFigure 13: Same method body with different headers when resting on disk vs. loaded in\nmemory\n\n**Defeating JIT Method Body Replacement With JITM**\n\nTo automatically recover the MSIL and the method body header, one possible approach\nsuggested by another FLARE team member is to install our own hook at compileMethod()\nfunction before loading and allowing the MassLogger module constructor to run. There are\n[multiple](https://georgeplotnikov.github.io/articles/just-in-time-hooking.html) [tutorials and](https://ntcore.com/files/netint_injection.htm) [open-sourced](https://xoofx.com/blog/2018/04/12/writing-managed-jit-in-csharp-with-coreclr/) [projects on hooking compileMethod() using both](https://github.com/maddnias/SJITHook)\nmanaged hooks (the new compileMethod() is a managed method written in C#) and native\nhooks (the new compileMethod() is native and written in C or C++). However, due to the\n\n\n-----\n\nunique way MassLogger hooks compileMethod(), we cannot use the vtable hooking\ntechnique implemented by many of the aforementioned projects. Therefore, I’d like to share\n[the following project: JITM, which is designed use inline hooking implemented by PolyHook](https://github.com/mandiant/jitm)\nlibrary. JITM comes with a wrapper for compileMethod() which logs all the method body\nheaders and MSIL bytes to a JSON file before calling the original compileMethod().\n\nIn addition to the hook, JITM also includes a .NET loader. This loader first loads the native\nhook DLL (jitmhook.dll) and installs the hook. The loader then loads the MassLogger payload\nand executes its entry point. This causes MassLogger’s module initialization code to execute\nand install its own hook, but hooking jitmhook.dll code instead of the original\ncompileMethod(). An alternative approach to executing MassLogger’s entry point is to call\nthe RuntimeHelpers.PrepareMethod() API to force the JIT compiler to run on all methods.\nThis approach is better because it avoids running the malware, and it potentially can recover\nmethods not called in the sample’s natural code path. However, additional work is required to\nforce all methods to be compiled properly.\n\nTo load and recover MassLogger methods, first run the following command (Figure 14):\n\njitm.exe Bin-123.exe [optional_timeout]\n\nFigure 14: Command to run jitm\n\nOnce the timeout expires, you should see the files jitm.log and jitm.json created in the\ncurrent directory. jitm.json contains the method tokens, method body headers and MSIL\nbytes of all methods recovered from Bin-123.exe. The only thing left to do is to rebuild the\n.NET metadata so we can perform static analysis.\n\n\n-----\n\nSample jitm.json\n\n\nFigure 15: Sample jitm.json\n\n**Rebuilding the Assembly**\n\nSince the decrypted method body headers and MSIL bytes may not fit in the original .NET\nassembly properly, the easiest thing to do is to add a new section and a section header to\nMassLogger. There are [plenty of](https://reverseengineering.stackexchange.com/questions/15045/adding-a-new-pe-section-for-a-code-cave) [resources on](https://reverseengineering.stackexchange.com/questions/8390/python-adding-a-asection-to-a-pe-file) [how to](https://reverseengineering.stackexchange.com/questions/13995/adding-section-to-pe-binary-using-stud-pe) [add a PE section header and data,](http://www.rohitab.com/discuss/topic/41466-add-a-new-pe-section-code-inside-of-it/)\nnone of which is trivial or easy to automate. Therefore, JITM also include the following\nPython 2.7 helper script to automate this process: Scripts\\addsection.py.\n\nWith the method body header and MSIL of each method added to a new PE section as\nshown in Figure 16, we can easily parse the .NET metadata and fix each method’s RVA to\npoint to the correct method body within the new section. Unfortunately, I did not find any\nPython library to easily parse the .NET metadata and the MethodDef table. Therefore, JITM\n\n\n-----\n\nalso includes a partially implemented .NET metadata parser: Script\\pydnet.py. This script\nuses pefile and vivisect modules and parses the PE file up to the Method table to extract all\nmethods and their associated RVAs.\n\n\nBin-123.exe before and after adding an additional section named FLARE\n\n\nFigure 16: Bin-123.exe before and after adding an additional section named FLARE\nFinally, to tie everything together, JITM provides Script\\fix_assembly.py to perform the\nfollowing tasks:\n\n1. Write the method body header and MSIL of each method recovered in jitm.json into a\n\ntemporary binary file named “section.bin” while at the same time remember the\nassociated method token and the offset into section.bin.\n2. Use addsection.py to add section.bin into Bin-123.exe and save the data into a new\n\nfile, e.g. Bin-123.fixed.exe.\n3. Use pydnet.py to parse Bin-123.fixed.exe and update the RVA field of each method\n\nentry in the MethodDef table to point to the correct RVA into the new section.\n\n\n-----\n\nThe final result is a partially reconstructed .NET assembly. Although additional work is\nnecessary to get this assembly to run correctly, it is good enough to perform static analysis to\nunderstand the malware’s high-level functionalities.\n\nLet’s look at the reconstructed method 0x0600043E that implements the decryption logic for\nthe malware configuration. Compared to the original MSIL, the reconstructed MSIL now\nshows that the malware uses AES-256 in CBC mode with PKCS7 padding. With a\ncombination of dynamic analysis and static analysis, we can also easily identify the key to be\n“Vewgbprxvhvjktmyxofjvpzgazqszaoo” and the IV to be part of the Base64-encoded buffer\npassed in as its argument.\n\n\nMethod 0x0600043 before and after fixing the assembly\n\n\nFigure 17: Method 0x0600043 before and after fixing the assembly\nArmed with that knowledge, we can write a simple tool to decrypt the malware configuration\nand recover all HBIs and NBIs (Figure 18).\n\n\n-----\n\nBinderBytes:\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nBinderName: Mzvmy_Nyrrd\nBinderOnce: false\nDownloaderFilename: Hrebxs\nDownloaderOnce: false\nDownloaderUrl: Vrwus\nEmailAddress: appfoil@outlook.com\nEmailClient: smtp.outlook.com\nEmailEnable: true\nEmailPass: services000\nEmailPort: 587\nEmailSendTo: appfoil@outlook.com\nEmailSsl: True\nEnableAntiDebugger: false\nEnableAntiHoneypot: false\nEnableAntiSandboxie: false\nEnableAntiVMware: false\nEnableBinder: false\nEnableBotKiller: false\nEnableBrowserRecovery: true\nEnableDeleteZoneIdentifier: false\nEnableDownloader: false\nEnableForceUac: false\nEnableInstall: false\nEnableKeylogger: true\nEnableMemoryScan: false\nEnableMutex: false\nEnableScreenshot: false\nEnableSearchAndUpload: false\nEnableSpreadUsb: false\nEnableWDExclusion: false\nEnableWindowSearcher: false\nExectionDelay: 6\nExitAfterDelivery: false\nFtpEnable: false\nFtpHost: ftp://127.0.0.1\nFtpPass:\nFtpPort: 21\nFtpUser: Foo\nInstallFile: Pkkbdphw\nInstallFolder: %AppData%\nInstallSecondFolder: Eqrzwmf\nKey:\nMutex: Ysjqh\nPanelEnable: false\nPanelHost: http://example.com/panel/upload.php\nSearchAndUploadExtensions: .jpeg, .txt, .docx, .doc,\nSearchAndUploadSizeLimit: 500000\nSearchAndUploadZipSize: 5000000\nSelfDestruct: false\nSendingInterval: 2\n\n\n-----\n\nVersion: MassLogger v1.3.4.0\nWindowSearcherKeywords: youtube, facebook, amazon,\n\nFigure 18: Decrypted configuration\n\n**Conclusion**\n\nUsing a JIT compiler hook to replace the MSIL is a powerful technique that makes static\nanalysis almost impossible. Although this technique is not new, I haven’t seen many .NET\nmalwares making use of it, let alone trying to implement their own adaptation instead of\n[using widely available protectors like ConfuserEx. Hopefully, with this blog post and JITM,](https://github.com/mandiant/jitm)\nanalysts will now have the tools and knowledge to defeat MassLogger or any future variants\nthat use a similar technique.\n\nIf this is the type of work that excites you; and, if you thrive to push the state of the art when\nit comes to malware analysis and reverse engineering, the Front Line Applied Research and\nExpertise (FLARE) team may be a good place for you. The FLARE team faces fun and\nexciting challenges on a daily basis; and we are constantly looking for more team members\n[to tackle these challenges head on. Check out FireEye’s career page to see if any of our](https://www.fireeye.com/company/jobs.html)\nopportunities would be a good fit for you.\n\n**Contributors (Listed Alphabetically)**\n\n[Tyler Dean (@spresec): Technical review of the post](https://twitter.com/spresec)\nMichael Durakovich: Technical review of the post\n[Stephen Eckels (@stevemk14ebr): Help with porting JITM to use PolyHook](https://github.com/stevemk14ebr/)\n[Jon Erickson (@evil-e): Technical review of the post](https://github.com/evil-e)\n[Moritz Raabe (@m_r_tz): Technical review of the post](https://twitter.com/m_r_tz?lang=en)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-08-06 - Bypassing MassLogger Anti-Analysis — a Man-in-the-Middle Approach.pdf"
+    ],
+    "report_names": [
+        "2020-08-06 - Bypassing MassLogger Anti-Analysis — a Man-in-the-Middle Approach.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "9f101d9c-05ea-48b9-b6f1-168cd6d06d12",
+            "created_at": "2023-01-06T13:46:39.396409Z",
+            "updated_at": "2025-03-27T02:00:03.074969Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "CHROMIUM",
+                "ControlX",
+                "Red Dev 10",
+                "RedHotel",
+                "Red Scylla",
+                "TAG-22",
+                "BRONZE UNIVERSITY",
+                "AQUATIC PANDA",
+                "Charcoal Typhoon",
+                "BountyGlad"
+            ],
+            "source_name": "MISPGALAXY:Earth Lusca",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "6abcc917-035c-4e9b-a53f-eaee636749c3",
+            "created_at": "2022-10-25T16:07:23.565337Z",
+            "updated_at": "2025-03-27T02:02:09.868522Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Bronze University",
+                "Charcoal Typhoon",
+                "Chromium",
+                "Red Dev 10",
+                "Red Scylla"
+            ],
+            "source_name": "ETDA:Earth Lusca",
+            "tools": [
+                "Agentemis",
+                "AntSword",
+                "BIOPASS",
+                "BIOPASS RAT",
+                "BadPotato",
+                "Behinder",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Doraemon",
+                "FRP",
+                "Fast Reverse Proxy",
+                "FunnySwitch",
+                "HUC Port Banner Scanner",
+                "KTLVdoor",
+                "Mimikatz",
+                "NBTscan",
+                "POISONPLUG.SHADOW",
+                "PipeMon",
+                "RbDoor",
+                "RibDoor",
+                "RouterGod",
+                "SAMRID",
+                "ShadowPad Winnti",
+                "SprySOCKS",
+                "WinRAR",
+                "Winnti",
+                "XShellGhost",
+                "cobeacon",
+                "fscan",
+                "lcx",
+                "nbtscan"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d53593c3-2819-4af3-bf16-0c39edc64920",
+            "created_at": "2022-10-27T08:27:13.212301Z",
+            "updated_at": "2025-03-27T02:00:55.529662Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Earth Lusca",
+                "TAG-22",
+                "Charcoal Typhoon",
+                "CHROMIUM",
+                "ControlX"
+            ],
+            "source_name": "MITRE:Earth Lusca",
+            "tools": [
+                "Mimikatz",
+                "PowerSploit",
+                "Tasklist",
+                "certutil",
+                "Cobalt Strike",
+                "Winnti for Linux",
+                "Nltest",
+                "NBTscan",
+                "ShadowPad"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536069,
+    "ts_updated_at": 1743041735,
+    "ts_creation_date": 1653706202,
+    "ts_modification_date": 1653706202,
+    "files": {
+        "pdf": "https://archive.orkl.eu/5477bbd5c27cd6be35be749d6f7c288267578eb5.pdf",
+        "text": "https://archive.orkl.eu/5477bbd5c27cd6be35be749d6f7c288267578eb5.txt",
+        "img": "https://archive.orkl.eu/5477bbd5c27cd6be35be749d6f7c288267578eb5.jpg"
+    }
+}

@@ -1,0 +1,235 @@
+{
+    "id": "7bc9d759-7322-4faa-97e3-3c1a3193807d",
+    "created_at": "2023-05-06T02:08:42.511156Z",
+    "updated_at": "2025-03-27T02:17:00.409581Z",
+    "deleted_at": null,
+    "sha1_hash": "ae15327693918cd11b5ba30508b1de664c87d54d",
+    "title": "2022-09-16 - Bumblebee Malware Loader- Threat Analysis",
+    "authors": "",
+    "file_creation_date": "2023-05-05T01:47:07Z",
+    "file_modification_date": "2023-05-05T01:47:07Z",
+    "file_size": 2879132,
+    "plain_text": "# Bumblebee Malware Loader: Threat Analysis\n\n**[aspirets.com/blog/bumblebee-malware-loader-threat-analysis/](https://www.aspirets.com/blog/bumblebee-malware-loader-threat-analysis/)**\n\n## Executive Summary\n\n\nSeptember 16, 2022\n\n\n[This year Google’s TAG (Threat Analysis Group) published an article referring to a new](https://blog.google/threat-analysis-group/exposing-initial-access-broker-ties-conti/)\nThreat Actor Group called “EXOTIC LILY”. This group is believed to be an Initial Access\n[Broker with strong links to the Wizard Spider group which operates the Conti ransomware](https://adversary.crowdstrike.com/en-US/adversary/wizard-spider/?L=235)\nvariant.\n\nIn an interesting analysis, Google TAG noted a new delivery method abusing file transfer\nsites like TransferXL and WeTransfer, which lured users to download a .zip file. Inside the\n.zip file was an .iso which, when clicked would auto-mount to a Windows system containing a\n.lnk shortcut file and .dll file.\n\nFurther analysis revealed that the .dll file is a new variant of loader which is executed by the\ncommand embedded into the .lnk file.\n\nAspire’s SOC team undertook further analysis of the campaign by retrieving a copy of the\n[network packet capture from the SANS Internet Storm Center. We uncovered evidence of](https://isc.sans.edu/forums/diary/Bumblebee+Malware+from+TransferXL+URLs/28664/)\ncobalt strike activity, suspicious C2 connections displaying evidence of defence evasion and\nsuspicious connections to AWS Virtual Machine Infrastructure.\n\n### Bumblebee delivery & execution mechanism overview\n\n\n-----\n\n### Bumblebee breakdown\n\nThe bumblebee loader is delivered as a zip file, downloaded via an e-mail lure from\nTransferXL:\n\nUpon opening the zip file you will find an .iso file which mounts when double clicked:\n\nInside the mounted .iso you will find a shortcut file and a .dll file (spc.dll)\n\n[Inspecting the shortcut reveals an execution tactic utilising rundll32.exe](https://lolbas-project.github.io/lolbas/Binaries/Rundll32/)\n\n\n-----\n\nRundll32.exe takes the .dll and the entry point as two arguments to execute the DLL.\n\n### Traffic analysis with Brim\n\nBrim is a desktop application providing a SIEM-like interface to take in PCAP files and\nconvert them to Zeek logs, as well as running the file through the Suricata NIDS engine to\nproduce alert events for suspicious activity.\n\nBrim can be used to pivot from zeek data points, open Wireshark for deeper analysis, enrich\nwith VirusTotal and visualise data in charts and graphs.\n\n\n-----\n\n### Host identification\n\nThere was only one host and username on the PCAP, which made scoping the potentially\ninfected host easier.\n\n**Hostname: DESKTOP-D8FSF3**\n\n**Domain: STUDIOPLUS.COMPANY**\n\n**Username: Jacob.macnuttey**\n\n\n-----\n\n### HTTPS traffic\n\nA quick filter on the SSL traffic shows us communications with the TransferXL domain\n(transferxl[.]com) initially. By ordering the traffic by time (Earliest to Latest) we can then start\nto spot suspicious domains that we might want to investigate more by pivoting into other\nZeek logs.\n\nAnother perspective of the SSL traffic is to sort by count of destination host, this shows the\nmajority of the traffic in this packet capture was to xenilik[.]com. What’s more interesting at\nthis point of our analysis, is that there are more connections directly to 194[.]135[.]33[.]144\nover Port 443… This could be our Command and Control (C2) connections.\n\n\n-----\n\n### Suricata alerts\n\nWhen you load a packet capture into Brim, the file will be analysed by the integrated Zeek\nand Suricata engines which in turn generates the Zeek log files as well as any Suricata\n(NIDS) alerts to assist in generating leads to investigate.\n\nIn the case of this packet capture, there were only 3 alert categories, which didn’t generate\nany immediate leads with regards to command and control, file download of exfiltration.\n\n**Conclusions**\n\nWith the traffic filtered down to interesting traffic i.e. not CDN, not googletagmanager etc. we\nget a clear view of the timeline.\n\nThe first section of traffic shows the download from TransferXL, the second section of traffic\nshows C2 traffic related to bumblebee loader, utilising a self-signed certificate.\n\n\n-----\n\n### TransferXL download & C2 traffic\n\n**C2 JA3 hash (The pitfall of JA3 hashes)**\n\nJA3 hashes can be really useful, as they aid in identifying the client application that made the\nSSL connection. With that said, some C2 frameworks will rely on underlying default libraries\n(Python) or an operating system socket, which means the hash cannot be used as a reliable\nIOC.\n\nWhen analysing the JA3 hash of the SSL handshake, Aspire uncovered that this is being\n[reported as an IoC in many sources and historical articles related to other threat actors. The](https://labs.nettitude.com/blog/detecting-poshc2-indicators-of-compromise/#:~:text=c12f54a3f91dc7bafd92cb59fe009a35)\nJA3 hash in this case actually identifies that the C2 used a Windows 10 socket, which means\nthat the hash cannot be used to uniquely identify the handshake as an indicator of malicious\ntraffic. This could in theory by a method of evasion.\n\nA full list of default hashes can be found below:\n\nWin10-socket: c12f54a3f91dc7bafd92cb59fe009a35\nWin10-socket-SNI: 3b5074b1b5d032e5620f69f9f700ff0e\nWin10-powershell: fc54e0d16d9764783542f0146a98b300\nWin10-powershell-SNI: 54328bd36c14bd82ddaa0c04b25ed9ad\nWin10-iexplore: be6155e945a3e59a1dd0841b86f6c945\nWin10-iexplore-SNI: 10ee8d30a5d01c042afd7b2b205facc4\nWin2016-socket: 043c543b63b895881d9abfbc320cb863\nWin2016-socket-SNI: 7c410ce832e848a3321432c9a82e972b\nWin2016-powershell: 17b69de9188f4c205a00fe5ae9c1151f\nWin2016-powershell-SNI: 235a856727c14dba889ddee0a38dd2f2\nWin2016-iexplore: 4f2e9c50db9bd107439136bd24740c0d\n\n\n-----\n\nWin2016-iexplore-SNI: f88610704d61a237aa9e5e0849573998\n\n_The above list should be used to baseline your environment. Credit to Jeff Atkinson who_\n_shared this list in the Bro Workshop 2019 at Geneva._\n\n### Suspicious AWS EC2 connections\n\nAs highlighted by MTA’s analysis, we also noted the suspicious connections to an AWS EC2\nVirtual Machine.\n\nWhilst Brim offers a powerful capability to see the raw packets in Wireshark at a click of a\nbutton to inspect the data in more detail, the traffic is SSL and thus cannot be inspected in\nthis case.\n\nWhat we can do is calculate the total bytes sent and received (Approx. 7.7MB), this traffic\ncould be related to the threat actor in some way, so should be deemed an IOC of low\nconfidence.\n\n### Cobalt Strike traffic\n\n\n-----\n\nWe re-visited the high amount of connections to xenilik[.]com (23[.]106[.]215[.]123), when\ncross-referencing the JA3 hash, this hash is a high confidence IOC for cobalt strike.\n\n### Enrichment\n\nOne final feature of Brim we leveraged, was the ability to enrich the data with VirusTotal by\nright clicking elements like IP Addresses and domain names to perform a VT lookup. One\nkey takeaway was that the detection rate was very low, with no key context around what the\nentities were related to i.e. Cobalt Strike or C2 or malware etc.\n\n## Want to Reduce Your Attack Surface?\n\n[Discover our managed cyber security services](https://www.aspirets.com/cyber-security-managed-services/)\n\n\n-----\n\n**Written by:**\n\n**Michael Lamb**\n\n[See more by\nMichael Lamb](https://www.aspirets.com/blog/author/michael-lamb/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-09-16 - Bumblebee Malware Loader- Threat Analysis.pdf"
+    ],
+    "report_names": [
+        "2022-09-16 - Bumblebee Malware Loader- Threat Analysis.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "4594f985-865e-4862-8047-2e80226e246a",
+            "created_at": "2022-10-27T08:27:12.984825Z",
+            "updated_at": "2025-03-27T02:00:55.424827Z",
+            "deleted_at": null,
+            "main_name": "EXOTIC LILY",
+            "aliases": [
+                "EXOTIC LILY"
+            ],
+            "source_name": "MITRE:EXOTIC LILY",
+            "tools": [
+                "Bazar"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "63061658-5810-4f01-9620-7eada7e9ae2e",
+            "created_at": "2022-10-25T15:50:23.752974Z",
+            "updated_at": "2025-03-27T02:00:55.538582Z",
+            "deleted_at": null,
+            "main_name": "Wizard Spider",
+            "aliases": [
+                "Wizard Spider",
+                "UNC1878",
+                "TEMP.MixMaster",
+                "Grim Spider",
+                "FIN12",
+                "GOLD BLACKBURN",
+                "ITG23",
+                "Periwinkle Tempest",
+                "DEV-0193"
+            ],
+            "source_name": "MITRE:Wizard Spider",
+            "tools": [
+                "TrickBot",
+                "AdFind",
+                "BITSAdmin",
+                "Bazar",
+                "LaZagne",
+                "Nltest",
+                "GrimAgent",
+                "Dyre",
+                "Ryuk",
+                "Conti",
+                "Emotet",
+                "Rubeus",
+                "Mimikatz",
+                "Diavol",
+                "PsExec",
+                "Cobalt Strike"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "f6f91e1c-9202-4497-bf22-9cd5ef477600",
+            "created_at": "2023-01-06T13:46:38.86765Z",
+            "updated_at": "2025-03-27T02:00:02.938998Z",
+            "deleted_at": null,
+            "main_name": "WIZARD SPIDER",
+            "aliases": [
+                "FIN12",
+                "UNC2053",
+                "Pistachio Tempest",
+                "TEMP.MixMaster",
+                "GOLD BLACKBURN",
+                "Periwinkle Tempest",
+                "DEV-0193",
+                "Storm-0193",
+                "Trickbot LLC",
+                "DEV-0237"
+            ],
+            "source_name": "MISPGALAXY:WIZARD SPIDER",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "e6a21528-2999-4e2e-aaf4-8b6af14e17f3",
+            "created_at": "2022-10-25T16:07:24.422115Z",
+            "updated_at": "2025-03-27T02:02:10.216817Z",
+            "deleted_at": null,
+            "main_name": "Wizard Spider",
+            "aliases": [
+                "DEV-0193",
+                "Gold Blackburn",
+                "Gold Ulrick",
+                "Grim Spider",
+                "ITG23",
+                "Operation BazaFlix",
+                "Periwinkle Tempest",
+                "TEMP.MixMaster",
+                "Wizard Spider"
+            ],
+            "source_name": "ETDA:Wizard Spider",
+            "tools": [
+                "AdFind",
+                "Agentemis",
+                "Anchor_DNS",
+                "BEERBOT",
+                "BazarBackdoor",
+                "BazarCall",
+                "BazarLoader",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Conti",
+                "Diavol",
+                "Dyranges",
+                "Dyre",
+                "Dyreza",
+                "Dyzap",
+                "Gophe",
+                "Invoke-SMBAutoBrute",
+                "KEGTAP",
+                "LaZagne",
+                "LightBot",
+                "PowerSploit",
+                "PowerTrick",
+                "PsExec",
+                "Ryuk",
+                "SessionGopher",
+                "TSPY_TRICKLOAD",
+                "Team9Backdoor",
+                "The Trick",
+                "TheTrick",
+                "Totbrick",
+                "TrickBot",
+                "TrickLoader",
+                "TrickMo",
+                "Upatre",
+                "bazaloader",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bc119938-a79c-4e5f-9d4d-dc96835dfe2e",
+            "created_at": "2024-06-04T02:03:07.799286Z",
+            "updated_at": "2025-03-27T02:05:17.337094Z",
+            "deleted_at": null,
+            "main_name": "GOLD BLACKBURN",
+            "aliases": [
+                "Periwinkle Tempest ",
+                "Wizard Spider ",
+                "ITG23 "
+            ],
+            "source_name": "Secureworks:GOLD BLACKBURN",
+            "tools": [
+                " Buer Loader",
+                " Dyre",
+                " Team9",
+                " TrickBot",
+                "BazarLoader"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "56384d06-abc2-4853-8440-db4d7b7d1b5f",
+            "created_at": "2023-01-06T13:46:39.367122Z",
+            "updated_at": "2025-03-27T02:00:03.064071Z",
+            "deleted_at": null,
+            "main_name": "EXOTIC LILY",
+            "aliases": [
+                "DEV-0413"
+            ],
+            "source_name": "MISPGALAXY:EXOTIC LILY",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1683338922,
+    "ts_updated_at": 1743041820,
+    "ts_creation_date": 1683251227,
+    "ts_modification_date": 1683251227,
+    "files": {
+        "pdf": "https://archive.orkl.eu/ae15327693918cd11b5ba30508b1de664c87d54d.pdf",
+        "text": "https://archive.orkl.eu/ae15327693918cd11b5ba30508b1de664c87d54d.txt",
+        "img": "https://archive.orkl.eu/ae15327693918cd11b5ba30508b1de664c87d54d.jpg"
+    }
+}

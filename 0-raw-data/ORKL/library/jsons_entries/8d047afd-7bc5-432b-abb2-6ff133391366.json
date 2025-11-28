@@ -1,0 +1,93 @@
+{
+    "id": "8d047afd-7bc5-432b-abb2-6ff133391366",
+    "created_at": "2023-01-12T15:02:59.786128Z",
+    "updated_at": "2025-03-27T02:12:11.111913Z",
+    "deleted_at": null,
+    "sha1_hash": "4080fd3fa1acb8cfe0939242f6d2cf32478dccf3",
+    "title": "2020-12-02 - Threat Alert- Fileless Malware Executing in Containers",
+    "authors": "",
+    "file_creation_date": "2022-05-28T18:21:41Z",
+    "file_modification_date": "2022-05-28T18:21:41Z",
+    "file_size": 2527224,
+    "plain_text": "# Threat Alert: Fileless Malware Executing in Containers\n\n**blog.aquasec.com/fileless-malware-container-security**\n\nIdan Revivo & Assaf Morag\n\nIdan Revivo & Assaf Morag\n\nDecember 02, 2020\nOur cyber research team detected a new type of attack that executes and runs malware\nstraight from memory in containers, thus evading common defenses and static scanning.\nThis malware is using a rootkit to hide its running processes, then hijacks resources by\n\n\n-----\n\nexecuting a crypto miner from memory — leaving a backdoor that enables attackers to do\nmore damage. We found four container images in Docker Hub designed to execute fileless\nmalware attacks.\n\nA fileless attack is especially concerning since industry reports indicate that every year the\nnumber of these malware attacks is increasing — by hundreds of percent. Some reports\nclaim that this type of malware attack is 10 times more likely to succeed in infecting a\nmachine than a file-based attack. Now that adversaries are using such highly sophisticated\nand obfuscated techniques, security practitioners must up their game accordingly.\n\n## What is a fileless malware attack?\n\nUntil recently, we’ve most often witnessed two types of attacks in containers, and neither of\nthem were fileless. Dedicated malicious images are one type of attack that can be detected\nby using traditional static security solutions, such as antivirus scanners, that usually scan to\nfind malicious marks correlated with a tool’s signature. The second type is a benign image\nrunning malicious scripts at the entry point which is set to download malware from the\nattacker’s C2 server. This type of attack is more advanced, to detect this form of malware\nyou need a dynamic scanner that’s capable of scanning files written to disk during runtime.\n[You can read more about our classifications in our 2020 Cloud Native Threat Report.](https://info.aquasec.com/cloud-native-threats)\n\nHowever, in a fileless malware attack, the malware is loaded into memory and then\nexecuted. By executing malicious code directly from memory, attackers can evade detection\nby static scanners, and even some dynamic scanners, because they cannot read the file\nfrom memory. Only more sophisticated dynamic analysis that analyzes a running system’s\nprocesses can help.\n\n## The detection method\n\nWe at Team Nautilus occasionally scan Docker Hub using our sophisticated Aqua DTA\n(Dynamic Threat Analysis) scanner. It is purpose-built to detect hidden, malicious elements\nin images by running the image as a container in a secure sandbox to analyze its behavior.\n\nUsing this technique, we detected two Docker Hub accounts (‘portaienr’ and ‘lifengyi1323’)\ncontaining various malicious images. Our research shows that these accounts are linked to\nTeamTNT, a group whose attacks we’ve seen before. We just reported about the account\n‘portaienr’ in a recent blog. In addition to the findings in the blog, DTA found four images\ndesigned to execute fileless malware attacks. It was at this point we decided to thoroughly\ninvestigate these images.\n\n\n-----\n\n## The entry points\n\nThe image ‘lifengyi1323/traband’ was built with six layers. Two of the layers contained\nBusyBox (provides various Unix utilities) and the rest contained TeamTNT’s malicious\nbinaries and scripts (as detailed below). The container is initiated with execution of file\ninit.sh which is located on disk (MD5= 2a42cc706d451a64b5d2cbf80e5d61ec).\n\n\n-----\n\nThe shell file Init.sh is a short, straight-forward file designed to prepare the environment to\nexecute three files. First, the script changes attribute definitions in several files. It changes\n‘/root/sbin’ (MD5= f42be0d5a0da02a4d6bfc95b62d1838e) and ‘/root/traband’ (MD5=\n37902136fe513879ee7fee9208cdb40a) mode to execute. Both ‘sbin’ and ‘traband’ are\npacked files, but they only have a few general detections in VirusTotal, an online service that\nanalyzes files and URLs to detect malicious content. A lack of detections within these files\nimplies that this technique is highly effective against av scanners. After a deeper analysis,\n[‘traband’ seems to be packed with UPX and](https://upx.github.io/) [ezuri packers while ‘sbin’ is packed with ezuri](https://github.com/guitmz/ezuri)\npacker.\n\nAttackers often use packers as a defensive evasion technique since they can compress a\nmalware file without affecting its code and functionality and appear to security detectors as a\nbenign file. There is also a 4th file (‘muser’) that is designed to open a backdoor for the\nattackers (TeamTNT). The script erases host Cron jobs and sets to execute the ‘muser’ file in\na Cron that is mounted to the host.\n\n## Loading and executing the payload in memory\n\nAs mentioned above, both files ‘sbin’ and ‘traband’ are decrypting and executing the payload\nfrom memory during runtime.\n\n**The file ‘traband’**\n\nFirst ‘traband’ is unpacked and the decrypted binary payload is written and executed from\nmemory. We then see an execve() syscall from memory that is running a process named\n[‘kthreadd’, this is actually a rootkit using LD Preload to hide all processes related to](https://github.com/gianlucaborello/libprocesshider/blob/master/processhider.c)\n‘kthreadd’.\n\nMoreover, the elf binary is also executed from memory. It is classified in VirusTotal as\nTsunami malware (MD5= 48c056a1bf908a424d472f121ccaf44b), something often used in\nTeamTNT’s other campaigns. Tsunami malware enables a remote attacker to download files\nand execute shell commands in an infected host. In addition, the attacker can also launch a\ndenial-of-service attack from the infected host. Lastly, the Tsunami connected through IRC\nprotocol to 164[.]68[.]106[.]96[:]6697 that serves as TeamTNT’s C2 server\n(ircbd[.]anondns[.]net / irc[.]teamtnt[.]red).\n\n**The file ‘sbin’**\n\nThe file ‘sbin’ is executed and the binary payload is written and executed from memory.\nFollowing that, we see indications of an unpacking process and another execve() syscall with\n‘kthreadd’ as argv. The same name is used in both executed binaries so that its processes\nare hidden with the help of the rootkit. The code is encrypted with base64 and is then\ndecrypted and executed during runtime. The output of the decrypted base64 is written to disk\nand archived as a tar file ‘kube.tar.gz.’ Once extracted, the outcome is ‘kube’ file, the\nTsunami malware (MD5=df386df8c8a376686f788ceff1216f11)\n\n\n-----\n\nWe see another execve() syscall that executes a crypto miner from memory. Lastly, we see a\nconnection with a mining pool (gulf[.]moneroocean[.]stream / 18[.]210[.]126[.]40).\n\n## In Summary\n\nThe first attacks in containers involved running a simple mining command or an\nunsophisticated attempt to break out of the container to the host. Now, for the first time, we\nsee a fileless attack in a container, using rootkit to hide traces, stealthily mining\ncryptocurrency, and opening a backdoor to the attackers.\n\nThese new and daring attacks emphasize the importance of putting better and stronger\nsolutions in the defender’s toolbox. Below are a few recommendations, when practiced\ntogether, they can assist you against these kinds of attacks:\n\n1. Scan all images that you use, make sure you are familiar with them and their use, use\n\nminimal privileges, such as avoiding root user and privileged mode. Use a static\n[vulnerability scanner such as Trivy (open source).](https://github.com/aquasecurity/trivy)\n2. Use [Tracee (open source) to detect suspicious or abnormal processes running in your](https://github.com/aquasecurity/tracee)\n\n[environment, and dynamically scan using DTA to safely discover malware in images](https://preview.hs-sites.com/dynamic-container-analysis)\nbefore deploying.\n3. Investigate logs, mostly around user actions, and look for anomalous actions.\n4. Form a security strategy to better [enforce your policies and consider using](https://blog.aquasec.com/cloud-native-security-drift-prevention)\n\n[advanced cloud security tools to improve security coverage.](https://www.aquasec.com/products/aqua-cloud-native-security-platform/)\n\n## MITRE ATT&CK Framework\n\n\n-----\n\n-----\n\n**_Indications of Compromise:_**\n\n**Container Image:**\n\nlifengyi1323/simple:latest\n\nlifengyi1323/speedrun:latest\n\nlifengyi1323/monkey:latest\n\nlifengyi1323/bindoc:latest\n\nlifengyi1323/kubeconfig:latest\n\nlifengyi1323/traband:latest\n\n**Binaries:**\n\nThe file ‘usr/bin/xmrig’ (MD5= 5888e17810aa1846c0c013804e181624) was detected in\ncontainer image ‘lifengyi1323/simple’\n\nThe in-memory file (MD5= e01d8a1656e41ec3b7de722424286ce9) was detected in\nruntime memory while running ‘lifengyi1323/simple’\n\nThe file ‘root/sbin’ (MD5= f42be0d5a0da02a4d6bfc95b62d1838e) was detected in\ncontainer image ‘lifengyi1323/bindoc’\n\nThe file ‘root/xmrig’ (MD5= 91a915ce774a9103c17e2786fb6d7424) was detected in\ncontainer image ‘lifengyi1323/kubeconfig’\n\nThe in-memory file (MD5= d180c45a49e3d338c4cd7fb1781453d7) was detected in\nruntime memory while running ‘lifengyi1323/kubeconfig’\n\n**Domains / IP Addresses:**\n\nircbd[.]anondns[.]net\n\nirc[.]teamtnt[.]red\n\n164[.]68[.]106[.]96\n\n\n-----\n\n**Idan Revivo & Assaf Morag**\n\nIdan is the Head of ‘Team Nautilus’ - Aqua's research team. Assaf Morag is the Lead Data\nAnalyst at Team Nautilus at Aqua.\n\n[Security Threats,](https://blog.aquasec.com/topic/security-threats) [Container Security,](https://blog.aquasec.com/topic/container-security) [Malware Attacks](https://blog.aquasec.com/topic/malware-attacks)\n\n[Tweet](https://twitter.com/share)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-12-02 - Threat Alert- Fileless Malware Executing in Containers.pdf"
+    ],
+    "report_names": [
+        "2020-12-02 - Threat Alert- Fileless Malware Executing in Containers.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "eb3f4e4d-2573-494d-9739-1be5141cf7b2",
+            "created_at": "2022-10-25T16:07:24.471018Z",
+            "updated_at": "2025-03-27T02:02:10.24394Z",
+            "deleted_at": null,
+            "main_name": "Cron",
+            "aliases": [],
+            "source_name": "ETDA:Cron",
+            "tools": [
+                "Catelites",
+                "Catelites Bot",
+                "CronBot",
+                "TinyZBot"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "f809bfcb-b200-4988-80a8-be78ef6a52ef",
+            "created_at": "2023-01-06T13:46:39.186988Z",
+            "updated_at": "2025-03-27T02:00:03.016358Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "Adept Libra"
+            ],
+            "source_name": "MISPGALAXY:TeamTNT",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c3ca592f-0669-49bd-ab5c-310007ab2fb4",
+            "created_at": "2022-10-25T15:50:23.334495Z",
+            "updated_at": "2025-03-27T02:00:55.445098Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "TeamTNT"
+            ],
+            "source_name": "MITRE:TeamTNT",
+            "tools": [
+                "Peirates",
+                "MimiPenguin",
+                "LaZagne",
+                "Hildegard"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535779,
+    "ts_updated_at": 1743041531,
+    "ts_creation_date": 1653762101,
+    "ts_modification_date": 1653762101,
+    "files": {
+        "pdf": "https://archive.orkl.eu/4080fd3fa1acb8cfe0939242f6d2cf32478dccf3.pdf",
+        "text": "https://archive.orkl.eu/4080fd3fa1acb8cfe0939242f6d2cf32478dccf3.txt",
+        "img": "https://archive.orkl.eu/4080fd3fa1acb8cfe0939242f6d2cf32478dccf3.jpg"
+    }
+}

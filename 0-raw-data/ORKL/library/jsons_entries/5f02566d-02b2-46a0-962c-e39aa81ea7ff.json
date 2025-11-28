@@ -1,0 +1,79 @@
+{
+    "id": "5f02566d-02b2-46a0-962c-e39aa81ea7ff",
+    "created_at": "2023-01-12T15:07:10.072462Z",
+    "updated_at": "2025-03-27T02:13:29.025554Z",
+    "deleted_at": null,
+    "sha1_hash": "8caadb6a917ffa41e534c459c406be65bd06dabe",
+    "title": "2019-08-15 - Gootkit Banking Trojan - Deep Dive into Anti-Analysis Features",
+    "authors": "",
+    "file_creation_date": "2022-05-27T22:00:56Z",
+    "file_modification_date": "2022-05-27T22:00:56Z",
+    "file_size": 863819,
+    "plain_text": "# Gootkit Banking Trojan | Deep Dive into Anti-Analysis Features\n\n**[labs.sentinelone.com/gootkit-banking-trojan-deep-dive-anti-analysis-features/](https://labs.sentinelone.com/gootkit-banking-trojan-deep-dive-anti-analysis-features/)**\n\nDaniel Bunce\n\n_In this post, Daniel discusses the Gootkit malware banking trojan and its use of Anti Analysis_\n_techniques._\n\nThe Gootkit Banking Trojan was discovered back in 2014, and utilizes the Node.JS library to\nperform a range of malicious tasks, from website injections and password grabbing, all the\nway up to video recording and remote VNC capabilities. Since its discovery in 2014, the\nactors behind Gootkit have continued to update the codebase to slow down analysis and\nthwart automated sandboxes. This post will take a look into the first stage of Gootkit, which\ncontains the unpacking phase and a malicious downloader that sets up the infected system,\nand its multiple anti-analysis mechanisms.\n\n## Unpacking\n\n**MD5 of Packed Sample:** `0b50ae28e1c6945d23f59dd2e17b5632`\n\nWith this specific sample, the unpacking routine is fairly trivial, as it performs self-injection.\nSimply put, the unpacker will:\n\n\n-----\n\n[Allocate a region of memory -> Decrypt shellcode and copy to the allocated region ->](https://www.sentinelone.com/blog/malicious-input-how-hackers-use-shellcode/)\nExecute the shellcode, decrypting the first stage Gootkit executable -> Overwrite\nunpacked with decrypted executable -> Change protections on the decrypted\nexecutable and transfer execution to it.\n\nTherefore, in order to unpack it, place breakpoints on both `VirtualAlloc and`\n```\nVirtualProtect, and look out for executable headers appearing in the allocated regions\n\n```\nof memory.\n\n**MD5 of Unpacked Sample:** `c342af62302936720e52679bc431d5a8`\nImmediately upon opening the sample in IDA, you’ll notice the use of the `CreateThread`\nAPI – this is used excessively throughout the binary, potentially as an anti-dynamic analysis\nmethod. It becomes quite difficult to debug the program due to the fact that multiple threads\nare running at once; however, this can be avoided by focusing on one thread per execution.\nStatic analysis methods are also hindered, due to the levels of obfuscation utilized by the\nsample. Whilst there are quite a few strings in plaintext, nearly all of the important strings\nused are decrypted at run time, using a simple but effective XOR algorithm. Not only are the\nstrings encrypted, they are also stored as stack strings, making it more complex to extract\n\n\n-----\n\nthe important data.\nAs mentioned previously, the algorithm is fairly simple. Essentially what happens is there are\n2 different “strings”. The first string (typically shorter), will loop around, XOR’ing each byte\nwith a byte of the second string. An example of this algorithm in Python can be seen below.\n\nThe example above will return the string `kernel32.dll .`\n\nBefore Gootkit begins to perform its malicious routines, it first checks the arguments passed\nto it – this determines the path it follows. The possible arguments that Gootkit accepts are:\n\n```\n--reinstall\n\n```\n```\n--service\n\n```\n\nIf no argument is given, Gootkit will perform a setup routine, and then execute itself with the\n```\n--vwxyz argument. The -test argument simply causes the process to exit, whereas the\n--reinstall argument will reinstall Gootkit using the persistence method that we will be\n\n```\ncovering in the next post. Finally, the `--service argument will simply set an additional`\nenvironment variable, specifically the variable name USERNAME_REQUIRED, with the\nvalue set as TRUE. In this post we, will be focusing primarily on the setup phase, to\nunderstand the steps Gootkit takes before executing itself with the `--vwxyz argument.`\n\n## Anti-Analysis Functionality\n\nAs mentioned previously, Gootkit packs plenty of Anti-Analysis features to evade sandboxes,\nprevent execution in a Virtual Machine, and slow down analysis. Interestingly, the functions\nresponsible for these features are skipped if a specific environment variable is set. The\nvariable that is set during runtime is named `crackmeololo, and the value given to it is`\n\n\n-----\n\n```\nnavigator . When it comes to checking the value, rather than compare it to a string,\n\n```\nGootkit will utilize CRC-32/JAMCRC hashing in order to check the validity. If the CRC hashes\ndon’t match, the system checks begin.\n\nThe first check that Gootkit performs is a filename check. Simply put, there is a hardcoded\nlist of CRC hashed filenames inside the binary, which are compared against the hash of the\ncurrent filename. If a match is found, Gootkit will create a batch file that will delete the\noriginal executable. The process will then exit. A list of the filenames that Gootkit searches\nfor can be seen below.\n```\nSAMPLE.EXE\nMALWARE.EXE\nBOT.EXE\nSANDBOX.EXE\nTEST.EXE\nKLAVME.EXE\nMYAPP.EXE\nTESTAPP.EXE\n\n```\n\n-----\n\nThe next checks are performed almost immediately after the filename check. Gootkit will\ncreate another thread, where it will output the string “MP3 file corrupted” using\n```\nOutputDebugStringA, and then check the environment variable crackmeololo once\n\n```\nagain. If the CRC hashes match, it will continue on to decrypt the on board configuration – if\nnot, it will perform a more in depth check of the environment.\n\nFirst, it begins by opening the registry key\n_HardwareDESCRIPTIONSystemCentralProcessor0, and then queries the_\n_ProcessorNameString, comparing the value to Xeon. The Xeon processor is used in servers_\nprimarily, and not in laptops or desktops. This is a good indicator that the malware is running\nin a sandbox, so if it is detected, Gootkit will enter an endless sleep-loop cycle.\n\n\n-----\n\nIf Xeon is not detected, execution will resume; however, the next check is a lot more\nintensive. Similar to the filename check, Gootkit also contains a hardcoded list of MAC\naddress identifiers used to detect sandboxes or VMs. After loading RPCRT4.DLL, it will call\n```\nUuidCreateSequential, which uses the MAC Address to create a GUID. If any of the\n\n```\nvalues match, it will enter an infinite sleep-loop cycle once again. A list of the hardcoded\nMAC Addresses along with the corresponding vendors can be seen below.\n\nF01FAF00 Dell\n\n00505600 VMWare\n\n8002700 PCS System Technology GmbH\n\n\n-----\n\n000C2900 VMWare\n\n00056900 VMWare\n\n0003FF00 Microsoft\n\n001C4200 Parallels\n\n00163E00 XenSource\n\n\n-----\n\nNext, Gootkit will call `GetModuleHandleA in an attempt to get a handle to either dbghelp.dll`\nand sbiedll.dll, in an attempt to detect a present debugger or the sandbox Sandboxie. If a\nhandle is returned successfully, an infinite sleep cycle will occur. Continuing on, the current\nusername will be retrieved with a call to `GetUserNameA, and compared to CurrentUser and`\n_Sandbox. The computer name will then be retrieved and compared to SANDBOX and_\n_7SILVIA. As you may have guessed, if any of these match, the sample will enter into an_\ninfinite sleep cycle.\n\nContinuing on, Gootkit will query HARDWAREDESCRIPTIONSystemSystemBiosVersion\nand compare the value to; AMI, BOCHS, VBOX, QEMU, SMCI, INTEL – 6040000, FTNT-1,\nand SONI. Once again, match = infinite sleep cycle.\n\n\n-----\n\nYet another registry query is performed, this time with the key\n_HARDWAREDescriptionSystemVideoBiosVersion, with the value being compared to_\n_VirtualBox. Finally, it queries_\n_SOFTWAREMicrosoftWindowsCurrentVersionSystemBiosVersion or_\n_HARDWAREDESCRIPTIONSystemSystemBiosVersion for 3 values that correspond to Joe_\n_Sandbox and CWSandbox:_\n```\n55274-640-2673064-23950: Joe Sandbox\n76487-644-3177037-23510: CWSandbox\n76487-337-8429955-22614: CWSandbox\n\n```\n\n-----\n\nIf all checks are passed, then execution of the sample will continue, by setting up persistence\nand retrieving the payload from the C2 server. Before doing that, it will check its filename\nonce again, using the same CRC hashing we saw earlier.\nIn the next post, we will take a look at the persistence method used by Gootkit, and take a\nlook at the `--reinstall pathway, as well as the communications routine used by the`\nsample to retrieve the final stage.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-08-15 - Gootkit Banking Trojan - Deep Dive into Anti-Analysis Features.pdf"
+    ],
+    "report_names": [
+        "2019-08-15 - Gootkit Banking Trojan - Deep Dive into Anti-Analysis Features.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f4f16213-7a22-4527-aecb-b964c64c2c46",
+            "created_at": "2024-06-19T02:03:08.090932Z",
+            "updated_at": "2025-03-27T02:05:17.387119Z",
+            "deleted_at": null,
+            "main_name": "GOLD NIAGARA",
+            "aliases": [
+                "Carbanak",
+                "Carbon Spider ",
+                "FIN7 ",
+                "Navigator ",
+                "Sangria Tempest ",
+                "TelePort Crew ",
+                "Calcium "
+            ],
+            "source_name": "Secureworks:GOLD NIAGARA",
+            "tools": [
+                " Carbanak",
+                " Cobalt Strike",
+                " DICELOADER",
+                " DRIFTPIN",
+                " GGLDR",
+                " GRIFFON",
+                " JSSLoader",
+                " Meterpreter",
+                " OFFTRACK",
+                " PILLOWMINT",
+                " POWERTRASH",
+                " SUPERSOFT",
+                " TAKEOUT",
+                " TinyMet",
+                "Bateleur"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536030,
+    "ts_updated_at": 1743041609,
+    "ts_creation_date": 1653688856,
+    "ts_modification_date": 1653688856,
+    "files": {
+        "pdf": "https://archive.orkl.eu/8caadb6a917ffa41e534c459c406be65bd06dabe.pdf",
+        "text": "https://archive.orkl.eu/8caadb6a917ffa41e534c459c406be65bd06dabe.txt",
+        "img": "https://archive.orkl.eu/8caadb6a917ffa41e534c459c406be65bd06dabe.jpg"
+    }
+}

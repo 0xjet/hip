@@ -1,0 +1,103 @@
+{
+    "id": "eb8cef7b-c00b-482e-b916-797527163ace",
+    "created_at": "2022-10-25T16:48:10.438645Z",
+    "updated_at": "2025-03-27T02:14:02.712297Z",
+    "deleted_at": null,
+    "sha1_hash": "c0061604b409cad311414bd47b97ba6ec79bb642",
+    "title": "",
+    "authors": "",
+    "file_creation_date": "2019-10-14T14:07:53Z",
+    "file_modification_date": "2019-10-14T14:07:53Z",
+    "file_size": 1199745,
+    "plain_text": "# From tweet to rootkit\n\n_ExaTrack - Stéfan Le Berre (stefan.le-berre [at] exatrack.com)_\n\nThis paper will talk about our analysis based on a twitter post by _Florian Roth to identify (and_\nanalyze) a **signed rootkit, with** **unrevoked certificate and** **unknown from VirusTotal. In this public**\nversion we will describe a part of our analysis on one of those two dumps. Have a good reading :-)\n\n## Introduction\nThe 24 of July 2019 a post on twitter by _Florian Roth caught our attention. The tweet is about a_\nWinnti rootkit that was just sent on VirusTotal.\n\nAt Exatrack, we are fond of rootkit analysis and detection. After more than a month without any\nanalysis based on this dump, we decided to have a look at it.\n\nOur Analysis is based on the following sample:\n[https://www.virustotal.com/gui/file/92c37c829dac8f6d277ae4b72b926e82f54ed8fc1b61885d7d7d9](https://www.virustotal.com/gui/file/92c37c829dac8f6d277ae4b72b926e82f54ed8fc1b61885d7d7d92fd8417b99f/analysis)\n[2fd8417b99f/analysis](https://www.virustotal.com/gui/file/92c37c829dac8f6d277ae4b72b926e82f54ed8fc1b61885d7d7d92fd8417b99f/analysis)\n\nThis analysis aims to identify the major functionalities of the rootkit as well as a part of the userland’s\ncapabilities.\n\n## Sample reconstruction\nThe file seems to be an executable dump partially corrupted, some PE headers are deleted. We\nrebuilt the MZ and PE headers and were able to load the binary and analyze it.\n\n\n-----\n\nSurprisingly this file is not a driver, as the tweet mentioned, but a 64b DLL file. We’ll see later in the\npaper the existence of an embedded signed driver.\n\n## DLL file analyze\n\n### Context information\nSome interesting information can be collected on the DLL before any kind of deep technical analysis.\n\nFirstly, the original DLL’s name seems be workdll64.dll, as declared in the Export Address Table.\nThis name is probably an internal name.\n\nBy searching specifics strings on internet we identified a link with a file available on Hybrid Analysis:\nhttp://ww.hybrid[analysis.com/sample/a5d6139921576c3aedfc64e2b37ae1a64f3160bd1bb70d4fc7fce956029e7d55](http://ww.hybrid-analysis.com/sample/a5d6139921576c3aedfc64e2b37ae1a64f3160bd1bb70d4fc7fce956029e7d55)\n\nThe file’s name is `rasppp_decrypt.dat_fixed by r0cu3, we can guess that the original filename`\nwas `rasppp.dll classed by the framework as` _ambiguous. The associated PDB filename is_\n```\nI:\\DrvDev\\Works\\NdisReroute\\X64\\NdisRerouteD.pdb, it probably indicates a possible link with\n\n```\nNDIS, this link will be confirmed later in this article. Our file was uploaded for the first time on\nVirusTotal the 2015-08-13, so the code is active for at least 4 years.\n\n\n-----\n\n### Entrypoint with specifics arguments\nThe first uncommon characteristic is the initialization of the malware. When a binary is loaded, its\n```\n  DllMain function is executed. Microsoft define this:\nBOOL WINAPI DllMain(\n _In_ HINSTANCE hinstDLL,\n _In_ DWORD   fdwReason,\n _In_ LPVOID  lpvReserved\n);\n\n```\nThe `lpvReserved argument is not clearly defined. Normally, its value should be 0, but in some`\n[special cases, as highlighted by j00ru (https://j00ru.vexillium.org/2009/07/dllmain-and-its-](https://j00ru.vexillium.org/2009/07/dllmain-and-its-uncovered-possibilites/)\n[uncovered-possibilites/) it can point to a CONTEXT structure.](https://j00ru.vexillium.org/2009/07/dllmain-and-its-uncovered-possibilites/)\n\nIn our case, DllMain starts by checking this argument against 0:\n```\nundefined8 DllMain(undefined8 hinstDLL,int fdwReason,CONTEXT *lpvReserved)\n{\n int iVar1;\n registers_dump local_58;\n if (((fdwReason == 1) && (_DAT_1800845e0 != 1)) &&\n   (_DAT_1800845e0 = fdwReason, lpvReserved != (CONTEXT *)0x0)) {\n\n```\nIf this module is loaded by an analysis framework the value will be set at 0 and the malware will do\nnothing. As explained in j00ru’s article: « If fdwReason is DLL_PROCESS_ATTACH, lpvReserved is NULL\nfor dynamic loads and non-NULL for static loads. »\n\n### Process validation\nAfterwards the code checks if it is executed in a process named svchost.exe.\n```\n GetModuleFileNameA((HMODULE)0x0,&local_128,0x104);\n _strlwr(&local_128);\n strstr(&local_128,\"svchost.exe\");\n\n```\nBetween the argument’s check (done in another part of the code) and the name check of the\nexecutable, the module‘s detection probability by a sandbox is relatively low.\n\n\n-----\n\n### Network devices request\nThe malware try to find the network ethernet device‘s `AdapterName using the functions`\n\n`GetAdaptersInfo` and `GetIfTable.` Once found, the DLL checks the registry key\n```\nHKLM\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4D36E972-E325-11CE-BFC1-08002BE10318}\n\n```\nto identify the subkey Linkage with the associated RootDevice.\n\nThe goal here is to validate the network configuration associated with the ethernet device.\n\n### Signed driver extraction\nDuring the module initialization steps, it loads a driver based on the current Windows version.\n\nThe value « 4 » represent Windows kernel 6.0 (Windows Vista). We were interested by the driver\nloaded on OS version 6.0 and upper.\n\nTo load the driver, the required registry keys are created by the malware and loading is triggered by a\ncall to NtLoadDriver (dynamically loaded).\n\n\n-----\n\n## Driver\n\n### Signature\nThe driver is signed by what is probably a stolen certificate used to load the rootkit on 64b Windows.\n```\n    Verified: A required certificate is not within its validity period when\nverifying against the current system clock or the timestamp in the signed file.\n    Link date:   06:10 11/04/2016\n    Signing date:  n/a\n    Catalog:    C:\\rootkit.sys\n    Signers:\n      *****\n        Cert Status:  This certificate or one of the certificates in the\ncertificate chain is not time valid.\n        Valid Usage:  Code Signing\n        Cert Issuer:  VeriSign Class 3 Code Signing 2010 CA\n        Serial Number: F0 87 74 64 EC F2 AA 94 E0 4B 84 25 4D ED B5 4E\n        Thumbprint:   117F5C5B276C2805D69A48F8B23C25883FCF5BE6\n        Algorithm:   sha1RSA\n        Valid from:   02:00 28/03/2012\n        Valid to:    01:59 14/04/2015\n\n### Hook of driver NULL.SYS\n```\nDuring the rootkit’s initialization it sets up a hook on the device `\\Device\\Null. To do so, it must`\nfirstly get the DEVICE_OBJECT and its associated DRIVER_OBJECT. With this it can directly modify the\nIRP table. The `0xe` entry of the MajorFunction array contains the handler for\n```\n  IRP_MJ_DEVICE_CONTROL.\n\n```\nThis action is a little risky for the rootkit, as it is common to see rootkits modifying the \\Device\\Null\nDRIVER_OBJECT .\n\nOnce its hook is setup, we can open a handle on \\\\.\\NUL to communicate with the rootkit by IoCtl.\n\n\n-----\n\n### IoCtl Communication\nAs almost all rootkits, a communication channel is established with the userland DLL using IoCtl:\n```\nioctl_code != 0x156003 && (ioctl_code != 0x15e007)\n\n```\nThe driver expects commands to be passed through the IoCtl buffer in the following format:\n```\nstruct ioclt_buffer_struct {\n  uint CodeId;\n  uint DataSize;\n  char Datas[];\n};\n\n```\nWe’ll describe some commands that can be called from the userland.\n\n**getMagicNumber (0x200)**\nThe simplest function.\n\nIt is probably a tag to check the version number.\n\n**hideDriver (0x100)**\nThis command takes one more argument to identify the sub-action to perform:\n\n   - 1: Hide the driver\n\n   - 2: Know state of the driver (hidden or visible)\n\nThe driver is hidden with multiple methods; its headers are overwritten with null bytes to avoid\ndetection by simple search of the MZ and PE headers.\n\nAfterward, the driver will enumerate the `\\Driver directory entries to find its own` `DRIVER_OBJECT.`\nOnce found, it will remove it from the list by replacing the previous object’s `FLINK pointer (next`\nobject) by the next driver.\n\n\n-----\n\nThe same operation is performed in `\\Device with the driver’s associated` `DEVICE_OBJECT (but our`\ndriver has no associated DEVICE_OBJECT in this version).\n\nAlthough the driver is deleted from the « Directory Object »’s list it also destroys some information\nthat may revealed it by memory forensic analysis.\n\nThis action is also done with the DEVICE_OBJECT, whereas no « device » was affected to the driver.\n\n\n-----\n\n**SetIpAndPort (0x600)**\nThis command setup the server remote server to validate usage of network injections by NDIS. We\nwill go back to its usage later in the paper.\n\n**send_packet (0x400)**\nUnder some conditions the driver may allow to send Ethernet packets directly on the network\ninterface. Sent datas are located in the buffer transferred to the kernel. Conditions of this delivery\nare described in the next part.\n\n### NDIS hooks and network injections\nThe rootkit have some interesting network capabilities, it position itself at the NDIS level to\ncommunicate directly with the network card. Globally, the references to NDIS functions and hooks\nfrom the driver’s EntryPoint are the following:\n\n\n-----\n\nThe `registerNdisProtocolDriver function will firstly search the` `TCPIP instance in the NDIS`\nprotocols. This process is done with a simple linked list.\n\nThis code walks the registered protocols, once TCPIP (here tcp_ip_ustr) is found, two functions will\nbe hooked, `ReceiveNetBufferLists and` `ProtSendNetBufferListsComplete. Those functions are`\nused to receive and send packets of the associated protocol.\n\nThe `hook_ReceiveNetBufferLists function receives packets from the network adapter. Each`\npacket’s content will be analyzed and verified against the configuration of the driver, if a precise\nformat is respected some of the rootkit abilities will be enabled.\n\nIt’s interesting to note that the rootkit have his own network packet parser.\n\nFirstly it checks if packet’s size is greater than 0x35 bytes: all TCP packets are larger this size. Next,\nthe protocol type must be 0x800, this value represent the IP protocol. Then, the rootkit checks if the\nIP version is 4 (for IPv4) and that the next protocol is TCP.\n\nThen, the IP source address (so the remote server) is compared with a gobal variable. This variable\ncan be setup with the IoCtl command `SetIpAndPort. It is mandatory to announce the C&C‘s IP`\naddress to trigger the whole parsing of the packet.\n\n\n-----\n\nRegistering the IP address through an IoCtl command is operated like this:\n\nAnd checks of the source’s IP address:\n\nLastly, a checksum is operated on the packet’s data:\n\nThis « checksum » is a simple XOR operation between the first DWORD and the third DWORD of the\ndata, followed by a rotation of 0x10 and the result is stored in the fourth DWORD.\n\nD1 D2 D3 D4\n\nROL\n\nIf this check is validated, the rootkit will reference the current handle (OpenQueue) in a global\nvariable. This variable will be used to send raw packets on the network.\n\nWe think those checks aims to probe if the remote server can be contacted and to identify which\ninterface need to be used to send raw packets on the network.\n\nOnce all the conditions are met we can send raw packets directly on the identified network interface.\nThis can be achieve by using the IoCtl command send_packet (0x400) containing the data to send. As\nyou can see, we were able to use the driver to send an arbitrary packet on the network.\n\n\n-----\n\nTo summarize, if we want to send raw packets on the network we need:\n\n1. To load the driver\n2. To communicate with \\Device\\Null\n3. Send an IOCTL to configure the IP address/port of C&C\n4. Exchange with the C&C to grab a checksum who validate the network interface to use\n5. Send an IOCTL to emit raw packets\n\nThe steps to send this raw packet can be summed up by the following schema:\n\n## Conclusion\nThe attacker behind this driver is a skilled one, the signed driver prove that it has the time and\nresources to implement complex attacks. Furthermore, the inner working of the driver demonstrates\na good technical level as NDIS injection are not an easy thing. The rootkit also has stealth capacities\nthat may not be used anymore because of PatchGuard.\n\n\n-----\n\n## References\n\n[1] Tweet of Florian Roth:\n[https://twitter.com/cyb3rops/status/1153983440871669761](https://twitter.com/cyb3rops/status/1153983440871669761)\n\n[2] Takahiro Haruyama slide with evocation of the rootkit:\n[https://hitcon.org/2016/pacific/0composition/pdf/1201/1201%20R2%201610%20winnti%20polymor](https://hitcon.org/2016/pacific/0composition/pdf/1201/1201%20R2%201610%20winnti%20polymorphism.pdf)\n[phism.pdf](https://hitcon.org/2016/pacific/0composition/pdf/1201/1201%20R2%201610%20winnti%20polymorphism.pdf)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        },
+        {
+            "id": "5910e58f-4bc9-4e4e-9dbb-887804094a01",
+            "created_at": "2022-10-25T16:32:58.457399Z",
+            "updated_at": "2022-10-25T16:32:58.457399Z",
+            "deleted_at": null,
+            "name": "OTX",
+            "url": "https://otx.alienvault.com",
+            "description": "Alienvault Open Threat Exchange (OTX)",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2019/2019.10.14.From_tweet_to_rootkit/winnti_EN.pdf",
+        "https://exatrack.com/public/winnti_EN.pdf"
+    ],
+    "report_names": [
+        "winnti_EN",
+        "winnti_EN.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "4c68ccd0-caba-4189-9ead-86ac4c2d9b70",
+            "created_at": "2024-05-01T02:03:07.930196Z",
+            "updated_at": "2025-03-27T02:05:17.251237Z",
+            "deleted_at": null,
+            "main_name": "BRONZE ATLAS",
+            "aliases": [
+                "Axiom",
+                "BARIUM ",
+                "Blackfly ",
+                "CTG-2633",
+                "GREF",
+                "Group 72 ",
+                "Red Kelpie ",
+                "TG-2633 ",
+                "Wicked Panda ",
+                "Winnti",
+                "APT41 "
+            ],
+            "source_name": "Secureworks:BRONZE ATLAS",
+            "tools": [
+                " CCleaner v5.33 backdoor",
+                " ChinaChopper",
+                " Cobalt Strike",
+                " Dicey MSDN",
+                " ForkPlayground",
+                " HUC Proxy Malware (Htran)",
+                " Mimikatz",
+                " PipeMon",
+                " PlugX",
+                " PortReuse",
+                " Powershell Empire",
+                " RCMD",
+                " RbDoor",
+                " SPEEDBOAT",
+                " ShadowPad",
+                " Sidewalk",
+                " Speculoos",
+                " TeamViewer",
+                " Winnkit",
+                " Winnti",
+                " reg save",
+                " vssadmin",
+                "Acehash"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716490,
+    "ts_updated_at": 1743041642,
+    "ts_creation_date": 1571062073,
+    "ts_modification_date": 1571062073,
+    "files": {
+        "pdf": "https://archive.orkl.eu/c0061604b409cad311414bd47b97ba6ec79bb642.pdf",
+        "text": "https://archive.orkl.eu/c0061604b409cad311414bd47b97ba6ec79bb642.txt",
+        "img": "https://archive.orkl.eu/c0061604b409cad311414bd47b97ba6ec79bb642.jpg"
+    }
+}

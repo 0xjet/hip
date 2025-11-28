@@ -1,0 +1,162 @@
+{
+    "id": "8a621d78-8d87-47e3-8ad0-1ae850de9ffd",
+    "created_at": "2023-01-12T14:59:20.732029Z",
+    "updated_at": "2025-03-27T02:16:01.197672Z",
+    "deleted_at": null,
+    "sha1_hash": "b24b51e179fd320cb218bcb9c6f5744b49616aa5",
+    "title": "2020-03-31 - An In-depth Look at MailTo Ransomware, Part One of Three",
+    "authors": "",
+    "file_creation_date": "2022-05-27T23:15:11Z",
+    "file_modification_date": "2022-05-27T23:15:11Z",
+    "file_size": 978217,
+    "plain_text": "# An In-depth Look at MailTo Ransomware, Part One of Three\n\n**[trustwave.com/en-us/resources/blogs/spiderlabs-blog/an-in-depth-look-at-mailto-ransomware-part-one-of-three/](https://www.trustwave.com/en-us/resources/blogs/spiderlabs-blog/an-in-depth-look-at-mailto-ransomware-part-one-of-three/)**\n\nLoading...\n\nBlogs & Stories\n\n## SpiderLabs Blog\n\nAttracting more than a half-million annual readers, this is the security community's go-to\ndestination for technical breakdowns of the latest threats, critical vulnerability disclosures\nand cutting-edge research.\n\nIn February, an Australian transportation company called Toll Group was hit by a\nransomware attack that reportedly spread to over 1000 servers and caused major\ndisruption for the company and its clients. Recently the same ransomware family was seen\n[attached to phishing emails targeting people's fear of COVID-19, a trend we've also been](https://www.bleepingcomputer.com/news/security/netwalker-ransomware-infecting-users-via-coronavirus-phishing/)\nseeing quite a bit of. We got a hold of a sample of the ransomware and decided to take a\ncloser look to see what makes it tick. The ransomware in question is named MailTo but also\n\n\n-----\n\nNetWalker. MailTo was a name given to the ransomware based on the format of the\nencrypted file names. NetWalker was a name given based on the ransomware’s decryption\ntool. In this blog, we will refer to the ransomware as MailTo.\n\nThis series of blog posts will cover the internals of how the MailTo ransomware works, but\nas a start, here's an overview of the full attack flow:\n\n_Figure 1 – Overview of MailTo Ransomware_\n\n## Initialize and Install\n\nThe MailTo ransomware initialization involves the following steps:\n\nResolving obfuscated API calls\nConfiguration Decryption and Parsing\nData collection\nPersistence and Installation\n\n### Resolving Obfuscated API Calls\n\nDoing basic static analysis on the MailTo ransomware, it is apparent that the ransomware is\nobfuscating many of its API calls due to a lack of found imports.\n\n\n-----\n\n_Figure 2 – MainTo Imports Unresolved_\n\nThis is more apparent when opening the ransomware in a disassembler and analyzing the\nfirst function call. Inside of the first function call, we can see hardcoded CRC32 hashes for\nmodule and function names.\n\n_Figure 3 – MailTo_\n\n_Import CRC32 Hashes_\n\nWe can quickly denote that an array of function pointers is being built with the function\npointer addresses being resolved through a function iterating over the exports of a module,\nhashing the name of the export with CRC32 and then comparing it with a hardcoded\nCRC32 hash to know if it has the correct address. A list of loaded modules is scanned to\nfind if the module for the export is loaded or not. If the module is found to not be loaded, it is\nloaded into memory via “LdrLoadDll” and added to a list of loaded modules.\n\n\n-----\n\n_Figure 4 – MailTo API Call Resolving_\n\nThe modules are also being resolved in a similar way but work differently by iterating over\nthe “InLoadOrderModuleList” located in the processes process environment block (PEB)\nand comparing a CRC32 hash of the iterated “InLoadOrderModuleList”’s “FullDllName>Buffer” member.\n\n_Figure 5 – MailTo Module Resolving_\n\nIn the sample we analyzed, a total of 149 function calls were resolved, with many being\nundocumented functions such as “NtGetContextThread”, “NtQueueApcThread”, and more.\n\n\n-----\n\n### Configuration Decryption and Parsing\n\nThe configuration for the MailTo ransomware can be found under the resource section of\nthe executable as a resource labeled with the name “1337”.\n\n_Figure 6 – Encrypted Configuration Resource (Resource Hacker)_\n\nThe configuration is extracted using typical resource extraction functions such as\n“FindResource”, “LoadResource”, “LockResource”, and “SizeOfResource”.'\n\n_Figure 7 – Function Used for Retrieving the Resource_\n\nOne function of interest to note is the “FindModuleBase” (not apart of the standard Windows\nAPI). We suspect this function is used in place of the “GetModuleHandle” Windows API\nfunction as when the ransomware is injected, it is not linked in the PEB>InLoadOrderModuleList meaning that “GetModuleHandle” will not be able to return the\nimage base of the ransomware, thus leaving the ransomware to resolve the image base on\nits own. This function works by ANDing the address of itself with “0xFFFFF000”, this gives\nus the start of the memory page that the code relies on. The ransomware then subtracts by\n512 bytes until the ransomware reaches a “MZ” header. The expected “MZ” header will be\nthe start of the ransomware mapped file itself.\n\n\n-----\n\n_Figure 8 – Returns Image_\n\n_Base of Ransomware_\n\nThe configuration is encrypted using the RC4 algorithm. Luckily the key and key length are\neasily determined by the first bytes of the resource. In this sample the first four bytes\ndetermine the length of the RC4 encryption key. The following bytes dictated by the\nprevious read length, is the encryption key. This encryption key is then used with the RC4\nalgorithm over the size of the entire resource to decrypt the ransomware’s configuration.\nThe decrypted configuration data is finally parsed into a global structure.\n\nFigure 9 – Encryption on the Left, Decryption on the Right\n\n### Configuration Description\n\nThe below table is a description of the configuration of the MailTo ransomware.\n\n\n-----\n\nOne field of interest is “mpk”. We presume this field stands for “my public key” as this is a\nbase64 encoding of the attacker’s public key. This field is of interest to us because it is one\nof the first indicators that the ransomware's encryption will not be decryptable without the\nattacker’s private key. “white”, “kill”, “net”, and “unlocker” are also fields of interest as they\nhelp us guess the functionality we should see within the ransomware.\n\n\n-----\n\n_Figure 10 –_\n\n\n_Decrypted and Formatted Configuration_\n\n\n-----\n\n### Data Collection\n\nThere are two main global structures used throughout the MailTo ransomware. One\nstructure contains data about the system and holds information for encryption, and the other\nstructure contains data that has been parsed from the configuration. The first structure we\nnamed “MachineInfo” and has much of its data initialized right after the configuration has\nfinished decrypting. The “MachineInfo” structures holds, and is initialized with, some of the\nfollowing data:\n\nMajor/Minor version of operating system\nIf the operating system is 64bit or not\nIf the ransomware is running under the local system account\nIf the ransomware is running with TokenElevationTypeFull\nProcess ID of the ransomware\nCRC32 hash of its process name\nVarious encryption data (encryption keys, length, hashes, data, etc)\nRansomware file path\nRansomware name length and path length\n\nThe data in this structure is read from, and wrote to, throughout the ransomware’s\nexecution.\n\n### Persistence and Installation\n\n**File Path**\n\nOne of the first installation steps the MailTo ransomware will take is to generate a unique\nname with a size based on the field “namesz”, in this sample, 8 characters.\n\nThe next step is to find out if the ransomware process is running under SysWOW64. If the\nransomware determines that it is running under SysWOW64, then it will create a copy of\nitself to the following path:\n\nProgram Files (x86)/<uniqueName>/<uniqueName.exe>\n\nOtherwise, if the ransomware determines that the opposite is true, it will copy itself to the\nfollowing path:\n\nProgram Files/<uniqueName>/<uniqueName.exe>\n\nIf the ransomware has been executed without administrative privileges, it will copy the file\nto:\n\nC:\\Users\\<username>\\AppData\\Roaming\\<uniqueName>\\<uniqueName.exe>\n\n\n-----\n\nAfter it has been copied to a path, the ransomware will delete itself from the original\nexecution location.\n\n**Registry Keys**\n\nMailTo makes use of registry keys to store encryption keys and to set up persistence on the\nvictim’s machine.\n\nWhen the ransomware sets up a registry key for persistence it will make use of the following\nregistry key:\n\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce\n\nA value is then placed under this registry key with a path to the ransomware:\n\n_Figure 11 – Persistence registry key_\n\nIf the ransomware fails to place the value at this registry key (often when it has not been run\nwith administrative privileges), it will attempt to place the value under this registry key\ninstead:\n\nHKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce\n\nMailTo also creates its own registry key and value named under its generated unique name.\nThe value holds a 140-byte binary blob of data which stores encryption key information\nnecessary for encryption and decryption (used with the attacker's decryptor which has their\nprivate key).\n\nKey:\n\nHKEY_CURRENT_USER\\SOFTWARE\\<uniqueName>\\\n\nValue (REG_BINARY):\n\nHKEY_CURRENT_USER\\SOFTWARE\\<uniqueName>\\<uniqueName>\n\n_Figure 12 – Registry key storing encryption-related data in binary form_\n\n### Conclusion\n\nAt this point, MailTo has installed itself on the victim's system, initialized all of the important\nconfiguration options (like the encryption keys it will use) and, finally, set up a process for\npersistence so that the malware will be able to relaunch itself even after a reboot. In the\nnext two parts of this series, we'll show you how the malware executes, embeds itself and\nstarts the process of encrypting the victim's valuable data.\n\n\n-----\n\n### Full Series\n\n[An In-depth Look at MailTo Ransomware, Part Two](https://www.trustwave.com/en-us/resources/blogs/spiderlabs-blog/an-in-depth-look-at-mailto-ransomware-part-two-of-three/)\n\n[An In-depth Look at MailTo Ransomware, Part Three](https://www.trustwave.com/en-us/resources/blogs/spiderlabs-blog/an-in-depth-look-at-mailto-ransomware-part-three-of-three/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-03-31 - An In-depth Look at MailTo Ransomware, Part One of Three.pdf"
+    ],
+    "report_names": [
+        "2020-03-31 - An In-depth Look at MailTo Ransomware, Part One of Three.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535560,
+    "ts_updated_at": 1743041761,
+    "ts_creation_date": 1653693311,
+    "ts_modification_date": 1653693311,
+    "files": {
+        "pdf": "https://archive.orkl.eu/b24b51e179fd320cb218bcb9c6f5744b49616aa5.pdf",
+        "text": "https://archive.orkl.eu/b24b51e179fd320cb218bcb9c6f5744b49616aa5.txt",
+        "img": "https://archive.orkl.eu/b24b51e179fd320cb218bcb9c6f5744b49616aa5.jpg"
+    }
+}

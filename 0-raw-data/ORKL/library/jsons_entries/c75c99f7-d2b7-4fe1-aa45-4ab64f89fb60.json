@@ -1,0 +1,99 @@
+{
+    "id": "c75c99f7-d2b7-4fe1-aa45-4ab64f89fb60",
+    "created_at": "2023-01-12T15:07:13.952623Z",
+    "updated_at": "2025-03-27T02:17:01.232497Z",
+    "deleted_at": null,
+    "sha1_hash": "b3add394dc8e065c7dca9b3f683e3ad20193c733",
+    "title": "2022-05-09 - From the Front Lines - Unsigned macOS oRAT Malware Gambles For The Win",
+    "authors": "",
+    "file_creation_date": "2022-05-27T23:18:42Z",
+    "file_modification_date": "2022-05-27T23:18:42Z",
+    "file_size": 1810377,
+    "plain_text": "# From the Front Lines | Unsigned macOS oRAT Malware Gambles For The Win\n\n**[sentinelone.com/blog/from-the-front-lines-unsigned-macos-orat-malware-gambles-for-the-win/](https://www.sentinelone.com/blog/from-the-front-lines-unsigned-macos-orat-malware-gambles-for-the-win/)**\n\nMay 9, 2022\n\n**By Dinesh Devadoss and Phil Stokes**\n\nResearchers looking into a new APT group targeting gambling sites with a variety of cross[platform malware recently identified a version of oRAT malware targeting macOS users and](https://www.trendmicro.com/en_us/research/22/d/new-apt-group-earth-berberoka-targets-gambling-websites-with-old.html)\nwritten in Go. While neither RATs nor Go malware are uncommon on any platform, including\nthe Mac, the development of such a tool by a previously unknown APT is an interesting turn,\nsignifying the increasing need for threat actors to address the rising occurrence of Macs\namong their intended targets and victims. In this post, we dig deeper into the technical\ndetails of this novel RAT to understand better how it works and how security teams can\ndetect it in their environments.\n\n\n-----\n\n## oRAT Distribution\n\nThe oRAT malware is distributed via a Disk Image masquerading as a collection of Bitget\n[Apps. The disk image contains a package with the name Bitget Apps.pkg and the distribution](https://mothersruin.com/software/SuspiciousPackage/)\nidentifier `com.adobe.pkg.Bitget .`\n\n\n-----\n\nThe disk image and installer package are notable for two reasons: neither has a valid\ndeveloper signature, and the latter doesn’t actually install any files and only contains a\npreinstall script, a succinct bash shell script whose purpose is to deliver a payload to the\n```\n/tmp directory, give the payload executable permissions, and then launch it.\n\n```\nPrecisely what kind of lure the threat actors use to convince targets to download and launch\nthe dropper is unknown at this time, but given that the target would need to override default\n[security warnings from Gatekeeper, it is likely either that the users are sourcing the malware](https://www.sentinelone.com/blog/the-complete-guide-to-understanding-apple-mac-security-for-enterprise-read-the-free-ebook/)\nfrom an environment where this is typical (e.g., a 3rd-party software distribution site that\nregularly delivers unsigned software) or users have been pre-groomed to bypass\nGatekeeper during a social engineering engagement of some kind.\n\nIn either case, the fact that there’s no deliverable from the user’s perspective is a risky\ngamble on the part of the threat actors. After running the installer and finding that it did not\nprovide whatever they were expecting, users are likely to become suspicious. This might\nsuggest the campaign was broadly targeted and that the threat actors were playing a\nnumbers game, happy to sweep up opportunistic infections as they occurred.\n\n## The oRAT Payload\n\n\n-----\n\nThings get more interesting when we examine the `darwinx64 payload dropped in the`\n```\n/tmp folder. The binary doesn’t define any Symbols, and outputting the list of Sections tells\n\n```\nus that the file has been packed with UPX.\n\nPacked files like this are opaque to static analysis, but fortunately standard UPX is very easy\n[to unpack thanks to the UPX utility itself.](https://upx.github.io/) [Dumping the strings tells us that it was packed with](https://www.sentinelone.com/blog/how-to-reverse-macos-malware-part-two/)\nUPX 3.96, the most recently released version available.\n\nThe packed binary is around 3MB in size, but after unpacking we are presented with a\nmassive ~10MB file. Such large file sizes are typical of cross-platform malware, particularly\nwhen binaries are compiled in Go, since they contain the entire run-time for the language\nalong with a number of supporting libraries.\n\nFortunately, from a reverse engineering perspective, we can easily ignore most of the\nstandard code that is common to all Go bins and focus on what is unique to the sample at\nhand. For IDA Pro users, [see here; for](https://www.sentinelone.com/labs/alphagolang-a-step-by-step-go-malware-reversing-methodology-for-ida-pro/) [r2 users, we can start by printing out a list of the](https://www.sentinelone.com/labs/6-pro-tricks-for-rapid-macos-malware-triage-with-radare2/)\nfunctions flagged with `sym._main .`\n\n\n-----\n\nIn Go binaries, the program code entrypoint is at main.main, and we can work our way\nthrough there to see what other functions, packages and modules are called. Below, we see\nthat the main.main function calls out to another custom package, `orat_utils .`\n\nThe `orat_utils package contains several interesting functions and gives us an entry into`\nunderstanding how the RAT works.\n\nOf particular interest is the `LoadConfig function. This is used to parse a blob of data`\nappended to the binary which turns out to be an encrypted malware configuration. The\nencrypted data at the end of the unpacked binary occupies 166 bytes and consists of the\ndata an AES key and two bytes representing the entire blob size\n\n\n-----\n\nOnce decrypted, the blob turns out to contain configuration data for the malware C2.\n\nAfter the malware decodes the config, it calls into `sym._orat_cmd_agent.app and begins`\na number of loops through `sys._orat_protocal.Dial . Depending on the config, it will call`\none of `orat_protocol.DialTCP,` `orat_protocol.DialSTCP or`\n```\norat_protocol.DialSUDP to establish a connection. The TCP protocols leverage smux\n\n```\n[while the SUDP protocol leverages QUIC. The malware loops with a sleep cycle of 5](https://github.com/lucas-clemente/quic-go)\nseconds as it waits for a response.\n\nThe `sym._orat_cmd_agent.app contains the primary RAT functionality of the malware and`\ndefines the following functions.\n\n\n-----\n\n```\norat/cmd/agent/app.( App).DownloadFile\norat/cmd/agent/app.(*App).Info\norat/cmd/agent/app.(*App).Join\norat/cmd/agent/app.(*App).KillSelf\norat/cmd/agent/app.(*App).NewNetConn\norat/cmd/agent/app.(*App).NewProxyConn\norat/cmd/agent/app.(*App).NewShellConn\norat/cmd/agent/app.(*App).Ping\norat/cmd/agent/app.(*App).PortScan\norat/cmd/agent/app.(*App).registerRouters\norat/cmd/agent/app.(*App).run\norat/cmd/agent/app.(*App).Screenshot\norat/cmd/agent/app.(*App).Serve\norat/cmd/agent/app.(*App).Unzip\norat/cmd/agent/app.(*App).UploadFile\norat/cmd/agent/app.(*App).Zip\n\n## Detecting oRAT in the Enterprise\n\n```\nThe SentinelOne agent detects the oRAT payload as malicious when it is written to disk,\nprotecting SentinelOne customers from this threat.\n\nThe SentinelOne agent also detects the malware on execution.\n\n\n-----\n\nFor those not protected by the SentinelOne platform, security teams are advised to hunt for\nartifacts as listed in the Indicators of Compromise section at the end of this post.\n\n## Conclusion\n\nThe oRAT malware targets macOS users using a combination of custom-written code and\npublic Golang repos. The developers are clearly familiar with using sophisticated features of\nGo for networking and communications, but due to the simplistic way the malware dropper\nwas packaged, unsigned and with no observable install to distract the victim, it would seem\nthey are less experienced with the challenges of infecting Mac users. Unfortunately, other\nthreat actors have provided plenty of examples from which this new player can learn, and\nsecurity teams should expect to see any future campaigns from this actor using more\nsophisticated droppers.\n\n## Indicators of Compromise\n\n**Filename** **SHA1**\n\nbitget-0.0.7 (1).dmg 3f08dfafbf04a062e6231344f18a60d95e8bd010\n\nBitget Apps.pkg 9779aac8867c4c5ff5ce7b40180d939572a4ff55\n\npreinstall 911895ed27ee290bea47bca3e208f1b302e98648\n\n`darwinx64 (packed)` 26ccf50a6c120cd7ad6b0d810aca509948c8cd78\n\n`darwinx64 (unpacked)` 9b4717505d8d165b0b12c6e2b9cc4f58ee8095a6\n\n\n-----\n\n**Paths**\n\n/tmp/ darwinx64\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-05-09 - From the Front Lines - Unsigned macOS oRAT Malware Gambles For The Win.pdf"
+    ],
+    "report_names": [
+        "2022-05-09 - From the Front Lines - Unsigned macOS oRAT Malware Gambles For The Win.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "452d2d74-e812-45d6-b0fe-b8a6cc4ebd01",
+            "created_at": "2022-10-25T16:07:23.562676Z",
+            "updated_at": "2025-03-27T02:02:09.865955Z",
+            "deleted_at": null,
+            "main_name": "Earth Berberoka",
+            "aliases": [
+                "GamblingPuppet"
+            ],
+            "source_name": "ETDA:Earth Berberoka",
+            "tools": [
+                "Agent.dhwf",
+                "AngryRebel",
+                "AsyncRAT",
+                "CinaRAT",
+                "Destroy RAT",
+                "DestroyRAT",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "Kaba",
+                "Korplug",
+                "Moudour",
+                "Mydoor",
+                "PCRat",
+                "PlugX",
+                "PuppetLoader",
+                "Quasar RAT",
+                "QuasarRAT",
+                "RedDelta",
+                "Sogu",
+                "TIGERPLUG",
+                "TVT",
+                "Thoper",
+                "Trochilus RAT",
+                "Xamtrav",
+                "Yggdrasil",
+                "oRAT"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "2664d6f5-f918-4978-87f8-f6afad7402c6",
+            "created_at": "2023-01-06T13:46:39.393669Z",
+            "updated_at": "2025-03-27T02:00:03.073942Z",
+            "deleted_at": null,
+            "main_name": "Earth Berberoka",
+            "aliases": [
+                "GamblingPuppet"
+            ],
+            "source_name": "MISPGALAXY:Earth Berberoka",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536033,
+    "ts_updated_at": 1743041821,
+    "ts_creation_date": 1653693522,
+    "ts_modification_date": 1653693522,
+    "files": {
+        "pdf": "https://archive.orkl.eu/b3add394dc8e065c7dca9b3f683e3ad20193c733.pdf",
+        "text": "https://archive.orkl.eu/b3add394dc8e065c7dca9b3f683e3ad20193c733.txt",
+        "img": "https://archive.orkl.eu/b3add394dc8e065c7dca9b3f683e3ad20193c733.jpg"
+    }
+}

@@ -1,0 +1,119 @@
+{
+    "id": "7be3c5c2-6045-4506-8844-6d6f2b7bd531",
+    "created_at": "2023-01-12T15:05:29.308837Z",
+    "updated_at": "2025-03-27T02:14:06.342785Z",
+    "deleted_at": null,
+    "sha1_hash": "f0f7389281d8962c122275762a34b01e9cadee86",
+    "title": "2021-09-27 - DoppelDridex Delivered via Slack and Discord",
+    "authors": "",
+    "file_creation_date": "2022-05-27T22:12:44Z",
+    "file_modification_date": "2022-05-27T22:12:44Z",
+    "file_size": 1282843,
+    "plain_text": "# DoppelDridex Delivered via Slack and Discord\n\n**security-soup.net/doppeldridex-delivered-via-slack-and-discord/**\n\nadmin September 27, 2021\n\n## Summary\n\nSeveral recent phishing campaigns have attempted to deliver a variant of the Dridex banking trojan via payloads staged on Slack and Discord\nCDNs. This is [DoppelDridex, a modified variant of original Dridex malware. It is operated by the financially motivate eCrime adversary tracked](https://www.crowdstrike.com/blog/doppelpaymer-ransomware-and-dridex-2/)\nas DOPPEL SPIDER. Additional tooling is often delivered as a secondary payload such as Cobalt Strike, which may be leveraged for further\n[remote access, lateral movement, and preparation for deployment of Grief ransomware.](https://redcanary.com/blog/grief-ransomware/)\n\nThe recent campaigns delivering this malware variant have used a technique that leverages attachments with the Excel 4.0 sheet-style macros\nto fetch the initial payload that is hosted on domains of popular messaging CDNs such as discordapp[.]com and files.slack[.]com. These sites\nare likely attractive for threat actors to stage payloads because they may be trusted or allowlisted by proxies or other network-based controls.\n[The maldocs in the phishing campaigns are also commonly built in the Microsoft Excel Binary Format (XLSB), which can cause problems for](https://docs.microsoft.com/en-us/openspecs/office_file_formats/ms-xlsb/acc8aa92-1f02-4167-99f5-84f9f676b95a)\nsome tools designed for automated analysis.\n\nIn this blog, I will review a recent sample of a DoppelDridex Excel maldoc with .xlsb extension, and examine some analytical approaches to\nextracting useful information in the form of TTPs and IOCs.\n\n## Delivery and Infection Chain\n\nThe maldocs in these campaigns are delivered as attachments to emails that commonly leverage an invoice-based or tax themed social\nengineering lure. If the user enables contented, the sheet macro is executed. The macro code is contains series of two obfuscated HTML\ndocuments that execute embedded VBScript to retrieve the the DoppelDridex payloads from adversary-controlled infrastructure hosted by the\nSlack and Discord CDNs. Two files are written to the ProgramData directory. The first, is an embedded HTML document extracted from the\nsheet macro, which is written to ‘C:\\ProgramData\\[random name].rtf’. and ran via an mhta.exe process. This .rtf contains an obfuscated array,\n\n\n-----\n\nc decodes to a ot e docu e t e seco d co ta s g t y ob uscated Sc pt a d s espo s b e o au c g a s e\nobject which then loads the main DoppelDridex payload–ultimately written to disk in ‘C:\\ProgramData\\defdoc.png’ and then executed by a\nrundll32.exe process.\n\nDoppelDridex infection chain\n\n## Static Sample Analysis\n\n[SHA256: 91164696edc4efba635e5246a48693e8fd75db2eef8e06e354848365b9fead55 (VT LINK)](https://www.virustotal.com/gui/file/91164696edc4efba635e5246a48693e8fd75db2eef8e06e354848365b9fead55/community)\n\nThe maldoc downloader is an example of an Excel document weaponized with Excel 4.0 (XLM) sheet-style macros–which have been popular\nfor a couple of years now. This type of macro is an older standard by Microsoft that has been essentially deprecated in favor of VBA macros.\n[However, all versions of Excel possess the capability of running Excel 4.0 macros, their use is simply discouraged. So, Excel 4.0 macros (a](https://support.office.com/en-us/article/working-with-excel-4-0-macros-ba8924d4-e157-4bb2-8d76-2c07ff02e0b8?ocmsassetID=HA010336614&CorrelationId=2aa46e64-978f-4d6a-bf7d-950ab12599a1&ui=en-US&rs=en-US&ad=US)\n20+ year standard) still work, and their functional use as a malware loader is intended for defense evasion. With sheet macros, instead of\nbeing contained in the OLE stream of a file, the code strings are simply broken up in various cells within the spreadsheet.\n\nHidden Sheet Macros\nThis can theoretically bypass detection mechanisms that are solely based on detecting compressed VBA within an OLE stream. When\nattempting to analyze the Excel 4.0 macro there are several options for extracting them. You could of course track the code execution\nthroughout all of the cells, but this is not a practical as there a several cells that reference each other along with string/integer manipulation that\nwould need to be processed. In these cases, it is not worth spending any additional time analyzing the document manually and automated\ntools should be used.\n\n\n-----\n\nSheet macro cells\nI have two go-to tools that do not require opening and interacting with the file directly. The first I typically try running is the oledump.py tool\nfrom [Didier Stevens. This tool has a plugin developed specifically for sheet macros that are stored in the more common .xls or .xlsx formats,](https://blog.didierstevens.com/programs/oledump-py/)\n[which will recognize these files and extract the macros from the BIFF record (Binary Interchange File Format) inside the OLE “Workbook”](https://docs.microsoft.com/en-us/openspecs/office_file_formats/ms-xls/e1ea0a14-8d2c-469b-8875-272091ea5aa9)\nstream. The BIFF record is a very old file format that pre-dates the XLS format, and the use of OLE binary data. By using the BIFF plugin, the\ntool will then dump all of the BIFF records in the stream. This works well on XLS format, but appears to be problematic with XLSB.\n\n[I also like Decalage‘s olevba for this type of analysis. Both tools are extremely useful for analyzing the OLE streams in documents weaponized](https://www.decalage.info/python/olevba)\nwith VBA macros. In this case, the XLSB caused me some problems with as the file format being XLSB there are literally no OLE steams to be\nanalyzed, so the macros were not identified by my preferred tooling.\n\nissues for\n\nautomated analysis\n\nUnfortunately, since this file is is .xlsb, neither tool are able to recognize the file or identify the macros. Of course in this case, we have the\nadvantage of knowing there is definitely a macro contained in the maldoc. There are very many cell values and/or string values that perform\nmalicious operations when a victim enables content.\n\nSince both of my tried and true methods were not effective, I turned to alternative tool from [DissectMalware called](https://github.com/DissectMalware) [XLMMacroDeobfuscator.](https://github.com/DissectMalware/XLMMacroDeobfuscator)\nThis tool uses an internal XLM emulator that is able to parse the macros without the need to actually run the code itself. Below you can see\nthat deobfuscator not only identifies the macros, but interprets the code execution, effectively stripping out the obfuscation. This way, the URLs\nthat are hosting the initial DoppelDridex payload on cdn.discordapp[.]com and files.slack[.]com can be easily extracted.\n\nsuccesful extraction with XLMMacroDeobfuscator\nThe XLMMacroDeobfuscator also identifies another segment of the HTML file that is of particular interest for the next stage execution. Here, I\nwas able to identify a large block of integers that had been assigned to an array. The key to decoding this block is by looping through the array\nand then subtracting “1022” from each integer. I was able to get this key from a line below the code block:\n```\n RKzEcSN = RKzEcSN & Chr(Round(VYITkd - 1022,0))\n\n```\nIf you look closely the “VYITkd” variable is iterated through in the array via a For Each statement.\n\n\n-----\n\nThe good new is that we can use this same logic to decode this array quickly and safely. I whipped up a quick Python script to handle this\noperation as this was likely the fastest and easiest method. The script itself isn’t anything fancy, but it got the job done. I basically just needed\nto loop through the array, subtract “1022”, and then convert the resulting integer value from decimal to ascii format. Then by joining those\n[results, I was able to get the second layer of HTML code. The Python script I used to decode the array can be found on my GitHub here:](https://github.com/Sec-Soup/Python-ToolBox/tree/master/array-decoder_2)\n\ndecoding the array with Python\nThe final command here in the stage of the infection chain simply creates a new object and leverages a wmic process to launch rundll32 which\nloads the DoppelDridex DLL, which was previously downloaded as a PNG file. To recap, the commands that can be leveraged for detection\nare:\n```\nwmic process call create ‘mshta C:\\ProgramData\\[RANDOM].rtf’\nwmic process call create \"rundll32.exe C:\\\\ProgramData\\defdoc.png\"\n\n```\n\n-----\n\no e deta s o t s a doc ca be ou d at t e p o ded abo e o t e Joe Sa dbo epo t e e\n\n## Conclusion\n\nDoppelSpider has consistently leveraged both Discord and Slack to deliver DoppelDridex payloads to victims in recent weeks. Search for the\n[following Dridex tags on URLhaus, and it is evident that the usage of Slack appears to ebb and flow, but Discord appears to be a preferred](https://urlhaus.abuse.ch/browse/tag/Dridex/)\nplatform to stage their payloads. If your organization doesn’t require connection to these CDNs, you might want to consider outright blocking\nthem at your network perimeter if there is no business justification for those connections. These campaigns also consistently utilize the XLSB\nfile format that may cause some problems for automation that relies on identifying malicious content in OLE steams. Despite this, static\nanalysis can be accomplished with tools that can emulate the macros in the XLSB document type, which easily extract the embedded IOCs.\n\nTechnical controls at the mail gateway typically have very high success rates for defeating commodity malware delivered in opportunistic\ncampaigns. The EXCEL 4.0/XLM macros in the maldocs with XLSB format may evade detection for similar reasons as noted above. The TTPs\npresented here can provide some additional detection opportunities for a layered defense strategy. I have also presented some analysis\ntechniques that can be used in response efforts to quickly identify and extract IOCs when needed. This campaign is a few days old of the time\nof this writing, however, the TTPs should still be relevant.\n\n## IOCs\n\nDelivery Maldoc SHA256: 91164696edc4efba635e5246a48693e8fd75db2eef8e06e354848365b9fead55\n\nDoppelDridex DLL SHA256: acbcd5ce1579a43148eee9b867f035cd0bc16f237a4790322467a0dac23ce7c6\n\nDoppelDridex DLL SHA256: a6aaa4ffb112d78aa20345821920ce6554d96303f7fb3facb5143de348cf2aae\n\nhxxps[:]//cdn.discordapp[.]com/attachments/890212086519566369/890212261132636200/5_samsrv.dll.dll\nhxxps[:]//cdn.discordapp[.]com/attachments/890212086519566369/890212251435425862/0_system.componentmodel.composition.registration.dll.\nhxxps[:]//cdn.discordapp[.]com/attachments/890212591471824921/890212677559922708/9_dispex.dll.dll\nhxxps[:]//files.slack[.]com/files-pri/T02F79UM6TT-F02F9AE9ZJ6/download/3_SmiEngine?pub_secret=4e9eeb9360\nhxxps[:]//files.slack[.]com/files-pri/T02ERNYLC69-F02F9AG9CEN/download/6_hpzstw72?pub_secret=356a094b3b\nhxxps[:]//files.slack[.]com/files-pri/T02EHM1BB19-F02FFGMT84C/download/6_hpzstw72?pub_secret=009a86b011\n\n## References\n\n[https://www.crowdstrike.com/blog/doppelpaymer-ransomware-and-dridex-2/](https://www.crowdstrike.com/blog/doppelpaymer-ransomware-and-dridex-2/)\n\n[https://redcanary.com/blog/grief-ransomware/](https://redcanary.com/blog/grief-ransomware/)\n\n[https://www.virustotal.com/gui/file/91164696edc4efba635e5246a48693e8fd75db2eef8e06e354848365b9fead55/community](https://www.virustotal.com/gui/file/91164696edc4efba635e5246a48693e8fd75db2eef8e06e354848365b9fead55/community)\n\n[https://docs.microsoft.com/en-us/openspecs/office_file_formats/ms-xlsb/acc8aa92-1f02-4167-99f5-84f9f676b95a](https://docs.microsoft.com/en-us/openspecs/office_file_formats/ms-xlsb/acc8aa92-1f02-4167-99f5-84f9f676b95a)\n\nhttps://support.microsoft.com/en-us/office/working-with-excel-4-0-macros-ba8924d4-e157-4bb2-8d76-2c07ff02e0b8?\nocmsassetid=ha010336614&correlationid=2aa46e64-978f-4d6a-bf7d-950ab12599a1&ui=en-us&rs=en-us&ad=us\n\n[https://www.virustotal.com/gui/file/91164696edc4efba635e5246a48693e8fd75db2eef8e06e354848365b9fead55/community](https://www.virustotal.com/gui/file/91164696edc4efba635e5246a48693e8fd75db2eef8e06e354848365b9fead55/community)\n\n[oledump.py](https://blog.didierstevens.com/programs/oledump-py/)\n[https://www.decalage.info/python/olevba](https://www.decalage.info/python/olevba)\n\n[https://github.com/DissectMalware](https://github.com/DissectMalware)\n\n[https://github.com/DissectMalware/XLMMacroDeobfuscator](https://github.com/DissectMalware/XLMMacroDeobfuscator)\n\n[https://github.com/Sec-Soup/Python-ToolBox/tree/master/array-decoder_2](https://github.com/Sec-Soup/Python-ToolBox/tree/master/array-decoder_2)\n\n[https://www.joesandbox.com/analysis/488098/0/html](https://www.joesandbox.com/analysis/488098/0/html)\n\n[https://urlhaus.abuse.ch/browse/tag/Dridex/](https://urlhaus.abuse.ch/browse/tag/Dridex/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-09-27 - DoppelDridex Delivered via Slack and Discord.pdf"
+    ],
+    "report_names": [
+        "2021-09-27 - DoppelDridex Delivered via Slack and Discord.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d555c5da-abe4-42aa-a8cf-77b68905891a",
+            "created_at": "2022-10-25T16:07:23.548385Z",
+            "updated_at": "2025-03-27T02:02:09.857957Z",
+            "deleted_at": null,
+            "main_name": "Doppel Spider",
+            "aliases": [
+                "Gold Heron",
+                "Grief Group"
+            ],
+            "source_name": "ETDA:Doppel Spider",
+            "tools": [
+                "Agentemis",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "DoppelPaymer",
+                "Pay OR Grief",
+                "Pay or Grief",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "a0d0e1ef-3562-40a8-a021-321db92644d9",
+            "created_at": "2023-01-06T13:46:39.104046Z",
+            "updated_at": "2025-03-27T02:00:02.997473Z",
+            "deleted_at": null,
+            "main_name": "DOPPEL SPIDER",
+            "aliases": [
+                "GOLD HERON"
+            ],
+            "source_name": "MISPGALAXY:DOPPEL SPIDER",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "ccd0f6b5-6d20-4d28-9796-88ab6deb4087",
+            "created_at": "2024-06-19T02:03:08.067518Z",
+            "updated_at": "2025-03-27T02:05:17.375595Z",
+            "deleted_at": null,
+            "main_name": "GOLD HERON",
+            "aliases": [
+                "Doppel Spider "
+            ],
+            "source_name": "Secureworks:GOLD HERON",
+            "tools": [
+                " DoppelPaymer",
+                " Dridex",
+                " Grief",
+                " Powershell Empire",
+                "Cobalt Strike"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535929,
+    "ts_updated_at": 1743041646,
+    "ts_creation_date": 1653689564,
+    "ts_modification_date": 1653689564,
+    "files": {
+        "pdf": "https://archive.orkl.eu/f0f7389281d8962c122275762a34b01e9cadee86.pdf",
+        "text": "https://archive.orkl.eu/f0f7389281d8962c122275762a34b01e9cadee86.txt",
+        "img": "https://archive.orkl.eu/f0f7389281d8962c122275762a34b01e9cadee86.jpg"
+    }
+}

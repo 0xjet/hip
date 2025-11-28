@@ -1,0 +1,42 @@
+{
+    "id": "aa0b155e-1449-4797-b1c2-a7903bdf0024",
+    "created_at": "2023-06-05T02:06:49.446208Z",
+    "updated_at": "2025-03-27T02:06:09.267135Z",
+    "deleted_at": null,
+    "sha1_hash": "1003fa812fb12262ad4a43e5ac4bedcec282b1a5",
+    "title": "2023-05-22 - [Case study] Decrypt strings using Dumpulator",
+    "authors": "",
+    "file_creation_date": "2023-06-04T12:58:55Z",
+    "file_modification_date": "2023-06-04T12:58:55Z",
+    "file_size": 508471,
+    "plain_text": "# [Case study] Decrypt strings using Dumpulator\n\n**[kienmanowar.wordpress.com/2023/05/22/case-study-decrypt-strings-using-dumpulator/](https://kienmanowar.wordpress.com/2023/05/22/case-study-decrypt-strings-using-dumpulator/)**\n\n1. References\n\n[Dumpulator (by](https://github.com/mrexodia/dumpulator/) **[mrexodia Duncan Ogilvie)](https://github.com/mrexodia)**\n[Native function and Assembly Code Invocation](https://research.checkpoint.com/2022/native-function-and-assembly-code-invocation/)\n[OALABS Research](https://research.openanalysis.net/categories/#dumpulator)\nAnd **[@herrcore (Thanks for his suggestion in private chat)](https://twitter.com/herrcore?)**\n\n2. Code analysis\n\n\nMay 22, 2023\n\n\nI received a suspicious Dll that needs to be analyzed. This Dll is packed. After unpacking it\nand throwing the Dll into IDA, IDA successfully analyzed it with over 7000 functions\n(including API/library function calls). Upon quickly examining at the Strings tab, I came\nacross numerous strings in the following format:\n\n\n-----\n\nBased on the information provided, I believe these strings have definitely been encrypted.\nGoing through the code snippet using an arbitrary string, I found the corresponding assembly\ncode and pseudocode as follows (function and variable names have been changed\n_accordingly):_\n\nWith the image above, it is easy to see:\n\nThe EAX register will hold the address of the encrypted string.\nTheEDX register will hold the address of the string after decryption.\nThe mw_decrypt_str_wrap function performs the task of decrypting the string.\n\nHere, if any of you have the same idea of analyzing the mw_decrypt_str_wrap function to\nrewrite the IDApython code for decryption, congratulations to you 🙂 You share the same\nthought as me! The mw_decrypt_str_wrap function will call the mw_decrypt_str function.\n\n\n-----\n\nAfter going around various functions and thinking about how to code, I started feeling\nincreasingly discouraged. Moreover, when examining the cross-references to the\n```\nmw_decrypt_str_wrap function, I noticed that it was called over 4000 times to decrypt\n\n```\nstrings… WTF 😐\n\n\n-----\n\n3. Use dumpulator\n\nAs shown in the above image, there are too many function calls to the decryption function.\nMoreover, rewriting this decryption function would be time-consuming and require code\ndebugging for verification. I think I need to find a way to emulate this function to perform the\ndecryption step and retrieve the decrypted string. Several solutions came to mind, and I also\nasked my brother, who suggested using x or y solutions. After some trial and error, I decided\nto try using dumpulator. To be able to use dumpulator, we first need to create a minidump\nfile of this DLL (dump when halted at DllEntryPoint). After obtaining the dump file, I tested the\nfollowing code snippet:\n```\nfrom dumpulator import Dumpulator\n\ndec_str_fn = 0x02FE08C0\n\nenc_str_offset = 0x02FD9988\n\ndp = Dumpulator(\"mal_dll.dmp\", quiet=True)\n\ntmp_addr = dp.allocate(256)\n\ndp.call(dec_str_fn, [], regs={'eax':enc_str_offset, 'edx': tmp_addr})\n\ndec_str = dp.read_str(dp.read_long(tmp_addr))\n\nprint(f\"Encrypted string: '{dp.read_str(enc_str_offset)}'\")\n\nprint(f\"Decrypted string: '{dec_str}'\")\n\n\n```\nResult when executing the above code:\n\n\n-----\n\nH0ly Sh1T… 😂 that’s exactly what I wanted.\n\nNext, I will rewrite the code according to my intention as follows:\n\nUse regex to search for patterns and extract all encoded string addresses.\nFilter out addresses that match the pattern but are not decryption functions or\nundefined addresses and add them to the BLACK_LIST.\n\nHere’s a lame code snippet that meets my needs:\n\n\n-----\n\n```\nimport re\n\nimport struct\n\nimport pefile\n\nfrom dumpulator import Dumpulator\n\ndump_image_base = 0x2F80000\n\ndec_str_fn = 0x02FE08C0\n\nBLACK_LIST = [0x3027520, 0x30380b6, 0x30380d0, 0x3039a08, 0x3039169, 0x303a6b6,\n0x303aa0e, 0x303ab5c, 0x303bbf3, 0x3066075, 0x306661b, 0x3083e50,\n\n       0x3084373, 0x30856d1, 0x30858aa, 0x308c7ac, 0x308d02d, 0x30acbfd,\n0x30cd12e, 0x30cd187, 0x30cd670, 0x30cd6d4, 0x30cfe2f, 0x30d4cc4,\n\n       0x3106da0]\n\nFILE_PATH = 'dumped_dll.dll'\n\ndp = Dumpulator(\"mal_dll.dmp\", quiet=True)\n\nfile_data = open(FILE_PATH, 'rb').read()\n\npe = pefile.PE(data=file_data)\n\negg = rb'\\x8D\\x55.\\xB8(....)\\xE8....\\x8b.'\n\ntmp_addr = dp.allocate(256)\n\ndef decrypt_str(xref_addr, enc_str_offset):  \n\n  print(f\"Processing xref address at: {hex(xref_addr)}\")\n\n  print(f\"Encryped string offset: {hex(enc_str_offset)}\")\n\n  dp.call(dec_str_fn, [], regs={'eax': enc_str_offset, 'edx': tmp_addr})\n\n  dec_str = dp.read_str(dp.read_long(tmp_addr))\n\n  print(f\"{hex(xref_addr)}: {dec_str}\\n\")\n\n  return dec_str\n\nfor m in re.finditer(egg, file_data):\n\n  enc_str_offset = struct.unpack('<I', m.group(1))[0]\n\n  inst_offset = m.start()\n\n  enc_str_offset_in_dmp = enc_str_offset - 0x400000 + dump_image_base\n\n  call_fn_addr = inst_offset + 8 - 0x400 + dump_image_base + 0x1000\n\n  if call_fn_addr not in BLACK_LIST:\n\n    str_ret = decrypt_str(call_fn_addr, enc_str_offset_in_dmp)\n\nprint(f\"H0lY SH1T... IT's D0NE!!!\")\n\n```\nResult when executing the above script:\n\n\n-----\n\nNo errors whatsoever 😈!!! As a final step, I added a code snippet to this script that will\noutput a Python file. This file will contain the idc.set_cmt commands to set comment for the\ndecrypted strings above at the address where the decrypt function is called.\n\nThe final result is as follows:\n\n\n-----\n\n-----\n\nEnd.\n\nm4n0w4r\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2023/2023-05-22 - [Case study] Decrypt strings using Dumpulator.pdf"
+    ],
+    "report_names": [
+        "2023-05-22 - [Case study] Decrypt strings using Dumpulator.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1685930809,
+    "ts_updated_at": 1743041169,
+    "ts_creation_date": 1685883535,
+    "ts_modification_date": 1685883535,
+    "files": {
+        "pdf": "https://archive.orkl.eu/1003fa812fb12262ad4a43e5ac4bedcec282b1a5.pdf",
+        "text": "https://archive.orkl.eu/1003fa812fb12262ad4a43e5ac4bedcec282b1a5.txt",
+        "img": "https://archive.orkl.eu/1003fa812fb12262ad4a43e5ac4bedcec282b1a5.jpg"
+    }
+}

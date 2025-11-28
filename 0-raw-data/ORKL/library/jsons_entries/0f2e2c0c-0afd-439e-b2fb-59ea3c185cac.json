@@ -1,0 +1,64 @@
+{
+    "id": "0f2e2c0c-0afd-439e-b2fb-59ea3c185cac",
+    "created_at": "2023-01-12T15:04:40.816286Z",
+    "updated_at": "2025-03-27T02:06:00.192491Z",
+    "deleted_at": null,
+    "sha1_hash": "05666cd57c3e60ad861508f603b02ef293cc0c56",
+    "title": "2020-12-18 - SolarWinds SUNBURST Backdoor- Inside the APT Campaign",
+    "authors": "",
+    "file_creation_date": "2022-05-28T02:33:34Z",
+    "file_modification_date": "2022-05-28T02:33:34Z",
+    "file_size": 1687390,
+    "plain_text": "# SolarWinds SUNBURST Backdoor: Inside the APT Campaign\n\n**[labs.sentinelone.com/solarwinds-sunburst-backdoor-inside-the-stealthy-apt-campaign/](https://labs.sentinelone.com/solarwinds-sunburst-backdoor-inside-the-stealthy-apt-campaign/)**\n\nJames Haughom\n\nKey findings:\n\n[Without any updates, SentinelOne customers are protected from SUNBURST;](https://www.sentinelone.com/blog/fireeye-breached-taking-action-and-staying-protected/)\nadditionally, our customers have been supplied bespoke in-product hunting packs for\nreal-time artifact observability.\n[The malware deployed through the SolarWinds Orion platform waits 12 days before it](https://www.solarwinds.com/securityadvisory)\nexecutes. This common phenomenon is a prime example of why lengthy EDR data\nretention is critical.\n\n\n-----\n\nAfter the 12-day dormant period, SUNBURST s malicious code looks for processes,\nservices, and drivers. You can find each list at the end of this research.\n\n**List of processes: includes mostly monitoring tools like Sysinternals and**\nresearchers tools. If they are seen, SUNBURST exits and does not run.\n**List of services: includes security products that have weak anti-tamper**\nmeasures. SUNBURST goes to the registry and tries to disable them. The\nbackdoor may have bypassed these products, or at least tried to. SentinelOne is\nnot on this list, and even if it was, SentinelOne’s anti-tamper capability protects\nfrom such attempts (without any special configuration needed).\n**List of drivers: The third list is shorter and includes a list of drivers; among them**\nis SentinelOne. When SUNBURST sees the drivers, it exits before initiating any\nC2 communication or enabling additional payloads.\n\nThe following analysis demonstrates the above key findings.\n\n## Reversing SUNBURST\n\nInteresting functionality resides within the `UpdateNotification() and` `Update()`\nmethods; more specifically, the true payload lies within an important `while() loop.`\n\n\n-----\n\nThe `TrackProcesses() method (called both by` `Update and` `UpdateNotification ) is`\nresponsible for querying the running processes on the victim’s machine to find process,\nservice, and driver names of interest. This routine will get a list of running process objects,\nthen pass it to three methods below for identifying blacklisted processes/services. These\nmethods will return true if a blacklisted process/service is found, causing the malware to\nbreak out of the `Update() loop.`\n\nThe hash of each process name is calculated, and then checked against a blacklist of\nhardcoded hashes. If the calculated hash is present in the blacklist, this method will return\ntrue.\n\n\n-----\n\nIn the `SearchServices() method, the malware leverages the same hashing technique to`\nidentify services of interest, then tries to manually disable the service through modifying its\nregistry key.\n\nBelow, the `SetValue() method is used with argument 4 for the` `Start entry, thus`\ndisabling the service through the registry.\n\n\n-----\n\nIn order to ensure that this works as intended, the malware attempts to take ownership of the\nregistry key before disabling the service.\n\nLastly, `SearchConfigurations() is used to identify blacklisted drivers. This is performed`\nthrough the WMI query – `Select * From Win32_SystemDriver, which is obfuscated in`\nthe below screenshot as\nC07NSU0uUdBScCvKz1UIz8wzNooPriwuSc11KcosSy0CAA==. The file name is obtained\nfor each driver, and if this driver is found in the blacklist, this method will return true. As\nmentioned before, returning true causes the malware to break out of the Update() loop prior\n\n\n-----\n\nto initiating the true backdoor code. Our driver `SentinelMonitor.sys` is hardcoded in the\nblacklist, meaning that the malware will not fully execute its payload on endpoints protected\nby SentinelOne so long as our driver is loaded.\n\nIf this blacklist check is passed, only then is the backdoor code initiated. The first interesting\naction the backdoor code takes is to call out to C2 to receive instructions/commands that will\nbe parsed and passed to the job engine. This C2 callout is to a URL generated at runtime by\nthe malware’s DGA, which will end up being a subdomain of avsvmcloud[.]com. We have\nobserved no endpoints monitored by SentinelOne calling out to any subdomain of\n*.avsvmcloud[.]com.\n\nDuring the research, we extracted all hashes from the malware, then calculated components\nin our agent found in C:Program FilesSentinelOne* to match. The only SentinelOne-related\nhash found was the driver name that FireEye shared.\n\nSnip of hardcoded hashes extracted from the malware:\n\n\n-----\n\nHashing function extracted from the malware:\n\nResults of the tool:\n```\n> .fnva_hash_s1.exe\n12343334044036541897 matched --> SentinelMonitor.sys\n\n## List of processes: SunBurst Exits\n\n```\n\n-----\n\n```\nexeinfope\n\n```\n\n-----\n\n```\nramcapture64\n\n```\n\n-----\n\n```\nx64dbg\n\n```\n\n## List of services: SunBurst tries to bypass\n\nThe list includes Windows Defender, Carbon Black, CrowdStrike, FireEye, ESET, FSECURE, and more.\n\n```\nautoruns64\n\n```\n\n-----\n\n```\nautoruns\n\n```\n\n-----\n\n```\nfsma\n\n```\n\n## List of drivers: SunBurst Exits\n```\n    cybkerneltracker.sys\n    atrsdfw.sys\n    eaw.sys\n    rvsavd.sys\n    dgdmk.sys\n    sentinelmonitor.sys\n    hexisfsmonitor.sys\n    groundling32.sys\n    groundling64.sys\n    safe-agent.sys\n    crexecprev.sys\n    psepfilter.sys\n    cve.sys\n    brfilter.sys\n    brcow_x_x_x_x.sys\n    lragentmf.sys\n    libwamf.sys\n\n IOCs/Hunt:\n\n```\n1. Search for the presence of the Injected class of weaponized DLL on\n\n_OrionImprovementBusinessLayer class in the SolarWinds.Orion.Core.BusinessLayer_\nnamespace – Indicates weaponized .NET assembly/DLL\n2. Hardcoded named pipe name 583da945-62af-10e8-4902-a8f205c72b2e – Does not\n\nindicate that the backdoor code was initiated, but is the first action taken after the 12-14\nday dormant period.\n3. Review proxy/web gateway logs for traffic to subdomains of this domain. This indicates\n\nthat the backdoor code was indeed executed – avsvmcloud[.]com\n\n\n-----\n\n4. Executed during blacklist check routine in the context of the\n\nprocess businesslayerhost.exe :\n```\n  Select * From Win32_SystemDriver – WMI query to identify blacklisted\n\n```\n```\ndrivers\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-12-18 - SolarWinds SUNBURST Backdoor- Inside the APT Campaign.pdf"
+    ],
+    "report_names": [
+        "2020-12-18 - SolarWinds SUNBURST Backdoor- Inside the APT Campaign.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535880,
+    "ts_updated_at": 1743041160,
+    "ts_creation_date": 1653705214,
+    "ts_modification_date": 1653705214,
+    "files": {
+        "pdf": "https://archive.orkl.eu/05666cd57c3e60ad861508f603b02ef293cc0c56.pdf",
+        "text": "https://archive.orkl.eu/05666cd57c3e60ad861508f603b02ef293cc0c56.txt",
+        "img": "https://archive.orkl.eu/05666cd57c3e60ad861508f603b02ef293cc0c56.jpg"
+    }
+}

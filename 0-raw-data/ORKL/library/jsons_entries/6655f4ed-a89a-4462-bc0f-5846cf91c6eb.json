@@ -1,0 +1,152 @@
+{
+    "id": "6655f4ed-a89a-4462-bc0f-5846cf91c6eb",
+    "created_at": "2023-01-12T15:04:42.450622Z",
+    "updated_at": "2025-03-27T02:16:39.921994Z",
+    "deleted_at": null,
+    "sha1_hash": "94ced3080a0bc5989b1e90139369fcf379efa22d",
+    "title": "2020-09-22 - Taidoor - a truly persistent threat",
+    "authors": "",
+    "file_creation_date": "2022-05-29T10:37:49Z",
+    "file_modification_date": "2022-05-29T10:37:49Z",
+    "file_size": 2087366,
+    "plain_text": "# Taidoor - a truly persistent threat\n\n**blog.reversinglabs.com/blog/taidoor-a-truly-persistent-threat**\n\n[Threat Research | September 22, 2020](https://blog.reversinglabs.com/blog/tag/threat-research)\n\nBlog Author\n[Karlo Zanki, Reverse Engineer at ReversingLabs. Read More...](https://blog.reversinglabs.com/blog/author/karlo-zanki)\n\n## When malware lasts longer than your washing machine\n\n\n-----\n\n## Introduction\n\nGovernment-supported actors usually conduct long-lasting activities in cyberspace, and to simplify such continuous\nprocesses, they often develop malicious tools with the intention of using them for a long period of time. Like any other\nmalicious tool, they need to be stealthy, and when they get detected, some modifications are necessary to become\nundetectable again. Sometimes it can be as simple as changing the compromised infrastructure, while at other times\ncreating a new version of the tool is required. When organizations put a lot of effort into creating a tool like that, they\nprobably don't plan to use it in massive campaigns. It is expected to be used in smaller, targeted attacks; therefore,\nresearchers won’t have too many samples for analysis at their disposal.\n\nAn example of such a tool is Taidoor RAT (remote access trojan), dating all the way back to 2008, whose new version\n[was recently discovered and presented in a technical report released by the US government institutions. Taidoor is](https://us-cert.cisa.gov/ncas/analysis-reports/ar20-216a)\ndescribed as a Remote Access Trojan developed and used by cyber actors supported by the Chinese government. The\nnew version of the RAT consists of two parts - a loader in a DLL form, and a main RAT module that comes as RC4encrypted binary data. The loader first decrypts the encrypted main RAT module, and then executes its exported Start\nfunction. The report provides two samples for both the loader and the main encrypted RAT module. These samples\ncome with only two C2 domains and one C2 IP.\nIn this blog, you will learn how our Titanium Platform can help you find more malware samples to extend the IOC lists\nand power up your defenses.\n\n## Taidoor\n\nAs already mentioned, the Taidoor RAT consists of two parts, a loader and the main RAT module. A few pivoting\nattempts on the loader samples didn’t produce any results, so we focused on the samples of the main RAT module.\nThis makes sense, as they contain the malware configuration including C2 domains and IPs.\n\nTwo samples of the main RAT available from the threat report are encrypted with the RC4 algorithm, and aren’t suitable\nfor pivoting in that form. The first step is to decrypt them and get them to their normal DLL format suitable for metadata\n[extraction. Publicly available tools like CyberChef can be used to decrypt various encryption algorithms, including RC4.](https://gchq.github.io/CyberChef)\nOnce decrypted, the DLL is processed with Titanium Platform, and its metadata is extracted. The first thing to do is look\nat the files grouped into the same buckets based on the RHA1, our functional file similarity algorithm, for each of the\nsamples.\n\n\n-----\n\n**Similar files grouped by RHA1 algorithm**\n\nThe RHA1 algorithm reveals ten more samples dating back to 2018 and 2019. However, there are additional options for\npivoting. Looking at the samples' exports shows a specific combination of functions and original file name.\n\n**Samples exports**\n\nRunning a Titanium Platform cloud search query with this specific combination finds the samples already discovered\nusing the RHA1 file similarity algorithm, and also 3 additional samples.\n\n\n-----\n\n**Pivoting on exports and original name**\n\nAnalyzing these three samples shows that they are using the same AES key as described in the threat report. The\nsignificant difference is that they have another layer of encryption used to hide the part of the code responsible for\nconfiguration decryption, including the AES key and S-Box initialization.\n\n\n-----\n\n**Loading of AES decryption key in previously decrypted layer of code**\n\nPivoting on these three samples didn’t return any new results. However, there is something uncommon in this exported\nfile name - “mm.dll”. It is probably a shorthand for something.\n\nWhat if there were some variations in the functionality of these samples? There is a chance that this mm prefix could\nhave something appended to it. To check this assumption, a search query is constructed using the wildcard character to\nmatch samples that start with the mm prefix and at the same time contain the aforementioned exported functions Start\nand Service.\n\n\n-----\n\n**Pivoting on exports and original name using wildcard character**\n\nOrdering these search results by their size - and ignoring clean software and previously discovered samples - leaves\njust a few hashes we need to look at. These hashes are split in two groups based on their size. Looking at their exports\nreveals two new original file names - mm_tcp_dll.dll and mm_tcp_svchost.dll.\n\n\n-----\n\n**Samples exports**\n\nAnalyzing these samples in disassembler confirms these are indeed Taidoor samples, since they perform the same\nAES decryption and use the same AES key. The 466 KB samples also have a layer of encryption used to hide the part\nof the code responsible for configuration decryption, as already described in the previous case.\n\n\n-----\n\n**Loading of AES decryption key in 134KB samples**\n\n**Loading of AES decryption key in previously decrypted layer of code in 466KB samples**\n\nThey also include the same strings present in the Taidoor samples mentioned in the referenced threat report.\n\n**Some of the strings found in Taidoor samples**\n\nOne interesting thing that catches the eye are the pdb paths. Samples of the 134 KB size contain the pdb path\n**“C:\\Users\\john\\Desktop\\KD17.6_20170628\\Release\\mm_tcp_svchost.pdb” and have the compilation timestamp set**\nto 2017-07-04T09:20:21. Samples of the 466 KB size have their compilation timestamp set to 2016-04-06T08:44:22\nand don’t include any pdb paths, but looking at the contained strings reveals one very similar to the mentioned pdb path\n\n- “c:\\users\\develop\\desktop\\kd15.1_aes_20160321\\mm_tcp_dll\\svchost.cpp”. We can assume that in the\n“KDVV.v_YYYYMMDD” part of the string, the VV.v represents the malware version, and that YYYYMMDD represents\nthe creation date. Unfortunately, pivoting variations on these pdb paths didn’t result in any other samples besides the\nones previously found.\n\nThere are still two discovered original file names left to pivot on. Pivoting on mm_tcp_svchost.dll doesn’t result in\nanything new. On the other hand, pivoting on mm_tcp_dll.dll reveals around 70 more samples. Looking at them in detail\nindicates they are older versions of Taidoor dating all the way back to 2011. These samples have configuration\n\n\n-----\n\n[encrypted with the RC4 algorithm, and not with AES like the version from the referenced threat report. We won t](https://us-cert.cisa.gov/ncas/analysis-reports/ar20-216a)\ndescribe these samples here because they are a bit outdated and are more similar to the older versions of Taidoor\n[already covered with technical reports from FireEye and](https://www.fireeye.com/blog/threat-research/2013/09/evasive-tactics-taidoor-3.html) [TrendMicro.](https://www.trendmicro.de/cloud-content/us/pdfs/security-intelligence/white-papers/wp_the_taidoor_campaign.pdf)\n\nBut if there is a sample named mm_tcp_dll.dll, is it possible that there is a sample using the http protocol for\ncommunication? We can guess that it would be named mm_http_dll.dll if it follows the naming convention. A search\nquery indeed finds 17 samples with this name, and analyzing them in disassembler shows they also have the\nconfiguration encrypted with the same “0xA1 0xA2” RC4 key. But as illustrated in the following image, these samples\nare also 8 years old, and are not in the focus of interest of this blog post.\n\n**Pivoting on original name**\n\nAnother very interesting sample exists, originally named mm_udt_dll.dll, suggesting usage of the UDT protocol for the\nC2 communication. Since it is also quite old, it won’t be examined in detail, but it uses the same RC4 key for\nconfiguration encryption, and it is likely that the only difference is the network protocol used for the communication.\n\n**Pivoting on original name**\n\nAll collected samples have their configuration placed in the .data section, and use the same AES key “2B 7E 15 16 28\n**AE D2 A6 AB F7 15 88 09 CF 4F 3C” IV: “00”. Configurations were extracted from all the samples and subsequently**\ndecrypted with the provided key. The last thing to do was to collect decrypted C2 domains and IPs, and create an IOC\nlist provided at the end of this blog.\n\n## Development history\n\n\n-----\n\nThe samples were grouped based on the described findings, and one representative sample from each group was put\ninto a table. The table was then sorted based on the compilation timestamp.\n\n\n**SHA1** **Compile**\n**timestamp**\n\nf1a1ea963ae8aca3a4623912c405cc97df510c07 2015-1222\nT07:15:44\n\n859e0f0ccbcafd25b0877a0c6df0c94cd84d2433 2016-0406\nT08:44:22\n\n4118cc4ee6e22bca1933b0033cfe07924293b6bb 2017-0704\nT09:20:21\n\nde7b0889fce6e38ac4f902e2399c9a794f8f00df 2018-0425\nT01:36:11\n\n22c55ded3486614728eaa29a7526d760ac496b20 2018-0921\nT01:51:04\n\n\n**First seen**\n**timestamp**\n\n12/23/2015\n4:40\n\n7/18/2018\n1:03\n\n6/6/2019\n12:18\n\n8/3/2018\n13:31\n\n11/20/2018\n13:19\n\n\n**Size** **File**\n**Type**\n\n\n**Original name**\n\n\n155.5KB PE/Dll mm.dll\n\n466KB PE/Dll mm_tcp_dll.dll\n\n134KB PE/Dll mm_tcp_svchost.dll\n\n154.5KB PE/Dll mm.dll\n\n179.5KB PE+/Dll mm.dll\n\n\nTwo oldest groups of samples have an extra layer of encryption used for hiding the part of the code responsible for AES\ndecryption. At some point in 2017, the malware developers decided to simplify the code and move that extra protection\nlayer, probably to another PE artifact (the loader component). The fact that the same AES key has been used for more\nthan 4 years is a lucky coincidence which simplifies the IOC extraction for researchers and makes correlating samples\neasier. Older versions of Taidoor mentioned in this blog use a different encryption algorithm, but have a highly similar\nset of exported functions, and also very similar high-level program logic.\n\n## Conclusion\n\nLike any other software product, malware families require a lot of maintenance and improvement to achieve long-term\noperability. Even though such continuous upgrading helps malware avoid detection mechanisms, it also results in\nrelated malware versions. These related versions must have some similarities, and this is an opportunity for security\nresearchers to establish correlations between various malware campaigns and quickly find more threat samples.\n\nAs part of this research, and based on the analysis provided in the referenced threat report, 23 related samples were\nfound and 40 new C2 IPs and domains extracted from their configurations.\n\nTitanium Platform helps researchers get a more detailed insight into malware samples. Various search queries can be\nconstructed from the extracted metadata, and can be used to find related threats. With Titanium Platform you can also\nestablish time relationships between the samples, and together with the differences in malware functionality, this can\nenable you a better understanding of malware development history.\n\n## IOC list\n\nThe following link contains the data extracted from the newly discovered samples related to the Taidoor malware.\n\n[https://blog.reversinglabs.com/hubfs/Blog/Taidoor_SHA1_list.txt](https://blog.reversinglabs.com/hubfs/Blog/Taidoor_SHA1_list.txt)\n\n[https://blog.reversinglabs.com/hubfs/Blog/Taidoor_C2_list.txt](https://blog.reversinglabs.com/hubfs/Blog/Taidoor_C2_list.txt)\n\n### MORE BLOG ARTICLES\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-09-22 - Taidoor - a truly persistent threat.pdf"
+    ],
+    "report_names": [
+        "2020-09-22 - Taidoor - a truly persistent threat.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "5d2bd376-fcdc-4c6a-bc2c-17ebbb5b81a4",
+            "created_at": "2022-10-25T16:07:23.667223Z",
+            "updated_at": "2025-03-27T02:02:09.916086Z",
+            "deleted_at": null,
+            "main_name": "GCHQ",
+            "aliases": [
+                "Government Communications Headquarters",
+                "Operation Socialist"
+            ],
+            "source_name": "ETDA:GCHQ",
+            "tools": [
+                "Prax",
+                "Regin",
+                "WarriorPride"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "71b19e59-b5f7-4bc6-816d-194be0f02af0",
+            "created_at": "2022-10-25T16:07:24.301036Z",
+            "updated_at": "2025-03-27T02:02:10.165121Z",
+            "deleted_at": null,
+            "main_name": "Taidoor",
+            "aliases": [
+                "Budminer",
+                "Earth Aughisky"
+            ],
+            "source_name": "ETDA:Taidoor",
+            "tools": [
+                "Dripion",
+                "Masson",
+                "Taidoor",
+                "simbot"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "2864e40a-f233-4618-ac61-b03760a41cbb",
+            "created_at": "2023-12-01T02:02:34.272108Z",
+            "updated_at": "2025-03-27T02:02:10.209072Z",
+            "deleted_at": null,
+            "main_name": "WildCard",
+            "aliases": [],
+            "source_name": "ETDA:WildCard",
+            "tools": [
+                "RustDown",
+                "SysJoker"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "50bd4a6c-7542-4bdd-8b37-ab468fc428ef",
+            "created_at": "2023-01-06T13:46:38.998658Z",
+            "updated_at": "2025-03-27T02:00:02.973354Z",
+            "deleted_at": null,
+            "main_name": "Taidoor",
+            "aliases": [
+                "G0015",
+                "Earth Aughisky"
+            ],
+            "source_name": "MISPGALAXY:Taidoor",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "478e9b27-39b9-49e4-a3c5-81569a767275",
+            "created_at": "2022-10-25T15:50:23.417339Z",
+            "updated_at": "2025-03-27T02:00:55.464624Z",
+            "deleted_at": null,
+            "main_name": "Taidoor",
+            "aliases": [
+                "Taidoor"
+            ],
+            "source_name": "MITRE:Taidoor",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "256a6a2d-e8a2-4497-b399-628a7fad4b3e",
+            "created_at": "2023-11-30T02:00:07.299845Z",
+            "updated_at": "2025-03-27T02:00:03.257794Z",
+            "deleted_at": null,
+            "main_name": "WildCard",
+            "aliases": [],
+            "source_name": "MISPGALAXY:WildCard",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f9806b99-e392-46f1-9c13-885e376b239f",
+            "created_at": "2023-01-06T13:46:39.431871Z",
+            "updated_at": "2025-03-27T02:00:03.08926Z",
+            "deleted_at": null,
+            "main_name": "Watchdog",
+            "aliases": [
+                "Thief Libra"
+            ],
+            "source_name": "MISPGALAXY:Watchdog",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535882,
+    "ts_updated_at": 1743041799,
+    "ts_creation_date": 1653820669,
+    "ts_modification_date": 1653820669,
+    "files": {
+        "pdf": "https://archive.orkl.eu/94ced3080a0bc5989b1e90139369fcf379efa22d.pdf",
+        "text": "https://archive.orkl.eu/94ced3080a0bc5989b1e90139369fcf379efa22d.txt",
+        "img": "https://archive.orkl.eu/94ced3080a0bc5989b1e90139369fcf379efa22d.jpg"
+    }
+}

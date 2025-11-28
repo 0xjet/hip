@@ -1,0 +1,240 @@
+{
+    "id": "edde4313-e559-4db6-b44a-1971e4b07033",
+    "created_at": "2023-01-12T15:09:22.068622Z",
+    "updated_at": "2025-03-27T02:13:47.856164Z",
+    "deleted_at": null,
+    "sha1_hash": "49c556343ee09f43dbd16eb346a0823fe6b71303",
+    "title": "2021-07-01 - Diavol - A New Ransomware Used By Wizard Spider-",
+    "authors": "",
+    "file_creation_date": "2022-05-28T16:53:20Z",
+    "file_modification_date": "2022-05-28T16:53:20Z",
+    "file_size": 598389,
+    "plain_text": "# Diavol - A New Ransomware Used By Wizard Spider?\n\n**fortinet.com/blog/threat-research/diavol-new-ransomware-used-by-wizard-spider**\n\n**[FortiGuard Labs Threat Research Report](https://www.fortinet.com/fortiguard/labs.html?utm_source=blog&utm_medium=campaign&utm_campaign=FortiGuardLabs)**\n\n**Affected Platforms:        Windows**\n\n**Impact:                  Data encryption, Data destruction**\n\n**Threat Severity:           Critical**\n\n## Diavol Introduction\n\n\nJuly 1, 2021\n\n\n[At the beginning of June, FortiEDR prevented a ransomware attack that had targeted one of our customers. After successfully stopping the](https://www.fortinet.com/products/endpoint-security/fortiedr.html?utm_source=blog&utm_campaign=fortiedr)\nattack, we were able to isolate two suspicious files that, at the time, were not found on VirusTotal: locker.exe and locker64.dll. In the timeline of\nthe attack, locker.exe was deployed a day before locker64.dll.\n\nWhile we were able to identify locker64.dll to be a Conti (v3) ransomware, locker.exe appeared to be entirely different. So, let’s say hello to a\nnew ransomware family.\n\nIn this blog, we’ll dive into the inner workings of Diavol and its possible attribution to the criminal group known as Wizard Spider.\n\n## First Encounter with Diavol\n\nThe ransomware drops a ransom note in a text format in every folder it goes over, as can be seen in figure 1.\n\nFigure 1: The dropped \"README_FOR_DECRYPT.txt\" ransom note.\n\n\n-----\n\ncco d g to t e ote, t e aut o s c a t ey sto e data o t e ct s ac e, t oug e d d ot d a sa p e t at as capab e o\nperforming that. This is either a bluff or a placeholder for future capabilities. Browsing to the URL led to us a website, seen in figures 2 and 3,\nfrom which we derived the name for the ransomware.\n\nFigures 2 and 3: Diavol’s website using Tor browser.\n\nAs part of a rather unique encryption procedure, Diavol operates using user-mode Asynchronous Procedure Calls (APCs) without a symmetric\nencryption algorithm. Usually, ransomware authors aim to complete the encryption operation in the shortest amount of time. Asymmetric\nencryption algorithms are not the obvious choice as they significantly slower than symmetric algorithms.\n\n## Technical Analysis\n\n_locker.exe is a 32-bit executable compiled with Microsoft Visual C/C++ Compiler. The timestamp 2021-04-30 15:58:15 on the file supports the_\nhypothesis that this ransomware is relatively new.\n\nUpon execution, Diavol starts by checking the command line arguments:\n\n\"-p\": path to a file with a list of paths to scan first for files.\n\n\"-log\": path to a log file.\n\n\"-m\": mode: net or local.\n\nnet- encrypt network shares only.\n\nlocal- encrypt local drives only and ignore network shares.\n\n\"-h\": path to a file that contains specific hosts (names and IPs) to enumerate for shares.\n\n\"-s\": IP address that the initial register message will be sent to. Overrides the hardcoded address.\n\nThe following command-line parameters were observed in the incident:\n\n_-p \"C:\\b.txt\" -m local -log \"C:\\programdata\\log.txt\"_\n\nThe log file lists files that were encrypted.\n\nThe authors didn’t remove the path to the debugging information file, unfortunately it didn’t divulge sensitive or incriminating details about the\nransomware authors:\n\n_D:\\Development\\Master\\onion\\locker.divided\\LockMainDIB\\Release\\LockMainDIB.pdb_\n\nWhile Diavol is not packed nor has any anti-disassembly tricks, it does use an interesting anti-analysis technique to obfuscate its code. Its\nmain routines are kept in bitmap images, which are stored in the PE resource section. Before calling each routine, it copies the bytes from the\nbitmap to a global buffer that has execute permissions.\n\nFigure 4: Diavol’s internals routines stored as bitmaps.\n\nThe imports used by each routine are also stored in the resource section under \"OFFSET\", with the same names as the bitmaps.\n\nFigure 5: Diavol’s imports data for the REGISTER routines.\n\nDiavol has 14 different routines stored as bitmaps. They are called in the following order:\n\nFigure 6: Diavol’s execution flow for invoking routines from the resource section.\n\n**· Create an identifier for the victim:**\n\nThe GENBOTID routine creates a unique identifier of the infected machine. It is composed of the following:\n\n<NetBIOS_computer_name> + <username> + “_W” + <OS major version in hex> + <OS minor version in hex> + <OS build number in hex> +\n“.” + <random_GUID_bytes in hex>\n\n**· Initialize configuration:**\n\nThe SHAPELISTS routine copy the hardcoded configuration from the PE’s .data section. The configuration begins with the “STATIC_DATA”\nstring and holds many unicode strings:\n\n- Base64 encoded RSA public key.\n\n- Server address for the initial registration.\n\n- Group ID for the initial registration.\n\n- List of excluded file extensions, file names and paths.\n\n- List of process names to terminate.\n\n- List of service names to stop.\n\n\n-----\n\nst o pat s to e u e ate es\n\n- List of filenames to delete.\n\n- Ransom note (in reverse).\n\n**· Register with the C&C server and update configuration:**\n\nThe REGISTER payload uses the WinINet API to send a request to a server and returns the response status code. Diavol issues the C&C\nserver a POST request to the hxxp://<server_address>/BnpOnspQwtjCA/register URL with the following headers:\n\n_User-Agent: \"Agent\"_\n_Content-Type: application/x-www-form-urlencoded; charset=UTF-8_\n\nThe body of the request is:\n\n_cid=<unique_victim_id>&group=<group_id_from_config>ip_local1=111.111.111.111&ip_local2=222.222.222.222&ip_external=2.16.7.12_\n\nIf the server returns status success, the ransomware will attempt to get an updated configuration from the C&C server. Since the “-s”\ncommand-line parameter was not provided, and as the configured address is 127.0.0.1 (localhost), the ransomware didn’t register itself or\nretrieve configuration updates.\n\nThe FROMNET routine sends a request to the server using the WinINet API as well and returns the data from the response. To get an updated\nconfiguration and override the hardcoded values, the ransomware sends HTTP GET requests using the same headers as before, to:\n\n_hxxp://173[.]232[.]146[.]118/Bnyar8RsK04ug/<unique_victim_id>/qqq123/<object_name>_\n\nThe following objects are supported:\n\n- /key - base64 encoded RSA public key.\n\n- /services - list of services to stop.\n\n- /priority - list of paths to scan for files for the first time.\n\n- /ignore - list of file extensions, filenames and paths to exclude.\n\n- /ext - list of file extensions to include.\n\n- /wipe - list of filenames to delete if they are found while enumerating the filesystem.\n\n- /landing - ransomware note.\n\nInspecting the network traffic to 173.232.146.118 showed that the HTTP Cookie header contains the string “diavol_session”.\n\nFigure 7: Network traffic to Diavol’s C&C server.\n\n**· Stop services and processes:**\n\nTo maximize its effect on the target machine and to encrypt as many files as possible, the ransomware terminates running processes that can\nlock access to valuable files, such as databases, office applications, financial\\accounting software, web servers, and virtual machines.\n\n_SERVPROC terminates services using the Service Control Manager (SCM) API. This API requires administrator permissions, which suggests_\nthe attackers are aware of this requirement and have taken appropriate steps beforehand.\n\nThe sample attempts to stop the following services:\n\n_sqlservr.exe, sqlmangr.exe, RAgui.exe, QBCFMonitorService.exe, supervise.exe, fdhost.exe, Culture.exe, RTVscan.exe, Defwatch.exe, wxServerV_\n_GDscan.exe, QBW32.exe, QBDBMgr.exe, qbupdate.exe,axlbridge.exe, 360se.exe, 360doctor.exe, QBIDPService.exe, wxServer.exe, httpd.exe, fd_\n_java.exe, wdswfsafe.exe._\n\nIn addition, the malware developers don’t check to see if the API calls are successful.\n\nFigure 8: Disassembly of SCM API calls to stop services.\n\n_KILLPR use CreateToolhelp32Snapshot, Process32First and Process32Next APIs to enumerate the running processes in the system._\n\nThe sample attempts to terminate the following list of processes:\n\n_DefWatch, ccEvtMgr, ccSetMgr, SavRoam, dbsrv12, sqlservr, sqlagent, Intuit.QuickBooks.FCS, dbeng8, sqladhlp, QBIDPService, Culserver, RTVs_\n_vmware-usbarbitator64, vmware-_\n_converter, VMAuthdService, VMnetDHCP, VMUSBArbService, VMwareHostd, sqlbrowser, SQLADHLP, sqlwriter, msmdsrv,_\n_tomcat6, QBCFMonitorServicechrome.exe, outlook.exe, chrome.exe._\n\nThe authors of Diavol made some mistakes in their hardcoded configuration. For starters, SERVPROC gets the list of the process names to\nterminate instead of service names to stop, and vice versa. The services list appears to include items that have nothing to do with services,\nlike \"winword.exe\". In the processes list, only the last three items look like actual process names, while even one of them is wrong\n(\"QBCFMonitorServicechrome.exe\" looks like a concatenation of “QBCFMonitorService” and “chrome.exe”).\n\n\n-----\n\n**t a** **e e c ypt o** **ey**\n\n_RSAINIT initializes the RSA public key used for encryption with the standard WinCrypt API._\n\n**· Find all drives to encrypt:**\n\n_ENMDSKS gets all the local drives in the system using GetLogicalDriveStrings API and checks to ensure they are not in the exclusions list._\nThis routine will be skipped if the mode command-line parameter (“-m”) is set to “net”.\n\nThe default list of the excluded file extensions, file names and paths is:\n\n_*.exe, *.sys, *.dll, *.lock64, *readme_for_decrypt.txt, *locker.txt, *unlocker.txt, %WINDIR%\\, %PROGRAMFILES%\\, %PROGRAMW6432%\\, %TEM_\n\n_SMBFASTand SMB routines enumerate available network shares for access._\n\n_SMBFAST will only be called if the “-h” parameter is present. This routine scans for accessible network shares on specific hosts._\n\n_SMB scans for accessible network shares on hosts found in the ARP table. Note that this routine will be skipped if the mode command-line_\nparameter (“-m”) is set to “local”.\n\n**· Find files to encrypt:**\n\n_FINDFILES traverses the file and directories in a given path. This routine is invoked multiple times:_\n\n- Depending on the “-p” command-line or hardcoded configuration.\n\n- According to ENMDSKS results.\n\n- According to SMBFAST results.\n\n- According to SMB results.\n\nFirst, the routine checks to see if the given file or folder is not in the exclusion list. Then the routine determines whether the current item is in\nthe list of files to delete. If not, it queues an APC on the current thread that gets the path to the item as an argument.\n\nFigure 9: Disassembly of the file system traversal.\n\n**· Prevent recovery by deleting shadow copies:**\n\n_VSSMOD drops and executes wscpy.exe in the current working directory, depending on the OS version (Windows Server 2003 or Vista and_\nnewer) and architecture (32 or 64-bit). Deleting the shadow copies snapshots is performed using the IVssBackupComponents COM object to\ncall the DeleteSnapshots method.\n\nThe dropped binaries are also kept in plaintext in the resource section under \"TEXT”. These binaries contained a PDB reference source file\nthat was used to compile the malware binary:\n\n_D:\\Projects\\Repository\\LockCry.divided\\WipeShadowCopies64\\RelNoCRT\\WipeShadowCopies64.pdb_\n\n_D:\\Projects\\Repository\\LockCry.divided\\WipeShadowCopies64\\x64\\RelNoCRT\\WipeShadowCopies64.pdb_\n\n_D:\\Development\\Master\\onion\\locker.divided\\WipeShadowCopies64\\RelNoCRT_Win2003\\WipeShadowStorageWin2003_32.pdb_\n\n_D:\\Development\\Master\\onion\\locker.divided\\WipeShadowCopies64\\x64\\RelNoCRT_Win2003\\WipeShadowStorageWin2003_64.pdb_\n\n**· Encryption:**\n\nAs mentioned before, FINDFILES will queue an APC object with a file or directory path. For the APC to get executed, the main function\ncalls SleepEx API in its final steps to set the thread to an alertable state.\n\nThe APC routine checks if the argument is directory and will create the “README_FOR_DECRYPT.txt” ransom note regardless of whether the\nfiles in the directory were encrypted. If the argument is a file, the ENCDEFILEroutine will be called.\n\nFigure 10: Disassembly of the APC routine checking the parameter type.\n\nUnlike most other ransomwares, Diavol does not use any symmetric encryption but only RSA to encrypt the files.\n\nENCDEFILE checks the file size. If it is less than 2,000,000 bytes, then only up to the first 11,700 bytes will be encrypted. If the file size is\nequal or greater than 2,000,000 bytes, then just the first 1,170,000 bytes will be encrypted.\n\nEach block of 11,700 bytes is split into ten chunks of 117 bytes each, and each chunk is encrypted using CryptEncrypt API. 117 plaintext bytes\nthen become 128 bytes of ciphertext. Therefore, 11,700 bytes become 12,800 bytes following the encryption. Diavol overwrites the file and\nwrites 11,700 encrypted bytes at the chunk’s original offset and appends the 1,100 remaining bytes to the end of the file.\n\nFinally, ENCDEFILE calls MoveFile API and appends a “.lock64” extension to the filename.\n\n\n-----\n\nO ce a Cs a e dequeued a d co p eted, t e t ead etu s o o g t e ca to S eep\n\n**· Change the desktop wallpaper:**\n\nBefore the process terminates, CHNGDESK is invoked.\n\nFirst, it captures the desktop window and sets the background color to black. It then writes \"All your files are encrypted! For more information\n_see “README-FOR-DECRYPT.txt\" with DrawText API to a bitmap image and saves it as \"encr.bmp\" in the public pictures folder. Finally, it_\nchanges the desktop wallpaper to the new image using the SystemParametersInfoAPI with the SPI_SETDESKWALLPAPER flag.\n\nFigure 11: Desktop wallpaper after being changed.\n\n## Connections to Conti and Egregor\n\nAs Diavol was deployed in conjunction with the Conti ransomware in this attack, albeit on different machines, we tried to see if there’s any\ncorrelation between them.\n\nStarting with the command-line parameters, the ones used by Diavol are nearly identical to those of Conti and used for the same functionality:\nlog file, encrypt local drives or network shares, and scan specific hosts for network shares. In addition, Diavol and Conti both operate similarly\nwith asynchronous I/O operations when queuing the file paths for encryption.\n\nThere also might be a link between Diavol and Egregor ransomware. Some lines in the ransom note are identical, as can be seen in figure 12,\nalthough this is not reliable as it could simply be a red herring that Diavol’s authors planted.\n\nSome have reported a link between Wizard Spider, the threat actor behind Conti, and Twisted Spider, the threat actor behind Egregor.\nAllegedly, these gangs cooperate on various operations. They are also both notoriously known for double ransoming their victims (data theft\nand encryption).\n\nFigure 12: Diavol’s ransom note above Egregor’s ransom note.\n\n## Summary\n\nIn this blog, we presented a complete analysis of the new ransomware family - Diavol.\n\nCurrently, the source of the intrusion is unknown. The parameters used by the attackers, along with the errors in the hardcoded configuration,\nhint to the fact that Diavol is a new tool in the arsenal of its operators which they are not yet fully accustomed to.\n\nAs the attack progressed, we found more Conti payloads named locker.exe in the network, strengthening the possibility the threat actor is\nindeed Wizard Spider. Despite a few similarities between Diavol, Conti, and other related ransomware, it’s still unclear, however, whether\nthere’s a direct link between them. And, there are a couple of major differences from attacks previously attributed to Wizard Spider & Co.,\nnamely:\n\n- No checks and balances to ensure the payload will not execute on Russian victims.\n\n- No clear evidence of double extortion in the environment was found.\n\n## Fortinet Solutions\n\n[FortiEDR detects and blocks the Diavol and Conti ransomwares attacks out-of-the-box without any prior knowledge or special configuration. It](https://www.fortinet.com/products/endpoint-security/fortiedr.html?utm_source=blog&utm_campaign=fortiedr)\ndoes this using its post-execution prevention engine to identify malicious activities, such as encrypting files or wiping the shadow copy, and\nthen blocking them in real-time, as can be seen in figures 13 and 14:\n\nFigure 13: FortiEDR blocking Diavol ransomware.\n\nFigure 14: FortiEDR blocking Conti ransomware.\n\nThe FortiGuard AntiVirus service is supported by, and the FortiGuard AntiVirus engine is included in Fortinet’s [FortiGate,](https://www.fortinet.com/products/next-generation-firewall.html?utm_source=blog&utm_campaign=fortigate-main-page) [FortiMail,](https://www.fortinet.com/products/email-security/fortimail.html?utm_source=blog&utm_campaign=fortimail-main-page) [FortiClient,](https://www.fortinet.com/products/endpoint-security/forticlient.html?utm_source=blog&utm_campaign=endpoint-web-page)\n[and FortiEDR solutions. FortiGuard AntiVirus has coverage in place for the following samples:](https://www.fortinet.com/products/endpoint-security/fortiedr.html?utm_source=blog&utm_campaign=fortiedr)\n\n85ec7f5ec91adf7c104c7e116511ac5e7945bcf4a8fdecdcc581e97d8525c5ac (Diavol, locker.exe) W32/Malicious_Behavior.VEX\n\n426ba2acf51641fb23c2efe686ad31d6398c3dd25c2c62f6ba0621455a3f7178 (Conti v3, locker64.dll) W64/BazarLoader.AD!tr\n\n4bfd58d4e4a6fe5e91b408bc190a24d352124902085f9c2da948ad7d79b72618 (Conti, locker.exe) W32/Conti.F!tr.ransom\n\n[All network IOCs have been added to the FortiGuard WebFiltering blocklist.](https://www.fortinet.com/support-and-training/support-services/fortiguard-security-subscriptions/web-filtering.html?utm_source=blog&utm_campaign=web-filtering)\n\nIn addition, as part of our membership in the Cyber Threat Alliance, details of this threat were shared in real time with other Alliance members\nto help create better protections for customers.\n\n## Appendix A: MITRE ATT&CK Techniques\n\n\n-----\n\nID Description\n\nT1027 Obfuscated Files or Information\n\nT1082 System Information Discovery\n\nT1071.001 Application Layer Protocol: Web Protocols\n\nT1489 Service Stop\n\nT1562.001 Impair Defenses: Disable or Modify Tools\n\nT1135 Network Share Discovery\n\nT1490 Inhibit System Recovery\n\nT1559.001 Inter-Process Communication: Component Object Model\n\nT1486 Data Encrypted for Impact\n\nT1485 Data Destruction\n\n## Appendix B: IOCs\n\n### File Hashes (SHA256)\n\n85ec7f5ec91adf7c104c7e116511ac5e7945bcf4a8fdecdcc581e97d8525c5ac (Diavol, locker.exe)\n\n426ba2acf51641fb23c2efe686ad31d6398c3dd25c2c62f6ba0621455a3f7178 (Conti v3, locker64.dll)\n\n4bfd58d4e4a6fe5e91b408bc190a24d352124902085f9c2da948ad7d79b72618 (Conti, locker.exe)\n\n### File Names\n\nlocker.exe\n\nlocker64.dll\n\nwscpy.exe\n\nencr.bmp\n\nREADME_FOR_DECRYPT.txt\n\n### File Paths\n\n%PUBLIC%\\Pictures\\encr.bmp\n\n### IPs\n\n173[.]232[.]146[.]118\n\n### URLs\n\nhxxp://<server_address>//BnpOnspQwtjCA/register\n\nhxxp://173[.]232[.]146[.]118/Bnyar8RsK04ug/\n\n### Domains\n\nr2gttyb5vqu6swf5[.]onion\n\n_Learn more about Fortinet’s_ _[FortiGuard Labs threat research and intelligence organization and the FortiGuard Security Subscriptions and](https://www.fortinet.com/fortiguard/labs?utm_source=blog&utm_campaign=fortiguard-labs)_\n_[Services portfolio.](https://www.fortinet.com/fortiguard/labs?tab=security-bundles&utm_source=blog&utm_campaign=security-bundles)_\n\n_Learn more about Fortinet’s_ _[free cybersecurity training, an initiative of Fortinet’s Training Advancement Agenda (TAA), or about](https://www.fortinet.com/training/cybersecurity-professionals?utm_source=blog&utm_medium=campaign&utm_campaign=Freetraininginitiative)_\n_the_ _[Fortinet Network Security Expert program, Security Academy program, and](https://training.fortinet.com/?utm_source=blog&utm_campaign=nse-institute)_ _[Veterans program. Learn more about FortiGuard Labs global](https://www.fortinet.com/corporate/careers/vets.html?utm_source=blog&utm_campaign=fortivet)_\n_[threat intelligence and research and the FortiGuard Security Subscriptions and Services portfolio.](https://www.fortinet.com/support/support-services/fortiguard-security-subscriptions/fortiguard-services-bundles.html?utm_source=blog&utm_campaign=fortiguard-service-bundles)_\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-07-01 - Diavol - A New Ransomware Used By Wizard Spider-.pdf"
+    ],
+    "report_names": [
+        "2021-07-01 - Diavol - A New Ransomware Used By Wizard Spider-.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "c3c864b3-fac9-4d56-8500-7c06c829fbf8",
+            "created_at": "2023-01-06T13:46:39.071873Z",
+            "updated_at": "2025-03-27T02:00:02.990045Z",
+            "deleted_at": null,
+            "main_name": "TA2101",
+            "aliases": [
+                "Storm-0216",
+                "DEV-0216",
+                "UNC2198",
+                "Maze Team",
+                "TWISTED SPIDER",
+                "GOLD VILLAGE"
+            ],
+            "source_name": "MISPGALAXY:TA2101",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "63061658-5810-4f01-9620-7eada7e9ae2e",
+            "created_at": "2022-10-25T15:50:23.752974Z",
+            "updated_at": "2025-03-27T02:00:55.538582Z",
+            "deleted_at": null,
+            "main_name": "Wizard Spider",
+            "aliases": [
+                "Wizard Spider",
+                "UNC1878",
+                "TEMP.MixMaster",
+                "Grim Spider",
+                "FIN12",
+                "GOLD BLACKBURN",
+                "ITG23",
+                "Periwinkle Tempest",
+                "DEV-0193"
+            ],
+            "source_name": "MITRE:Wizard Spider",
+            "tools": [
+                "TrickBot",
+                "AdFind",
+                "BITSAdmin",
+                "Bazar",
+                "LaZagne",
+                "Nltest",
+                "GrimAgent",
+                "Dyre",
+                "Ryuk",
+                "Conti",
+                "Emotet",
+                "Rubeus",
+                "Mimikatz",
+                "Diavol",
+                "PsExec",
+                "Cobalt Strike"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "e9f85280-337c-4321-b872-0919f8ef64a6",
+            "created_at": "2022-10-25T16:07:24.261761Z",
+            "updated_at": "2025-03-27T02:02:10.153781Z",
+            "deleted_at": null,
+            "main_name": "TA2101",
+            "aliases": [
+                "Gold Village",
+                "Maze Team",
+                "TA2101",
+                "Twisted Spider"
+            ],
+            "source_name": "ETDA:TA2101",
+            "tools": [
+                "7-Zip",
+                "Agentemis",
+                "BokBot",
+                "Buran",
+                "ChaCha",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Egregor",
+                "IceID",
+                "IcedID",
+                "Mimikatz",
+                "PsExec",
+                "SharpHound",
+                "VegaLocker",
+                "WinSCP",
+                "cobeacon",
+                "nmap"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "f6f91e1c-9202-4497-bf22-9cd5ef477600",
+            "created_at": "2023-01-06T13:46:38.86765Z",
+            "updated_at": "2025-03-27T02:00:02.938998Z",
+            "deleted_at": null,
+            "main_name": "WIZARD SPIDER",
+            "aliases": [
+                "FIN12",
+                "UNC2053",
+                "Pistachio Tempest",
+                "TEMP.MixMaster",
+                "GOLD BLACKBURN",
+                "Periwinkle Tempest",
+                "DEV-0193",
+                "Storm-0193",
+                "Trickbot LLC",
+                "DEV-0237"
+            ],
+            "source_name": "MISPGALAXY:WIZARD SPIDER",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "e6a21528-2999-4e2e-aaf4-8b6af14e17f3",
+            "created_at": "2022-10-25T16:07:24.422115Z",
+            "updated_at": "2025-03-27T02:02:10.216817Z",
+            "deleted_at": null,
+            "main_name": "Wizard Spider",
+            "aliases": [
+                "DEV-0193",
+                "Gold Blackburn",
+                "Gold Ulrick",
+                "Grim Spider",
+                "ITG23",
+                "Operation BazaFlix",
+                "Periwinkle Tempest",
+                "TEMP.MixMaster",
+                "Wizard Spider"
+            ],
+            "source_name": "ETDA:Wizard Spider",
+            "tools": [
+                "AdFind",
+                "Agentemis",
+                "Anchor_DNS",
+                "BEERBOT",
+                "BazarBackdoor",
+                "BazarCall",
+                "BazarLoader",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Conti",
+                "Diavol",
+                "Dyranges",
+                "Dyre",
+                "Dyreza",
+                "Dyzap",
+                "Gophe",
+                "Invoke-SMBAutoBrute",
+                "KEGTAP",
+                "LaZagne",
+                "LightBot",
+                "PowerSploit",
+                "PowerTrick",
+                "PsExec",
+                "Ryuk",
+                "SessionGopher",
+                "TSPY_TRICKLOAD",
+                "Team9Backdoor",
+                "The Trick",
+                "TheTrick",
+                "Totbrick",
+                "TrickBot",
+                "TrickLoader",
+                "TrickMo",
+                "Upatre",
+                "bazaloader",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bc119938-a79c-4e5f-9d4d-dc96835dfe2e",
+            "created_at": "2024-06-04T02:03:07.799286Z",
+            "updated_at": "2025-03-27T02:05:17.337094Z",
+            "deleted_at": null,
+            "main_name": "GOLD BLACKBURN",
+            "aliases": [
+                "Periwinkle Tempest ",
+                "Wizard Spider ",
+                "ITG23 "
+            ],
+            "source_name": "Secureworks:GOLD BLACKBURN",
+            "tools": [
+                " Buer Loader",
+                " Dyre",
+                " Team9",
+                " TrickBot",
+                "BazarLoader"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536162,
+    "ts_updated_at": 1743041627,
+    "ts_creation_date": 1653756800,
+    "ts_modification_date": 1653756800,
+    "files": {
+        "pdf": "https://archive.orkl.eu/49c556343ee09f43dbd16eb346a0823fe6b71303.pdf",
+        "text": "https://archive.orkl.eu/49c556343ee09f43dbd16eb346a0823fe6b71303.txt",
+        "img": "https://archive.orkl.eu/49c556343ee09f43dbd16eb346a0823fe6b71303.jpg"
+    }
+}

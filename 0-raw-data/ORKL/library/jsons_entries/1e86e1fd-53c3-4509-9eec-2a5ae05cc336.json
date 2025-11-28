@@ -1,0 +1,181 @@
+{
+    "id": "1e86e1fd-53c3-4509-9eec-2a5ae05cc336",
+    "created_at": "2023-01-12T15:02:24.348369Z",
+    "updated_at": "2025-03-27T02:08:51.372597Z",
+    "deleted_at": null,
+    "sha1_hash": "95b6e1c362e32d5aa28dfd418e0a793e9f5b9aa0",
+    "title": "2021-01-21 - Silencing Microsoft Defender for Endpoint using firewall rules",
+    "authors": "",
+    "file_creation_date": "2022-05-28T01:19:58Z",
+    "file_modification_date": "2022-05-28T01:19:58Z",
+    "file_size": 350946,
+    "plain_text": "# Silencing Microsoft Defender for Endpoint using firewall rules\n\n**[medium.com/csis-techblog/silencing-microsoft-defender-for-endpoint-using-firewall-rules-3839a8bf8d18](https://medium.com/csis-techblog/silencing-microsoft-defender-for-endpoint-using-firewall-rules-3839a8bf8d18)**\n\nSøren Fritzbøger January 21, 2021\n\n[Søren Fritzbøger](https://medium.com/@fritzboger?source=post_page-----3839a8bf8d18--------------------------------)\n\nJan 21, 2021\n\n\n6 min read\n\nWindows Defender for Endpoint (formerly Windows Defender ATP) is a so-called “cloud\npowered” EDR product[1], i.e. alerts and events are pushed to the cloud where defenders\ncan respond to them.\n\nWhen doing Red Team assignments one of the biggest hurdles usually lie in evading EDR\nproducts and ensuring that our actions are not detected. While a lot of work and research\nhas been put into evading and bypassing Windows Defender for Endpoint, little research\nexplores the possibility of simply silencing MD for Endpoint such that no data is sent to the\ncloud.\n\nThis article will explore one possible way of silencing MD for Endpoint by utilizing firewall\nrules to ensure that no events are sent to Microsoft Defender Security Center (i.e.\n[https://securitycenter.windows.com), and how to detect this kind of activity.](https://securitycenter.windows.com/)\n\nKnown methods of tampering with MD for Endpoint was detailed in Chris Thompson’s\n[(@retBandit) talk “Red Team Techniques for Evading, Bypassing, and Disabling MS](https://twitter.com/retBandit)\nAdvanced Threat Protection and Advanced Threat[4] Analytics” from BlackHat Europe 2017.\nIn this talk the usage of firewall rules to block traffic to known MD for Endpoint URLs is\ndiscussed. While this technique still works, it is cumbersome to create firewall rules for all the\n[hosts detailed in the service URLs for MD for Endpoint, which can be found here[2][3].](https://github.com/MicrosoftDocs/windows-itpro-docs/raw/public/windows/security/threat-protection/microsoft-defender-atp/downloads/mdatp-urls.xlsx)\nFurthermore, the list of URLs also contain entries such as\n\n*.blob.core.windows.net\n*.azure-automation.net\n\nwhich might break certain Windows services. In the case of a Red Team or penetration test,\nyou don’t want to negatively affect the client more than necessary or alert defenders by\nobstructing the usual workflow.\n\n\n-----\n\nTherefore, instead of blocking communication to certain URLs, we wanted to asses if it was\npossible to block communication for specific services and processes in order to silence MD\nfor Endpoint. To do this, we needed to figure out which processes communicate with known\nMD for Endpoint URLs, and block these specific processes. There are many ways to\n[examine which domains processes contact, including Microsoft Network Monitor[5],](https://docs.microsoft.com/en-us/troubleshoot/windows-server/networking/network-monitor-3)\n[Wireshark[6] and probably a ton of others. However, all the information we need is already](https://www.wireshark.org/)\ncollected by MD for Endpoint and available to us through Microsoft Defender Security\nCenter!\n\nMD for Endpoint gathers network connections from all running processes, and can therefore\nbe used to figure out what processes communicate with known MD for Defender URLs. The\n[following Kusto query can be run to see these processes.](https://docs.microsoft.com/en-us/azure/data-explorer/kusto/concepts/)\n\nKusto query to find processes making connections to known MD for Endpoint URLs\n\nProcesses making connections to known MD for Endpoint URLs\nGoing through the list, we have a few processes that stick out as processes that do not have\nanything to do with MD for Endpoint. For example, Teams.exe, which is the official Teams\nclient for Microsoft, apparently sends events to the known URLs. Furthermore, we have a\nprocess with no name, which we did not look further into.\n\nThe rest of the processes should be very familiar to anyone who has experience with\nDefender for Endpoint. However, a thorough understanding of these processes will aid in\nblocking them effectively using Windows Firewall.\n\nExecutable that spawns as a child process of MsSense.exe when initiating a “Live\nResponse Session” through Microsoft Defender Security Center\nExecutable that spawns as a child process of MsSense.exe. The description calls it\n“Communication Module”, so presumably handles communication to the\naforementioned URLs and also proxying if you applied this\nMain service executable for Defender for Endpoint. This runs as a service with the\nname “Sense” (On Windows 10)\nMain service executable for Microsoft Defender Antivirus. This runs as a service with\nthe name “WinDefend” (On Windows 10)\nCommand-line tool to perform various Microsoft Defender Antivirus functions\n\n\n-----\n\nExecutable that spawns as a child process of the HealthService service. Part of\nMicrosoft Monitoring Agent, which is installed when onboarding devices with previous\nversions of Windows (Server 2016 and below + Windows 8.1 Enterprise and below)[6]\n\n[7]\nMain service executable for Microsoft Monitoring Agent, which is installed when\nonboarding devices with previous versions of Windows (Server 2016 and below +\nWindows 8.1 Enterprise and below)[6][7]\n\nFurthermore, there is a bunch of native windows services such as utcsvc and diagtrack that\nalso communicate with the known URLs, but in our testing they were not sending any event\nor alert data related to MD for Endpoint.\n\n## PoC — Firewall rules\n\n Windows 10 and Windows Server 2019\n\nSilencing MD for Endpoint on Windows 10 and Windows Server 2019 is fairly easy, as only\nthe three processes, MsMpEng, SenseCncProxy and MsSense need to be blocked from\nsending traffic outbound on port 443. Running the following PowerShell script will effectively\nsilence Windows Defender without triggering any alerts at the time of writing:\n\nFirewall rules to silence MD for Endpoint on Windows 10 and Windows Server 2019\nAdding firewall rules in Windows requires local admin privileges, so the attack cannot be\ndone from a low privileged user account. As you can see from the following screenshot taken\nfrom Microsoft Defender Security Center, no events are received once the firewall rules are\napplied.\n\n\n-----\n\nAs you can see, no events are shown in Security Center after the firewall rules have been\napplied\nIt seems that all events are cached locally, so once the firewall rules are removed, the events\nand alerts will start showing up in Microsoft Defender Security Center.\n\n## Previous versions of Windows?\n\nWhile we could give the answer to this question, we will leave this as an exercise to the\nreader. All the information should already be given, so it is just a matter of doing a little bit of\nresearch and trying stuff out.\n\n## Detection\n\nIf you rely solely on MD for Endpoint for host-based intrusion detection, you are at loss here.\nAs no event or alert is sent to the cloud solution, it is, at the time of writing, impossible to\ndetect using MD for Endpoint in any useful way. Luckily for us, MD for Endpoint logs\nconnection errors in the Microsoft-Windows-SENSE/Operational event log with event id 5. An\nexample can be seen below.\n\n\n-----\n\nEvent logs for detecting when the MD for endpoint client is unable to contact the cloud server\nWhile you could also detect the attack based on process execution or PowerShell logs, it is\nnot a robust solution as many ways of adding firewall rules exist in Windows, for example\nusing the GUI or netsh.exe[9]. I have not found a proper way of detecting the creation of\nfirewall rules, as most resources point to event id 4947 (A change has been made to\nWindows Firewall exception list. A rule was modified) which only shows the RuleId and\nRuleName, but not the rule content.\n\n**Addition: When MD for Endpoint has been blocked for 7 days, the health state will change**\nto inactive[11]. This means that for the first 7 days, the device is not marked as inactive even\nthough it is not sending any alerts or events.\n\n**Addition 2: In the Device Inventory overview you can filter devices that have “Imparied**\n[communications” or “No sensor data”[11]. According to @SiliconShecky this list will show the](https://twitter.com/SiliconShecky)\ndevices within 24 hours.\n\n**Addition 3:** [@bh4b3sh has published a post describing how creation of firewall rules can be](https://twitter.com/bh4b3sh)\ndetected by using registry auditing. See more information in his post:\n[https://bhabeshraj.com/post/detect-addition-of-new-firewall-rules-in-defender-firewall/](https://bhabeshraj.com/post/detect-addition-of-new-firewall-rules-in-defender-firewall/)\n\n## Prevention\n\nWhile it is possible to create custom detection rules in MD for Endpoint[10], these are only\nevaluated on the server and does not block any actions on the endpoints. It merely alerts on\nthem for an operator to take action. Therefore, to prevent this specific attack we have to wait\nuntil Microsoft decides to block the action itself in Microsoft Defender through AMSI or similar\nmethods.\n\nI hope you enjoyed the article. If you have any questions don’t hesitate to contact me on\ntwitter [@fritzboger.](https://twitter.com/fritzboger)\n\n## References\n\n\n-----\n\n[1] [https://www.microsoft.com/en/microsoft-365/security/endpoint-defender](https://www.microsoft.com/en/microsoft-365/security/endpoint-defender)\n\n[2] https://docs.microsoft.com/en-us/windows/security/threat-protection/microsoft-defender[atp/configure-proxy-internet#enable-access-to-microsoft-defender-for-endpoint-service-urls-](https://docs.microsoft.com/en-us/windows/security/threat-protection/microsoft-defender-atp/configure-proxy-internet#enable-access-to-microsoft-defender-for-endpoint-service-urls-in-the-proxy-server)\nin-the-proxy-server\n\n[3] https://github.com/MicrosoftDocs/windows-itpro-docs/raw/public/windows/security/threatprotection/microsoft-defender-atp/downloads/mdatp-urls.xlsx\n\n[4] https://www.blackhat.com/docs/eu-17/materials/eu-17-Thompson-Red-Team-Techniques[For-Evading-Bypassing-And-Disabling-MS-Advanced-Threat-Protection-And-Advanced-](https://www.blackhat.com/docs/eu-17/materials/eu-17-Thompson-Red-Team-Techniques-For-Evading-Bypassing-And-Disabling-MS-Advanced-Threat-Protection-And-Advanced-Threat-Analytics.pdf)\nThreat-Analytics.pdf\n\n[5] https://docs.microsoft.com/en-us/troubleshoot/windows-server/networking/networkmonitor-3\n\n[6] https://docs.microsoft.com/en-us/windows/security/threat-protection/microsoft-defenderatp/onboard-downlevel\n\n[7] https://docs.microsoft.com/en-us/windows/security/threat-protection/microsoft-defenderatp/configure-server-endpoints\n\n[8] [https://docs.microsoft.com/en-us/sysinternals/downloads/sysmon](https://docs.microsoft.com/en-us/sysinternals/downloads/sysmon)\n\n[9] https://docs.microsoft.com/en-us/troubleshoot/windows-server/networking/netshadvfirewall-firewall-control-firewall-behavior\n\n[10] https://docs.microsoft.com/en-us/windows/security/threat-protection/microsoft-defenderatp/custom-detection-rules\n\n[11] https://docs.microsoft.com/en-us/windows/security/threat-protection/microsoft-defenderatp/fix-unhealthy-sensors#inactive-devices\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-01-21 - Silencing Microsoft Defender for Endpoint using firewall rules.pdf"
+    ],
+    "report_names": [
+        "2021-01-21 - Silencing Microsoft Defender for Endpoint using firewall rules.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "42a6a29d-6b98-4fd6-a742-a45a0306c7b0",
+            "created_at": "2022-10-25T15:50:23.710403Z",
+            "updated_at": "2025-03-27T02:00:55.531313Z",
+            "deleted_at": null,
+            "main_name": "Silence",
+            "aliases": [
+                "Whisper Spider"
+            ],
+            "source_name": "MITRE:Silence",
+            "tools": [
+                "Winexe",
+                "SDelete"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "88e53203-891a-46f8-9ced-81d874a271c4",
+            "created_at": "2022-10-25T16:07:24.191982Z",
+            "updated_at": "2025-03-27T02:02:10.13692Z",
+            "deleted_at": null,
+            "main_name": "Silence",
+            "aliases": [
+                "ATK 86",
+                "Contract Crew",
+                "TAG-CR8",
+                "TEMP.TruthTeller",
+                "Whisper Spider"
+            ],
+            "source_name": "ETDA:Silence",
+            "tools": [
+                "EDA",
+                "EmpireDNSAgent",
+                "Farse",
+                "Ivoke",
+                "Kikothac",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "Meterpreter",
+                "ProxyBot",
+                "ReconModule",
+                "Silence.Downloader",
+                "TiniMet",
+                "TinyMet",
+                "TrueBot",
+                "xfs-disp.exe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "cfdd35af-bd12-4c03-8737-08fca638346d",
+            "created_at": "2022-10-25T16:07:24.165595Z",
+            "updated_at": "2025-03-27T02:02:10.128957Z",
+            "deleted_at": null,
+            "main_name": "Sea Turtle",
+            "aliases": [
+                "Cosmic Wolf",
+                "Marbled Dust",
+                "Silicon",
+                "Teal Kurma",
+                "UNC1326"
+            ],
+            "source_name": "ETDA:Sea Turtle",
+            "tools": [
+                "Drupalgeddon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "2f07a03f-eb1f-47c8-a8e9-a1a00f2ec253",
+            "created_at": "2022-10-25T16:07:24.277669Z",
+            "updated_at": "2025-03-27T02:02:10.157972Z",
+            "deleted_at": null,
+            "main_name": "TA428",
+            "aliases": [
+                "Operation LagTime IT",
+                "Operation StealthyTrident",
+                "ThunderCats"
+            ],
+            "source_name": "ETDA:TA428",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "Agent.dhwf",
+                "Albaniiutas",
+                "BlueTraveller",
+                "Chymine",
+                "Cotx RAT",
+                "CoughingDown",
+                "Darkmoon",
+                "Destroy RAT",
+                "DestroyRAT",
+                "Gen:Trojan.Heur.PT",
+                "Kaba",
+                "Korplug",
+                "LuckyBack",
+                "PhantomNet",
+                "PlugX",
+                "Poison Ivy",
+                "RedDelta",
+                "RoyalRoad",
+                "SManager",
+                "SPIVY",
+                "Sogu",
+                "TIGERPLUG",
+                "TManger",
+                "TVT",
+                "Thoper",
+                "Xamtrav",
+                "pivy",
+                "poisonivy"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "33ae2a40-02cd-4dba-8461-d0a50e75578b",
+            "created_at": "2023-01-06T13:46:38.947314Z",
+            "updated_at": "2025-03-27T02:00:02.959421Z",
+            "deleted_at": null,
+            "main_name": "Sea Turtle",
+            "aliases": [
+                "SILICON",
+                "Teal Kurma",
+                "UNC1326",
+                "COSMIC WOLF",
+                "Marbled Dust"
+            ],
+            "source_name": "MISPGALAXY:Sea Turtle",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535744,
+    "ts_updated_at": 1743041331,
+    "ts_creation_date": 1653700798,
+    "ts_modification_date": 1653700798,
+    "files": {
+        "pdf": "https://archive.orkl.eu/95b6e1c362e32d5aa28dfd418e0a793e9f5b9aa0.pdf",
+        "text": "https://archive.orkl.eu/95b6e1c362e32d5aa28dfd418e0a793e9f5b9aa0.txt",
+        "img": "https://archive.orkl.eu/95b6e1c362e32d5aa28dfd418e0a793e9f5b9aa0.jpg"
+    }
+}

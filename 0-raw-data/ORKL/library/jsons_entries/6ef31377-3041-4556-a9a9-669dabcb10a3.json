@@ -1,0 +1,67 @@
+{
+    "id": "6ef31377-3041-4556-a9a9-669dabcb10a3",
+    "created_at": "2023-01-12T14:59:01.456598Z",
+    "updated_at": "2025-03-27T02:08:40.591093Z",
+    "deleted_at": null,
+    "sha1_hash": "0175c0b6990fef895e8c1232d8c9d31f740ca43b",
+    "title": "2019-12-23 - DarkRat - Hacking a malware control panel",
+    "authors": "",
+    "file_creation_date": "2022-05-28T02:39:34Z",
+    "file_modification_date": "2022-05-28T02:39:34Z",
+    "file_size": 1294249,
+    "plain_text": "# DarkRat - Hacking a malware control panel\n\n**fr3d.hk/blog/darkrat-hacking-a-malware-control-panel**\n\n1. You are here: [fr3d.hk](https://fr3d.hk/blog/)\n[2. Malware](https://fr3d.hk/blog/category/malware)\n[3. DarkRat - Hacking a malware control panel](https://fr3d.hk/blog/darkrat-hacking-a-malware-control-panel)\n\nDecember 23, 2019 - Reading time: 11 minutes\n\nIn this post I will be showing you how I found vulnerabilities in the control panel of a new\npiece of malware and how I exploited these to be able to take it over. I will also be giving\ninsight into chaining vulnerabilities.\n\nThe malware we are talking about today is DarkRat. This nasty bit of code has recently\npopped up on the least underground hacking forum there is, HackForums. HackForums is a\nvery accessible forum that shows just about anyone how to become a cybercriminal. It is full\nof very easy to use tools on all kinds of different subjects but today we will be concentrating\non its malware & marketplace sections. The developer of today's target is very active on this\nforum and you will find him posting in these two sections. The actor goes by the name \"Dark\nSpider\" and along with his main piece of malware (DarkRat) has created other pieces of\nmalware including an exploit kit (CapeSand). Here is the banner of his profile on the site\nwhich I find quite ironic since he is a cyber criminal and someone that is aiding other cyber\ncriminals.\n\nHere is a screenshot of his sales thread for DarkRat.\n\n\n-----\n\nThe reason how I was able to get my hands on the source code of the control panel for this\nmalware is that the developer was developing the bot and updating it on github publicly, after\na friend of mine discovered it and shared it with me I was able to quickly clone the repository\nand back it up locally. Not long after this the developer discovered that the source code for all\nof his products had been discovered he proceeded to post this thread.\n\n\n-----\n\nObviously his products weren't for learning purposes but I'm happy he came to realize that\nwhat he was doing is wrong and has now stopped all sales. Onto the main topic of today!\n\nIf we look at the traffic that the malware sends to the control panel you will see a post\nparameter followed with what looks like gibberish to the untrained eye.\n\nFor those of you that have any experience with encoding you will notice that there is a trailing\ntwo equal signs after the gibberish, this is a sign of padding for base64. If we decode the\ngibberish with base64 we simply get more gibberish like so.\n\nHopefully you can notice from what I said in the previous paragraph that this is again\nbase64. Decoding it again will give us what we are looking for.\n\nWe can now see that the malware is sending an initial POST to the control panel, informing it\nof the specs and details of the computer it has just been run on. There are pieces of\ninformation that are base64 encoded within this already double decoded request but I won't\nconcentrate on those as they are just names of what hardware and software the computer is\nusing. So now that we know what the malware is sending to the control panel let's look at the\npanel itself.\n\n\n-----\n\nThis is what the DarkRat main panel looks like after setup.\n\nTasks page\n\nBots page\n\nSettings page\n\n\n-----\n\nSo lets now take the POST request the malware sent to the panel and send it to my localhost\nand see what happens. I have recreated the post within a web security tool called burp.\n\nAnd we get a successful update on the control panel.\n\nSo let's take a look at what is actually handling this request. Within the panel source code\nthere is a file called bot handler, this handles the malware connecting to the control panel.\nThis file checks if the bot (infected computer) is in the database and if not it then prepares to\ninsert the computers details into the database. This is done using SQL statements in php but\nwhat the author forgets to do is to encode or remove special characters from what it inserts.\nThis is exactly what we want as this will lead to XSS. XSS or cross site scripting is when you\nmanage to inject html into a webpage through user submitted content. On the main page we\nsee the names of the computers that have been infected. Here is what it looks like after I\nsent my request.\n\n\n-----\n\nSo what happens if we replace \"USER-PC\" with something like \"<script>alert(1);</alert>\"? To\nquickly explain this I am inserting a script tag that will run the JavaScript between the tags, If\n[you don't understand what I am talking about please read this: Introduction to XSS so now](https://medium.com/@charithra/introduction-to-xss-e9eb90b4323d)\nthat you can see what I am doing let's actually put it into practice.\n\nIn the decoded request I replace \"USER-PC\" with \"<script>alert(1);</alert>\" and then double\nbase64 encode it and send it back to the panel. Refreshing the panel we get alerted by this.\n\nSo now we can see that the XSS worked and this means that we can now insert whatever\nhtml/JavaScript we want into the main page for the malware operator to see. Obviously we\ndon't actually want the malware operator to get any visual indication that we have hacked his\ncontrol panel so after our payload we can insert a bit of text so that the original \"USER-PC\"\nstill appears.\n\nNow that we have XSS we need to chain it with something else so that we can take over the\ncontrol panel. A useful web vulnerability we can use is CSRF or cross site request forgery.\nThis is when you make the browser do something to emulate what a user would do. In this\ncase we want the operator to add a new user to the control panel so that we can access it.\nTo do this we need to send a POST request to the settings page that will then add the user to\nthe panel. Here is the post that is sent when you try to add a new user to the control panel.\n\n\n-----\n\nSo now from this we can use a tool within burp to create a CSRF payload from this.\n\nWhat this is doing is automatically submitting a form to the settings panel that emulates what\nthe control panel operator would be submitting if they were to add a new user to their panel.\nYou can see on the right the values \"guestuser\" being set as the value for the user and\npassword input fields. Now we want this form to automatically be submitted once viewed.\nThe new html looks like this.\n\n\n-----\n\nYou can see the JavaScript at the end, this automatically submits the form upon visit. Due to\nthe way the developer has configured the database I have only 100 characters that I can\nenter into the pc name column. This means that I cannot directly enter this piece of code into\nthe site as it is well over the 100-character limit, so I have to display it differently. This can be\ndone with an iframe. An iframe displays another webpage within a webpage which is perfect\nfor our needs. We can use this iframe that has a style set so that it is invisible to the user. So\nif we save the html above as \"payload.html\" and host it at our domain of attacker.com then\nour new iframe payload will look like this.\n\nSo now that we have our final payload we can then append \"USER-PC\" to the end so that it\ndisplays something that the control panel operator expects to see for maximum stealth. We\ncan now insert this into our payload, encode it twice and send it to the control panel. Once\nthe operator views his control panel then he will be secretly adding a user to his control\npanel. I can then monitor requests to my domain & host so that I know when this user has\nbeen added. Now that I have access I can remove all the infected computers by adding this\ncommand to the panel.\n\nAnd there we go! That brings this blog post to a close. I hope that you enjoyed the read and\nlearnt something! Until next time, goodbye!\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-12-23 - DarkRat - Hacking a malware control panel.pdf"
+    ],
+    "report_names": [
+        "2019-12-23 - DarkRat - Hacking a malware control panel.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535541,
+    "ts_updated_at": 1743041320,
+    "ts_creation_date": 1653705574,
+    "ts_modification_date": 1653705574,
+    "files": {
+        "pdf": "https://archive.orkl.eu/0175c0b6990fef895e8c1232d8c9d31f740ca43b.pdf",
+        "text": "https://archive.orkl.eu/0175c0b6990fef895e8c1232d8c9d31f740ca43b.txt",
+        "img": "https://archive.orkl.eu/0175c0b6990fef895e8c1232d8c9d31f740ca43b.jpg"
+    }
+}

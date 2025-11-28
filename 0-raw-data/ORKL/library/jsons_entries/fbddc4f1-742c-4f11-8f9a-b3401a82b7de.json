@@ -1,0 +1,172 @@
+{
+    "id": "fbddc4f1-742c-4f11-8f9a-b3401a82b7de",
+    "created_at": "2023-01-12T15:08:16.773893Z",
+    "updated_at": "2025-03-27T02:17:02.270111Z",
+    "deleted_at": null,
+    "sha1_hash": "d75aaa6ed2715143c656a84fadf04b25b0cefc2a",
+    "title": "2021-10-26 - Malware WinDealer used by LuoYu Attack Group",
+    "authors": "",
+    "file_creation_date": "2022-05-28T15:45:24Z",
+    "file_modification_date": "2022-05-28T15:45:24Z",
+    "file_size": 2321326,
+    "plain_text": "### Malware WinDealer used by LuoYu Attack Group\n\n**blogs.jpcert.or.jp/en/2021/10/windealer.html**\n\n増渕 [維摩(Yuma Masubuchi)](https://blogs.jpcert.or.jp/en/masubuchi/)\n\nOctober 26, 2021\n\n[Email](http://10.10.0.46/mailto:?subject=Malware%20WinDealer%20used%20by%20LuoYu%20Attack%20Group&body=https%3A%2F%2Fblogs.jpcert.or.jp%2Fen%2F2021%2F10%2Fwindealer.html)\n\n[During JSAC2021 on 28 January 2021, there was a presentation about an attack group](https://jsac.jpcert.or.jp/archive/2021/en/index.html)\nLuoYu, which targets Korean and Japanese organisations since 2014 [1][2]. Recently,\nJPCERT/CC came across malware WinDealer used by this group. This article introduces\nsome findings of our analysis.\n\n##### Malware WinDealer overview\n\nWinDealer steals information of an infected PC and sends it to a C2 server as described in\nFigure 1.\n\nFigure 1： Malware WinDealer behaviour overview\n\n\n-----\n\nOnce launched, the malware reads configuration from a file under C:\\ProgramData and loads\na DLL module on its memory. It steals information about the victim PC, network configuration\nand SNS applications etc. and saves them in a file with an “.a” extension under %TEMP%,\nwhich is then sent to a C2 server.\nThe following points will be described in the next sections.\n\nRead configuration\nCommunicate with C2 servers\nProcess and send stolen data\nFunctions of modules loaded on memory\n\n##### Read configuration\n\nThe malware stores its configuration in several folders under C:\\ProgramData and reads it\nwhen executed. The contents are encoded based on XOR with its key value “b6a7%7486”.\nPlease refer to Appendix A for the configuration file path and its contents. Figure 2 shows a\nfunction to decode configuration.\n\n\n-----\n\nFigure 2：Function to decode a file storing configuration\n\n##### Communicate with C2 servers\n\nIf the following configuration files exist in the designated folder, WinDealer loads the C2\nserver information from them and starts communicating.\n\nC:\\ProgramData\\ad5f82e8\nC:\\ProgramData\\1c76cbfe\nC:\\ProgramData\\9c3b6294\n\n\n-----\n\nIf no such file exists, WinDealer communicates to a random IP address in one of the\nfollowing ranges (port 6999/UDP or 55556/TCP). It switches to an IP address in the other\nrange at a certain interval.\n\n113.62.0.0 - 113.63.255.255\n111.120.0.0 - 111.123.255.255\n\nFigure 3 shows the malware’s communication flow with its C2 server. First, it encrypts an\nAES key with RSA algorithm and sends to a C2 server. Information stolen from a victim PC is\nencrypted with this AES key and sent to a C2 server at a certain interval. After that, C2\nserver sends a command to the victim PC. The malware executes it and sends the result to\nthe C2 server after encryption. Besides the data exchange, the malware also communicates\nwith domains such as www[.]microsoftcom (non-existent at the moment) and\nicanhazip[.]com.\n\n##### WinDealer C2Server\n\n**UDP** **RSA** **Deliver AES key** **Length:144**\n\n**UDP** **AES** **Send stolen data Length:208**\n\n**UDP** **AES** **Send stolen data Length:816**\n\n**UDP** **AES** **Send stolen data Length:816** **Send at a**\n\n**certain interval**\n\n**UDP** **AES** **Send command**\n\n**UDP** **AES** **Send command execution result**\n\nFigure 3: Communication flow with a C2 server\n\nFigure 4 describes the communication contents when delivering an AES key. AES key and\nits CRC32 checksum value are encrypted with RSA1024bit public key. The public key is\nhardcoded in the sample, which is also used for other samples as well.\n\n\n-----\n\n**UDP header** **Victim PC identifier** **Value generated from configuration file + fixed value**\n\n**Fixed value**\n\n**AES key + RSA-encrypted data of AES key’s CRC32 value**\n\nFigure 4： Example of contents sent with AES key\n\nFrom the second round of communication and onwards, data is encrypted in AES128bit ECB\nmode based on the AES key which was dynamically generated during the initial\ncommunication. Please refer to Appendix B for the details of data format.\n\n##### Process and send stolen data\n\nWinDealer processes a series of stolen data as “.a” file in a folder under %TEMP%, encrypts\nit with AES and send it to a C2 server. The flow of event is illustrated in Figure 5. The\nmodules steal and process the data, while WinDealer itself monitors the files under\n%TEMP%, encrypts the file and sends it to a C2 server.\n\n\n**UDP header** **Victim PC identifier** **Value generated from configuration file + fixed value**\n\n**Fixed value**\n\n**AES key + RSA-encrypted data of AES key’s CRC32 value**\n\nFigure 4： Example of contents sent with AES key\n\n\n-----\n\n# .a\n## Load\n\n Encrypt\n\n Send\n#### AES\n\n##### Memory\n\nFigure 5：Flow of events by WinDealer and modules\n\nA part of the code for generating “.a” file by a module is as follows (Figure 6):\n\nFigure 6： DLL module’s code to generate “.a” file\n\n\n-----\n\nThe stolen data is first stored in a file with an “.t” extension, which is then renamed to “.a”.\nThe series of data is stored in different directories based on the data category, and they are\ntaken out when “.a” file is created. Please refer to Appendix E for the details of each\ndirectory.\nBefore writing and reading the files, the data is encoded/decoded by XOR-based function\nwith its key value “YYYY” as in Figure 7.\n\nFigure 7：A function for XOR-based encoding when accessing “.a” file\n\n##### Functions of modules loaded on memory\n\nOnce launched, WinDealer loads a DLL module in a PE format (encoded in the sample) on\nthe memory and executes it (Figure 8).\n\n\n-----\n\n**Byte string to search** **Used for XOR-based decode function**\n\n**Encoded PE data**\n\nFigure 8： Encoded module data\n\nThe malware obtains its file path, searches for a byte string “0xFF3456FF00” and extracts\ndata from its offset 0xE. Using its offset 0x4 value and a XOR-based decode routine (Figure\n9), a DLL module is loaded on the memory and then executed.\n\n\n**Byte string to search** **Used for XOR-based decode function**\n\n**Encoded PE data**\n\nFigure 8： Encoded module data\n\nThe malware obtains its file path, searches for a byte string “0xFF3456FF00” and extracts\ndata from its offset 0xE. Using its offset 0x4 value and a XOR-based decode routine (Figure\n9), a DLL module is loaded on the memory and then executed.\n\n\n-----\n\nFigure 9： Decoding module\n\nThe loaded DLL module is named as “MozillaDll.dll”. There are 3 Export functions as follows:\n\nAutoGetSystemInfo: Steal data\nGetConfigInfo: Set configuration\npartInitOpt: Set commands\n\nThe loaded DLL module monitors the below items, saves related items in a separate file and\nobtains them to send out to a C2 server.\n\nFiles stored in a USB memory\nFiles under Documents, desktop and recycle bin\nFiles under folders related to SNS applications\n\nPlease see Appendix D for the details of commands that C2 server sends and its contents.\n\n##### In closing\n\nBesides WinDealer, it has been confirmed that LuoYu uses other kinds of malware that\noperate in various platforms. We will report if we observe a new type of malware.\n\nFor your reference, SHA256 hash values of similar samples are listed in Appendix F.\n\n- Yuma Masubuchi\n\n(Translated by Yukako Uchida)\n\n#### Reference\n\n[1] “LuoYu” The eavesdropper sneaking in multiple platforms\n\n[https://jsac.jpcert.or.jp/archive/2021/pdf/JSAC2021_301_shui-leon_en.pdf](https://jsac.jpcert.or.jp/archive/2021/pdf/JSAC2021_301_shui-leon_en.pdf)\n\n[2] Japan Security Analyst Conference 2021 -3rd Track\n[https://blogs.jpcert.or.jp/en/2021/02/jsac2021report1.html](https://blogs.jpcert.or.jp/en/2021/02/jsac2021report1.html)\n\n#### Appendix A WinDealer configuration\n\nTable A：List of configuration\n\nFile path String in malware Contents\n\nC:\\ProgramData\\923b5fd7 remark \n\n-----\n\nC:\\ProgramData\\ad5f82e8 remotedomain Domain name\n\nC:\\ProgramData\\8fe4c114 password \nC:\\ProgramData\\1c76cbfe remoteip C2 server IP\n\nC:\\ProgramData\\9c3b6294 reverseip C2 server IP (reconfigured)\n\nC:\\ProgramData\\789406d0 - Result of connection to a dummy host\n\nC:\\ProgramData\\c25549fe otherinfo \nC:\\ProgramData\\f46d373b - Created when launched\n\nC:\\ProgramData\\windows.inf - \nC:\\ProgramData\\Destro - Name information to register in run key\n\n#### Appendix B WinDealer Contents of data exchanged\n\nTable B-1： Format of data sent for first communication\n\n\nOffset Length\n(byte)\n\n\nContents\n\n\n0x00 4 0x91DA8106\n\n0x04 4 0x439FC7CE\n\n0x08 4 Victim PC identifier\n\n0x0C 1 Generated based on the contents of a configuration file\n\"789406d0\"\n\n0x0D 3 0x001400\n\n\n-----\n\n0x10 128 AES key + RSA-encrypted data of AES key’s CRC32 value\n\nTable B-2：Format of data sent for second communication onwards\n\n\nOffset Length\n(byte)\n\n\nContents\n\n\n0x00 4 0x91DA8106\n\n0x04 4 0x439FC7CE\n\n0x08 4 Victim PC identifier\n\n0x0C 1 Generated based on the contents of a configuration file\n\"789406d0\"\n\n0x0D 1 Type\n\n0x0E 2 0x1400\n\n0x10 1 Length\n\n0x11 1 0x6\n\n0x12 1 remark length\n\n0x13 remark\n\n- 1 0x3\n\n- 1 password length\n\n- - password\n\n- 1 0x5\n\n\n-----\n\n - 1 otherinfo length\n\n -  - otherinfo\n\n -  - System information\n\nTable B-3：Format of data received\n\nOffset Length (byte) Contents\n\n0x00 4 0x91DA8106\n\n0x04 4 0x439FC7CE\n\n0x0D 1 Commands\n\n0x10 2 command data length\n\n0x12 2 Unused\n\n0x14 2 Unused\n\n0x16 2 Unused\n\n0x18 Command data length Command data\n\n#### Appendix C WinDealer List of commands\n\nTable C：List of commands\n\nValue Parameter string* Contents\n\n0x06 content-length: 2 uninstall\n\n0x09 content-length, filename, time Delete files under %TEMP%\n\n\n-----\n\n0xC filename, flg CreateProcess\n\n0x1F speed Configure Sleep time\n\n0x2D filepath Obtain contents of selected file\n\n0x50 filename, md5 Delete selected file\n\n0x51 filepos,filename, filelen, block, md5 Write on selected file\n\n0x5A datastate Write on\n\"C:\\ProgramData\\windows.inf\"\n\n0x5B - Perpetuation settings for\nregistries\n\n0x5C list Perpetuation after process\ncheck\n\n0x5D yes Set a value to SType of\n{HKCU}\\\\Softwaware\\Microsoft\n\n0x5E otherinfo Write on \"c25549fe\"\n\n0x60 headsign, 1, 2 Write on \"789406d0\"\n\n0x61 reverseip Write on \"9c3b6294\"\n\n0x63 - Obtain configuration\n\n0x64 - Read time\n\n0x66 remoteip, remark, password Write on configuration files\n\n0x67 sessionid: \n\n-----\n\n0x8F Hkey, subkey, valuename, classesroot,\ncurrentuser, localmachine, users, currentconfig\n\n\nExecute RegQueryValue\n\n\n0xAA pname Screen capture\n\n0xAB - Configuration on screen\ncapture\n\n0xAD - Configuration on screen\ncapture\n\n*Parameter string: These strings are parsed from the received command and used as a\ncommand parameter\n\n#### Appendix D List of commands of loaded modules\n\nTable D：List of commands\n\nValue Parameter string* Contents\n\n0x02 - Related to screen capture\n\n0x03 bootdir, filetype Related to folder/files\n\n\n0x05 filename, monitortype, begpos,\nblock\n\n\nSend files\n\n\n0x07 - Obtain drive information\n\n0x0A - Configure for lnk files\n\n0x0D - Execute commands 0xC0, 0xC5, 0xC3, 0xC1,\n0xC2, 0xC4, 0xC6\n\n0x12 freq, storetm, quality, type Configure parameter\n\n0x1E srhdir, srhcont, srhnum, sessid \n\n-----\n\n0x28 filename Obtain file information\n\n\n0x29 filefilter, settype, usbfilter,\ncheckdirfilter\n\n\nConfigure parameter for monitoring\n\n\n0x2A monitortype, monitorvalue Obtain files of monitoring results\n\n0x2B - \n0x30 - Write contents such as \"c:\\windows\",\n\"c:\\program files\" on \"~BF24\"\n\n0x32 freq, storetm Configure parameter\n\n0x3E file Create jpeg file under %TEMP%\n\n0x65 filename, fileoffset Obtain contents from selected files and offsets\n\n0x69 filename, delete, yes Delete selected files\n\n\n0x7A cmdtype, command:,reset,\ndownfile, getmypath, dealmd5\n\n0x7B session, command, reset,\ndownfile, exit, getmypath\n\n\nExecute cmd.exe\n\nExecute remote shell\n\n\n0xC0 - Write list of processes on \"28e4-20a6acec\"\n\n0xC1 - Write list of applications on \"28e4-20a6acec\"\n\n0xC2 - Write keyboard information on \"28e420a6acec\"\n\n0xC3 - Write SNS-related registry contents on \"28e420a6acec\"\n\n0xC4 - Write configuration of Skype, QQ, WeChat\nand wangwang on \"28e4-20a6acec\"\n\n\n-----\n\n0xC5 - Write MAC address etc. on \"28e4-20a6acec\"\n\n0xC6 - Write network configuration on \"28e420a6acec\"\n\n*Parameter string: These strings are parsed from the received command and used as a\ncommand parameter\n\n#### Appendix E List of generated directories\n\nTable E： List of directory\n\nID Path String in malware\n\n(none) %TEMP%\\\\~FEFEFE \n0x01 %TEMP%\\\\070a-cf37dcf5 \n0x02 %TEMP%\\\\d0c8-b9baa92f audio\n\n0x03 %TEMP%\\\\~B5D9 keylog\n\n0x04 %TEMP%\\\\632c-0ef22957 \n0x05 %TEMP%\\\\8e98-fb8010fb filelist\n\n0x06 %TEMP%\\\\7a4a-90e18681 \n0x07 %TEMP%\\\\d4a5-30d3fff6 \n0x08 %TEMP%\\\\d4dc-3165f4cf \n0x09 %TEMP%\\\\~CE14 monitortype\n\n0x0A %TEMP%\\\\~CE2E \n0x0B %TEMP%\\\\~B5BE skypeaudio\n\n\n-----\n\n0x0C %TEMP%\\\\~B61A skypeshoot\n\n0x0E %TEMP%\\\\5a7e-42ccdb67 \n0x0F %TEMP%\\\\~BF24 browser\n\n0x10 %TEMP%\\\\65ce-731bffbb md5filter\n\n0x11 %TEMP%\\\\~BF34 browsercookie\n\n0x12 %TEMP%\\\\28e4-20a6acec systeminfo\n\n0x61 %TEMP%\\\\~FFFE otherfile\n\n0x62 %TEMP%\\\\FFFF otherdata\n\n0x63 %TEMP%\\\\63ae-a20cf808 \n#### Appendix F SHA256 hash values of similar samples\n\nEXE\n\n1e9fc7f32bd5522dd0222932eb9f1d8bd0a2e132c7b46cfcc622ad97831e6128\n\nb9f526eea625eec1ddab25a0fc9bd847f37c9189750499c446471b7a52204d5a\n\nDLL\n\n0c365d9730a10f1a3680d24214682f79f88aa2a2a602d3d80ef4c1712210ab07\n2eef273af0c768b514db6159d7772054d27a6fa8bc3d862df74de75741dbfb9c\n\n[Email](http://10.10.0.46/mailto:?subject=Malware%20WinDealer%20used%20by%20LuoYu%20Attack%20Group&body=https%3A%2F%2Fblogs.jpcert.or.jp%2Fen%2F2021%2F10%2Fwindealer.html)\n\nAuthor\n\n増渕 [維摩(Yuma Masubuchi)](https://blogs.jpcert.or.jp/en/masubuchi/)\n\n\n-----\n\nYuma has been engaged in malware analysis and coordination of cyber security incidents in\nJPCERT/CC Incident Response Group since November 2020.\n\nWas this page helpful?\n\n0 people found this content helpful.\n\nIf you wish to make comments or ask questions, please use this form.\n\nThis form is for comments and inquiries. For any questions regarding specific commercial\nproducts, please contact the vendor.\n\nplease change the setting of your browser to set JavaScript valid. Thank you!\n\n#### Related articles\n\nAnalysis of HUI Loader\n\nAnti-UPX Unpacking Technique\n\nFAQ: Malware that Targets Mobile Devices and How to Protect Them\n\n\n-----\n\nMalware Gh0stTimes Used by BlackTech\n\nFurther Updates in LODEINFO Malware\n\n\n[Back](https://blogs.jpcert.or.jp/en/2021/10/gh0sttimes.html)\n[Top](https://blogs.jpcert.or.jp/en/)\n[Next](https://blogs.jpcert.or.jp/en/2021/12/tsubame_overflow_2021-07-09.html)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-10-26 - Malware WinDealer used by LuoYu Attack Group.pdf"
+    ],
+    "report_names": [
+        "2021-10-26 - Malware WinDealer used by LuoYu Attack Group.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "2646f776-792a-4498-967b-ec0d3498fdf1",
+            "created_at": "2022-10-25T15:50:23.475784Z",
+            "updated_at": "2025-03-27T02:00:55.479958Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "BlackTech",
+                "Palmerworm"
+            ],
+            "source_name": "MITRE:BlackTech",
+            "tools": [
+                "Kivars",
+                "PsExec",
+                "TSCookie",
+                "Flagpro",
+                "Waterbear"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d3a7123c-f519-49a0-a234-de24a1ef052a",
+            "created_at": "2022-10-25T16:47:55.545211Z",
+            "updated_at": "2025-03-27T02:05:17.254744Z",
+            "deleted_at": null,
+            "main_name": "BRONZE CANAL",
+            "aliases": [
+                "CTG-6177 ",
+                "Circuit Panda ",
+                "Palmerworm ",
+                "Shrouded Crossbow ",
+                "BlackTech"
+            ],
+            "source_name": "Secureworks:BRONZE CANAL",
+            "tools": [
+                " DRIGO",
+                " Flagpro",
+                " Gh0stTimes",
+                " PLEAD",
+                " Spiderpig",
+                " Waterbear",
+                "Bifrose"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "75024aad-424b-449a-b286-352fe9226bcb",
+            "created_at": "2023-01-06T13:46:38.962724Z",
+            "updated_at": "2025-03-27T02:00:02.964002Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "CIRCUIT PANDA",
+                "Temp.Overboard",
+                "G0098",
+                "Red Djinn",
+                "HUAPI",
+                "Palmerworm",
+                "T-APT-03",
+                "Manga Taurus",
+                "Earth Hundun"
+            ],
+            "source_name": "MISPGALAXY:BlackTech",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "efa7c047-b61c-4598-96d5-e00d01dec96b",
+            "created_at": "2022-10-25T16:07:23.404442Z",
+            "updated_at": "2025-03-27T02:02:09.781478Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "BlackTech",
+                "Circuit Panda",
+                "Earth Hundun",
+                "Manga Taurus",
+                "Operation PLEAD",
+                "Operation Shrouded Crossbow",
+                "Operation Waterbear",
+                "Palmerworm",
+                "Radio Panda",
+                "Red Djinn",
+                "T-APT-03",
+                "TEMP.Overboard"
+            ],
+            "source_name": "ETDA:BlackTech",
+            "tools": [
+                "BIFROST",
+                "BUSYICE",
+                "BendyBear",
+                "Bluether",
+                "CAPGELD",
+                "DRIGO",
+                "Deuterbear",
+                "Flagpro",
+                "GOODTIMES",
+                "Gh0stTimes",
+                "IconDown",
+                "KIVARS",
+                "LOLBAS",
+                "LOLBins",
+                "Linopid",
+                "Living off the Land",
+                "TSCookie",
+                "Waterbear",
+                "XBOW",
+                "elf.bifrose"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "b72c2616-cc7c-4c47-a83d-6b7866b94746",
+            "created_at": "2023-01-06T13:46:39.425297Z",
+            "updated_at": "2025-03-27T02:00:03.08718Z",
+            "deleted_at": null,
+            "main_name": "Red Nue",
+            "aliases": [
+                "LuoYu"
+            ],
+            "source_name": "MISPGALAXY:Red Nue",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536096,
+    "ts_updated_at": 1743041822,
+    "ts_creation_date": 1653752724,
+    "ts_modification_date": 1653752724,
+    "files": {
+        "pdf": "https://archive.orkl.eu/d75aaa6ed2715143c656a84fadf04b25b0cefc2a.pdf",
+        "text": "https://archive.orkl.eu/d75aaa6ed2715143c656a84fadf04b25b0cefc2a.txt",
+        "img": "https://archive.orkl.eu/d75aaa6ed2715143c656a84fadf04b25b0cefc2a.jpg"
+    }
+}

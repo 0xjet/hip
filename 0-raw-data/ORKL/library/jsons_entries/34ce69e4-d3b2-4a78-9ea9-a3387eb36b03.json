@@ -1,0 +1,42 @@
+{
+    "id": "34ce69e4-d3b2-4a78-9ea9-a3387eb36b03",
+    "created_at": "2023-01-12T15:04:20.844406Z",
+    "updated_at": "2025-03-27T02:05:20.762904Z",
+    "deleted_at": null,
+    "sha1_hash": "df96953ab610b1497ad3ebd57bd30576347ecdf5",
+    "title": "2022-09-22 - A Technical Analysis Of The Leaked LOCKBIT 3.0 Builder",
+    "authors": "",
+    "file_creation_date": "2022-10-02T12:22:16Z",
+    "file_modification_date": "2022-10-02T12:22:16Z",
+    "file_size": 2232023,
+    "plain_text": "# A technical analysis of the leaked LockBit 3.0 builder\n\n**[cybergeeks.tech/a-technical-analysis-of-the-leaked-lockbit-3-0-builder/](https://cybergeeks.tech/a-technical-analysis-of-the-leaked-lockbit-3-0-builder/)**\n\nSummary\n\nThis is our analysis of the LockBit 3.0 builder that was leaked online on September 21, 2022.\nThe executable called “keygen.exe” can be used to generate the RSA public and private\nkeys that are embedded in the encryptor and decryptor, respectively. The builder embedded\n4 resources used to create executables or DLL files according to the command line\nparameters. As in the case of Conti leaks, we’ll probably encounter LockBit-forked\nransomware because of the builder’s availability.\n\n**Analyst:** [@GeeksCyber](https://twitter.com/GeeksCyber)\n\nTechnical analysis\n\nSHA256:\nA736269F5F3A9F2E11DD776E352E1801BC28BB699E47876784B8EF761E0062DB\n\nThe builder (“builder.exe”) was compiled on September 13, 2022. The executable\n“keygen.exe” can be used to generate RSA public and private keys that are saved as\n“pub.key” and “priv.key”.\n\nThe RSA public/private key is Base64-encoded, as highlighted below:\n\nFigure 1\nThe process retrieves the command-line string using GetCommandLineW:\n\nFigure 2\nThe CommandLineToArgvW API is utilized to obtain an array of pointers to the command line\narguments:\n\nFigure 3\nRunning with the -type dec -privkey priv.key -config config.json -ofile LB3Decryptor.exe\nparameters\n\n\n-----\n\nThe malware compares the parameters with -type enc (encryptor) and -type dec\n(decryptor) to decide which executable to generate:\n\nFigure 4\nThe builder opens the RSA private key file by calling the CreateFileW function (0x80000000\n= GENERIC_READ, 0x1 = FILE_SHARE_READ, 0x3 = OPEN_EXISTING, 0x80 =\n**FILE_ATTRIBUTE_NORMAL):**\n\nFigure 5\nThe process reads the above file content using the ReadFile API:\n\nFigure 6\n\n\n-----\n\nThe RSA private key is Base64-decoded by the malicious process:\n\nFigure 7\n\nFigure 8\n\nThe executable parses the LockBit configuration file “config.json” that contains information\nsuch as the whitelisted folders/files/extensions, the processes and services to stop, and the\nransom note content:\n\n\n-----\n\nFigure 9 Figure 10\n\nThe malware implements a custom “hashing” function that computes a 4-byte value for each\nwhitelisted directory/file/extension/host. An example of a function result is shown in figure 12.\n\n\n-----\n\nFigure 11\n\nFigure 12\nThe resulting buffer containing the hashes is Base64-encoded by the builder, as shown in\nthe figure below.\n\n\n-----\n\nFigure 14\n\n\nFigure 13\n\nFigure 15\n\n\nThe malicious executable can use two instructions to generate 2 random 4-byte values:\nRDRAND and RDSEED. Firstly, it checks if these instructions are supported by the\nprocessor and then generates the random bytes. An identical implementation was also used\nby [DarkSide ransomware, which could mean that the two groups borrowed the code from the](https://cybergeeks.tech/a-step-by-step-analysis-of-a-new-version-of-darkside-ransomware/)\nsame place:\n\n\n-----\n\nFigure 16\nThe random values are combined with two hard-coded values, which are modified using\nsimple operations such as OR:\n\nFigure 17\n\nFigure 18\nA buffer containing the RSA private key and the Base64-encoded string computed above is\nXOR-ed with the values generated using the 4-byte random values:\n\n\n-----\n\nFigure 19 Figure\n\n20\nThe encrypted data will be embedded in the final decryptor.\n\nThe malware determines the location of the resource with ID = 100 using\nFindResourceW (0xA = RT_RCDATA):\n\nFigure 21\nThe resource is loaded into memory via a function call to LoadResource:\n\n\n-----\n\nFigure 22\nThe builder has embedded 4 resources in the “.rsrc” section. We’ll give the details about the\nother resources in the following paragraphs:\n\nFigure 23\nThe binary uses the undocumented RtlImageNtHeader function to retrieve the NT header of\nthe resource:\n\nFigure 24\nThe section name called “.xyz” is replaced with “.data” by the process:\n\n\n-----\n\nFigure 25\nThe CheckSumMappedFile method is used to compute the checksum of the extracted\nresource. The value will populate the PE checksum field in the header:\n\nFigure 26\nThe builder creates the decryptor file called “LB3Decryptor.exe” using CreateFileW:\n\nFigure 27\nThe process writes the modified resource to the decryptor executable via a call to WriteFile:\n\nFigure 28\nRunning with the -type enc -exe (-pass) -pubkey pub.key -config config.json -ofile\n**LB3.exe parameters**\n\nWe only highlight the differences between this case and the first one. The builder extracts the\nresource with ID = 101, and the encryptor will contain the RSA public key and the ransom\nnote content. If it’s running with the “-pass” parameter, the ransomware avoids sandboxes\n[and increases the difficulty of the dynamic analysis. SentinelOne also analyzed the LockBit](https://www.sentinelone.com/labs/lockbit-3-0-update-unpicking-the-ransomwares-latest-anti-analysis-and-evasion-techniques/)\n3.0 ransomware and mentioned the “-pass” parameter.\n\nRunning with the -type enc -dll (-pass) -pubkey pub.key -config config.json -ofile\n**LB3_Rundll32.dll parameters**\n\n\n-----\n\nThe builder extracts the resource with ID = 103, and the encryptor will be a DLL file with\nmultiple export functions (see figure 29).\n\nFigure 29\n\nRunning with the -type enc -ref -pubkey pub.key -config config.json -ofile\n**LB3_ReflectiveDll_DllMain.dll parameters**\n\nThe builder extracts the resource with ID = 106, and the encryptor will be a DLL file with a\nsingle export function. The execution flows of the two different DLLs are similar, as\nhighlighted in the figure below.\n\n\n-----\n\nFigure 30\nAccording to our preliminary analysis of the LockBit 3.0 encryptor, the builder is legit and,\nunfortunately, can represent a gold mine for cybercriminals. Please do not use the builder for\nmalicious purposes because you’ll be persecuted according to the law.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-09-22 - A Technical Analysis Of The Leaked LOCKBIT 3.0 Builder.pdf"
+    ],
+    "report_names": [
+        "2022-09-22 - A Technical Analysis Of The Leaked LOCKBIT 3.0 Builder.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673535860,
+    "ts_updated_at": 1743041120,
+    "ts_creation_date": 1664713336,
+    "ts_modification_date": 1664713336,
+    "files": {
+        "pdf": "https://archive.orkl.eu/df96953ab610b1497ad3ebd57bd30576347ecdf5.pdf",
+        "text": "https://archive.orkl.eu/df96953ab610b1497ad3ebd57bd30576347ecdf5.txt",
+        "img": "https://archive.orkl.eu/df96953ab610b1497ad3ebd57bd30576347ecdf5.jpg"
+    }
+}

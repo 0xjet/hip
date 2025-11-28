@@ -1,0 +1,209 @@
+{
+    "id": "c9220123-578d-442d-b103-dd35ce449a8f",
+    "created_at": "2024-06-26T02:03:22.511426Z",
+    "updated_at": "2025-03-27T02:16:25.797127Z",
+    "deleted_at": null,
+    "sha1_hash": "e2a94972dabea2b6a603a3b9674d7b024a75690f",
+    "title": "Objective-See's Blog",
+    "authors": "",
+    "file_creation_date": "2024-06-26T01:33:45Z",
+    "file_modification_date": "2024-06-26T01:33:45Z",
+    "file_size": 464261,
+    "plain_text": "# Objective-See's Blog\n\n**objective-see.org/blog/blog_0x78.html**\n\nAnalyzing DPRK's SpectralBlur\n\nThe first malware of 2024 is (already) here!\n\nby: Patrick Wardle / January 4, 2024\n\n📝 👾 Want to play along?\n[As ‘Sharing is Caring’ I’ve uploaded a sample of the malware SpectralBlur.zip to our](https://github.com/objective-see/Malware/raw/main/SpectralBlur.zip)\npublic macOS malware collection. The password is: infect3d\n\n...please though, don't infect yourself! 🙈\n\n## Background\n\n[Not three days into 2024 Greg Lesnewich tweeted the following:](https://twitter.com/greglesnewich%5D)\n\n[#100DaysofYARA day 03 - talking SpectralBlur, a MacOS (and other OS 🤫](https://twitter.com/hashtag/100DaysofYARA?src=hash&ref_src=twsrc%5Etfw) )\nbackdoor linked to TA444/Bluenoroff, that I suspect is a cousin of the KandyKorn\n[family our pals at Elastic found! https://t.co/P2TGw98UR6](https://t.co/P2TGw98UR6)\n[pic.twitter.com/Y8U3hsjNiF](https://t.co/Y8U3hsjNiF)\n\n[— Greg Lesnewich (@greglesnewich) January 3, 2024](https://twitter.com/greglesnewich/status/1742575613834084684?ref_src=twsrc%5Etfw)\n\n[In both his twitter (err, X) thread and in a subsequent posting he provided a](https://g-les.github.io/yara/2024/01/03/100DaysofYARA_SpectralBlur.html)\ncomprehensive background and triage of the malware dubbed SpectralBlur. In terms of\nits capabilities he noted:\n\nSpectralBlur is a moderately capable backdoor, that can upload/download files, run\na shell, update its configuration, delete files, hibernate or sleep, based on\ncommands issued from the C2. -Greg\n\nHe also pointed out similarities to/overlaps with the DPRK malware known as KandyKorn\n[(that we covered in our “Mac Malware of 2024” report), while also pointing out there was](https://objective-see.org/blog/blog_0x77.html#-kandykorn)\ndifferences, leading him to conclude:\n\nWe can see some similarities ... to the KandyKorn. But these feel like families\ndeveloped by different folks with the same sort of requirements. -Greg\n\n\n-----\n\nGreg's writeup, though focusing more on the discovery and triage of the SpectralBlur, is\nexcellent a read, and provides essential background and context for our more indepth\nanalysis.\n\nHave a read:\n[100DaysofYARA - SpectralBlur](https://g-les.github.io/yara/2024/01/03/100DaysofYARA_SpectralBlur.html)\nGreg ended his write up, nothing that he hadn’t had time yet to fully analyze the sample,\nbut “if anyone in the community is keen on it, go for it!!”. As I’m rather obsessed with\n(new) Mac malware I decided to dig in more.\n\n## Triage\n\nThe sample of SpectralBlur mentioned in his tweets and triage has a SHA-1 hash of\n```\n06c8c84fb0a85bdf3520608b0a5c910b77e3b8c1. Popping over to VirusTotal to grab the\n\n```\n[sample, we can see that currently it is not flagged as malicious by any of the AV engines:](https://www.virustotal.com/gui/file/6f3e849ee0fe7a6453bd0408f0537fa894b17fc55bc9d1729ae035596f5c9220/behavior)\n\nSpectralBlur on VirusTotal (Scan Date: Aug. 2023)\n\nTriggering a rescan of the malware on VirusTotal shows it is (now) detected by at least\none AV engine (ESET).\n\nMoreover its worth noting that the previous scan of the malware (refereneced in the\nscreenshot above) was performed in August 2023. Thus, though at that time no AV\nengine flagged the item as malicous, between now and then, detections could have been\nadded.\n\nLooking at telemetric data we can see its name is either .macshare or mac.jpg, and at\nleast on one macOS system it was found in /Users/Shared/.macshare.\n\nPrefixing the name with a '.' will hide the file from Finder (unless the viewing of hidden\nfiles has been enabled).\n\nThis SpectralBlur sample was initially submitted to VirusTotal on 2023-08-16 from\nColombia (CO). Interestingly in VirusTotal’s telemetric data, we can also see that at least\none of Objective-See’s tools (which, integrate with VirusTotal, for example to allow users\nto submit unrecognized files) encountered the malware in the wild too …how cool!\n\n[Using WhatsYourSign we can see the binary is not signed:](https://objective-see.com/products/whatsyoursign.html)\n\nWhatsYourSign shows the malware is not signed\nYou can also extract codesigning information (or lack thereof) from the terminal via\nmacOS’s codesign utility:\n\n\n-----\n\n```\n% codesign -dvv SpectralBlur/.macshare\nSpectralBlur/.macshare: code object is not signed at all\n\n```\nVia the terminal we can also see its a 64bit Intel (x86_64) binary:\n```\n% file SpectralBlur/.macshare\nSpectralBlur/.macshare: Mach-O 64-bit executable x86_64\n\n```\nNext let’s pull out any embedded strings, as this can give a good idea of the malware’s\ncapabilities and also guide continued analysis:\n```\n% strings SpectralBlur/.macshare\nThere is NO WARRANTY, to the extent permitted by law.\n%s.d\n/dev/null\nSHELL\n/bin/sh\n...\n\n```\nOther than some strings related to the shell, not a lot! Maybe others are obfuscated? (We\nalso didn’t show function names or API imports in the strings output, as these show up\nbetter via nm).\n\nUsing nm we can extract symbols which will include the Malware’s function names, as well\nas APIs that the malware calls into (“imports”). Let’s start with just function names, which\nwill be found the __TEXT segment/section: __text. We can use nm’s -s to limit its output\nto just a specified segment/section:\n\n\n-----\n\n```\n% nm -s __TEXT __text SpectralBlur/.macshare\n0000000100001540 T _hangout\n00000001000034f0 T _init\n0000000100001570 T _init_fcontext\n0000000100001870 T _load_config\n0000000100003650 T _main\n0000000100002a10 T _mainprocess\n0000000100003370 T _mainthread\n00000001000031c0 T _openchannel\n00000001000029a0 T _proc_die\n0000000100001b10 T _proc_dir\n0000000100002420 T _proc_download\n0000000100002290 T _proc_download_content\n00000001000027e0 T _proc_getcfg\n00000001000028c0 T _proc_hibernate\n00000001000019f0 T _proc_none\n00000001000029d0 T _proc_restart\n00000001000025a0 T _proc_rmfile\n0000000100002860 T _proc_setcfg\n0000000100001a90 T _proc_shell\n0000000100002930 T _proc_sleep\n0000000100001a20 T _proc_stop\n00000001000026b0 T _proc_testconn\n0000000100002160 T _proc_upload\n0000000100002040 T _proc_upload_content\n00000001000015f0 T _read_packet\n0000000100001930 T _save_config\n0000000100001500 T _sigchild\n00000001000011f0 T _socket_close\n0000000100000d10 T _socket_connect\n0000000100001140 T _socket_recv\n00000001000010c0 T _socket_send\n0000000100000be0 T _wait_read\n0000000100001730 T _write_packet\n00000001000017e0 T _write_packet_value\n0000000100001270 T _xcrypt\n\n```\nLooks like functions dealing with a config (e.g., load_config), network communications\n(e.g., socket_recv, socket_send), and encryption (xcrypt). But also then, standard\nbackdoor capabilities implemented (as noted by Greg), in function prefixed with proc.\n\nAnd what about the APIs the malware imports to call into? Again we can use nm, this time\nthe -u flag:\n\n\n-----\n\n```\n% nm -m SpectralBlur/.macshare\n_connect\n_dup2\n_execve\n...\n_fork\n_fread\n_fwrite\n...\n_gethostbyname\n_getlogin\n_getpwuid\n_getsockopt\n_grantpt\n...\n_ioctl\n_kill\n...\n_pthread_create\n_rand\n_recv\n_send\n_socket\n_unlink\n_waitpid\n_write\n...\n\n```\nFrom these imports we can surmise that the malware performs file I/O (fread, fwrite,\n```\nunlink), network I/O (socket, recv, send), and spawning/managing processes (execve,\nfork, kill).\n\n```\nWe’ll see these APIs are invoked by the malware often in response to commands. For\nexample, the malware’s proc_rmfile function invokes the unlink API to remove a file:\n```\n1int proc_rmfile(int arg0, int arg1) {\n2  var_10 = arg1;\n3  var_18 = var_10 + 0x10;\n4  ...\n5  unlink(var_18);\n6  ...  \n\n```\n[Based on this triage (and Greg’s report), we’ve developed what is likely a reasonable](https://g-les.github.io/yara/2024/01/03/100DaysofYARA_SpectralBlur.html)\nunderstanding of the malware. Still, its always good to validate triages with continued\nstatic, but also dynamical analysis. So …onward!\n\n## Analysis\n\nAt the start of the malware disassembly it calls into a function named init. Here, it builds\na path to its config, and then opens it. The path is built by appending .d to the malware’s\nbinary full path:\n\n\n-----\n\n```\ninit(...){\n  _sprintf_chk(config, 0x0, 0x41a, \"%s.d\", malwaresPath);\n  ...\n  loadConfig(...)\n}\n\n```\nWe can confirm this in a debugger, where at a call to fopen (in the load_config function)\nthe malware will attempt to open the file macshare.d, in the directory where the malware\nis currently running (e.g. /Users/user/Downloads/).\n```\n% lldb /Users/user/Downloads/macshare\n(lldb)\n* thread #1, queue = 'com.apple.main-thread'\nmacshare`load_config:\n-> 0x100001890 <+32>: callq 0x100003d8c        ; symbol stub for: fopen\nTarget 0: (macshare) stopped.\n(lldb) x/s $rdi\n0x100008820: \"/Users/user/Downloads/macshare.d\"\n\n```\n[We can also see this in a File Monitor:](https://objective-see.org/products/utilities.html#FileMonitor)\n```\n# ./FileMonitor.app/Contents/MacOS/FileMonitor -pretty -filter macshare\n{\n \"event\" : \"ES_EVENT_TYPE_NOTIFY_OPEN\",\n \"file\" : {\n  \"destination\" : \"/Users/user/Downloads/macshare.d\",\n  \"process\" : {\n    \"pid\" : 6818,\n    \"name\" : \"macshare\",\n    \"path\" : \"/Users/user/Downloads/macshare\" \n  }\n }\n}\n\n```\nBy looking at its cross-references (xrefs), we can see the xcrypt function is invoked to\nencrypt/decrypt the malware’s config and network traffic:\n\n\n-----\n\nXRefs to the xcrypt function\n…the xcrypt function according to ChatGPT appears to be a custom stream cipher.\nWhile static analysis shows that the key may be stored at the start of this config (address\n```\n0x100008c3a), and set to random 64bit value:\n*qword_100008c3a = sign_extend_64(rand()) + time(0x0) + sign_extend_64(rand() *\nrand());\n\n```\nBack to the config file, unfortunately, I (currently) don’t have access an example config.\nThus some of our continued analysis is based solely on static analysis.\n\nOnce the init function returns (which loaded the config), that malware performs a myriad\nof actions that appear to complicate dynamic analysis and perhaps detection. This\nincluding forking itself, but also setting up a pseduo-terminal via posix_openpt (as noted\nby Phil Stokes):\n\nUses grantpt to set up a pseudo-terminal. Not seen that before. Interesting!\n\n— Phil Stokes ⫍🐠 [⫎ (@philofishal) January 4, 2024](https://twitter.com/philofishal/status/1742840111459385632?ref_src=twsrc%5Etfw)\n\n…this is followed by more forks, execs, and more. Again, if I had to guess, this simply to\ncomplicate analysis (and/or perhaps, making it a detached/“isolated” process complicated\ndetections)? We’ll also see that the psuedo-terminal is used to execute shell commands\nfrom the attacker’s remote C&C server.\n\nRegardless we can skip over this all, and simply continue execution (or static analysis)\nwhere a new thread (named _mainthread) is spawned. After invoking functions such as\n```\nopenchannel and socket_connect to likely connect to its C&C server (whose address\n\n```\nlikely would be found in the malware’s config: macshare.d), it invokes a function named\n```\nmainprocess.\n\n```\nThe mainprocess function (eventually) invokes the read_packet function which appears\nto return the index of a command. The code in mainprocess function then iterates over an\narray named _procs in order to find the handler for the specified command (that I’ve\n\n\n-----\n\nnamed commandHandler in the below disassembly). The command handler is then directly\ninvoked:\n```\n 1int mainprocess(int arg0, int arg1) {\n 2\n 3  var_558 = read_packet(...);\n 4  if (var_558 != 0x0) goto loc_100002dfc;\n 5\n 6loc_100002dfc:\n 7  var_560 = *(var_558 + 0x8);\n 8  commandHandler = 0x0;\n 9  addrOfProcs = _procs;\n10  do {\n11      var_5C1 = 0x0;\n12      if (*addrOfProcs != 0x0) {\n13        var_5C1 = (var_568 != 0x0 ? 0x1 : 0x0) ^ 0xff;\n14      }\n15      if ((var_5C1 & 0x1) == 0x0) {\n16        break;\n17      }\n18      if (*addrOfProcs == var_560) {\n19          commandHandler = *(addrOfProcs + 0x4);\n20      }\n21      addrOfProcs = addrOfProcs + 0xc;\n22  } while (true);\n23\n24\n25  var_538 = (commandHandler)(var_530, var_558);\n26 \n27}\n\n```\nAfter creating a custom structure (procStruct) for this array, we can see each command\nnumber and its handler:\n\n\n-----\n\n```\nprocs:\n0x0000000100008000     struct procStruct {  \n                0x1,\n                _proc_none\n              }\n0x000000010000800c     struct procStruct {\n                0x2,\n                _proc_shell\n              }\n0x0000000100008018     struct procStruct {\n                0x3,\n                _proc_dir\n              }\n0x0000000100008024     struct procStruct {\n                0x4,\n                _proc_upload\n              }\n0x0000000100008030     struct procStruct {\n                0x5,\n                _proc_upload_content\n              }\n0x000000010000803c     struct procStruct {\n                0x6,\n                _proc_download\n              }\n0x0000000100008048     struct procStruct {\n                0x7,\n                _proc_rmfile\n              }\n0x0000000100008054     struct procStruct {\n                0x8,\n                _proc_testconn\n              }\n0x0000000100008060     struct procStruct {\n                0x9,\n                _proc_getcfg\n              }\n0x000000010000806c     struct procStruct {\n                0xa,\n                _proc_setcfg\n              }\n0x0000000100008078     struct procStruct {\n                0xb,\n                _proc_hibernate\n              }\n0x0000000100008084     struct procStruct {\n                0xc,\n                _proc_sleep\n              }\n0x0000000100008090     struct procStruct {\n                0xd,\n                _proc_die\n              }\n0x000000010000809c     struct procStruct {\n\n```\n\n-----\n\n```\n                0xe,\n                _proc_stop\n              }\n0x00000001000080a8     struct procStruct {\n                0xf,\n                _proc_restart\n              }\n\n```\nRecall we saw the names of each command handler (_proc_*) in the output of nm. And,\nthough we can guess the likely capability of eahc command from its name, let’s look a\nfew to confirm.\n\nThe proc_rmfile will remove a file by invoking the unlink API. However, we can also\nsee that it first opens the file (fopen) and overwrites its contents with zero:\n```\n 1int proc_rmfile(int arg0, int arg1) {\n 2  var_4 = arg0;\n 3  var_10 = arg1;\n 4  var_18 = var_10 + 0x10;\n 5  file = fopen(var_18, \"rb+\");\n 6  if (file != 0x0) {\n 7      fseek(file, 0x0, 0x2);\n 8      var_28 = ftell(file);\n 9      fseek(file, 0x0, 0x0);\n10      var_30 = 0x5000;\n11      if (var_28 < var_30) {\n12        var_30 = var_28;\n13      }\n14      var_38 = malloc(var_30);\n15      _memset_chk(var_38, 0x0, var_30, 0xffffffffffffffff);\n16      fwrite(var_38, 0x1, var_30, file);\n17      free(var_38);\n18      fclose(file);\n19  }\n20  rdx = unlink(var_18);\n21  rax = 0x0;\n22  if (rdx == 0x0) {\n23      rax = 0x1;\n24  }\n25  return _write_packet_value(var_4, *var_10, rax);\n26}\n\n```\n…each command will also report a result by invoking the malware write_packet_value\nAPI.\n\nThe proc_restart will terminate the child process:\n\n\n-----\n\n```\n1int main(...)\n2\n3  call    fork            \n4  mov    dword [childPID], eax\n5\n6int proc_restart(int arg0, int arg1)\n7\n8  kill(*childPID, 0x9);  \n9  return write_packet_value(arg0, *arg1, 0x0);\n\n```\nFinally, let’s look at the proc_shell, which executed a command by write‘ing to the\npseudo-terminal that was opened (via posix_openpt) previously:\n```\n 1int main(...)\n 2\n 3  call    posix_openpt \n 4  mov    dword [pt], eax\n 5\n 6int proc_shell(...) {\n 7  var_8 = arg0;\n 8  var_10 = arg1;\n 9  if (write(*pt, var_10 + 0x10, strlen(var_10 + 0x10)) <= 0x0) {\n10      var_4 = _write_packet_value(var_8, *var_10, 0x0);\n11  }\n\n```\nThe other commands execute actions consistent with their respective names.\n\n## Conclusion\n\n[Today we dug into SpectralBlur, a DPRK backdoor. Building upon Greg’s research we](https://g-les.github.io/yara/2024/01/03/100DaysofYARA_SpectralBlur.html)\nfurther detailed its capabilities.\n\n**Interested in learning more Mac Malware Analysis Techniques?**\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2024/2024.01.04.SpectralBlur_Analyzing/Analyzing%20DPRK%20SpectralBlur.pdf"
+    ],
+    "report_names": [
+        "Analyzing DPRK SpectralBlur"
+    ],
+    "threat_actors": [
+        {
+            "id": "1bdb91cf-f1a6-4bed-8cfa-c7ea1b635ebd",
+            "created_at": "2022-10-25T16:07:23.766784Z",
+            "updated_at": "2025-03-27T02:02:09.971636Z",
+            "deleted_at": null,
+            "main_name": "Bluenoroff",
+            "aliases": [
+                "APT 38",
+                "ATK 117",
+                "Alluring Pisces",
+                "Black Alicanto",
+                "Bluenoroff",
+                "CTG-6459",
+                "Copernicium",
+                "Nickel Gladstone",
+                "Sapphire Sleet",
+                "Selective Pisces",
+                "Stardust Chollima",
+                "T-APT-15",
+                "TA444",
+                "TAG-71",
+                "TEMP.Hermit"
+            ],
+            "source_name": "ETDA:Bluenoroff",
+            "tools": [],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d14271be-be2e-4be7-9578-5b6196e35481",
+            "created_at": "2023-11-21T02:00:07.355328Z",
+            "updated_at": "2025-03-27T02:00:03.24142Z",
+            "deleted_at": null,
+            "main_name": "TA444",
+            "aliases": [],
+            "source_name": "MISPGALAXY:TA444",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f426f0a0-faef-4c0e-bcf8-88974116c9d0",
+            "created_at": "2022-10-25T15:50:23.240383Z",
+            "updated_at": "2025-03-27T02:00:55.404232Z",
+            "deleted_at": null,
+            "main_name": "APT38",
+            "aliases": [
+                "APT38",
+                "NICKEL GLADSTONE",
+                "BeagleBoyz",
+                "Bluenoroff",
+                "Stardust Chollima",
+                "Sapphire Sleet",
+                "COPERNICIUM"
+            ],
+            "source_name": "MITRE:APT38",
+            "tools": [
+                "ECCENTRICBANDWAGON",
+                "HOPLIGHT",
+                "Mimikatz",
+                "KillDisk",
+                "DarkComet"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "8bc1a044-a23b-4904-903c-13f463605cb3",
+            "created_at": "2024-05-01T02:03:08.136237Z",
+            "updated_at": "2025-03-27T02:05:17.415795Z",
+            "deleted_at": null,
+            "main_name": "NICKEL GLADSTONE",
+            "aliases": [
+                "Bluenoroff ",
+                "CTG-6459 ",
+                "Citrine Sleet ",
+                "HIDDEN COBRA ",
+                "Lazarus Group",
+                "Sapphire Sleet ",
+                "Stardust Chollima ",
+                "APT38 "
+            ],
+            "source_name": "Secureworks:NICKEL GLADSTONE",
+            "tools": [
+                " Bankshot",
+                " CATCH22",
+                " CCGC_Proxy",
+                " Cur1Agent",
+                " Ratankba",
+                " Server_TrafficForwarder",
+                " Wcry",
+                "AlphaNC"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "a2b92056-9378-4749-926b-7e10c4500dac",
+            "created_at": "2023-01-06T13:46:38.430595Z",
+            "updated_at": "2025-03-27T02:00:02.831633Z",
+            "deleted_at": null,
+            "main_name": "Lazarus Group",
+            "aliases": [
+                "Operation DarkSeoul",
+                "APT38",
+                "ATK117",
+                "DEV-1222",
+                "G0032",
+                "APT 38",
+                "Stardust Chollima",
+                "APT-C-26",
+                "ATK3",
+                "Diamond Sleet",
+                "Hidden Cobra",
+                "Unit 121",
+                "Subgroup: Bluenoroff",
+                "NICKEL GLADSTONE",
+                "DEV-0139",
+                "Andariel",
+                "Operation Troy",
+                "COVELLITE",
+                "TA404",
+                "Lazarus group",
+                "Dark Seoul",
+                "G0082",
+                "NewRomanic Cyber Army Team",
+                "Bluenoroff",
+                "Appleworm",
+                "Nickel Academy",
+                "COPERNICIUM",
+                "Hastati Group",
+                "Bureau 121",
+                "Operation AppleJeus",
+                "Whois Hacking Team",
+                "Citrine Sleet",
+                "Sapphire Sleet",
+                "Group 77",
+                "Labyrinth Chollima",
+                "Operation GhostSecret",
+                "BeagleBoyz"
+            ],
+            "source_name": "MISPGALAXY:Lazarus Group",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1719367402,
+    "ts_updated_at": 1743041785,
+    "ts_creation_date": 1719365625,
+    "ts_modification_date": 1719365625,
+    "files": {
+        "pdf": "https://archive.orkl.eu/e2a94972dabea2b6a603a3b9674d7b024a75690f.pdf",
+        "text": "https://archive.orkl.eu/e2a94972dabea2b6a603a3b9674d7b024a75690f.txt",
+        "img": "https://archive.orkl.eu/e2a94972dabea2b6a603a3b9674d7b024a75690f.jpg"
+    }
+}

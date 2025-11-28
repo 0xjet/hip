@@ -1,0 +1,82 @@
+{
+    "id": "cdd9e9d8-ba74-4884-8907-870ea0907493",
+    "created_at": "2023-01-12T15:06:31.362552Z",
+    "updated_at": "2025-03-27T02:16:26.463911Z",
+    "deleted_at": null,
+    "sha1_hash": "1865d93f119c4ea685af334785e4691c4faff386",
+    "title": "2022-08-15 - Detecting a Rogue Domain Controller – DCShadow Attack",
+    "authors": "",
+    "file_creation_date": "2022-09-01T10:10:42Z",
+    "file_modification_date": "2022-09-01T10:10:42Z",
+    "file_size": 427149,
+    "plain_text": "# Detecting a Rogue Domain Controller – DCShadow Attack\n\n**[sentinelone.com/blog/detecting-a-rogue-domain-controller-dcshadow-attack/](https://www.sentinelone.com/blog/detecting-a-rogue-domain-controller-dcshadow-attack/)**\n\nAugust 15, 2022\n\n[In our earlier Protecting Against Active Directory DCSync Attacks blog post, we have seen](https://www.sentinelone.com/blog/active-directory-dcsync-attacks/)\nhow attackers can replicate permissions and completely control Active Directory (AD)\ninfrastructure using DCSync attacks. Another devastating technique that attackers explore\nagainst AD is the DCShadow attack. It is a method of manipulating AD data, including\nobjects and schemas, by registering (or reusing an inactive registration) and simulating the\nbehavior of a legitimate Domain Controller (DC).\n\nA DCShadow attack allows an attacker with domain or enterprise admin privileges to create\nrogue DC in the networks. Once registered, a rogue DC is used to inject domain objects\n(such as accounts, access control lists, schemas, credentials, or access keys) and replicate\nchanges into AD infrastructure.\n\n\n-----\n\n## How Does a DCShadow Attack Work?\n\nDCShadow attack shares similarities with the DCSync attack, which is already present in the\n[lsadump module of an open-source tool Mimikatz. A post-exploitation attack requires domain](https://github.com/gentilkiwi/mimikatz/wiki/module-~-lsadump)\nadmin or enterprise admin privileges on an endpoint. The following attack flow was\n[demonstrated with detailed steps at the](https://www.dcshadow.com/) [Bluehat IL 2018 conference by](http://www.bluehatil.com/abstracts.html?abs=2#2) [Vincent LE TOUX](https://twitter.com/mysmartlogon)\n[and Benjamin Delpy.](https://twitter.com/gentilkiwi)\n\n1. Registering the DC by creating two objects in the CN=Configuration partition and\n\naltering the SPN of the computer used.\n2. Pushing the data, triggered using `DrsReplicaAdd, Kerberos Credentials Collector`\n\n(KCC), or other internal AD events.\n3. Removing the object previously created to demote the DC.\n\n[Attackers can perform a DCShadow attack by installing Mimikatz on a compromised](https://www.sentinelone.com/cybersecurity-101/mimikatz/)\nWindows endpoint and starting the `mimidrv service. To play the role of fake Domain`\nController, an attacker can execute the following commands to register and start a service\nwith appropriate privileges.\n```\n!+\n!processtoken\n\ntoken::whoami\n\n\n```\nLet us take one scenario and see how an attacker attempts a persistence attack by\nmodifying the primaryGroupID attribute. An attacker can run the `lsadump::dcshadow`\ncommand to modify the value of primaryGroupID to 512.\n\n\n-----\n\nThe following command can make domain standard users be a member of the domain admin\ngroup.\n```\nlsadump::dcshadow /object:POC User5 /attribute:primaryGroupID /value:512\n\n\n```\nFirst, let us verify the primary group ID value before pushing AD data. As shown in the image\nbelow, we can use the `net group command to verify and confirm that the user` `POC`\n```\nUser5 is not part of the Admin group.\n\n```\nWe will replicate the changes from the rogue domain controller to the legitimate one by\nexecuting the following command.\n```\nlsadump::dcshadow /push\n\n\n```\nLet us verify again `net group command output. As you can see, the same user` `POC`\n```\nUser5 will be part of the Domain Administrator group.\nnet group \"Domain Admins\" /domain\n\n\n```\nIt is just as simple as shown above. Once an endpoint is a member of a domain\nadministrator or privileged group, it gets higher privileges in the domain and can compromise\nthe entire domain.\n\n\n-----\n\n[TrickBot is an example of a modular malware that used Mimikatz s](https://www.sentinelone.com/labs/inside-a-trickbot-cobalt-strike-attack-server/) [lsadump module to collect](https://www.sentinelone.com/blog/windows-security-essentials-preventing-4-common-methods-of-credentials-exfiltration/)\n[valuable information and carry out attacks, such as DCSync, DCShadow, and the](https://www.sentinelone.com/blog/active-directory-dcsync-attacks/) Kerberos\nGolden Ticket compromise.\n\n## Detecting a DCShadow Attack\n\nThe DCShadow technique can avoid detections and bypass SIEM logging mechanisms\nsince changes from a rogue DC are not captured. The technique changes or deletes\nreplication and other associated metadata to obstruct forensic analysis. The SentinelOne\n[Singularity™ Identity solution detects DCShadow attacks targeting AD and identifies](https://www.sentinelone.com/platform/singularity-identity/)\nsuspicious user behaviors. The solution also triggers high-fidelity alerts and reports on rogue\nDomain Controllers that can pose a serious risk to the organization’s domain information.\n\n## Mitigation Strategies\n\nSecurity administrators can examine what real or rogue DC is as a mitigation strategy. Delete\nthe computer object that is not a genuine Domain Controller. It is also important to verify the\npresence of computer objects in the Domain Controller OU and nTDSDSA objects in the\nconfiguration partition of the AD.\n\nThe following investigation steps can also help security administrators to mitigate DCShadow\nattacks.\n\nCapture network traffic and analyze the packets associated with data replication (such\nas calls to `DrsAddEntry,` `DrsReplicaAdd, and especially` `GetNCChanges )`\nbetween DCs as well as to/from non-DC hosts.\nInvestigate Directory Service Replication (DRS) events 4928 and 4929 using Event\nViewer on the DC. Observe Destination DRA and Source DRA distinguished name\n(DN) and validate the legitimate DN from Active Directory Users and Computers. Find\nout any unauthorized DRA replication between domain controllers.\nMonitor for Mimikatz command usage, for example, `lsadump::dcshadow .`\nMonitor for SPN scanning tools usage. For example, the simple command `setspn -Q`\n```\n   HTTP/* allows an attacker to find HTTP SPNs.\n\n```\n\n-----\n\nInvestigate the usage of Kerberos Service Principal Names (SPNs). Two types of SPNs\ncan clearly indicate DCShadow attack. A SPN is beginning with “GC/” is associated\nwith services by computers not present in the DC organizational unit (OU) and a SPN\nassociated with the Directory Replication Service (DRS) Remote Protocol interface\n(GUID E3514235–4B06–11D1-AB04–00C04FC2DCD2).\n\n## Conclusion\n\nAttackers can utilize the DCShadow technique and perform more advanced attacks to\nestablish backdoors for persistence. The organization must implement continuous monitoring\nsolutions, regularly review system activities such as monitoring AD object creation/replication\nand alert the security team to take necessary mitigations.\n\n[For more information, please visit Singularity™ Identity.](https://www.sentinelone.com/platform/singularity-identity/)\n\nGet a Demo of SentinelOne's Identity Suite\nBringing Identity to XDR. Ready to experience the market’s leading identity security suite?\n[Request A Demo](https://www.sentinelone.com/lp/identity-suite-demo/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-08-15 - Detecting a Rogue Domain Controller – DCShadow Attack.pdf"
+    ],
+    "report_names": [
+        "2022-08-15 - Detecting a Rogue Domain Controller – DCShadow Attack.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535991,
+    "ts_updated_at": 1743041786,
+    "ts_creation_date": 1662027042,
+    "ts_modification_date": 1662027042,
+    "files": {
+        "pdf": "https://archive.orkl.eu/1865d93f119c4ea685af334785e4691c4faff386.pdf",
+        "text": "https://archive.orkl.eu/1865d93f119c4ea685af334785e4691c4faff386.txt",
+        "img": "https://archive.orkl.eu/1865d93f119c4ea685af334785e4691c4faff386.jpg"
+    }
+}

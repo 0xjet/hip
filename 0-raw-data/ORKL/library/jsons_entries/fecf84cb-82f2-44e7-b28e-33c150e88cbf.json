@@ -1,0 +1,121 @@
+{
+    "id": "fecf84cb-82f2-44e7-b28e-33c150e88cbf",
+    "created_at": "2023-01-12T14:59:57.376751Z",
+    "updated_at": "2025-03-27T02:12:11.080487Z",
+    "deleted_at": null,
+    "sha1_hash": "32133c5a7f96c600deff73ddb50cd2a6d4af1956",
+    "title": "2012-12-03 - Compromised library",
+    "authors": "",
+    "file_creation_date": "2022-05-27T19:01:23Z",
+    "file_modification_date": "2022-05-27T19:01:23Z",
+    "file_size": 681163,
+    "plain_text": "# Compromised library\n\n**[virusbulletin.com/virusbulletin/2012/12/compromised-library](https://www.virusbulletin.com/virusbulletin/2012/12/compromised-library)**\n\n2012-12-03\n\n### Raul Alvarez\n\nFortinet, Canada Editor: Helen Martin\n**Abstract**\n\nThe Floxif DLL file infector implements both anti‑static- and anti-dynamic-analysis\ntechniques. Raul Alvarez describes how.\n\nIn the October issue of Virus Bulletin [1] I wrote about the Quervar file infector, which infects\n.EXE, .DOC, .DOCX, .XLS and .XLSX files. We have seen hundreds of file infectors that can\ninfect executable files, and we also have seen document-infecting malware. However,\nQuevar infects document files not because they are documents, but because they have the\nextension used by document files – if you rename any file with ‘.DOC’ or ‘.XLS’ as the first\nthree letters of the extension name, chances are, they would be infected.\n\nJust a few weeks after Quervar, we discovered a file infector whose main target is DLL files.\nThe malware code is not highly encrypted, but it has some interesting sophistication. This\narticle focuses on the DLL file infector dubbed Floxif/Pioneer. We will uncover how it\nimplements both anti-static- and anti-dynamic-analysis techniques.\n\n## Executing an infected DLL\n\nOnce an infected DLL is loaded into memory, a jump instruction at the entry point of the file\nwill lead to the malware body. This instruction is a five-byte piece of code that is added by\nFloxif every time it infects a DLL. The original five bytes of the host file are stored\nsomewhere in the virus body.\n\nFloxif starts by getting the imagebase of kernel32.dll by parsing the Process Environment\nBlock (PEB). Once the imagebase is established, it starts parsing the exported API names of\nkernel32.dll, searching for ‘GetProcAddress’ and eventually getting the equivalent address\nfor this API.\n\nOnce the GetProcAddress API has been found, it starts getting the API addresses of\nGetProcessHeap, GetModuleFileNameA, GetSystemDirectoryA, GetTempPathA,\nCloseHandle, CreateFileA, GetFileSize, ReadFile, VirtualProtect, LoadLibraryA and\nWriteFile.\n\n\n-----\n\nEvery time an API (from the list mentioned above) is needed, the virus gets its equivalent\naddress and executes it. The following is a summary of the execution:\n\nFloxif reserves a memory space, opens the original DLL file and loads it in a newly created\nspace. It starts decrypting part of the virus code from the newly loaded DLL file in memory,\nrevealing the contents of the UPX version of symsrv.dll, which will be dropped later.\n(Symsrv.dll plays an important role in the overall infection process.) The decryptor is a simple\ncombination of XOR 0x2A and NOT instructions.\n\nAfter decrypting the content of the symsrv.dll file, it also decrypts the strings (‘C:\\Program\nFiles\\Common Files\\System\\symsrv.dll’) where the file will be dropped. After dropping\nsymsrv.dll, Floxif will load it as one of the modules of the infected DLL file in memory using\nthe LoadLibraryA API. (It is interesting to note that the content of symsrv.dll is already\naccessible by Floxif, but it still reloads symsrv.dll as a module.)\n\nActing as a module, Floxif can use the exported functions of symsrv.dll as some sort of API.\nTwo exported APIs are contained in symsrv.dll, namely: FloodFix and crc32. The virus gets\nits name from the FloodFix API. (The crc32 API is a continuous loop to a call to a sleep\nfunction with a one-minute interval.)\n\nOnce the symsrv.dll module is properly loaded into the host DLL, the virus will execute the\nFloodFix API. Let’s take a closer look at what this API does.\n\nFirst, it changes the protection of the memory used by the host DLL between the start of the\nPE header and before the section header, to PAGE_EXECUTE_READWRITE. Then, it\nrestores the virtual address and the size of the base relocation table. Afterwards, it resets the\nprotection of the same memory area to PAGE_READONLY.\n\nNext, it changes the protection of the whole .text section to PAGE_EXECUTE_READWRITE\nand restores 3,513 bytes of code. Then, it resets the protection to PAGE_EXECUTE_READ.\nAfterwards, it restores the original five-byte code to the host DLL entry point.\n\nFinally, jumping to the entry point of the host DLL file, it executes the original file.\n\nThe main function of the FloodFix API is to restore the host DLL in its original form in\nmemory and to execute the host DLL, starting at its entry point, while the virus runs in the\nbackground.\n\n## Anti-static-analysis trick\n\nBefore we go any further, let’s look into Floxif’s anti-static-analysis trick. If the malware code\nis not encrypted, or binary dumped from the decrypted code, we can quickly take a look at its\nfunctionality using static analysis. In the case of Floxif, it looks as if the code is corrupted,\nbecause a disassembler can’t render it properly. Figure 1 shows what the virus code looks\nlike if we are just browsing it.\n\n\n-----\n\n**Figure 1. Browsing the virus code.**\n\nThe lines of code highlighted in the figure are not junk code or corrupted data. The\ndisassembler/debugger can’t disassemble the code properly because an ‘EXTRA’ byte has\nbeen added after the RETN instruction. By default, the disassembler will re-interpret the code\nafter the RETN as a new function, and it will look like junk/corrupted code.\n\nThe call to the Reroute function leads to another call, this time to the Reroute2 function.\nUsing static analysis, a disassembler won’t be able to follow the RETN 8 instruction. We can\nassume that it will jump back to the caller, hence we will just end up at the first call.\n\nUsing a debugger, following the RETN 8 instruction from the Reroute2 function will lead to\nanother routine, which in turn will jump to another location – but instead of jumping to the\nlocation straight after the RETN, the new location is just after the extra byte.\n\nFigure 2 shows the disassembler’s attempt to interpret the code after the RETN following the\nfirst CALL instruction, and the equivalent code once the proper jump has been established.\n\n\n-----\n\n**Figure 2. Disassembler’s attempt to interpret code after the RETN, and equivalent**\n**code once the proper jump has been established.**\n\nThe byte (FF) at address 100046A2 was added to disorient the disassembler. To emphasize\nthe point, modifying the byte FF to 90 (NOP instruction) will yield the proper representation of\nthe code which the CALL <symsrv.__Reroute__> will be jumping into.\n\nThis anti-static-analysis trick is an attempt to force the analyst to perform dynamic analysis\nusing a debugger.\n\n## Anti-dynamic-analysis trick\n\nOnce we have decided that dynamic analysis is the better alternative, Floxif has another\nsurprise.\n\nThe FloodFix API found at symsrv.dll doesn’t do anything other than restoring the host DLL\nand its entry point. Some dynamic analysis approaches involve modifying the instruction\npointer (EIP) to start at some interesting part of the code, assuming that the data and code\nare properly configured.\n\nFloxif is aware of this method. To implement an anti-dynamic-analysis trick, Floxif hooks the\nKiUserExceptionDispatcher API of ntdll.dll. Any attempt to change the EIP to anywhere\nwithin symsrv.dll might result in the error message shown in Figure 3. Also shown in Figure 3\nis the hook calling the address 10001220, which contains the function that displays an error\nmessage. After displaying the message box, the virus will terminate its execution.\n\n\n-----\n\n**Figure 3. Hook calling the address 10001220, which contains the function that**\n**displays an error message.**\n\nThis anti-dynamic-analysis trick is easy to overlook because the error message resembles a\nvalid error message from the operating system.\n\n## Now, the infection routine\n\nWe know that the infection routine is not triggered in FloodFix or in the crc32 API. The\ninfection routine is triggered once symsrv.dll is loaded into the memory space of the infected\nDLL file, using a call to the LoadLibrary API.\n\nThereby, the virus is already infecting the system in the background while the FloodFix API is\nbeing called.\n\nLet’s take a look at what happens behind the scenes:\n\nFloxif adjusts the privilege of the access token to enable it to hook the\nKiUserExceptionDispatcher API from ntdll.dll. The KiUserExceptionDispatcher API is used\nfor some sort of anti-dynamic-analysis, as discussed earlier. To hook the API, it gets its\nvirtual address by loading ntdll.dll using LoadLibraryA, then using GetProcAddress to get the\nAPI’s address.\n\nOnce the address of the KiUserExceptionDispatcher API has been acquired, the virus parses\nthe API code looking for a jump instruction. Once found, it saves the original jump location\nand overwrites it with a relative value that will enable it to jump to 10001220 (Figure 3 shows\nthe hooked location).\n\n\n-----\n\nAfter hooking the KiUserExceptionDispatcher API, the virus creates a mutex named\n‘Global\\SYS_E0A9138’ (see Figure 4), which is initially encrypted using a NOT instruction.\n\n**Figure 4. The virus creates a mutex.**\n\nAfter creating the mutex, it stores the names of the %system%, %windows% and %temp%\nfolders using the GetSystemDirectoryA, GetWindowsDirectoryA and GetTempPathA APIs,\nrespectively. Floxif avoids infecting files found in these folders.\n\nNext, it starts enumerating the modules for each process running in the system. Floxif does\nthis by getting the process list using a combination of the CreateToolhelp32Snapshot,\nProcess32First and Process32Next APIs. It gets the module list from each process by using\na combination of the CreateToolhelp32Snapshot, Module32First and Module32Next APIs.\n\nEach module’s path is checked against the three folders whose names were stored earlier:\n%system%, %windows%, and %temp%. Provided the module is not located in any of the\nthree folders mentioned, the virus will read the file to memory and infect it. Then, it renames\nthe original DLL file from <filename.DLL> to ‘<filename.DLL>.DAT’. Floxif then creates a new\nfile with the infected version, which it names <filename.DLL> (i.e. the same as the original).\n\nIt will delete <filename.DLL.DAT> the next time the system is restarted by using the\nMoveFileExA API with the parameter NewName=NULL Flags=DELAY_UNTIL_REBOOT.\n\n## Then, the conclusion\n\nAnti-static- and anti-dynamic-analysis techniques are not new. We encounter them on a\nregular, if not daily basis. There are even more sophisticated techniques than these, but we\nseldom see them being discussed. It is interesting to see a piece of malware that infects DLL\nfiles employing anti-analysis techniques. It is possible that I have missed other techniques\nthat are deployed by the malware, such as anti-debugging, anti-emulation, or anti-anythingelse.\n\n\n-----\n\nWhat seems certain is that we are likely to see more of both Quervar and Floxif messing our\nfiles around.\n\n### Bibliography\n\n[1] Alvarez, R. Filename: BUGGY.COD.E. Virus Bulletin, October 2012, p.11.\n[http://www.virusbtn.com/virusbulletin/archive/2012/10/vb201210-Quervar.](http://10.10.0.46/virusbulletin/2012/10/filename-buggy-cod-e%0A)\n\n## Latest articles:\n\n### Cryptojacking on the fly: TeamTNT using NVIDIA drivers to mine cryptocurrency\n\nTeamTNT is known for attacking insecure and vulnerable Kubernetes deployments in order\nto infiltrate organizations’ dedicated environments and transform them into attack\nlaunchpads. In this article Aditya Sood presents a new module introduced by…\n\n### Collector-stealer: a Russian origin credential and information extractor\n\nCollector-stealer, a piece of malware of Russian origin, is heavily used on the Internet to\nexfiltrate sensitive data from end-user systems and store it in its C&C panels. In this article,\nresearchers Aditya K Sood and Rohit Chaturvedi present a 360…\n\n### Fighting Fire with Fire\n\nIn 1989, Joe Wells encountered his first virus: Jerusalem. He disassembled the virus, and\nfrom that moment onward, was intrigued by the properties of these small pieces of selfreplicating code. Joe Wells was an expert on computer viruses, was partly…\n\n### Run your malicious VBA macros anywhere!\n\nKurt Natvig wanted to understand whether it’s possible to recompile VBA macros to another\nlanguage, which could then easily be ‘run’ on any gateway, thus revealing a sample’s true\nnature in a safe manner. In this article he explains how he recompiled…\n\n### Dissecting the design and vulnerabilities in AZORult C&C panels\n\nAditya K Sood looks at the command-and-control (C&C) design of the AZORult malware,\ndiscussing his team's findings related to the C&C design and some security issues they\nidentified during the research.\n\n[Bulletin Archive](https://www.virusbulletin.com/virusbulletin/archive)\n\n_Copyright © 2012 Virus Bulletin_\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2012/2012-12-03 - Compromised library.pdf"
+    ],
+    "report_names": [
+        "2012-12-03 - Compromised library.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "f809bfcb-b200-4988-80a8-be78ef6a52ef",
+            "created_at": "2023-01-06T13:46:39.186988Z",
+            "updated_at": "2025-03-27T02:00:03.016358Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "Adept Libra"
+            ],
+            "source_name": "MISPGALAXY:TeamTNT",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c3ca592f-0669-49bd-ab5c-310007ab2fb4",
+            "created_at": "2022-10-25T15:50:23.334495Z",
+            "updated_at": "2025-03-27T02:00:55.445098Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "TeamTNT"
+            ],
+            "source_name": "MITRE:TeamTNT",
+            "tools": [
+                "Peirates",
+                "MimiPenguin",
+                "LaZagne",
+                "Hildegard"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535597,
+    "ts_updated_at": 1743041531,
+    "ts_creation_date": 1653678083,
+    "ts_modification_date": 1653678083,
+    "files": {
+        "pdf": "https://archive.orkl.eu/32133c5a7f96c600deff73ddb50cd2a6d4af1956.pdf",
+        "text": "https://archive.orkl.eu/32133c5a7f96c600deff73ddb50cd2a6d4af1956.txt",
+        "img": "https://archive.orkl.eu/32133c5a7f96c600deff73ddb50cd2a6d4af1956.jpg"
+    }
+}

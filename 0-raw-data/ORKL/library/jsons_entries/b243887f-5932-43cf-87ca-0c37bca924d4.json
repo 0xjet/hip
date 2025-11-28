@@ -1,0 +1,197 @@
+{
+    "id": "b243887f-5932-43cf-87ca-0c37bca924d4",
+    "created_at": "2023-01-12T15:03:37.803528Z",
+    "updated_at": "2025-03-27T02:09:30.402637Z",
+    "deleted_at": null,
+    "sha1_hash": "b0b9d19439cab5dc658a74c6ae38b033284f5829",
+    "title": "2021-12-07 - Exploit, steganography and Delphi- unpacking DBatLoader",
+    "authors": "",
+    "file_creation_date": "2022-05-28T23:18:32Z",
+    "file_modification_date": "2022-05-28T23:18:32Z",
+    "file_size": 2267115,
+    "plain_text": "# Exploit, steganography and Delphi: unpacking DBatLoader\n\n**malcat.fr/blog/exploit-steganography-and-delphi-unpacking-dbatloader/**\n\n**Sample:**\n\n[13063a496da7e490f35ebb4f24a138db4551d48a1d82c0c876906a03b8e83e05 (Bazaar,](https://bazaar.abuse.ch/sample/13063a496da7e490f35ebb4f24a138db4551d48a1d82c0c876906a03b8e83e05/) [VT)](https://www.virustotal.com/gui/file/13063a496da7e490f35ebb4f24a138db4551d48a1d82c0c876906a03b8e83e05)\n\n**Infection chain:**\n\nExcel stylesheet -> Office equation -> Shellcode (downloader) -> DBatLoader stage 1 (stegano dropper) -> DBatLoader stage 2\n(discord downloader) -> DBatLoader stage 3 (resource dropper) -> Stone packed -> Formbook\n\n**Tools used:**\n\n**Difficulty:**\n\nIntermediate\n\n## Introduction\n\nIf you are doing cyber threat research on the internet, chances are you will find a ton of papers documenting malicious RATs, APTs and\nstate-sponsored campaigns. It is indeed interesting (and it makes cyber security folks feel like James Bond), but sadly little attention is\ngiven to what makes most of the threat landscape: the packers, droppers and other downloaders at the front of the infection chain. They\nmay be less sophisticated, but it is what the user first encounters, and what makes most of the threat landscape.\n\nThe truth is, if an antivirus successfully detects and blocks an advanced RAT on a system, it means that it already failed and that the\nsystem is compromised, because advanced RAT are at the end of the infection chain.\n\nTo illustrate our point, we will inspect a Formbook sample and we won't talk about Formbook at all. Instead we will dissect the infection\nchain which leads to the installation of Formbook. As you will see, it is actually more complex than one might think.\n\n## Exploiting CVE-2018-0798\n\n Excel document\n\nThe malware we are analyzing today is an encrypted OpenXML Excel document that came as email attachment. OpenXML documents\nare usually just ZIP archives containing XML files and are easy to analyze, but not encrypted documents like this one. In fact, when a\nuser chose to protect its Excel sheet, Microsoft Excel will encrypt it (using the magical password `VelvetSweatshop ) and store it inside`\nan OLE container. And when the user opens the document, Office will transparently decrypt it without any user interaction. Malware\n[authors are well aware of that fact and tend to abuse Excel encryption in order to evade antivirus detection. Fortunately, this is an old](https://blogs.vmware.com/networkvirtualization/2020/11/velvetsweatshop-when-default-passwords-can-still-make-a-difference.html/)\ntechnique and tools exist to decrypt this kind of files. In fact, it is as simple as a few lines of python:\n\n\n-----\n\n```\nimport msoffcrypto\n\"\"\"\nNOTE: for this script to work, you will have to install msoffcrypto: pip3 install\nmsoffcrypto-tool\n\"\"\"\nwith open(\"13063a496da7e490f35ebb4f24a138db4551d48a1d82c0c876906a03b8e83e05.xlsx\", \"rb\") as\nf_in:\n  doc = msoffcrypto.OfficeFile(f_in)\n  doc.load_key(password=\"VelvetSweatshop\")\n  with open(\"file0_stage0.xlsx.dec\", \"wb\") as f_out:\n    doc.decrypt(f_out)\n\n```\n\nThis gives us an OpenXML ZIP archive. Browsing the content, we can see a few things worth of interest:\n\nthe document contains pictures baiting the user to deactivate safe mode (see screenshot below)\nthere is no `vbaProject.bin file in the archive, meaning no VBA macro`\nthere is no Excel macro sheet\nthere are two embedded objects:\n\na Word document at `xl/embeddings/Microsoft_Office_Word_Macro-Enabled_Document1.docm`\nan OLE container at `xl/embeddings/oleObject1.bin`\n\nBeside these elements, the document looks pretty clean. The Word document only contains a single picture, but the OLE container\nseems promising since its doctype GUID is `0002CE02-0000-0000-C000-000000000046 (Microsoft Equation 3.0 object). Equation`\nobjects have seen several vulnerabilities in the past years and are actively exploited in the wild. Let us dive in.\n\n\n-----\n\nFigure 1: Excel sheet baiting the user to deactivate safe mode\n\n## Buggy equation\n\nIf we open the `oLE10NATive stream of the OLE container` `xl/embeddings/oleObject1.bin inside Malcat, we can see a very bare`\n[bone Equation 3.0 object which has been stripped to the minimal, leaving just enough to target the exploit. But which exploit? VirusTotal](https://www.virustotal.com/gui/file/13063a496da7e490f35ebb4f24a138db4551d48a1d82c0c876906a03b8e83e05)\ntends to detect it as CVE-2017-11882, but not all engines agree. Let us have a look at the data:\n\n\n-----\n\nFigure 2: Embedded OLE object\n[Using the documentation of the MTEF format found here, we can make sense of most of the stream:](http://rtf2latex2e.sourceforge.net/MTEF3.html)\n\n**Offset** **Size** **Meaning**\n\n00 4 The OLE1 header specifying the size of the data in the stream. Office seems to ignore this value and use the stream\nsize from the OLE container instead\n\n04 5 MTEF header. Only the MTEF version (3) and MTEF product(1 = Equation Editor) seem to have valid values. The\nrest is most likely ignored by Office and has been randomized.\n\n09 2 First MTEF record: 0x0A = FULL SIZE record\n\n0B 6-? Second MTEF record: 0x05 = MATRIX record\n\nThe MATRIX record seem to be the culprit there, and it would mean that we are facing CVE-2018-0798. CVE-2018-0798 is sometimes\nconfused with CVE-2018-0802 since Microsoft originally allocated the same CVE for two different vulnerabilities. But it is quite different\nfrom CVE-2017-11882 which exploits the FONT record: funny how most antivirus got it wrong.\n\nAccording to [this document, the MATRIX record triggers the exploit by setting the field](http://ith4cker.com/content/uploadfile/201801/bd671515949243.pdf) `NumberOfRows too high. Only 8 bytes are`\nreserved in eqnedt32.exe for the array `RowPartitionLineTypes, but (2 * 0xec + 9) / 8 = 0x3c bytes are copied instead, leading to a`\nstack overflow:\n\n|Offset|Size|Meaning|\n|---|---|---|\n|00|4|The OLE1 header specifying the size of the data in the stream. Office seems to ignore this value and use the stream size from the OLE container instead|\n|04|5|MTEF header. Only the MTEF version (3) and MTEF product(1 = Equation Editor) seem to have valid values. The rest is most likely ignored by Office and has been randomized.|\n|09|2|First MTEF record: 0x0A = FULL SIZE record|\n|0B|6-?|Second MTEF record: 0x05 = MATRIX record|\n\n\n-----\n\nFigure 3: The equation object explained\nKnowing this, we can now start looking for a shellcode.\n\n## The shellcode\n\nBy quickly inspecting what follows the MATRIX record (so starting at offset 0x4D), we notice that offset 0x50 looks like the start of a\nshellcode. Indeed, the push/pop/jmp chain tends to indicate a meterpreter-generated shellcode.\n\nFigure 4: meterpreter-generated\n\nshellcode are easy to spot\nJudging by the high entropy of the rest of the stream, the shellcode is most likely encrypted. We could of course reverse it, but it is\n[faster to emulate the code. We will use the Speakeasy emulator from FireEye on the content of the](https://github.com/mandiant/speakeasy) `oLE10NATive stream. You can use`\nthe following script:\n\n\n-----\n\n```\nimport speakeasy\nimport speakeasy.winenv.arch as e_arch\nunpacker = speakeasy.Speakeasy()\nwith open(\"olenative10_stream.bin\", \"rb\") as ole10native:\n  data = ole10native.read()\naddress = unpacker.load_shellcode(\"\", e_arch.ARCH_X86, data=data)\nunpacker.run_shellcode(address, 0x50)  # shellcode starts at offset\n0x50\nwith open(\"shellcode_decrypted.bin\", \"wb\") as f:\n  f.write(unpacker.mem_read(address, len(data)))\n\n```\n\n[If you are using Malcat, you can alternatively force a function declaration at offset 0x50 (start of the shellcode) and then run the script](https://malcat.fr/)\n```\nspeakeasy_shellcode.py . The shellcode gets decrypted and strings are now in plain text:\n\n```\nFigure 5: Decrypting the shellcode with speakeasy\n\n\n-----\n\nNo need to analyze the shellcode in depth. Judging by the strings, it is a simple downloader that fetches and runs a file from the url\n```\nhxxp://104.168.32.50/009/vbc.exe (still online at time of writing). So let us fetch the data and move on.\n\n## First stage: a bit of steganography\n\n```\nThe file `vbc.exe is a 937KB Delphi application of sha256`\n[3045902d7104e67ca88ca54360d9ef5bfe5bec8b575580bc28205ca67eeba96d (Bazaar,](https://bazaar.abuse.ch/sample/3045902d7104e67ca88ca54360d9ef5bfe5bec8b575580bc28205ca67eeba96d/) [VT). Because of its size, reversing the](https://www.virustotal.com/gui/file/3045902d7104e67ca88ca54360d9ef5bfe5bec8b575580bc28205ca67eeba96d)\ncomplete application is out of question. We could send it to a sandbox, but our goal is to analyze and understand the dropper. So let us\ntry to locate the payload instead by looking at anomalies.\n\n## Locating the payload\n\nSweeping quickly through the binary, we find two points of interest:\n\nA huge string (104427 bytes) at address `0x0046f718`\n\nA resource bitmap named `BBTREX which does not look like the standard one (size is different, resource language too). Visually,`\nthe resource is a picture and definitely not an icon like the rest. It has most likely been patched post-compilation.\n\nFigure 6: Weird bitmap resource BBTREX\nThese two objects are referenced by the same function at offset `0x46D330, which is quite convenient. This function is located near the`\nend of the CODE section, which is also of importance. Delphi application are structured in Units, and the linker tends to put library units\nat the start of the code section, and user units at the end. So everything at the end of the CODE section is likely to be user code and\nthus interesting. Let us have a look at the function using HexRays:\n```\n  #! cpp\n  int DropAndRun() {  // 46D330 \n   int *v0; // eax\n   DWORD v3; // [esp-18h] [ebp-20h]\n   int *v4; // [esp-14h] [ebp-1Ch]\n   LPURL_COMPONENTS v5; // [esp-10h] [ebp-18h]\n   unsigned int v6; // [esp-Ch] [ebp-14h]\n   void *v7; // [esp-4h] [ebp-Ch]\n   __int32 unpacked_bitmap; // [esp+0h] [ebp-8h] BYREF\n   int v9; // [esp+4h] [ebp-4h] BYREF\n   int savedregs; // [esp+8h] [ebp+0h] BYREF\n   TimeGetTickCount(100);\n   sub_406F00(dword_48ACB0, dword_48AD7C, 4);\n   if ( InetIsOffline(0) )\n    System::__linkproc__ LStrAsg(&payload, &str_A[1]);\n\n```\n\n-----\n\n```\n  System::__linkproc__ LStrAsg(&payload, &str_a[1]);\n System::__linkproc__ LStrCatN(&v9, 6);\n GetApiAddress(v9, &str_RasClearLinkSta[1], &p_RasClearLinkStatistics);\n if ( dword_48ACC0 <= 0x87A68E ) { // always true\n  GetApiAddress(&str_amsi[1], &str_amsiamsiScanBuf[1], &p_amsiScanBuffer);\n  Patch(p_amsiScanBuffer, WinHttpCrackUrl);\n  bitmap = Graphics::TBitmap::TBitmap(&cls_Graphics_TBitmap);\n  LoadResourceIntoBitmap(bitmap, Y, &str_BBTREX + 8);// load resource bitmap\nBBTREX\n  SteganoUnpack(bitmap, &unpacked_bitmap);  // extract payload from bitmap\n  System::__linkproc__ LStrAsg(&payload, unpacked_bitmap);\n  RunPayload(payload);            // run payload in memory\n  v0 = j_unknown_libname_57_0(&dword_48AD44);\n  System::Move(aGlojdxoscdjtlq, v0 + 2, 0);  // append very long string in\nmemory\n }\n else {\n  // call WinHttpCrackUrl and exits\n }\n __writefsdword(0, v6);\n v7 = &loc_46D4A5;\n return System::__linkproc__ LStrArrayClr(&unpacked_bitmap, 2);\n}\n\n```\n\n-----\n\nThe function `RunPayload at address` `0x46cdf0 makes use of` `VirtualAlloc and` `VirtualProtect, which suggests that at this`\npoint the dropper already decrypted its payload. And just before the call, we can see that the program loads the patched bitmap\nresource `BBTREX into a` `TBitmap and calls the function that we named` `SteganoUnpack . So let us have a look at` `SteganoUnpack .`\n\n## Decrypting the bitmap\n\nThe function `SteganoUnpack at address` `0x46C8F8 is a bit harder to understand. But using IDA's Delphi FLIRT signatures, we can`\nget most of it:\n```\n  int __fastcall SteganoUnpack(Graphics::TBitmap *bitmap, BYTE *output)\n  {\n   char is_bit_set; // al\n   payload_data = new_string(&off_415BF8, output, 0);\n   line_content = Graphics::TBitmap::GetScanline(bitmap, 0);// read first bitmap line\n   // in the first 3 bytes is an integer encoded that is the number of lsb bits that should be extracted from each byte\n  to get the payload.\n   // (only saw the value 3 in the wild)\n   stegano_num_lsb_bits = 0;           \n   is_bit_set = IsBitSet(*line_content, 0);\n   SetBit(&stegano_num_lsb_bits, 0, is_bit_set);\n   is_bit_set = IsBitSet(*line_content, 1u);\n   SetBit(&stegano_num_lsb_bits, 1, is_bit_set);\n   is_bit_set = IsBitSet(*(line_content + 1), 0);\n   SetBit(&stegano_num_lsb_bits, 2, is_bit_set);\n   is_bit_set = IsBitSet(*(line_content + 2), 0);\n   SetBit(&stegano_num_lsb_bits, 3, is_bit_set);\n   bitmap_width = (*(*bitmap + 44))(bitmap);\n   bitmap_height = (*(*bitmap + 32))(bitmap) - 1;\n   bitmap_line_index = 0;\n   bit_index = 0;\n   bitmap_row_index = 2;             // X position on current bitmap line (1-based)\n   rgb_index = 1;                // which color component are we reading: 1 = RED, 2 = GREEN, B = BLUE\n   line_content += 3;              // advance file pointer by 3 bytes\n   payload_bit_index = 0;\n   do {\n    is_bit_set = IsBitSet(*(line_content + rgb_index - 1), bit_index);\n    SetBit(&payload_size, payload_bit_index, is_bit_set);\n    AdvanceToNextBit();   // will update bit_index, rgb_index, bitmap_row_index and line_content as needed\n    ++payload_bit_index;\n   } while ( payload_bit_index != 32 );        // first 32 payload bits = payload size\n   if ( payload_size > 0 ) {   // start of the payload extraction process\n    do {\n     payload_bit_index = 0;\n     do {\n      is_bit_set = IsBitSet(*(line_content + rgb_index - 1), bit_index);\n      SetBit(&payload_byte, payload_bit_index, is_bit_set);\n      AdvanceToNextBit(); // will update bit_index, rgb_index, bitmap_row_index and line_content as needed\n      ++payload_bit_index;\n     }\n     while ( payload_bit_index != 8 );       // extract 8 bits from bitmap\n     (*(*payload_data + 16))(payload_data, &payload_byte, 1);// append byte to payload data\n     System::__linkproc__ LStrAsg(output, *(payload_data + 1));\n    }\n    while ( --payload_size );          // read <payload_size> bytes into <output>\n   }\n   System::TObject::Free(payload_data);\n   return System::TObject::Free(bitmap);\n  }\n\n```\n\n-----\n\n-----\n\nIn a nutshell, the function reads the bitmap line by line, and each line pixel by pixel. For every byte of the bitmap, some bits (the lowest\nsignificant bits) are extracted and concatenated in order to assemble the final payload. This is textbook steganography. The first line is a\nbit special since it contains additional info:\n\nThe first 3 bytes (so the first RGB pixel) encodes a 4 bits integer (2 bits of red component, 1 bit of green and 1 bit of blue). This\ninteger that we named `stegano_num_lsb_bits tells the software how many bits of each bitmap byte it should extract from the`\nimage (3 in our case)\nThen the software jumps to the 4th byte and reads 32 bits from the bitmap into an integer. This integer is the number of bytes\nwhich should be extracted from the image (the payload size in other words)\nFinally the software starts the payload extraction process\n\nSo let us try if we got it right. We will open the bitmap `BBTREX (which is a DIB bitmap, meaning the BITMAPFILEINFOHEADER is`\nmissing) in an hexadecimal editor and try to manually decode the first bytes. We first have to locate the first bitmap row. Good to know:\nbitmaps are stored upside down, i.e the top-most line is actually the last one in the file. So knowing that our bitmap is 588 pixels wide\nand is a RGB bitmap (so 3 bytes per pixel), the first line should start at EndOfFile - 588*3 = `0x44ea8 :`\n\nFigure 7: The first bitmap line\nSo first thing first, we will decrypt the first 4 bits integer (aka `stegano_num_lsb_bits ). The first line starts with the 3 bytes` `03 02`\n```\n02, which gives us the binary number 1100 (in LSB display) = 3. Ok.\n\n```\nNext, the algorithm moves to the second pixel and reads 32 bits. 32 bits / 3 bits per byte means it will read 10 bytes and 2 bits of the\n11th byte. The next 11 bytes are: `00 00 00 03 06 02 00 00 00 00 04, which gives us the binary number` `000 000 000 110 011`\n```\n010 000 000 000 000 00(1) (in LSB display) = 91648 ok. The 11th byte contains an additional bit which we did not read which was a\n(1) .\n\n```\nNext we could start reading 2 bytes of the payload, which is 16 bits. Since we still have a bit unread from `04, we just have to read 15`\nadditional bits or 5 bytes. The next five bytes are: `06 04 04 06 02, which gives us the binary numbers` `(1) 011 001 0--01 011`\n```\n010 or 0x4d--0x5a ... looks like the start of a PE, great!\n\n```\nSo let us put everything together and write a small extraction script using python. The following script should be run inside Malcat's\nscript editor with the bitmap open:\n```\n  def next_byte(malcat):\n    width = malcat.struct[\"BitmapInfoHeader\"]\n  [\"biWidth\"]\n    height = malcat.struct[\"BitmapInfoHeader\"]\n  [\"biHeight\"]\n    bpp = malcat.struct[\"BitmapInfoHeader\"]\n  [\"biBitCount\"]\n    data = malcat.struct[\"biImageData\"]\n    line_width = width * (bpp // 8)\n    if line_width % 4:\n      line_width += 4 - (line_width % 4)\n    for y in range(height, 0, -1):\n      ptr = line_width * (y - 1)\n      for x in range(width * (bpp // 8)):\n        yield data[ptr + x]\n  def next_bit(data):\n    for c in data:\n       for i in range(num bits):\n\n```\n\n-----\n\n```\nbyte_iterator = next_byte(malcat)\nfor i in range(3):\n  next(byte_iterator)\nbit_iterator = next_bit(byte_iterator)\nres = bytearray()\n# read size of payload\npayload_size = 0\nfor i in range(32):\n  payload_size |= next(bit_iterator) << i\ncur_i = 0\ncur_val = 0\nfor bit in bit_iterator:\n  if bit:\n    cur_val = cur_val | (1 << cur_i)\n  cur_i += 1\n  if cur_i >= 8:\n    res.append(cur_val)\n    if len(res) == payload_size:\n      break\n    cur_val = 0\n    cur_i = 0\ngui.open_after(bytes(res), \"decrypted\")\n\n```\n\n-----\n\nRunning the script gives us the second stage of DBatLoader.\n\n## Second stage: cloud download\n\nWe are now looking at a Delphi binary of sha256 `e232e1cd61ca125fbb698cb32222a097216c83f16fe96e8ea7a8b03b00fe3e40` [(VT).](https://www.virustotal.com/gui/file/e232e1cd61ca125fbb698cb32222a097216c83f16fe96e8ea7a8b03b00fe3e40)\nGiven its small size (91KB) and API usage (wininet usage) it definitely looks like a downloader. So let us dive in this new binary.\n\n## Retrieving the url\n\nWho says downloader says download url, but no URL can be found in the second stage. If the url is not hard-coded in this binary, it has\nto be somewhere else. Remember the big big string that we've identified as suspicious in the previous binary (address `0x0046f718 )?`\nIt is mostly composed of uppercase letter, except for a short substring:\n\nFigure 8: Huge string composed almost exclusively of capital letters\nAnd the delimiter `^^Nc can be found as referenced string in the second stage binary at address` `0x413f58, so could it be our url? At`\nthis point we should look for decrypting functions inside one of the two binaries. But let us be smart. See how the string prefix\n```\nammil3(( has repeated characters. Encryption is must likely a weak one-byte cipher. And we know that we are looking for an url, so\n\n```\nthe plain text string could definitely start with `https:// . So let us try a few usual cipher:`\n\nXOR: the key would be 0x09 and give us `hdd... -> no`\nROT13: ROT13 does not encode non-letter characters so not likely since the slash has been encrypted\nADD: the key would be 0x7 and give us\n\n```\nhttps://cdn.discordapp.com/attachments/902132472924479511/902136733435592744/Wbjhzkbevojgqfhfalbqxnykvunmobi\n\n```\n\nbingo!\n\n\n-----\n\nSometimes, being lazy pays off. Note that the url is not reachable anymore at the time of writing, so I have attached a copy of the file at\n[this address. But the work is not over yet: the downloaded packet looks encrypted:](https://malcat.fr/blog/exploit-steganography-and-delphi-unpacking-dbatloader/file0_stage2_dlded.bin)\n\nFigure 9: Repeating sequence in downloaded buffer\n\n## Decrypting the file\n\nSo before going further, we have to locate function responsible for decrypting the downloaded discord attachment inside the binary.\nWhile the binary is relatively small, Malcat helps us saving some time by locating two candidates functions featuring a XOR opcode\ninside a loop:\n\nFigure 10: any XOR in a loop is a good decryption routine candidate\nThe function `sub_413b14 seems to be the most promising of the two, so let us have a look. This function is quite simple, and takes as`\ninput a single number in `ecx and a Delphi string in` `edx . The number is kind of the decryption key, and will be used to generate three`\nvariables:\n```\n   [ebp-0C] which is initialized with 0x833e - number\n   [ebp-10] which is initialized with 0x5e9b - number\n   [ebp-14] which is initialized with 0x41d6 - number\n\n```\nThis input number is hard-coded. If we look to the decryption function's caller code, we can see that this numbers stems from an\n```\natoi(0x41414c) call at address 0x41408d . The atoi parameter at address 0x41414c is the string \"328\", so the first mystery\n\n```\nhas been solved.\n\n\n-----\n\nFigure\n\n11: decryption function sub_413b14\nNow we just have to figure how the key stream is generated from these three variables. The assembly code of the function body is\nrelatively simple. We converted it to a Python script that can be run inside Malcat, with the downloaded file open. Running the script will\ndecrypt the packet:\n\n\n-----\n\n```\ndef decrypt_stage2(data, number):\n  res = bytearray(len(data))\n  ebp_c = 0x833e - number\n  ebp_10 = 0x5e9b - number\n  ebp_14 = 0x41d6 - number\n  di = ebp_14\n  for i, c in enumerate(data):\n    e = c ^ (di >> 8)\n    res[i] = e\n    di = c\n    di = (di + ebp_14) & 0xffff\n    di = (di * ebp_c) & 0xffff\n    di = (di + ebp_10) & 0xffff\n  return res\ndecrypted = decrypt_stage2(malcat.file[:], 328)\ndecrypted = decrypted[::-1]         # payload is stored reversed, don't ask\nme why\ngui.open_after(bytes(decrypted), \"decrypted\")\n\n```\n\nAfter decryption, we obtain yet another Delphi program, which would make it the third stage of the malware.\n\n## Third stage: resource dropper\n\nWe are now looking at a Delphi binary of sha256 `f8fc925d89baa140c9cb436f158ec91209789e9f8e82a0b7252f05587ce8e06f` [(VT).](https://www.virustotal.com/gui/file/f8fc925d89baa140c9cb436f158ec91209789e9f8e82a0b7252f05587ce8e06f)\nIt looks more like a dropper this time, since most of its size (269KB) is taken by a single resource entry named `YAK .`\n\n\n-----\n\nFigure 12: Third stage of the malware: a dropper\nThe `YAK resource is a well-known artifact of the DBatLoader malware family. Note that Malcat does not identify it as a Delphi program`\nbecause section names have been modified post-compilation and replaced with dots. Why, that's a very good question, since it only\nmakes the binary more suspicious.\n\n## Making sense of the YAK resource\n\nThe program contains all his logic inside the main function, located at the program's entry point. It performs a lot of unnecessary and\nover-complicated operations in order to decrypt the resource. Here is a summary:\n\ncall to function `0x416004 : loads content of resource` `YAK into memory`\ncall to function `0x416408 : the resource bytes gets \"decrypted\" using the following algorithm: for every byte b, if 0x21 <= b <=`\n0x7e: b = ( (c + 0xe) % 0x5e) + 0x21. I know, it does not make a lot of sense.\nthe first 36 bytes of the decrypted resource is a delimiter ( *()%@5YT!@#G__T@#$%^&*()__#@$#57$#!@ ). This delimiter is used to\nseparate different fields in the decrypted YAK data:\n\nthe first field ( 7826546 ) use is unknown\nthe second field is a XOR key used to decrypt the payload data\nthe third field is used to generate the filename and RunKey name used by the dropper to save and persist the dropped\npayload data\nthe 4th field is the encrypted payload data\n... other field of lesser importance follow\nthe last field is another decryption key and has the value `328 (remember stage 1? Looks like the author really likes this`\nnumber)\n\nThis is how the YAK resource looks after the first initial decryption done by function `0x416408 . We have highlighted the delimiter to`\nbetter highlight the different fields:\n\n\n-----\n\nFigure 13: The decrypted YAK resource first 4 fields\nDoes it sound overly complicated? Wait until you have seen how the resource payload data is decrypted.\n\n## Decrypting the payload data\n\nNow that we know the structure of the YAK resource, it is time to decrypt the payload data (aka the 4th field), which makes most of the\nYAK resource. The decryption process happens in four steps:\n\nfunction `0x415c40 decrypts Xor the data using the second field ( ipnwxoenebxarqdhdiseentqdtfigqgzpuxlxi ) as key. But`\nevery byte is not only XORed with a byte of the key, but also with the size of the payload AND the size of the key.\nthe result is reversed.\nfunction `0x416368 decrypts the final result using the last field ( 328 ) as key. Every byte is added with the value` `335 % 328 =`\n```\n   7 .\n\n```\nthe result is finally decrypted using function `0x416408, the same algorithm that was used to perform the initial decryption of the`\nYAK resource\n\nAt this stage, I have a lot of questions to the programmer who wrote this. The main one is: why oh god why? Why adding so much\ncomplexity to the payload extraction process. The added measures don't help evading detection:\n\nmanual reversers don't care about the extra layers. Most of them youl just use a debugger and go through the decryption process\nin one pass.\nfor reversers who likes to do everything statically (hi!), the added code is too simple to be considered as obfuscation.\nantivirus programs don't care about the resource, they would just put a signature on the decryption code. Or even better, create an\nheuristic on the binary (which would be very easy considering Delphi program with dots as section names are pretty rare :)\n\"next-gen\" machine-learning based antivirus also have a very easy time there\nsandbox directly go through the decryption process and would grab the payload at injection time\n\nOn the other hand, it makes the dropping code quite harder to maintain. I am a bit puzzled to be honest. Anyway, let us write the\ndecryption algorithm in python. This python scripts must be run inside Malcat, with the third stage binary open:\n```\n  import itertools\n  def decrypt_yak(data):\n    \"\"\"\n    implements the first decryption layer of function 0x416408\n    \"\"\"\n    res = bytearray(data)\n    for i, c in enumerate(data):\n      if 0x21 <= c <= 0x7e:\n        res[i] = ((((c + 0xe) % 0x5e) + 0x21) & 0xff)\n    return res\n  def xor_payload(data, key):\n    \"\"\"\n    custom XOR, function 0x415c40\n    \"\"\"\n    res = bytearray()\n    for data_byte, key_byte in zip(data, itertools.cycle(key)):\n      c = data_byte ^ key_byte ^ len(data) ^ len(key)\n      res.append( c & 0xff )\n    return res\n  def add payload(data key):\n\n```\n\n-----\n\n```\n  custom ADD, function 0x416368\n  \"\"\"\n  res = bytearray(len(data))\n  val = 335 % key\n  for i, c in enumerate(data):\n    res[i] = (c + val) & 0xff\n  return res\n#######################################\nyak_resource = malcat.struct[\"Resources.RCDATA.YAK.unk.Data\"]\ndecrypted = decrypt_yak(yak_resource)\n# split resource into fields\ndelimiter = decrypted[:36]\nfields = decrypted[len(delimiter):].split(delimiter)\n#get important fields\npayload_data = fields[3]\nxor_key = fields[1]\nadd_key = int(fields[-1])\nprint(\"Decrypting payload data ({} bytes) with XOR key '{}' and ADD key\n{:d}\".format(\n  len(payload_data), \n  xor_key.decode(\"ascii\"), \n  add_key))\nstep1 = xor_payload(payload_data, xor_key)\nstep2 = step1[::-1]   # reverse\nstep3 = add_payload(step2, add_key)\ndecrypted = decrypt_yak(step3)\ngui.open_after(bytes(decrypted), \"yak_payload_plaintext\")\n\n```\n\n-----\n\nRunning this script, we obtain another PE file. Do you think it is the final malware? Do you? Of course not :)\n\n## Fourth stage: Stone's packer\n\nThis time, believe it or not, we are not facing a Delphi program, but a packed 164KB binary featuring a weird `.Stone section and a`\nhuge encrypted `.text section. The sha256 of the binary is`\n```\nb0b4a3897ef76dfebc9ccdc9b83b49cb6d23c08a5b010bf8960c0bb82d48c4bc . How do we know it is packed you may ask? Well, it\n\n```\ncould be because the entropy is high, or maybe because it is written in the binary:\n\n\n-----\n\nFigure 14: That is one hell of a stealth crypter\nYes, sometimes it is this easy :) Also the word `PowerLame seems to imply we won't have a hard time cracking this one.`\n\n## Unpacking Stone's packer\n\nInstead of diving into the code, let us have a quick sweep through the file. The `.text section displays interesting properties, in`\nparticular the beginning of the section:\n\nFigure 15: Start of encrypted .text section\nThe end of the first section is also interesting. Sections are usually padded with zeroes (or `PADDINGXXX for the resource section), but`\nhere we got ones instead:\n\nFigure 16: End of encrypted .text section\nKnowing that the most frequent x86 function prologue is `55 8B EC (aka` `push ebp; mov ebp, esp ), it looks like all bytes value are`\njust one off. So let us try our hypothesis and just subtract 1 to the complete `.text section. This can be done easily using Malcat's`\ntransforms, as we can see below:\n\nFigure 17: Decrypting the .text section\n\n\n-----\n\nAfter reanalyzing the file, we can see that our hypothesis holds and the `.text section has been successfully decrypted. Several`\nfunctions are now visible, even if most of theme are obfuscated and part of the binary seem to remain encrypted. But anyway, we are\nnow facing the last stage of the malware, and what we see should be enough to identify the malware.\n\n## Identifying the malware family\n\n[Using the TLP:white Yara rule set from Malpedia, the decrypted binary is detected by Malpedia's Formbook rule:](https://malpedia.caad.fkie.fraunhofer.de/details/win.formbook)\n\nFigure 18: Formbook detection\nFormbook is a well-known stealer-as-a-service used by a variety of threat actors for over five years. It is designed to steal personal\ninformation and allow remote control via commands issued from a C2 server. It can steal passwords from locally installed software\n(browsers, chat clients, email clients and FTP clients), or directly from the user using keylogger and form-grabber components. After\n[submitting the sample toe Joe sandbox, we get access to the Formbook configuration data and the address of its C2 server:](https://www.joesandbox.com/analysis/526334/0/html)\n\n\n-----\n\n```\n{\n \"C2 list\": [\n  \"www.mgav26.xyz/n8rn/\"\n ],\n \"decoy\": [\n  \"jlvip1066.com\",\n  \"gconsultingfirm.com\",\n  \"foundergomwef.xyz\",\n  \"bredaslo.com\",\n  // ... (truncated)\n  \"counterpokemon.com\",\n\"beyerenterprisestreeservice.com\"\n,\n  \"phorganicfoods.com\",\n  \"hermespros.com\"\n ]\n}\n\n```\n\nAnd ... that's the end of the infection chain and the end of this article.\n\n## Conclusion\n\nWhile entry-level malware do not make headlines, it does not mean that they should be ignored altogether. Some of them are more than\njust mere droppers and feature multi-staged architectures. In this article, we have dissected a gran total of 4 intermediate malicious\nbinaries that were used between the initial infection (an armed Excel spreadsheet) and the final malware (Formbook).\n\nEach of theme used different techniques, from exploits to cloud-based downloaders and event a bit of steganography. We developed\npython scripts to extract and decrypt the payload of each of them. These scripts can be applied to other instances of DBatLoader, like\nthis other [excel document, which downloads another DBatLoader first stage using yet another picture for its steganography.](https://www.virustotal.com/gui/file/13063a496da7e490f35ebb4f24a138db4551d48a1d82c0c876906a03b8e83e05)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-12-07 - Exploit, steganography and Delphi- unpacking DBatLoader.pdf"
+    ],
+    "report_names": [
+        "2021-12-07 - Exploit, steganography and Delphi- unpacking DBatLoader.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "b740943a-da51-4133-855b-df29822531ea",
+            "created_at": "2022-10-25T15:50:23.604126Z",
+            "updated_at": "2025-03-27T02:00:55.505366Z",
+            "deleted_at": null,
+            "main_name": "Equation",
+            "aliases": [
+                "Equation"
+            ],
+            "source_name": "MITRE:Equation",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535817,
+    "ts_updated_at": 1743041370,
+    "ts_creation_date": 1653779912,
+    "ts_modification_date": 1653779912,
+    "files": {
+        "pdf": "https://archive.orkl.eu/b0b9d19439cab5dc658a74c6ae38b033284f5829.pdf",
+        "text": "https://archive.orkl.eu/b0b9d19439cab5dc658a74c6ae38b033284f5829.txt",
+        "img": "https://archive.orkl.eu/b0b9d19439cab5dc658a74c6ae38b033284f5829.jpg"
+    }
+}

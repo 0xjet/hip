@@ -1,0 +1,62 @@
+{
+    "id": "cc175210-ff82-4198-add1-f986e3c3b6ef",
+    "created_at": "2023-01-12T15:07:37.831164Z",
+    "updated_at": "2025-03-27T02:05:34.790774Z",
+    "deleted_at": null,
+    "sha1_hash": "ad7067eb1dd975be5eb5507797e9d55a4be10068",
+    "title": "2021-01-15 - Detecting Malicious C2 Activity -SpawnAs & SMB Lateral Movement in CobaltStrike",
+    "authors": "",
+    "file_creation_date": "2022-05-28T15:22:05Z",
+    "file_modification_date": "2022-05-28T15:22:05Z",
+    "file_size": 96605,
+    "plain_text": "# Detecting Malicious C2 Activity -SpawnAs & SMB Lateral Movement in CobaltStrike\n\n**[dansec.medium.com/detecting-malicious-c2-activity-spawnas-smb-lateral-movement-in-cobaltstrike-9d518e68b64](https://dansec.medium.com/detecting-malicious-c2-activity-spawnas-smb-lateral-movement-in-cobaltstrike-9d518e68b64)**\n\nDan Lussier February 24, 2021\n\nDa\nn\n\n\n[Dan Lussier](https://dansec.medium.com/?source=post_page-----9d518e68b64--------------------------------)\n\nJan 15, 2021\n\n\n5 min read\n\n\n-----\n\nUnderstanding common attack vectors and how threat actors move in your environment postcompromise is critical to identifying what kind of potential threats exist in an environment. We’re\ngoing to review how threat actors use common C2 spawning features to utilize elevated\nprivileges which allow for lateral movement via SMB, and what defenders can do to detect it.\n\nIn the [last article, a lot of time was spent describing how advanced threat actors often spawn a](https://dansec.medium.com/detecting-malicious-c2-activity-with-edr-telemetry-de1e8f3e7004)\nsacrificial process. This mainly focused on same user-credential based spawning, however in\nmany campaigns threat actors have harvested credentials and want to spawn a process as that\ndifferent user context, often with elevated privileges.\n\n## SpawnAs\n\n\n-----\n\nWhen a threat actor is able to successfully get a foothold on a target network some of the first\nsteps are recon which includes identifying easy ways to get elevated privileges. There are many\n[ways to initially get elevated privileges, but most common are Kerberoasting,](https://attack.mitre.org/techniques/T1558/003/) [ASREPRoast,](https://github.com/GhostPack/Rubeus)\n[and file share enumeration looking for cleartext credentials. Although these can be noisy,](https://attack.mitre.org/techniques/T1135/)\nthey’re highly effective in delivering elevated privileges.\n\n_Let’s take a look at spawning a process as a new user_\n\nNot a great way to show it, but you can see beacon.exe (initial payload) spawn\nchrome_proxy.exe (elevated with another account) with a bunch of network connections\nfollowing it, if module detection was enabled that would also be tied to the new elevated\nprocess.\n\n\n-----\n\nNow let s take a look at a rule that would detect a threat actor utilizing CobaltStrike to spawn a\nnew process with elevated privileges.\n```\nrule detect_cobaltstrike_spawnas { meta:  author = \"Dan L\"  description = \"Look for\na cobaltstrike spawnas\"  version = \"1.0\"  severity = \"High\"  mitre_TA = \"TA0004 Privilege Escalation\"  mitre_T1 = \"T1055\"  mitre_url = \"\"events:// Successful Login \n$e0.metadata.product_event_type = \"UserLogon\"    $e0.security_result.summary =\n\"Successful login occurred\"    $e0.target.user.userid != /.*$.*/ nocase    \n$e0.target.user.userid != /.*dwm.*/ nocase    $e0.principal.hostname = $hostname//\nModules being loaded due to new session being loaded    $e1.metadata.event_type =\n\"PROCESS_MODULE_LOAD\"    $e1.principal.hostname = $hostname// A process injection\nmust happen to spawnas    $e2.metadata.event_type = \"GENERIC_EVENT\"    \n$e2.metadata.product_event_type = \"ProcessInjection\"    $e2.principal.hostname =\n$hostnamematch:  $hostname over 1mcondition:  $e0 and #e1 > 5 and $e2}\n\n```\nIn this rule there are three areas of focus which are a successful logon, a bunch of modules\nbeing loaded, and process injection. The first of these is a successful logon, this is captured via\nEDR/Windows Event Logs as a new user account will be utilized to spawn the process. Second\na bunch of modules will load at the time of the spawn of the new process, every time a payload\nexecutes many modules are loaded with it, and finally process injection.\n\nAt this point, the threat actor has obtained a newly created beacon to their C2 with what is often\na privileged account, or an account that allows for additional lateral movement in an\nenvironment.\n\n## SMB Beacon/Payload\n\nAdditional recon will often take place with this newly spawned payload due to its new user\ncontext. At this point a threat actor will want to move laterally from their current compromised\nasset to other assets in the environment, and one of the ways to do this in CobaltStrike is via an\n[SMB beacon. As of this writing (early 2021) you can still utilize the default SMB beacon without](https://www.cobaltstrike.com/help-smb-beacon)\na custom named pipe that drops a file called beacon.dll onto an asset without being detected by\nmany EDR platforms. With that said, that may not be the best move for opsec purposes from a\nthreat actor perspective.\n\nLet’s jump into what a rule that can detect lateral movement via the SMB beacon in\nCobaltStrike looks like.\n```\nrule cobaltstrike_smb_beacon_detection { meta:  author = \"Dan L\"  description =\n\"Detects the usage of cobaltstrike, metasploit SMB Beacon\"  version = \"2.0\"  \nseverity = \"High\"  mitre_TA = \"TA0008 - Lateral Movement\"  mitre_T1 = \"T1570\"  \nmitre_url = \"\"events:     // Look for a successful user login    \n$e0.metadata.product_event_type = \"UserLogon\"    $e0.security_result.summary =\n\"Successful login occurred\"    $e0.principal.hostname = $hostname     // Look\nfor a file launching from ADMIN$    $e1.metadata.event_type = \"PROCESS_LAUNCH\"   \n$e1.target.process.command_line = /.*\\\\admin\\$\\\\.*/ nocase    $e1.principal.hostname\n= $hostname     // Look for an SMB SERVER Share Open    \n$e2.metadata.product_event_type = \"SmbServerShareOpenedEtw\"    \n$e2.target.user.userid = /.*\\$/ nocase    $e2.principal.hostname = $hostnamematch: \n$hostname over 10mcondition:  $e0 and $e1 and #e2 > 1}\n\n```\n\n-----\n\nIn this rule, we again have 3 conditions we are trying to match on, all of these conditions will be\nhappening on the remote device the threat actor is attempting to connect to. First a successful\nlogon event from EDR/Windows Event Logs, second a process launch in the ADMIN$ path on\nthe remote asset, and finally the EDR/Windows Event of a file share being opened more than\nonce. This can take a bit of time depending on an environment, so look for all of this activity to\ntake place over a 10 minute window.\n\n_Let’s take a look at what this looks like as a detection_\n\nEach of the events from the rule triggered when attempting SMB lateral movement via\nCobaltStrike (Authentication, random process in the ADMIN$ folder launched, and\nSmbServerShare triggered).\n\n\n-----\n\nOnce a threat actor has spawned an SMB beacon on a remote asset, they ve taken the the\nspawnas command with a potentially elevated privileged account context and opened a\npersistent connection to the initial compromised asset. A large component to this is a threat\nactor doesn’t need to generate an abundance of HTTPS/DNS traffic which could be identified\n(outside of the initial compromise), as it will all traverse over SMB.\n\n**BONUS: This rule detects the default beacon.dll file being written on a remote asset. This**\nshould never trigger, however it can’t hurt to have it running with many ransomware groups\nutilizing default settings in CobaltStrike.\n\n(2/24/21 Updated regex pattern on $e0)\n```\nrule default_cobaltstrike_smb_beacondll { meta:  credit = \"Dan L\"  description =\n\"Identify the default beacon.dll file being written to disk during SMB beacon lateral\nmovement\"  Version = \"1.0\"  severity = \"High\"  mitre_TA = \"TA0008 - Lateral\nMovement\"  mitre_T1 = \"T1570\"  mitre_url = \"\"\nevents:\n     $e0.target.file.full_path = /.*beacon.dll.*/ nocase  $e0.principal.hostname\n= $hostnamematch:    $hostname over 1mcondition:   $e0}\n\n```\nOne thing I’d like to note here is that SMB is not the only means to move laterally through an\nenvironment and there are many Sharp tools that can offer similar tooling with less artifacts\n[written to disk (SharpRDP, and](https://github.com/0xthirteen/SharpRDP) [SharpWMI). The good news here is that the rules from the](https://github.com/GhostPack/SharpWMI)\n[previous article should detect the launch of any Sharp tool and hand off an alert to the](https://dansec.medium.com/detecting-malicious-c2-activity-with-edr-telemetry-de1e8f3e7004)\ndefenders.\n\nDefensive > [Chronicle,](https://chronicle.security/) [LimaCharlie (Robust EDR platform)](https://limacharlie.io/)\n\n[Offensive > CobaltStrike](https://www.cobaltstrike.com/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-01-15 - Detecting Malicious C2 Activity -SpawnAs & SMB Lateral Movement in CobaltStrike.pdf"
+    ],
+    "report_names": [
+        "2021-01-15 - Detecting Malicious C2 Activity -SpawnAs & SMB Lateral Movement in CobaltStrike.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536057,
+    "ts_updated_at": 1743041134,
+    "ts_creation_date": 1653751325,
+    "ts_modification_date": 1653751325,
+    "files": {
+        "pdf": "https://archive.orkl.eu/ad7067eb1dd975be5eb5507797e9d55a4be10068.pdf",
+        "text": "https://archive.orkl.eu/ad7067eb1dd975be5eb5507797e9d55a4be10068.txt",
+        "img": "https://archive.orkl.eu/ad7067eb1dd975be5eb5507797e9d55a4be10068.jpg"
+    }
+}

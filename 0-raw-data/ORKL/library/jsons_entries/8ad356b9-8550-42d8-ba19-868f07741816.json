@@ -1,0 +1,113 @@
+{
+    "id": "8ad356b9-8550-42d8-ba19-868f07741816",
+    "created_at": "2023-01-12T14:59:10.93077Z",
+    "updated_at": "2025-03-27T02:09:43.007438Z",
+    "deleted_at": null,
+    "sha1_hash": "c130fe8e3383d66eb0b2321d9cfa2633562be708",
+    "title": "2019-12-31 - Fuel Pumps II – PoSlurp.B",
+    "authors": "",
+    "file_creation_date": "2022-05-28T17:01:10Z",
+    "file_modification_date": "2022-05-28T17:01:10Z",
+    "file_size": 747393,
+    "plain_text": "# Fuel Pumps II – PoSlurp.B\n\n**norfolkinfosec.com/fuel-pumps-ii-poslurp-b/**\n\nnorfolk December 31, 2019\n\n[In a previous post, this blog examined malware used in a financially-motivated incident at a](https://norfolkinfosec.com/pos-malware-used-at-fuel-pumps/)\n[fuel dispensing company, as disclosed in a security bulletin by VISA. The bulletin detailed a](https://usa.visa.com/dam/VCOM/global/support-legal/documents/cybercrime-groups-targeting-fuel-dispenser-merchants.pdf)\nsecond incident that is likely attributable to an additional threat actor. Specifically, VISA\nidentified C2 infrastructure, a filename, and additional TTPs that allegedly align with FIN8\n[activity, as described in public Gigamon and](https://atr-blog.gigamon.com/2019/07/23/abadbabe-8badf00d-discovering-badhatch-and-a-detailed-look-at-fin8s-tooling/) [Root9b reporting. These TTPs suggest that the](https://www.root9b.com/content/uploads/2018/10/PoS-Malware-ShellTea-PoSlurp_YARA.pdf)\nthreat actors used a memory scraper referred to as PoSlurp.B in public reporting to scrape\ncustomer credit card data from a targeted device.\n\nThis post examines a PoSlurp.B file identified (through its shellcode loader) by Twitter user\n[@just_windex to provide additional details regarding the malware’s functionality that were](https://twitter.com/just_windex/status/1162118585805758464)\nnot previously disclosed in open source. This analysis focuses on the final payload of the\nshellcode loader, although additional information and advice for bringing this file into a\ndebuggable state is available at the end of the post.\n\nUnlike the previously analyzed file (FrameworkPoS/GratefulPOS), which indiscriminately\nscraped all processes on a device, PoSlurp.B is designed to scrape the memory of an\nattacker-specified process.\n**Analysis**\n\nShellcode Hash:\n\nMD5: b54283d17b7c13329943168b898ff07e\n\nSHA1: 67a06663b0c8a885d444b8bedb8261b28f050a39\n\nSHA256: e78d9a6cd94bd8ec3095a0ecbbc9c4add78d3281d2bf46497164d0406c346395\n\nDumped PoSlurp.B Payload (Uploaded to VT for this blog, not from ITW)\n\nMD5: 3d5ae56c6746e0b3ed5b15124264a0d2\n\nSHA1: f92c886f85928041148d0dcd7c4fb9623b157f94\n\nSHA256: d9e442cd69d1f656a3e8cfd0792333a8f0108193e052a4ee2d7f9138a4b253b2\n\nInitial Checks and Exit Conditions\n\nPoSlurp.B is a 64-bit executable that is expected to be run in memory. When executed, the\nmalware performs two conditional checks:\n\n– The malware must have been loaded into memory\n\n– In this analysis, the check appears to be conducted by examining the the entry point\n\n– The malware must identify an environment variable – “PRMS” – that contains data to direct\n\n\n-----\n\nthe workflow\n– Setting this in the system settings did not appear to work. Setting this in a PowerShell\ninjector script did.\n\n[A Gigamon report previously described the need for this environment variable and its](https://atr-blog.gigamon.com/2019/07/23/abadbabe-8badf00d-discovering-badhatch-and-a-detailed-look-at-fin8s-tooling/)\npresence in a PowerShell loader. While this loader is not currently available on VirusTotal,\ninformation regarding reconstructing one is available at the end of this blog. The malware\nuses a stack string to assemble this environment variable name, likely to limit static detection\nof the string. These first two checks can be seen below. Following these checks, the malware\nmoves to a validation and parsing function (boxed in red in the bottom right of this image) to\nextract information from this environment variable.\n\n\n-----\n\n**PRMS Environment**\n\n**Variable Check**\n\nThe parsing function is designed to extract the contents of the environment variable. The\nfunction contains nine different references to the ExitProcess Windows API call. Combined\nwith the previous function, the following exit conditions for the malware have been identified:\n\n– The malware determines it wasn’t injected or started properly\n\n– The malware can’t locate the “PRMS” environment variable\n\n– The environment variable doesn’t contain “t” as the first letter of a value in a workflow\n\n-----\n\nspecific position\n– When run in injection mode, the malware is unable to identify a process specified for\ninjection\n– An invalid value is in the workflow parameter location (i.e. not “i” “s” or “p”)\n– An incorrect number of arguments have been specified\n– The malware runs successfully\n\nWhile some of these appear to be anti-analysis checks, this blog assesses that others may\nbe for workflow validation and to prevent errors, crashing, or unexpected events. In\nparticular, there are multiple checks regarding the correct number of parameters being\npassed to the malware that eventually become redundant, as a final check requires a larger\nnumber of parameters than an initial check. There are additional exit conditions that are not\nyet fully understood.\n\n\n-----\n\n**Validation and Parsing Function**\n\nEnvironment Variable and Three Workflows\n\nThe environment variable is expected to contain multiple values, delimited by a “|” character.\nThe first character specifies which workflow to take, and can be the letter p, s, or i.\n\n\n-----\n\n– p scrapes a specified process for credit card data\n– “i” injects the malware into a process and creates a thread at the scraping function used by\np\n– “s” injects the malware into a suspended svchost process and creates a thread at the same\nscraping function\n\nThe malware ultimately appears to expect more arguments than are necessary in certain\ncases. For example, if the environment variable were set to:\n\n_p|notepad.exe|t|[value]|[value]_\n\nThe first three values would be sufficient to validate many of the checks and scrape the\n“notepad.exe” process, although something would need to fill the remaining values to\nsuccessfully run. It is possible that these additional values may perform further validation\nchecks, which were bypassed for the purpose of this analysis (and which would need to be\nbypassed if using the environment variables exactly as written in this blog).\n\nThe malware also treats these arguments differently depending on the mode selected. For\nexample, in “p” and “s” mode the first argument specified after “p” is the process to be\nscraped. In “i” mode, the first argument after “i” is the process to be injected, whereas the\nnext argument is the process to be scraped. Thus, using “i” mode would require a value such\nas:\n\ni|injection_target.exe|process_to_be_scraped.exe|t|[unknown]|[unknown]\n\n\n-----\n\n**Malware Workflow Options**\n\nInjection Workflow (“i”)\n\nThe injection workflow contains two relatively simple functions.\n\n_Function One_\n– The malware uses the CreateToolhelp32Snapshot and Process32First/Next APIs to list\nrunning processes\n– The malware compares each process name to the first process argument in the\nenvironment variable\n– If no match is found, the malware returns and exits\n\n_Function Two_\n– The malware opens a handle to the targeted process\n\n\n-----\n\n– The malware uses the VirtualAllocEx and WriteProcessMemory to write itself to the\ntargeted process\n– The malware creates a thread at the location of the main scraping loop within this injected\nprocess\n\n\n-----\n\n**First Function (Process Identification) in Injection Workflow**\n\n\n-----\n\nSvchost Workflow (s)\n\nThe svchost workflow also contains two functions.\n\nFirst, the malware uses stack strings to assemble “svchost.exe” (similar to the “PRMS” string\ncreation), likely to avoid static detection of this value. The malware then identifies the system\ndirectory via API call and concatenates the svchost.exe process name to this string and\nspawns this process in a suspended state.\n\nSecond, the malware uses a form of process injection similar to a method described in open\nsource reporting as the “Zberp” method. The malware uses CreateFileMappingA,\nMapViewOfFile, and NtMapViewOfSection to inject itself into the suspended svchost\nprocess. Finally, the malware uses NtQueApcThread and ResumeThread to run the main\nscraping loop.\n\nMain Scraping Loop\n\nThe main scraping loop, which is either called directly through the “p” workflow or invoked\nthrough the other workflows as a created thread, represents the core of the malware’s\nfunctionality. Similar to the “i” routine, the main scraping loop calls a function that enumerates\nrunning processes (via CreateToolhelp32Snapshot, Process32First, and Process32Next) to\nidentify a match with a specified target process (right click on the images below and open in\na new tab to expand).\n\n\n-----\n\n-----\n\nIf a process name is found that matches the target name, the malware calls the function\nboxed in red in the image above. The malware uses the VirtualQueryEx and\nReadProcessMemory APIs to read the process, and then subsequently calls the actual data\nparsing routine. The malware looks for data formatted similarly to magnetic strip information.\nIf found, the malware calls an additional function (referenced in five locations) to encode and\nwrite this data to a file located at “c:\\users\\public\\music\\wmsetup.tmp” and then repeats the\nloop.\n\nOnce the scraping is completed (or if the scraping fails), the malware can perform two\nadditional cleanup functions before exiting. First, the malware deletes a registry entry located\nat Software\\Microsoft\\CurrentVersion\\Run named PSMon. The malware can also delete a\nkey named ODBC2 under Software\\*.\n\nThe purpose of these two keys is currently unknown. This blog speculates that both may be\nused as components of persistence mechanisms (perhaps with the former pointing to a script\nand the latter pointing to second-stage data stored in the registry). If this is the case, they\n\n\n-----\n\nmay be named to mimic legitimate processes expected on these devices, such as the Unix\nProcess Monitor tool and a SQL Database component (ODBC). It is also possible – but less\nlikely – that this activity is designed to terminate these legitimate processes.\n\nAdditional Thoughts\n\nWhile there are still some information gaps (particularly regarding the installer for this\nmalware), this point of sale scraper represents a very different approach from the previously\nexamined incident. Whereas that file scraped the memory of every process on a system,\nPoSlurp.B is designed for a more targeted approach. This suggests that the attackers\nconducted sufficient reconnaissance within the environment to determine where credit card\ndata was likely to be held (or knew this information prior to the intrusion).\n**Analysis Tips**\n\nAnalyzing this file proved particularly challenging, given the high number of conditional exits\nand the need for the malware to successfully parse an environment variable. Ultimately, I can\nrecommend the following approach:\n\nThe hash 82953a819daff3a81e678c75ce7736b3 contains a PowerShell byte array loader\nthat I found during a search for other FIN8 malware (whether or not it is actually affiliated with\nthis group, I have not checked).\n\n– Take the shellcode, open it in a hex editor (e.g. HxD), and copy the hex into a text editor\n(Notepad++)\n– Replace the spaces from the hex bytes with a “,0x”\n– Add a leading “0x” to the first bytes\n– Add an additional two bytes, 0xEB and 0xFE, to the start of the file. This is an infinite loop.\n– Replace the payload bytes in the hash above with these bytes\n– Add the environment variable\n– Run the PowerShell file\n– In x64dbg, attach to the PowerShell file\n– Resume the program\n– Look in the memory map for the executable section of memory\n– Set a breakpoint at this section\n– NOP the infinite jump instruction\n– Begin debugging\n\nThe idea here is to get PowerShell to load the shellcode, but to do so in a way in which is\ndoesn’t execute. EB FE is a shorthand for an infinite loop in which the malware jumps to the\njumping instruction. The malware will run this indefinitely, until you manually place a\nbreakpoint there. Programs such as jmp2it will do this automatically, but I ran into issues\nattaching to it in a 64-bit debugger. A few other creative approaches (side-loading in place of\nChinese APT shellcode, injecting it into other processes) came up short. They also didn’t\nallow the malware to recognize an environment variable.\n\n\n-----\n\nFor simply statically analyzing the shellcode and its subsequent payload, I d recommend\n[Adam’s approach. It looks like a lot of steps, but it only takes a few minutes, and you can](http://www.hexacorn.com/blog/2015/12/10/converting-shellcode-to-portable-executable-32-and-64-bit/)\nbuild a 64-bit executable that’s pretty easy to directly debug (and subsequently dump a\npayload from).\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-12-31 - Fuel Pumps II – PoSlurp.B.pdf"
+    ],
+    "report_names": [
+        "2019-12-31 - Fuel Pumps II – PoSlurp.B.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "72d09c17-e33e-4c2f-95db-f204848cc797",
+            "created_at": "2022-10-25T15:50:23.832551Z",
+            "updated_at": "2025-03-27T02:00:55.554841Z",
+            "deleted_at": null,
+            "main_name": "FIN8",
+            "aliases": [
+                "FIN8",
+                "Syssphinx"
+            ],
+            "source_name": "MITRE:FIN8",
+            "tools": [
+                "BADHATCH",
+                "PUNCHBUGGY",
+                "Ragnar Locker",
+                "PUNCHTRACK",
+                "dsquery",
+                "Nltest",
+                "Sardonic",
+                "PsExec",
+                "Impacket"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "fc80a724-e567-457c-82bb-70147435e129",
+            "created_at": "2022-10-25T16:07:23.624289Z",
+            "updated_at": "2025-03-27T02:02:09.892602Z",
+            "deleted_at": null,
+            "main_name": "FIN8",
+            "aliases": [
+                "ATK 113",
+                "Syssphinx"
+            ],
+            "source_name": "ETDA:FIN8",
+            "tools": [
+                "ALPHV",
+                "ALPHVM",
+                "BadHatch",
+                "BlackCat",
+                "Noberus",
+                "PSVC",
+                "PUNCHTRACK",
+                "PoSlurp",
+                "Powersniff",
+                "PunchBuggy",
+                "Ragnar Locker",
+                "RagnarLocker",
+                "Sardonic",
+                "ShellTea"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "5bdde906-0416-42ee-9100-5ebd95dda77a",
+            "created_at": "2023-01-06T13:46:38.601977Z",
+            "updated_at": "2025-03-27T02:00:02.870694Z",
+            "deleted_at": null,
+            "main_name": "FIN8",
+            "aliases": [
+                "ATK113",
+                "G0061"
+            ],
+            "source_name": "MISPGALAXY:FIN8",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535550,
+    "ts_updated_at": 1743041383,
+    "ts_creation_date": 1653757270,
+    "ts_modification_date": 1653757270,
+    "files": {
+        "pdf": "https://archive.orkl.eu/c130fe8e3383d66eb0b2321d9cfa2633562be708.pdf",
+        "text": "https://archive.orkl.eu/c130fe8e3383d66eb0b2321d9cfa2633562be708.txt",
+        "img": "https://archive.orkl.eu/c130fe8e3383d66eb0b2321d9cfa2633562be708.jpg"
+    }
+}

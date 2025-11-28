@@ -1,0 +1,208 @@
+{
+    "id": "5e81b0b3-1bc1-4d44-9c1d-d6c682bb6dc4",
+    "created_at": "2023-01-12T15:03:00.456604Z",
+    "updated_at": "2025-03-27T02:15:06.305586Z",
+    "deleted_at": null,
+    "sha1_hash": "ab864839522252bb6a8b4005e5ed05ebf77a208b",
+    "title": "2017-01-30 - Nymaim revisited",
+    "authors": "",
+    "file_creation_date": "2022-05-28T03:33:04Z",
+    "file_modification_date": "2022-05-28T03:33:04Z",
+    "file_size": 1124384,
+    "plain_text": "# Nymaim revisited | CERT Polska\n\n**cert.pl/en/news/single/nymaim-revisited/**\n\n## Introduction\n\nNymaim was discovered in 2013. At that time it was only a dropper used to distribute\nTorrentLocker. In February 2016 it became popular again after incorporating leaked ISFB\ncode, dubbed Goznym. This incarnation of Nymaim was interesting for us because it gained\nbanking capabilities and became a serious threat in Poland. Because of this, we researched\nit in depth and we were able to track Nymaim activities since then.\n\nHowever a lot of things have changed during the last two months. Most notably, Avalanche\nfast-flux network (which was central to Nymaim operations) was taken down and that struck\na serious blow to Nymaim activity. For two weeks everything went silent and even today\nNymaim is a shadow of its former self. Although it’s still active in Germany (with new injects),\nwe haven’t observed any serious recent activity in Poland.\n\n## Obfuscation\n\nThis topic is really well researched by other teams, but it’s still interesting enough to be worth\nmentioning. Nymaim is heavily obfuscated with a custom obfuscator – to the point that\nanalysis is almost impossible. For example typical code after obfuscation looks like this:\n\nBut with some effort we can make sense of it. There are a lot of obfuscation techniques\nused, so we’ll cover them one by one:\n\nFirst of all, registers are usually not pushed directly onto the stack, but helper function\n“push_cpu_register” is used. For example push_cpu_register(0x53) is equivalent to pushing\nebx and push_cpu_register(0x50) is equivalent to pushing eax. Constants are not always the\nsame, but registers are always in the same order (standard x86 ordering).\n\n\n-----\n\n**..** **registerregister** **constantconstant**\n\n0 eax 0x50\n\n1 ecx 0x51\n\n2 ebx 0x52\n\n3 edx 0x53\n\n4 esp 0x54\n\n5 ebp 0x55\n\n6 esi 0x56\n\n7 edi 0x57\n\nAdditionally, most constants in code gets obfuscated too – for example mov eax, 25 can be\nchanged to:\n\nThe constant used in the example is 8CBFB5DA, but there’s nothing special about it – it’s a\nrandom dword value, generated just for the purpose of obfuscating this constant. The only\nthing that matters is the result of the operation (0x25 in this case).\n\nAdditionally there other similar obfuscating functions are used sometimes – for example\nsub_*_from_eax and add_*_to_eax.\n\nLast but not least, the control flow is heavily obfuscated. There are a lot of control flow\nobfuscation methods used, but all boil down to simple transformation – call X and jmp X are\ntransformed to at least two pushes. This obfuscation is in fact very similar to previous one –\ninstead of jumping to 0x42424242, malware calls function detour with two parameters:\n0x40404040 and 0x02020202. The detour adds it’s parameters and jumps to the result. In\npseudoasm instead of:\n\nwe have:\n\nThere exists also a slight variation of this method – instead of pushing two constants,\nsometimes only one constant is pushed and machine code after a call opcode is used\ninstead of a second constant (detour uses return address as a pointer to the second\nconstant).\n\nTo sum up, previously pasted obfuscated code should be read like this:\n\nWith this in mind, we created our own deobfuscator. This was quite a long time ago and\nsince then other solutions have shown up. Our deobfuscator probably isn’t the best, but is\neasily modifiable for our needs and it has some unique (as far as we know) features that we\n\n\n-----\n\nneed, for example it imports recovery and decrypting encrypted strings stored in binary.\n[Other deobfuscators include mynaim and](https://github.com/thngkaiyuan/mynaim) [ida-patchwork Nevertheless, with our deobfuscator](https://bitbucket.org/daniel_plohmann/idapatchwork)\nwe are able to untangle that messy code to something manageable:\n\nWhen it comes to Nymaim obfuscation capabilities it’s not nearly over. For example external\nfunctions are not called directly, instead of it an elaborate wrapper is used:\n\nThis wrapper pushes hash of function name on the stack and jumps to the next dispatcher\n(even though call opcode is used, this code never returns here):\n\nA second dispatcher pushes hash of a dll name on the stack and jumps to the helper\nfunction:\n\nAnd finally real dispatcher is executed:\n\nAdditionally, real return address from API is obfuscated – return address is set to call ebx\nsomewhere in the ntdll (real return address is somewhere in ebx by then, of course). Most\ntools are very confused by it. Let’s just say, it’s very frustrating when debugging and/or single\nstepping.\n\n\n-----\n\nBut wait, there’s more! As we have seen, short constants are obfuscated with simple\nmathematical operations, but what about longer constants, for example strings? Fear not,\nmalware authors have a solution for that too. Almost every constant used in the program is\nstored in a special data section. When Nymaim needs to use one of that constants, it is using\nspecial encrypted_memcpy function. At heart it is not very complicated:\n\nInner workings of memcpy_and_decrypt are not that complicated either. Our\nreimplementation of the encryption algorithm in Python is only few lines long:\n\nWe only need to extract constants used for the encryption (they differ between executables)\n– they are hidden in these portions of code:\n\n\n-----\n\n(These functions are not obfuscated, so extraction can be done with simple pattern\nmatching).\n\nBut encryption of every constant was not good enough. Malware authors decided that they\ncan do better than that – why don’t encrypt the code too? That’s not very often used, but few\ncritical functions are stored encrypted and decrypted just before calling. Quite an unusual\napproach, that’s for sure. Ok, let’s leave obfuscation at that.\n\n## Static Configuration\n\nAfter deobfuscation, the code is easier to analyze and we can get to interesting things. First\nof all, we’d like to extract static configuration from binaries, especially things like:\n\nC&C addresses\nDGA hashes\nEncryption keys\nMalware version\nOther stuff needed for communication\n\nHow hard can that be? Turns out that harder than it looks – because this information is not\njust stored in the encrypted data section.\n\nFortunately, this time the encryption algorithm is rather simple.\n\nWe just need to point nymaim_config_crypt to the start of encrypted static config and\neverything will just work.\n\n\n-----\n\nHow do we know where static config starts? Well… We tried few clever approaches\n(matching code, etc), but they weren’t reliable enough for us. Finally, we solved this problem\nwith a simplest possible solution – we just try every possible index in binary and try to\ndecrypt from there. This may sound dumb (and it is), but with few trivial heuristics (static\nconfig won’t take 3 bytes of space, neither will it take 3 megabytes) this is quite fast – less\nthan 1s on typical binary – and works every time.\n\nDespite this, after decrypting static config we get a structure, which is is quite nice and easy\nto parse. It consists of multiple consecutive “chunks”, each with assigned type, length and\ndata (for those familiar with file formats, this is something very similar to PNG, or wav, or any\nother RIFF).\n\nGraphically this looks like this:\n\nAnd chunks are laid consecutive in static config block:\n\nSo we can quickly traverse through all chunks of a static config with a simple five-liner:\n\nSnippet from process_chunk (hash == chunk_type):\n\nAfter initial parsing the static config looks like this:\n\n\n-----\n\n(By the way, in this article chunk types are usually represented byte-order, i.e. big endian)\n\nAnd in a more human readable form with most interesting chunks interpreted:\n\n## Infection timeline\n\nThere is more than one “kind” of Nymaims. As of now we distinguish between three kinds:\n\ndropper – first Nymaim that gets executed on the system. This is the only type\ndistributed directly to victims.\npayload – module responsible for most of the “real work” – web injects for\nexample\nbot_peer – module responsible for P2P communication. It tries to become\nsupernode in the botnet.\n\n\n-----\n\nThese are all one kind of malware and all of them share the same codebase, except few\nspecialized functions. For example our static config extractor works on all of them, just like\nour deobfuscator and they all use the same network protocol.\n\nDropper role is simple. It performs few sanity checks – for example:\n\nMakes sure that it’s not virtualized or incubated\nCompares current date to “expiration time” from static config\nChecks that DNS works as it should (by trying to resolve microsoft.com and\ngoogle.com)\n\nIf something isn’t right, the dropper shuts down and the infection doesn’t happen.\n\nThe second check is especially annoying, because if you want to infect yourself Nymaim has\nto be really “fresh” – older executables won’t work. Even if you override check in the binary,\nthis is also validated server-side and the payload won’t be downloaded.\n\nIf we want to connect to a Nymaim instance, we need to know the IP address of peer/C&C.\nStatic config contains (among others) two interesting pieces of information:\n\nDNS server (virtually always it’s 8.8.8.8 and 8.8.4.4).\nC&C domain name (for example ejdqzkd.com or sjzmvclevg.com).\n\nNymaim is resolving that domain, but returned A records are not real C&C addresses – they\nare used in another algorithm to get a real IP address. We won’t reproduce that code here,\nbut there is a [great article from Talos on that topic. If someone is interested only in the DGA](http://blog.talosintel.com/2016/09/goznym.html)\ncode, it can be found here:\n\n[https://github.com/vrtadmin/goznym/blob/master/DGA_release.py](https://github.com/vrtadmin/goznym/blob/master/DGA_release.py)\n\nWhen dropper obtains C&C address, it starts real communication. It downloads two\nimportant binaries and a lot more:\n\n**payload – banker module (responsible for web injects – passive member of**\nbotnet)\noptional bot module (it is trying to open ports on a router and become an active\npart of a botnet. When it fails to do so, it removes itself from a system).\nfew additional malicious binaries (VNC, password stealers, etc – not very\ninteresting for us).\n\n\n-----\n\n## DGA\n\nPayload is very different from dropper when it comes to network communication:\n\nNo hardcoded domain\nBut has DGA\nAnd P2P\n\nThe payload’s DGA algorithm is really simple – characters are generated one by one with\nsimple pseudo-random function (variation of xorshift). Initial state of DGA depends only on\nseed (stored in static config) and the current date, so we can easily predict it for any given\nbinary. Additionally, researchers from Talos have bruteforced valid seeds, simplifying the task\nof domain prediction even more.\n\n## P2P\n\nFirst of all, few examples why we suspected from the start that there is something else\nbesides DGA:\n\nWe have taken one of our binaries that hadn’t behaved like the payload, unpacked it,\ndeobfuscated and reverse engineered it. But even without in-depth analysis, we’ve found a\nlot of hints that P2P may be happening. For example we can find strings typical for adding\nexception to Windows Firewall (and of course – that’s what malware did when executed on a\nreal machine).\n\nAnother suspicious behavior is opening ports on a router with help of UPNP. Because of this,\ninfected devices from around the world can connect to it directly\n\n\n-----\n\nAnd finally something even more outstanding. As we have seen, the malware presents itself\nas the Nginx in the “Server” header. Where does this header come from? Directly from the\nbinary:\n\nWe implemented tracker for the botnet (more about that later) and with the data we obtained,\nwe concluded that this probably is a single botnet, but with geolocated injects (for example\nPolish and US injects are very similar). Distribution of IPs we found is similar to what other\nresearchers have determined (we have found more PL nodes and less US than others, but\nthat’s probably because the botnet is geolocated and we were more focused on Poland).\n\n49.9% (~7.5k) of found supernodes were in Poland, 30% (~4.5k) in Germany and 15.7%\n(~2.2k) in the US.\n\n## Network protocol\n\nAnd now for something more technical. This is an example of a typical Nymaim request (P2P\nand C2 communication use the same protocol internally):\n\n\n-----\n\nHost header is taken from the static config\nRandomized POST variable name and path\nPOST variable value = encrypted request (base64 encoded)\nUser-Agent and rest of the headers are generated by WinHTTP (so headers are\nnot very unique and it’s impossible to detect Nymaim network requests by using\nonly them).\n\nTypical response:\n\nThis isn’t really Nginx, just pretending.\nEverything except the data section is hardcoded\nData = encrypted request\n\n\n-----\n\nEncrypted messages have very specific format:\n\nA lower nibble of the first byte is equal to a length of the salt and a lower nibble of the second\nbyte is equal to the length of the padding. Everything between the salt and the padding is the\nencrypted message. To decrypt it, we need to concatenate the key with the salt – and use\nthat password with the rc4 algorithm.\n\nIt can be easily decrypted using Python (but we had to reverse engineer that algorithm first):\n\nAfter decrypting a message, we get something with a format very similar to the static config\n(i.e. a sequence of consecutive chunks):\n\nEach chunk has its type, length and raw data:\n\nWe can process decrypted message with almost exactly the same code as code for static\nconfig:\n\nAnd this is the basic code used for parsing the message. Each chunk type needs to be\nprocessed a bit differently. Interestingly, parsing message is recursive, because some chunk\ntypes can contain other lists of chunks, which in turn can contain other lists of chunks, etc.\nUnfortunately, important chunks have another layer of encryption and compression. At the\n\n\n-----\n\nend of an encrypted chunk we can find special RSA encrypted (or rather – signed) header.\nAfter decryption (unsigning) of the header, we can recover a md5 hash and length of the\ndecrypted data and most important of all – a Serpent cipher key used to encrypt the data.\n\nAfter the decryption we will stumble upon another packing method – decrypted data is\ncompressed with APLIB32. This structure is very similar to the one used by ISFB – firstly we\nhave magic ‘ARCH’, then length of compressed data, length of uncompressed data and\ncrc32 – all of them are dwords (4 bytes).\n\nAgain, it’s nothing Python can’t deal with. We quickly hacked this function to recover real\ndata hidden underneath:\n\nWith this function we finally managed to hit the jackpot. We decrypted all of the interesting\nartifacts passed over the wire, most importantly additional downloaded binaries, web filters\nand injects.\n\n## Communication\n\nAn example request, after dissection, may look like this:\n\nAs we can see, quite a lot of things is passed around here. There are a lot of fingerprinting\neverywhere and some information about current state.\n\n\n-----\n\nResponses are often more elaborate, but for the sake of presentation, let s dissect a simple\none:\n\nAn infected machine gets to know its public IP address, IP addresses (and listening ports) of\nits peers and the active domain. Additionally it is usually ordered to sleep for some time\n(usually 90 seconds when some files are pending to be transmitted and 280 seconds when\nnothing special happens).\n\nHere is the list of types of chunks that we can parse and understand:\n\n**chunk**\n**hash** **short description**\n\nffd5e56e fingerprint 1\n\n014e2be0 fingerprint 2 + timestamps\n\nf77006f9 fingerprint 3\n\n22451ed7 crcs of last received chunks of type be8ec514 and 0282aa05\n\nb873dfe0 probably “enabled” flag (can be only 1 or 0)\n\n0c526e8b nested chunk (decrypt with nymaim_config_crypt, unpack with aplib,\nrecursively repeat parsing)\n\n875c2fbf plain (non-encrypted) executable\n\n08750ec5 nested chunk (decrypt with nymaim_config_crypt, unpack with aplib,\nrecursively repeat parsing)\n\n1f5e1840 injects (decrypt with serpent, unpack with aplib, parse ISFB binary format)\n\n76daea91 dropper handshake (marker, without data)\n\nbe8ec514 list of peer IPs\n\n138bee04 list of peer IPs\n\n1a701ad9 encrypted binary (decrypt with serpent, unpack with aplib, save)\n\n30f01ee5 encrypted binary (decrypt with serpent, unpack with aplib, save)\n\n3bbc6128 encrypted binary (decrypt with serpent, unpack with aplib, save)\n\n39bc61ae encrypted binary (decrypt with serpent, unpack with aplib, save)\n\n261dc56c encrypted binary (decrypt with serpent, unpack with aplib, save)\n\na01fc56c encrypted binary (decrypt with serpent, unpack with aplib, save)\n\n\n-----\n\n**chunk**\n**hash** **short description**\n\n76fbf55a padding\n\ncae9ea25 nested chunk (decrypt with nymaim_config_crypt, unpack with aplib,\nrecursively repeat parsing)\n\n0282aa05 nested chunk (decrypt with nymaim_config_crypt, unpack with aplib,\nrecursively repeat parsing)\n\nd2bf6f4a state informations\n\n41f2e735 web filters\n\n1ec0a948 web filters\n\n18c0a95e web filters\n\n3d717c2e web filters\n\n8de8f7e6 datetime (purpose is unknown, it’s always few days ahead of current date)\n\n3e5a221c list of additional binaries that was downloaded\n\n5babb165 payload handshake (marker, without data)\n\nb84216c7 public IP of infected machine\n\ncb0e30c4 number of seconds to sleep\n\nf31cc18f additional CRC32s of downloaded binaries\n\n920f2f0c injects (decrypt with serpent, unpack with aplib, parse ISFB binary format)\n\n930f2f0c injects (decrypt with serpent, unpack with aplib, parse ISFB binary format)\n\nThis may seem like a lot, but there are a lot of things we didn’t try to understand (we ignored\nmost of dword-sized or always-zero chunks).\n\nAfter extracting everything from communication we can finally look at injects. For example\nPolish ones:\n\n\n-----\n\n(304 different injects, as of today)\n\nOr US injects:\n\n(393 different injects, as of today)\n\n## Resources\n\nYara rules:\n\n\n-----\n\nHashes (md5):\n\nPayload 2016-10-20, 9d6cb537d65240bbe417815243e56461, version 90032\nDropper 2016-10-20, a395c8475ad51459aeaf01166e333179, version 80018\nPayload 2016-10-05, 744d184bf8ea92270f77c6b2eea28896, version 90019\nPayload 2016-10-04, 6b31500ddd7a55a8882ebac03d731a3e, version 90012\nDropper 2016-04-12, cb3d058a78196e5c80a8ec83a73c2a79, version 80017\nDropper 2016-04-09, 8a9ae9f4c96c2409137cc361fc5740e9, version 80016\n\n[Repository with our tools: nymaim-tools](https://github.com/CERT-Polska/nymaim-tools)\n\n## Other research\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2017/2017-01-30 - Nymaim revisited.pdf"
+    ],
+    "report_names": [
+        "2017-01-30 - Nymaim revisited.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "bc289ba8-bc61-474c-8462-a3f7179d97bb",
+            "created_at": "2022-10-25T16:07:24.450609Z",
+            "updated_at": "2025-03-27T02:02:10.235933Z",
+            "deleted_at": null,
+            "main_name": "Avalanche",
+            "aliases": [],
+            "source_name": "ETDA:Avalanche",
+            "tools": [],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "b753c6a8-a83d-47bc-829d-45e56136eb7d",
+            "created_at": "2023-01-06T13:46:38.97802Z",
+            "updated_at": "2025-03-27T02:00:02.967861Z",
+            "deleted_at": null,
+            "main_name": "GozNym",
+            "aliases": [],
+            "source_name": "MISPGALAXY:GozNym",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "2d06d270-acfd-4db8-83a8-4ff68b9b1ada",
+            "created_at": "2022-10-25T16:07:23.477794Z",
+            "updated_at": "2025-03-27T02:02:09.824281Z",
+            "deleted_at": null,
+            "main_name": "Cold River",
+            "aliases": [
+                "Blue Callisto",
+                "BlueCharlie",
+                "Calisto",
+                "Cobalt Edgewater",
+                "Nahr Elbard",
+                "Nahr el bared",
+                "Seaborgium",
+                "Star Blizzard",
+                "TA446",
+                "TAG-53",
+                "UNC4057"
+            ],
+            "source_name": "ETDA:Cold River",
+            "tools": [
+                "Agent Drable",
+                "AgentDrable",
+                "DNSpionage",
+                "SPICA"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "7ea1e0de-53b9-4059-802f-485884180701",
+            "created_at": "2022-10-25T16:07:24.04846Z",
+            "updated_at": "2025-03-27T02:02:10.090459Z",
+            "deleted_at": null,
+            "main_name": "Patchwork",
+            "aliases": [
+                "APT-C-09",
+                "ATK 11",
+                "Capricorn Organisation",
+                "Chinastrats",
+                "Dropping Elephant",
+                "Maha Grass",
+                "Quilted Tiger",
+                "TG-4410",
+                "Thirsty Gemini",
+                "Zinc Emerson"
+            ],
+            "source_name": "ETDA:Patchwork",
+            "tools": [
+                "AndroRAT",
+                "Artra Downloader",
+                "ArtraDownloader",
+                "AutoIt backdoor",
+                "BADNEWS",
+                "BIRDDOG",
+                "Bahamut",
+                "Bozok",
+                "Bozok RAT",
+                "Brute Ratel",
+                "Brute Ratel C4",
+                "CinaRAT",
+                "Crypta",
+                "ForeIT",
+                "JakyllHyde",
+                "Loki",
+                "Loki.Rat",
+                "LokiBot",
+                "LokiPWS",
+                "NDiskMonitor",
+                "Nadrac",
+                "PGoShell",
+                "PowerSploit",
+                "PubFantacy",
+                "Quasar RAT",
+                "QuasarRAT",
+                "Ragnatela",
+                "Ragnatela RAT",
+                "SocksBot",
+                "TINYTYPHON",
+                "Unknown Logger",
+                "WSCSPL",
+                "Yggdrasil"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "9c884c88-2c9f-49c5-856a-2383ad1d8ef8",
+            "created_at": "2024-05-01T02:03:08.152Z",
+            "updated_at": "2025-03-27T02:05:17.422887Z",
+            "deleted_at": null,
+            "main_name": "ZINC EMERSON",
+            "aliases": [
+                "Dropping Elephant ",
+                "EHDevel ",
+                "Manul ",
+                "Monsoon ",
+                "Operation Hangover ",
+                "Patchwork ",
+                "TG-4410 ",
+                "Viceroy Tiger ",
+                "Confucius "
+            ],
+            "source_name": "Secureworks:ZINC EMERSON",
+            "tools": [
+                " Hanove",
+                " Mac OS X KitM Spyware",
+                " Proyecto2",
+                " YTY Backdoor",
+                "Enlighten Infostealer"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "c81067e0-9dcb-4e3f-abb0-80126519c5b6",
+            "created_at": "2022-10-25T15:50:23.285448Z",
+            "updated_at": "2025-03-27T02:00:55.42906Z",
+            "deleted_at": null,
+            "main_name": "Patchwork",
+            "aliases": [
+                "Hangover Group",
+                "Dropping Elephant",
+                "Chinastrats",
+                "Operation Hangover"
+            ],
+            "source_name": "MITRE:Patchwork",
+            "tools": [
+                "NDiskMonitor",
+                "QuasarRAT",
+                "BackConfig",
+                "TINYTYPHON",
+                "AutoIt backdoor",
+                "PowerSploit",
+                "BADNEWS",
+                "Unknown Logger",
+                "Socksbot"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535780,
+    "ts_updated_at": 1743041706,
+    "ts_creation_date": 1653708784,
+    "ts_modification_date": 1653708784,
+    "files": {
+        "pdf": "https://archive.orkl.eu/ab864839522252bb6a8b4005e5ed05ebf77a208b.pdf",
+        "text": "https://archive.orkl.eu/ab864839522252bb6a8b4005e5ed05ebf77a208b.txt",
+        "img": "https://archive.orkl.eu/ab864839522252bb6a8b4005e5ed05ebf77a208b.jpg"
+    }
+}

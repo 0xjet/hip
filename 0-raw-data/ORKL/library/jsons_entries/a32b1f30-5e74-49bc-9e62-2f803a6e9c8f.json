@@ -1,0 +1,187 @@
+{
+    "id": "a32b1f30-5e74-49bc-9e62-2f803a6e9c8f",
+    "created_at": "2024-09-17T07:26:19.135515Z",
+    "updated_at": "2025-03-27T02:13:57.283228Z",
+    "deleted_at": null,
+    "sha1_hash": "d80285d183f189dbdcbea129264b676bc6a744ac",
+    "title": "Microsoft Word - tale_of_gamaredon_infection.docx",
+    "authors": "",
+    "file_creation_date": "2021-01-26T14:24:43Z",
+    "file_modification_date": "2021-01-26T14:24:43Z",
+    "file_size": 4585843,
+    "plain_text": "# Gamaredon Infection: From Dropper to Entry \n\nBy: CERT-EE / Estonian Information System Authority\nDate: 27 January 2021\n\nTags: malware, Gamaredon, Primitive Bear, Armageddon\nVersion: 1.0\nTLP: WHITE\n\n## Summary \nGamaredon (Russian state sponsored) APT group has been active from 2013 and mostly\nknown to target Ukrainian government and military officials with intention to gain access to\ninformation.\n\nSince the beginning of 2020 there are reports that APT group has taken advantage of the\ncoronavirus pandemic and used it as a lure to attract victims to open malicious attachments\nsent with spearphishing emails. Target audience has widened also as found in reports,\nincluding European Union member countries.\n\nThe purpose of this case study was to understand better how the attack chain works, in order\nto recommend ways to mitigate risks in advance and offer advice in case of suspected\ninfection. Since the group uses legitimate scripting and tools, it may happen that antivirus\nsoftwares may not generate alerts/block such detections. It is highly recommended to\neducate users to identify malicious emails and attachments.\n\nFigure 0. Picture extracted from malicious .dot template depicting the Soviet Red Army insignia.\n\n\n-----\n\n## Case study timeline \n\nThe attack begins with a spearphising email with a .docx attachment. The attached .docx file\ncontains an URL to an external .dot template which contains malicious VBS code. Once the\n.docx file is opened by the user, Microsoft Word connects to a defined template without any\nuser interaction needed and executes.\n\nFigure 1. Infected Gamaredon dropper .docx file with a reference to an external .dot file.\n\nThe xxxx.dot file contains a macro:\n\nFigure 2. Fragment from .dot macro – folder creation and wscript.exe copy.\n\nOn execution the script creates a folder named: ’PrintSoftware’ into the user’s profile\ndirectory. It then copies ’Windows\\System32\\wscript.exe’ to the newly created folder\n’%USERPROFILE%\\PrintSoftware\\’ and names the file: ’PrintDriver.exe’.\n\nFigure 3. extract from .dot macro – creation of PrintDriver.vbs\n\nNext the script creates a file named ’PrintDriver.vbs’ to the\n’%USERPROFILE%\\PrintSoftware\\’ folder which contents are base64 encoded in the\ntemplate’s macro.\n\nDetails of ’PrintDriver.vbs’ will be discussed later in this document.\n\n\n-----\n\nFigure 4. Fragment from the .dot macro – persistency, creation of a Scheduled Task.\n\nThe script creates 3 scheduled tasks:\n\n1) PrintSoftware: executes every 35 minutes:\n\n„%USERPROFILE%\\PrintSoftware\\PrintDriver.exe //b\n%USERPROFILE%\\PrintSoftware\\PrintDriver.vbs“\n2) CleanerSoftWare: executes every 22 minutes: „taskkill /f /im PrintSoftware.exe“\n3) WritePrintSoftware: executes every 6 minutes: „%APPDATA%\n\n\\Microsoft\\Windows\\PrintSoftware.exe“\n\nFigure 5. Fragment from the .dot macro – security settings changes in Microsoft Word.\n\nWord macro and VBA execution security settings are changed through users’ registry:\n\n1) \"AccessVBOM\", 1, – Trust access to the VBA project object model\n2) \"VBAWarnings\", 1, – Enable all macros (not recommended; potentially dangerous code\n\ncan run)\n\n**PrintDriver.vbs**\n\nFigure 6. Fragment from the PrintDriver.vbs script – persistency, registry key added.\n\nThe VBS script adds a key named ’PrintSoftware’ in the current user’s registry hive under\n‘RunOnce’ that executes a command line:\n\n1) \"%USERPROFILE%\\PrintSoftware\\PrintDriver.exe //b\n%USERPROFILE%\\PrintSoftware\\PrintDriver.vbs\"\n\n\n-----\n\nFigure 7. Fragment from the PrintDriver.vbs script – beacon settings for connection to C2.\n\nThe script queries the serial number of the system drive and the computer name via WMI, the\nreturned values are added to User-Agent, which gives the attacker a unique identificator of\nthe system that is starting to communicate with C2 server.\n\nQXHUtYEBXRkD = %COMPUTERNAME%\nxLIGzmnp = GetDrive(%SYSTEMDRIVE%).SerialNumber\n\nMozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)\nChrome/81.0.4044.138 Safari/537.36 OPR/68.0.3618.197::\" & QXHUtYEBXRkD & \"_\" &\nxLIGzmnp & \"::/.isobel/.\n\nAs the VBS script executes every 35 minutes (as defined in the scheduled task) it starts with\nmaking a GET request with the specific User-agent to hXXp://intumescere.online/index.html\n\nIt then uses WMIPingProvider to ping the host defined in script: „intumescere.online“.\nWhen the response is: „StatusCode = 0“ (success) then the GET request goes to:\n\nhXXp://“IPAadress“/index.html\n\nFigure 8. Network beacon traffic.\n\n\n-----\n\nFigure 9. Network beacon traffic request details.\n\nAs seen above all requests get the response code: 404 (Not Found).\n\nIt leaves an impression as if the current C2 is „dead“...\n\nIt activates about 6 hours later...\n\nFigure 10. Network beacon traffic – response 200.\n\nFigure 11. Network beacon traffic – response 200 details.\n\nThe attacker then sends additional tools to the infected machine.\n\nFigure 12. Fragment from the PrintDriver.vbs script – actions when the C2 response is 200.\n\n\n-----\n\nThe “404” responses are deceptive. The VBS script contains a condition: if the GET request\nreceives the response code „200“, then action needs to be taken.\n\nAfter receiving the content, the script creates a „PrintSoftware.exe“ file in user’s profile\n„\\AppData\\Roaming\\Microsoft\\Windows\\“ folder and executes it.\n\nFigure 13. Sysmon log entry for PrintSoftware.exe execution event.\n\nThe file is a self-extracting archive. It extracts and renames files as needed.\n\nFigure 14. Sysmon combined log entries for file renaming events after PrintSoftware.exe extraction.\n\n„PrintSoftware.exe“ also contains „UltraVNC“ for remote access to the system. It is then\ncopied to „C:\\Users\\Public\\“ to „CheckSystems.exe“ file (this is detectable by Virustotal).\n\nhttps://www.virustotal.com/gui/file/cedbbbc4deb6569c23aa20ac64ad1c2b2bef6f7b3405cef\n861f26a0b44d836d9/detection\n\n\n-----\n\nFigure 15 Sysmon log entry for wn.cmd execution.\n\nFigure 16. Contents of wn.cmd.\n\nWm.cmd is executed and it initiates a connection to „torrent-vnc.ddns[.]net:5612“.\n\nFigure 17. VNC connection established.\n\nThe attacker now gains access to the system.\n\nAfter realizing that this particular system had no value, we observed that the deletion of files\nstarted. All files and folders on the user’s desktop and profile directory were erased.\n\n\n-----\n\nA picture was left as a „message“ by the member of the APT group before leaving the system.\n\nFigure 18. „я был здесь“ (I was here) message.\n\n...to be continued.\n\n## IoCs\n\nURL:\n\nhttp[:]//intumescere[.]online/index.html\nhttp[:]//torrent-vnc.ddns[.]net:5612\n\nIP:\n\n188.225.82[.]216\n195.88.208[.]51\n\nSHA256:\ncedbbbc4deb6569c23aa20ac64ad1c2b2bef6f7b3405cef861f26a0b44d836d9\n\n\n-----\n\n## Mitre ATT&CK Framework\n\nInitial Access:\nSpearphishing Attachment T1566.001\n\nExecution:\nVisual Basic T1059.005\nWindows Command Shell T1059.003\nScheduled Task T1059.005\nMalicious File T1204.002\n\nPersistence:\nRegistry Run Keys / Startup Folder T1547.001\nScheduled Task T1053.005\n\nDefense Evasion:\nDeobfuscate/Decode Files or Information T1140\nDisable or Modify Tools T1562.001\nModify Registry T1112\nTemplate Injection T1221\n\nDiscovery:\nSystem Information Discovery T1082\n\nCommand and Control:\nIngress Tool Transfer T1105\nWeb Protocols T1071.001\n\nImpact:\nData Destruction T1485\n\n|Initial Access:|Col2|\n|---|---|\n|Spearphishing Attachment|T1566.001|\n\n|Execution:|Col2|\n|---|---|\n|Visual Basic|T1059.005|\n|Windows Command Shell|T1059.003|\n|Scheduled Task|T1059.005|\n|Malicious File|T1204.002|\n\n|Persistence:|Col2|\n|---|---|\n|Registry Run Keys / Startup Folder|T1547.001|\n|Scheduled Task|T1053.005|\n\n|Defense Evasion:|Col2|\n|---|---|\n|Deobfuscate/Decode Files or Information|T1140|\n|Disable or Modify Tools|T1562.001|\n|Modify Registry|T1112|\n|Template Injection|T1221|\n\n|Discovery:|Col2|\n|---|---|\n|System Information Discovery|T1082|\n\n|Command and Control:|Col2|\n|---|---|\n|Ingress Tool Transfer|T1105|\n|Web Protocols|T1071.001|\n\n|Impact:|Col2|\n|---|---|\n|Data Destruction|T1485|\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "99fdc3ef-333d-48f5-a4a1-becd788c7b80",
+            "created_at": "2022-10-25T15:28:29.802983Z",
+            "updated_at": "2022-10-25T15:28:29.802983Z",
+            "deleted_at": null,
+            "name": "MITRE",
+            "url": "https://github.com/mitre-attack/attack-stix-data",
+            "description": "MITRE ATT&CK STIX Data",
+            "reports": null
+        },
+        {
+            "id": "6fc23d14-23a6-4870-8fad-b291b182596f",
+            "created_at": "2022-10-25T16:07:18.480113Z",
+            "updated_at": "2022-10-25T16:07:18.480113Z",
+            "deleted_at": null,
+            "name": "ETDA",
+            "url": "https://apt.etda.or.th",
+            "description": "Threat Group Cards: A Threat Actor Encyclopedia",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://www.ria.ee/sites/default/files/content-editors/kuberturve/tale_of_gamaredon_infection.pdf"
+    ],
+    "report_names": [
+        "tale_of_gamaredon_infection.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "81bd7107-6b2d-45c9-9eea-1843d4b9b308",
+            "created_at": "2022-10-25T15:50:23.320841Z",
+            "updated_at": "2025-03-27T02:00:55.441723Z",
+            "deleted_at": null,
+            "main_name": "Gamaredon Group",
+            "aliases": [
+                "Gamaredon Group",
+                "IRON TILDEN",
+                "Primitive Bear",
+                "ACTINIUM",
+                "Armageddon",
+                "Shuckworm",
+                "DEV-0157",
+                "Aqua Blizzard"
+            ],
+            "source_name": "MITRE:Gamaredon Group",
+            "tools": [
+                "QuietSieve",
+                "Pteranodon",
+                "PowerPunch"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d5156b55-5d7d-4fb2-836f-861d2e868147",
+            "created_at": "2023-01-06T13:46:38.557326Z",
+            "updated_at": "2025-03-27T02:00:02.861124Z",
+            "deleted_at": null,
+            "main_name": "Gamaredon Group",
+            "aliases": [
+                "Aqua Blizzard",
+                "Actinium",
+                "DEV-0157",
+                "Blue Otso",
+                "G0047",
+                "PRIMITIVE BEAR",
+                "Shuckworm",
+                "Trident Ursa",
+                "UAC-0010",
+                "Winterflounder",
+                "ACTINIUM",
+                "BlueAlpha",
+                "IRON TILDEN"
+            ],
+            "source_name": "MISPGALAXY:Gamaredon Group",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "61940e18-8f90-4ecc-bc06-416c54bc60f9",
+            "created_at": "2022-10-25T16:07:23.659529Z",
+            "updated_at": "2025-03-27T02:02:09.912404Z",
+            "deleted_at": null,
+            "main_name": "Gamaredon Group",
+            "aliases": [
+                "Actinium",
+                "Aqua Blizzard",
+                "Armageddon",
+                "Blue Otso",
+                "BlueAlpha",
+                "Callisto",
+                "DEV-0157",
+                "Iron Tilden",
+                "Operation STEADY#URSA",
+                "Primitive Bear",
+                "SectorC08",
+                "Shuckworm",
+                "Trident Ursa",
+                "UAC-0010",
+                "Winterflounder"
+            ],
+            "source_name": "ETDA:Gamaredon Group",
+            "tools": [
+                "Aversome infector",
+                "BoneSpy",
+                "DessertDown",
+                "DilongTrash",
+                "DinoTrain",
+                "EvilGnome",
+                "FRAUDROP",
+                "Gamaredon",
+                "GammaDrop",
+                "GammaLoad",
+                "GammaSteel",
+                "Gussdoor",
+                "ObfuBerry",
+                "ObfuMerry",
+                "PlainGnome",
+                "PowerPunch",
+                "Pteranodon",
+                "Pterodo",
+                "QuietSieve",
+                "Remote Manipulator System",
+                "Resetter",
+                "RuRAT",
+                "SUBTLE-PAWS",
+                "UltraVNC"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "236a8303-bf12-4787-b6d0-549b44271a19",
+            "created_at": "2024-06-04T02:03:07.966137Z",
+            "updated_at": "2025-03-27T02:05:17.410356Z",
+            "deleted_at": null,
+            "main_name": "IRON TILDEN",
+            "aliases": [
+                "Aqua Blizzard ",
+                "Armageddon",
+                "Blue Otso ",
+                "BlueAlpha ",
+                "Dancing Salome ",
+                "Gamaredon",
+                "Gamaredon Group",
+                "Hive0051 ",
+                "Primitive Bear ",
+                "Shuckworm ",
+                "Trident Ursa ",
+                "UAC-0010 ",
+                "UNC530 ",
+                "WinterFlounder ",
+                "ACTINIUM "
+            ],
+            "source_name": "Secureworks:IRON TILDEN",
+            "tools": [
+                "Pterodo"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1726557979,
+    "ts_updated_at": 1743041637,
+    "ts_creation_date": 1611671083,
+    "ts_modification_date": 1611671083,
+    "files": {
+        "pdf": "https://archive.orkl.eu/d80285d183f189dbdcbea129264b676bc6a744ac.pdf",
+        "text": "https://archive.orkl.eu/d80285d183f189dbdcbea129264b676bc6a744ac.txt",
+        "img": "https://archive.orkl.eu/d80285d183f189dbdcbea129264b676bc6a744ac.jpg"
+    }
+}

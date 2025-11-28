@@ -1,0 +1,42 @@
+{
+    "id": "d28bdafa-5167-4d59-93f6-a1a6bc8c7292",
+    "created_at": "2023-01-12T15:09:30.905717Z",
+    "updated_at": "2025-03-27T02:05:54.443809Z",
+    "deleted_at": null,
+    "sha1_hash": "3e6acde056c0dacff829d0a062feb7d3a6d7a29c",
+    "title": "2022-01-21 - Analyzing an IDA Pro anti-decompilation code",
+    "authors": "",
+    "file_creation_date": "2022-05-28T17:14:27Z",
+    "file_modification_date": "2022-05-28T17:14:27Z",
+    "file_size": 85066,
+    "plain_text": "# Analyzing an IDA Pro anti-decompilation code\n\n**[antonioparata.blogspot.com/2022/01/analyzing-ida-pro-anti-decompilation.html](https://antonioparata.blogspot.com/2022/01/analyzing-ida-pro-anti-decompilation.html)**\n\nTwitter: [@s4tan](https://twitter.com/s4tan)\n\nGitHub: [https://github.com/enkomio/](https://github.com/enkomio/)\n\nIn this post I'll analyze a piece of code that induces IDA Pro to decompile the assembly in a\nwrong way. I'll propose a fix, but I'm open to more elegant solutions :)\n\nThe function that we want to decompile has the following assembly code (I'm using IDA Pro\nv7.6):\n```\n.text:1001BC95 56         push  esi\n.text:1001BC96 FF 74 24 10     push  [esp+4+arg_8]   \n.text:1001BC9A 8B 74 24 10     mov   esi, [esp+8+arg_4] \n.text:1001BC9E 56         push  esi\n.text:1001BC9F FF 74 24 10     push  [esp+0Ch+arg_0]\n.text:1001BCA3 52         push  edx\n.text:1001BCA4 51         push  ecx\n.text:1001BCA5 E8 57 20 FF FF   call  nullsub_1\n.text:1001BCAA 8B 0A        mov   ecx, [edx]   \n.text:1001BCAC 83 C4 14      add   esp, 14h\n.text:1001BCAF 89 4E 0C      mov   [esi+0Ch], ecx\n.text:1001BCB2 8B 42 04      mov   eax, [edx+4]\n.text:1001BCB5 03 C1        add   eax, ecx\n.text:1001BCB7 89 46 04      mov   [esi+4], eax\n.text:1001BCBA 5E         pop   esi\n.text:1001BCBB C3         retn\n\n```\nThe function uses two arguments with an unconventional calling convention. If we decompile\nthe code, we obtain:\n```\nint __cdecl sub_1001BC95(int a1, int a2)\n{\n int *v2; // edx\n int v3; // ecx\n int result; // eax\n nullsub_1();\n v3 = *v2;\n *(a2 + 12) = *v2;\n result = v3 + v2[1];\n *(a2 + 4) = result;\n return result;\n}\n\n```\nIn IDA Pro the v2 variable (corrisponding to the line at address 0x1001BCAA) is colored in\nred since its value might be undefined\n\n\n-----\n\nCustom calling convention might cause some problems to the decompilation process (see\n[this), but, in general, there exist an easy fix to it: it is enough to inform IDA Pro that the](https://github.com/enkomio/Misc/tree/master/Hex-Rays)\nfunction uses a custom calling convention. By modifying the function, we can set the new\ntype with the following definition:\n```\nint __usercall sub_1001BC95@<eax>(PUCHAR arg0@<edx>, int garbage, PUCHAR arg1)\n\n```\nwith this new definition, the decompiled code now looks like the following:\n```\nint __usercall sub_1001BC95@<eax>(PUCHAR arg0@<edx>, int garbage, PUCHAR arg1)\n{\n int *v1; // edx\n int v2; // ecx\n int result; // eax\n int v4; // [esp+Ch] [ebp+8h]\n nullsub_1();\n v2 = *v1;\n *(v4 + 12) = *v1;\n result = v2 + v1[1];\n *(v4 + 4) = result;\n return result;\n}\n\n```\nWe haven't done any progress at all. The only place where we haven't checked is the\n**nullsub_1 function, the problem must be in its call. If we analyze this function, we notice that**\nit has an empty body, as shown below.\n```\n.text:1000DD01 C3         retn\n\n```\nWhy is this function causing problems? The answer is in the software convention used by the\ncompiler. During the compilation, the compiler considers some registers as volatile. This\nmeans that the value of these registers, after a function call, should not be considered\n[preserved ([1]). Among the volatile registers, there is EDX, which is exactly one of the](https://docs.microsoft.com/en-us/cpp/build/x64-software-conventions?view=msvc-170)\nregisters used to pass a function parameter in the custom calling convention.\n\nThis code causes problem to the decompilation process that considers (correctly) the EDX\nregister to have an undefined value after the function call.\n\nI'm not aware of any particular IDA Pro command to inform the decompiler to not consider\n**EDX as volatile, so the simpler solution that I found is to just remove the call instruction (I**\npatched the bytes E8 57 20 FF FF with 90 90 90 90 90). The result is a much cleaner\ndecompiled code, as shown below.\n\n\n-----\n\n```\nint __usercall sub_1001BC95@<eax>(PUCHAR arg0@<edx>, int garbage, PUCHAR arg1)\n{\n PUCHAR v3; // ecx\n int result; // eax\n v3 = *arg0;\n *(arg1 + 3) = *arg0;\n result = &arg0[1][v3];\n *(arg1 + 1) = result;\n return result;\n}\n\n```\nNow we can proceed to further improve the decompilation code (we can clearly see the\nusage of a struct in the code) now that the decompiled code represents the real intent of the\nassembly code.\n\n### Update:\n\n[I received a message on twitter and](https://mobile.twitter.com/namazso/status/1484328336167878657) [reddit that suggests to have a look at the __spoils](https://www.reddit.com/r/ReverseEngineering/comments/s8u7y6/comment/htiwl4s/?utm_source=share&utm_medium=web2x&context=3)\n[keyword mentioned in this Igor’s tip of the week post [2] (shame on me for not having found](https://hex-rays.com/blog/igors-tip-of-the-week-51-custom-calling-conventions/)\nit).\n\nIts meaning is exactly what we need to solve the problem in a more elegant and generic way.\nIt is enough to change the nullsub_1 function definition by adding the __spoils keyword, as\nshow below:\n```\nvoid __spoils<> nullsub_1(void)\n\n```\nThe decompilation result of the function sub_1001BC95 is the same as before with the\nexception that the call to the nullsub_1 function is still there (it is not necessary to patch the\nbytes anymore).\n\n## Links:\n\n[1] [Register volatility and preservation](https://docs.microsoft.com/en-us/cpp/build/x64-software-conventions?view=msvc-170)\n\n[2] [Igor’s tip of the week #51: Custom calling conventions](https://hex-rays.com/blog/igors-tip-of-the-week-51-custom-calling-conventions/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-01-21 - Analyzing an IDA Pro anti-decompilation code.pdf"
+    ],
+    "report_names": [
+        "2022-01-21 - Analyzing an IDA Pro anti-decompilation code.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673536170,
+    "ts_updated_at": 1743041154,
+    "ts_creation_date": 1653758067,
+    "ts_modification_date": 1653758067,
+    "files": {
+        "pdf": "https://archive.orkl.eu/3e6acde056c0dacff829d0a062feb7d3a6d7a29c.pdf",
+        "text": "https://archive.orkl.eu/3e6acde056c0dacff829d0a062feb7d3a6d7a29c.txt",
+        "img": "https://archive.orkl.eu/3e6acde056c0dacff829d0a062feb7d3a6d7a29c.jpg"
+    }
+}

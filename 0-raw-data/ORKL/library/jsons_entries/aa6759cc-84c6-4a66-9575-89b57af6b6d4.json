@@ -1,0 +1,82 @@
+{
+    "id": "aa6759cc-84c6-4a66-9575-89b57af6b6d4",
+    "created_at": "2023-01-12T15:01:13.655408Z",
+    "updated_at": "2025-03-27T02:05:25.701951Z",
+    "deleted_at": null,
+    "sha1_hash": "ca8043f7f1fa33d794ec141637585b9e4e4505f9",
+    "title": "2013-08-13 - PowerLoader Injection – Something truly amazing",
+    "authors": "",
+    "file_creation_date": "2022-05-28T15:34:54Z",
+    "file_modification_date": "2022-05-28T15:34:54Z",
+    "file_size": 200166,
+    "plain_text": "# Related Posts\n\n**[malwaretech.com/2013/08/powerloader-injection-something-truly.html](https://www.malwaretech.com/2013/08/powerloader-injection-something-truly.html)**\n\nMalwareTech August 13, 2013\n\n## I’m not dead\n\nIt has been a while since i wrote an article (I’ve been pretty busy in real life), so I decided to\nget writing. This article will probably only make sense to people from a malware research /\nprogramming background, but to compensate i will be posting a fairly non technical article in\nthe near future.\nI will be talking about the infamous injection method from PowerLoader 2.0, which has been\nseen in many different malware families such as: Carberp, Redyms and Gapz. Recently,\nafter looking at the difference between 0vercl0ck’s proof of concept and the real deal, a\nfriend asked me “Why does PowerLoader go to all the trouble of using ROP chains instead\nof just executing the shellcode like 0vercl0ck does.”, I already had a perfect idea of why, but\ndecided to do some digging and answer the question “How?”, this digging resulted in me\nfinding something that truly impressed me, (I try not to admire the work of criminals as i don’t\nwant to seem like a psychopath 😉 ). I would have written this article sooner, but i was totally\nunaware that no blogs had really gone into depth on this method, i like to be unique!\n\n## The Purpose\n\nMost antiviruses don’t treat all processes the same, a known “trusted” process is usually far\nless likely to flag up any warnings from the antivirus. In this case, the goal of malware is to\ninject code into one of these “trusted” processes in order to run with less risk of detection. Of\ncourse antiviruses will attempt to catch injection too, so the challenge is for malware to find a\nway into the trusted process without being detected.\nIn order to give a better idea of the stealthiness of PowerLoader I have listed below some\ncommon telltale signs of a malicious process attempting to inject.\n(The following only apply to a process trying to perform any of these actions on another\nprocess)\n\nAllocating heap space\nCreating threads\nOverwriting process/module memory\nManipulating thread context\nQueuing asynchronous procedure calls (APCs)\n\nProactive antiviruses will check for processes trying to perform these actions and could likely\nresult in the user being alerted to a malicious process. The aim of PowerLoader is to subvert\nthis, (which seems to be a success as it is not picked up by antiviruses, and does not cross\noff anything on the list).\n\n\n-----\n\n## Writing the code to explorer\n\nIn the case of PowerLoader, the trusted process targeted is explorer. I won’t be putting any\n[images/reversed code for this part as it has already been well documented by ESET.](http://www.welivesecurity.com/2012/12/27/win32gapz-steps-of-evolution/)\nPowerLoader gets the malicious code into the process by opening an existing, shared\nsection already mapped into explorer, removing the need to allocate heap space or overwrite\nprocess memory. PowerLoader then proceeds to map the shellcode onto the end of the\nchosen section. Below is a list of targeted shared sections.\n\nBaseNamedObjectsShimSharedMemory\nBaseNamedObjectswindows_shell_global_counters\nBaseNamedObjectsMSCTF.Shared.SFM.MIH\nBaseNamedObjectsMSCTF.Shared.SFM.AMF\nBaseNamedObjectsUrlZonesSM_Administrator\nBaseNamedObjectsUrlZonesSM_SYSTEM\n\n## Executing the code\n\nIn order to execute the remote code without creating a thread, PowerLoader uses a little trick\nwith the explorer tray window procedure. By opening “Shell_TrayWnd” and calling\nSetWindowLong, PowerLoader is able to set a variable used by the window procedure to\npoint to a specific address in its shellcode. Here PowerLoader sets the address to a pointer\nto a pointer to KiUserApcDispatcher, whereas 0vercl0ck’s code will just set it to a pointer to a\npointer to the payload (which resides in a shared section).\nWhen SendNotifyMessage is called by the malware, the window procedure inside explorer is\ntriggered and this is what happens.\n\nFigure 1: A snippet from the Window Procedure\n\nNow this code is simple, it will perform a double indirection that will result in the address\npointed to by the pointer that was set using SetWindowLong, being executed.\n\nThis is where PowerLoader differs from 0vercl0ck’s version. The instruction “call dword ptr\neax” will read the value pointed to by EAX and then call it. The read part won’t trigger DEP\n(Data Execution Prevention), if the section is not executable (in later versions of windows it is\nexecute-protected), however if EAX points to an address inside the section, DEP will be\ntriggered. Because the sections protection is only set to Read/Write in later versions of\nwindows, 0vercl0ck’s code will likely trigger DEP and crash explorer, however, because\n\n\n-----\n\nPowerLoader s pointer points to KiUserApcDispatcher (resides in ntdll), DEP is not\ntriggered.\nWell how does one get from KiUserApcDispatcher to code execution, without executing the\nnon-executable shellcode, I hear you ask?\n\n## ROP Chains, Unicorns, and Rainbows\n\nThis part greatly interested me, partly because I have never seen a ROP chain in the wild\nbefore but mainly because it is the most advanced injection method I have ever come\nacross. In order to understand how PowerLoader gets from KiUserApcDispatcher, to\nshellcode execution, we need to do some disassembling.\nIn Figure 1, we see the Window Procedure pushing ESI onto the stack, then calling\nKiUserApcDispatcher. It is important to remember ESI contains the address (held in the\nshellcode) of the pointer to the KiUserApcDispatcher pointer.\nSo let’s see dissasemble KiUserApcDispatcher.\n\nFigure 2: KiUserApcDispatcher\n\nPay attention to the first 3 instructions. “lea edi, [esp+10h]” is loading the last parameter into\nthe EDI register. If you remember in Figure 1, the last parameter pushed to the stack was\nESI, which contains an address within the shellcode. Next it pops the return address into the\nEAX and then calls it, this results in execution being transferred back to the Window\nProcedure.\nSo really nothing has happened here, We’ve just set the EDI to an address inside the\nshellcode and then gone back to where we came from. So in order to see what happens\nnext, we are going to have to dig deeper. Here is some more of the Window Procedure.\n\n\n-----\n\nFigure 3: More of the Window Procedure shown in Figure 1\n\nNow in this disassembly we need to pay attention to the instructions underlined in red and\norange, the blue box is the code we already discussed (executes KiUserApcDispatcher and\nsets EDI to ESI), the rest of the code can be ignored. As you can see, the function makes 2\nmore calls (EAX+8, followed by EAX+4), if you remember earlier, EAX is an address in the\nshellcode, so the next call is to the address 8 Bytes below.\n\nLet’s take a look at the shellcode shall we?\n\nFigure 4: A small snippet from the shellcode\n\nWhen SetWindowLong was called by PowerLoader it set the ESI (Blue Box Figure 3) to\n00100E0C (Which holds the address 00100E20), The code then performs and indirection\n\n\n-----\n\nand EAX ends up pointing to KiUserApcDispatchPtr (00100E20). Using some very basic\nmaths, EAX+8 points to 00100E28 and EAX+4 to 00100E24.\nWhat are 00100E28 & 00100E24? When the shellcode was made during runtime,\nPowerLoader searched for some byte sequences in explorer using ReadProcessMemory,\nthen stored the addresses of those sequences in the shellcode. The sequences are\ninstruction within the executable regions of explorer’s memory, their purpose is to perform\ncertain operations as PowerLoader can’t execute any of its own code yet, due to the section\nbeing execute-protected.\n00100E28 points to some code in explorer that executes the instruction “STD” followed by\n“RET”, As a result the instruction underlined in red will result in the direction flag being set\nand execution being returned to the Window Procedure.\n\nUntil now, nothing makes any sense at all. We’ve set the ESI to an address in the shellcode\n(Figure 1), we’ve set the EDI to an address on the stack (Figure2), and we’ve set the\ndirection flag. What happens next makes sense of it all. EAX+4 is called from the window\nprocedure, as we established EAX+4 is a pointer in our shellcode, but what does it point to?\nAgain, we need to do some disassembling.\n\nFigure 4: A random function in shell32.dll\n\nRemember i said PowerLoader scanned some byte sequences in explorer? Well these bytes\nwere found, in this case inside some random shell32 function (it doesn’t matter). Now the\npointer doesn’t point to the start of the function, it points somewhere in the middle, as a\nresult, only the bytes in the red box are executed. It should become apparent what is\nhappening. The instruction “REP MOVSD” will move ECX (0x94) bytes from the address in\nESI to the address in EDI. Earlier the code managed to use code within explorer to set the\nESI to the shellcode address, the EDI to an address on the stack, then Set the direction flag\nto 1. Because of this, the shellcode starting at address 00100E0C will be copied to the stack\n\n\n-----\n\nbackwards (The copying will start at the address in ESI, copy a DWORD, then subtract the\naddress by 4 and repeat.\n(Remember: because all addresses points to executable code within explorer address\nspace, and they are called using a pointer, no code in the shellcode is actually executed,\nthus resulting in no nasty DEP errors.)\nThis is where things start to heat up, PowerLoader has just used code located within explorer\nto overwrite some of the stack with some shellcode, which means although still incapable of\ndirectly executing its own code, PowerLoader has control over return addresses and stack\nbased parameters.\nLet’s have a look at the code that was copied.\n\nFigure 5: The ROP Shellcode that is written to the stack\n\nOnce the code copying the ROP Shellcode to the stack is done, it hits the ret instruction, but\nbecause the stack has been overwritten, it instead ends up executing code pointed to by the\nROP Shellcode, Each bit of code has a ret instruction which causes the next ROP gadget to\nbe executed. I stepped through in a debugger, below i have made a list of the ROP Gadgets\nin order of execution, each line is a different gadget.\n\n1. Direction Flag Clear\n\n\n-----\n\n2. Pop 0x70 into EAX\n3. Call _alloca_probe\n4. WriteProcessMemory\n5. Pop the address of ntdll!atan into EAX\n6. Jmp to EAX\n\nSome things to note:\n\nThe _alloca_probe function is undocumented but I believe it takes the value in EAX\nand check that the stack can hold that many items, if not it triggers the guard page to\nallocate more stack space (0x70 is in EAX)\nThe parameters for WriteProcessMemory are at address 00090DA0, these parameters\ncause WriteProcessMemory to read the shellcode from the shared section, then write it\nover ntdll!atan which we can assume isn’t used by explorer.\nFinally the last instruction jumps to ntdll!atan and the code begins execution.\n\n## TLDR / Recap\n\nPowerLoader bypasses the execution protection on the shared sections, by using code\nfound inside explorer to copy a ROP Chain to the stack, then uses the ROP Chain to\nmanipulate the call stack into causing Explorer to call WriteProcessMemory and overwrite an\nunused function in ntdll with some shellcode to complete the injection.\n\n## Conclusion\n\nSo there we have it, from non-executable section to shellcode execution by using explorer’s\nown code against itself. I’ll try and get a new article up soon, sorry for the inactivity <3\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2013/2013-08-13 - PowerLoader Injection – Something truly amazing.pdf"
+    ],
+    "report_names": [
+        "2013-08-13 - PowerLoader Injection – Something truly amazing.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "2150d1ac-edf0-46d4-a78a-a8899e45b2b5",
+            "created_at": "2022-10-25T15:50:23.269339Z",
+            "updated_at": "2025-03-27T02:00:55.416524Z",
+            "deleted_at": null,
+            "main_name": "APT17",
+            "aliases": [
+                "APT17",
+                "Deputy Dog"
+            ],
+            "source_name": "MITRE:APT17",
+            "tools": [
+                "BLACKCOFFEE"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "a7aefdda-98f1-4790-a32d-14cc99de2d60",
+            "created_at": "2023-01-06T13:46:38.281844Z",
+            "updated_at": "2025-03-27T02:00:02.792526Z",
+            "deleted_at": null,
+            "main_name": "APT17",
+            "aliases": [
+                "G0025",
+                "AURORA PANDA",
+                "Group 72",
+                "G0001",
+                "HELIUM",
+                "Group 8",
+                "Hidden Lynx",
+                "Tailgater Team",
+                "BRONZE KEYSTONE"
+            ],
+            "source_name": "MISPGALAXY:APT17",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535673,
+    "ts_updated_at": 1743041125,
+    "ts_creation_date": 1653752094,
+    "ts_modification_date": 1653752094,
+    "files": {
+        "pdf": "https://archive.orkl.eu/ca8043f7f1fa33d794ec141637585b9e4e4505f9.pdf",
+        "text": "https://archive.orkl.eu/ca8043f7f1fa33d794ec141637585b9e4e4505f9.txt",
+        "img": "https://archive.orkl.eu/ca8043f7f1fa33d794ec141637585b9e4e4505f9.jpg"
+    }
+}

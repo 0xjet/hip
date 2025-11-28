@@ -1,0 +1,87 @@
+{
+    "id": "20b8dd14-c0ce-4a82-a23f-08452437ba84",
+    "created_at": "2023-01-12T15:08:33.807595Z",
+    "updated_at": "2025-03-27T02:16:26.212371Z",
+    "deleted_at": null,
+    "sha1_hash": "864d487d34a3ec92812f81213c12a42c2cbbdffa",
+    "title": "2020-06-21 - UpnP – Messing up Security since years",
+    "authors": "",
+    "file_creation_date": "2022-05-28T04:01:03Z",
+    "file_modification_date": "2022-05-28T04:01:03Z",
+    "file_size": 391424,
+    "plain_text": "# UpnP – Messing up Security since years\n\n**[malwareandstuff.com/upnp-messing-up-security-since-years/](https://malwareandstuff.com/upnp-messing-up-security-since-years/)**\n\n[Published by hackingump on June 21, 2020](https://malwareandstuff.com/author/klopsch/)\n\n\nJune 21, 2020\n\n\nUpnP is a set of networking protocols to permit network devices to discover each other’s\npresence on a network and establish services for various functionalities.\n\nToo lazy to port forward yourself ? Just enable UpnP to automatically establish working\nconfigurations with devices! Dynamic device configuration like this makes our life more\ncomfortable for sure. Sadly it also comes with many security issues.\n\nIn this blog article I am focusing on mentioning the stages of the UpnP protocol, a quick\nintroduction to security issues regarding UpnP and how QBot abuses the UpnP protocol to\nexploit devices as proxy C2 servers.\n\n## UpnP in a nutshell\n\nUpnP takes usage of common networking protocols and stacks `HTTP,` `SOAP and` `XML on`\ntop of the `IP protocol in order to provide a variety of functionalities for users. Without going`\nto deep into how UpnP works in detail, the following figure is enough for the basics.\n\n\n-----\n\nQuick explanation of existing\n\nstages in UpnP protocol\nSome services a node with UpnP enabled can offer (it really depends on the device):\n\nPort forwarding\nSwitching power on and off for light bulbs\netc.\n\nThis is very high level of course. If you are interested in everything about UpnP, I recommend\n[you to check out Wikipedia[1] for a high level introduction or read this report that goes more](https://en.wikipedia.org/wiki/Universal_Plug_and_Play)\n[into detail[2].](https://openconnectivity.org/upnp-specs/UPnP-arch-DeviceArchitecture-v2.0-20200417.pdf)\n\nFor the following content of this blog article, only the first three stages are really relevant.\n\n## IoT Security and UpnP\n\n### Misconfiguration\n\n\n-----\n\nAgain, while it might be very convenient for customers to have devices autoconfigure\nthemselves, it leads to huge security risks.\n\nMany routers have UpnP enabled by default. Think of misconfigured IoT devices that sends\na command to port forward a specific port, leading to a port exposure to the internet.\n\nIt is known that many IoT devices contain awful security flaws like default credentials for\ntelnet. If devices like this have such misconfigurations and expose its telnet port to the\noutside, it probably takes about 5 minutes till some script kiddie adds this device to its botnet.\n\n### Exploitation\n\n[A blog post from TrendMicro[3] previously mentioned that many devices still use very old](https://blog.trendmicro.com/trendlabs-security-intelligence/upnp-enabled-connected-devices-in-home-unpatched-known-vulnerabilities/)\nUpnP libraries which are not up to date to current security standards. This creates a larger\nattack surface for attackers. The newest one being `CallStranger .`\n\nsource : **[https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2020-12695](https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2020-12695)**\nIt is caused by the Callback header value in the UpnP SUBSCRIBE function. This field can\nbe controlled by an attacker and enabled a `Server Side Request Forgery like`\nvulnerability. It can be used for the following malicious cases:\n\nExfilitrate data\nScan networks\nForce nodes to participate in DDoS attacks\n\n[I recommend you to visit the official domain[4] of this vulnerability, if you want gain more](https://callstranger.com/)\nknowledge about this vulnerability.\n\n## UpnP abused by QBot\n\nSecurity risks created by UpnP are not limited to the IoT landscape of course.\n\n\n-----\n\nAnother method to use UpnP for malicious cases is to install Proxy C2 servers on devices\nwhich have the mentioned protocol enabled, like QBot does for example. Let’s take a look at\nhow this is done.\n\n**Diving into QBot’s UpnP proxy module**\n\n[This technique was first discovered by McAfee[4] in 2017. First QBot starts scanning for](https://www.mcafee.com/blogs/other-blogs/mcafee-labs/mcafee-discovers-pinkslipbot-exploiting-infected-machines-as-control-servers-releases-free-tool-to-detect-disable-trojan/)\ndevices which have UpnP enabled and is one of the following device types:\n\nurn:schemas-upnp-org:device:InternetGatewayDevice:1\nurn:schemas-upnp-org:service:WANIPConnection:1\nurn:schemas-upnp-org:service:WANPPPConnection:1\nupnp:rootdevice\n\nDisassembly of strcmp calls to check for device type\nIf you are using INETSIM for malware analysis, you will probably realise that it does not offer\nany functionality to fake a SSDP or UpnP service in any way. However, we can use this\n[python script[5] by user GrahamCobb which emulates a fake SSDP service and adjust the](https://github.com/GrahamCobb/ssdp-fake)\ndevice description to suit our needs.\n\nOnce the devices are discovered, it sends requests for device descriptions and checks\nwhether it deals with an internet gateway device. This can be determined by looking at the\ndevice description itself.\n\n\n-----\n\nCapture SSDP traffic, showing the MSEARCH request and retrieval of the device description\nIf it is an internet gateway device, it confirms whether a connection exists by sending a\n```\nGetStatusInfo followed by retrieving the external ip address of this device by sending the\nGetExternalIPAddress command.\n\n```\nNext it tries to use the `AddPortMapping command to add port forwarding rules to the`\ndevice.\n\nPort forwarding command sent to fake SSDP service\nAfterwards all rules are removed again and the ports which were successfully port forwarded\nare sent as a `HTTP-POST to the C2 server.`\n\nThe carrier protocol is `HTTPS and the response is sent in the following form:`\n```\n# destination address\nhttps://[HARDCODED_IP]:[HARDCODED_PORT]/bot_serv\n# POST DATA form, successful port forwarded ports are appended to ports\ncmd=1&msg=%s&ports=\n\n```\n\n-----\n\nFrom this point on, my analysis stopped for now. However, McAfee explains that a new\nbinary is downloaded from the contacted C2 server, which re-adds the port forwarding rules\nand is responsible for the C2 communication. The blog article I’ve referenced above explains\nthe whole functionality, so I recommend you to take a look at it, if you are interested in the\nnext steps.\n\n## Final Words\n\nAs you can see UpnP contains many security flaws and can lead to a compromised network.\nIf you have UpnP enabled in your company’s network, I really recommend to check whether\nthis is really needed and turn it off if it is not necessary.\n\nSo exams at university are coming up next, it will probably take some time until I can get my\nhands on the QBot C2 protocol or the proxy binary. I do however, want to look at these two\nfunctionalities next.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-06-21 - UpnP – Messing up Security since years.pdf"
+    ],
+    "report_names": [
+        "2020-06-21 - UpnP – Messing up Security since years.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536113,
+    "ts_updated_at": 1743041786,
+    "ts_creation_date": 1653710463,
+    "ts_modification_date": 1653710463,
+    "files": {
+        "pdf": "https://archive.orkl.eu/864d487d34a3ec92812f81213c12a42c2cbbdffa.pdf",
+        "text": "https://archive.orkl.eu/864d487d34a3ec92812f81213c12a42c2cbbdffa.txt",
+        "img": "https://archive.orkl.eu/864d487d34a3ec92812f81213c12a42c2cbbdffa.jpg"
+    }
+}

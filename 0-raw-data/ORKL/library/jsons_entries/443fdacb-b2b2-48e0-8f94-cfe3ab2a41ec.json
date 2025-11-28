@@ -1,0 +1,169 @@
+{
+    "id": "443fdacb-b2b2-48e0-8f94-cfe3ab2a41ec",
+    "created_at": "2023-01-12T15:09:30.184268Z",
+    "updated_at": "2025-03-27T02:12:30.016611Z",
+    "deleted_at": null,
+    "sha1_hash": "6d87dc0a06d16c1433bf39f13037d27814f0bf95",
+    "title": "2021-03-16 - Detecting Cobalt Strike with memory signatures",
+    "authors": "",
+    "file_creation_date": "2022-05-27T23:18:23Z",
+    "file_modification_date": "2022-05-27T23:18:23Z",
+    "file_size": 284628,
+    "plain_text": "# Detecting Cobalt Strike with memory signatures\n\n**[elastic.co/blog/detecting-cobalt-strike-with-memory-signatures](https://www.elastic.co/blog/detecting-cobalt-strike-with-memory-signatures)**\n\nMarch 16, 2021\n\nAt Elastic Security, we approach the challenge of threat detection with various methods.\nTraditionally, we have focused on machine learning models and behaviors. These two\nmethods are powerful because they can detect never-before-seen malware. Historically,\nwe’ve felt that signatures are too easily evaded, but we also recognize that ease of evasion\nis only one of many factors to consider. Performance and false positive rates are also\ncritical in measuring a detection technique's effectiveness.\n\nSignatures, while unable to detect unknown malware, have false positive rates that\napproach zero and have associated labels that help prioritize alerts. For example, an alert\nfor TrickBot or REvil Ransomware requires more immediate action than a potentially\nunwanted adware variant. Even if we could hypothetically catch only half of known malware\nwith signatures, that is still a huge win when layered with other protections, considering the\nother benefits. Realistically we can do even better.\n\nOne roadblock to creating signatures that provide long-term value is the widespread use of\npackers and throw-away malware loaders. These components rapidly evolve to evade\nsignature detection; however, the final malware payload is eventually decrypted and\nexecuted in memory.\n\n\n-----\n\nTo step around the issue of packers and loaders, we can focus signature detection\nstrategies on in-memory content. This effectively extends the shelf life of the signature from\ndays to months. In this post, we will use Cobalt Strike as an example for leveraging inmemory signatures.\n\n## Signaturing Cobalt Strike\n\n[Cobalt Strike is a popular framework for conducting red team operations and adversary](https://www.cobaltstrike.com/)\nsimulation. Presumably due to its ease of use, stability, and stealth features, it is also a\nfavorite tool for [bad actors with even more](https://www.fireeye.com/blog/threat-research/2017/05/cyber-espionage-apt32.html) [nefarious intentions. There have been various](https://symantec-enterprise-blogs.security.com/blogs/threat-intelligence/sodinokibi-ransomware-cobalt-strike-pos)\ntechniques for detecting Beacon, Cobalt Strike’s endpoint payload. This includes looking for\n[unbacked threads, and, more recently, built-in](https://www.elastic.co/blog/hunting-memory) [named pipes. However, due to the level of](https://labs.f-secure.com/blog/detecting-cobalt-strike-default-modules-via-named-pipe-analysis/)\n[configurability in Beacon, there are usually ways to evade public detection strategies. Here](https://blog.cobaltstrike.com/2019/05/02/cobalt-strike-3-14-post-ex-omakase-shimasu/)\nwe will attempt to use memory signatures as an alternative detection strategy.\n\n[Beacon is typically reflectively loaded into memory and never touches disk in a directly](https://github.com/stephenfewer/ReflectiveDLLInjection)\nsignaturable form. Further, Beacon can be configured with a variety of in-memory\n[obfuscation options to hide its payload. For example, the obfuscate-and-sleep option](https://blog.cobaltstrike.com/2018/09/06/cobalt-strike-3-12-blink-and-youll-miss-it/)\nattempts to mask portions of the Beacon payload between callbacks to specifically evade\nsignature-based memory scans. We will need to consider this option when developing\nsignatures, but it is still easy to signature Beacon even with these advanced stealth\nfeatures.\n\n## Diving in\n\n[We will start by obtaining a handful of Beacon payloads with the sleep_mask option](https://github.com/rsmudge/Malleable-C2-Profiles/blob/master/normal/reference.profile#L254-L255)\nenabled and disabled with the most recent releases (hashes in reference section). Starting\nwith a sample with sleep_mask disabled, after detonation we can locate Beacon in memory\nwith Process Hacker by looking for a thread which calls SleepEx from an unbacked region:\n\n\n-----\n\nFrom there, we can save the associated memory region to disk for analysis:\n\nThe easiest win would be to pick a few unique strings from this region and use those as our\n[signature. To demonstrate, will will be writing signatures with yara, an industry standard tool](https://virustotal.github.io/yara/)\nfor this purpose:\n\n\n-----\n\n```\nrule cobaltstrike_beacon_strings\n{\nmeta:\n  author = \"Elastic\"\n  description = \"Identifies strings used in Cobalt Strike Beacon DLL.\"\nstrings:\n  $a = \"%02d/%02d/%02d %02d:%02d:%02d\"\n  $b = \"Started service %s on %s\"\n  $c = \"%s as %s\\\\%s: %d\"\ncondition:\n  2 of them\n}\n\n```\nThis would give us a good base of coverage, but we can do better by looking at the\nsamples with sleep_mask enabled. If we look in memory where the MZ/PE header would\nnormally be found, we now see it is obfuscated:\n\nQuickly looking at this, we can see a lot of repeated bytes (0x80 in this case) where we\nwould actually expect null bytes. This can be an indication that Beacon is using a simple\n[one-byte XOR obfuscation. To confirm, we can use CyberChef:](https://gchq.github.io/CyberChef/)\n\n\n-----\n\nAs you can see, the “This program cannot be run in DOS mode” string appears after\ndecoding, confirming our theory. Because a single byte XOR is one of the oldest tricks in\n[the book, yara actually supports native detection with the xor modifier:](https://yara.readthedocs.io/en/stable/writingrules.html)\n```\nrule cobaltstrike_beacon_xor_strings\n{\nmeta:\n  author = \"Elastic\"\n  description = \"Identifies XOR'd strings used in Cobalt Strike Beacon DLL.\"\nstrings:\n  $a = \"%02d/%02d/%02d %02d:%02d:%02d\" xor(0x01-0xff)\n  $b = \"Started service %s on %s\" xor(0x01-0xff)\n  $c = \"%s as %s\\\\%s: %d\" xor(0x01-0xff)\ncondition:\n  2 of them\n}\n\n```\nWe can confirm detection for our yara rules thus far by providing a PID while scanning:\n\n\n-----\n\nHowever, we are not quite done. After testing this signature on a sample with the latest\nversion of Beacon (4.2 as of this writing), the obfuscation routine has been improved. The\nroutine can be located by following the call stack as shown earlier. It now uses a 13-byte\nXOR key as shown in the following IDA Pro snippet:\n\nFortunately, Beacon’s obfuscate-and-sleep option only obfuscates strings and data, leaving\nthe entire code section ripe for signaturing. There is the question of which function in the\ncode section we should develop a signature for, but that is worth its own blog post. For now,\nwe can just create a signature on the deobfuscation routine, which should work well:\n```\nrule cobaltstrike_beacon_4_2_decrypt\n{\nmeta:\n  author = \"Elastic\"\n  description = \"Identifies deobfuscation routine used in Cobalt Strike Beacon DLL\nversion 4.2.\"\nstrings:\n  $a_x64 = {4C 8B 53 08 45 8B 0A 45 8B 5A 04 4D 8D 52 08 45 85 C9 75 05 45 85 DB\n74 33 45 3B CB 73 E6 49 8B F9 4C 8B 03}\n  $a_x86 = {8B 46 04 8B 08 8B 50 04 83 C0 08 89 55 08 89 45 0C 85 C9 75 04 85 D2\n74 23 3B CA 73 E6 8B 06 8D 3C 08 33 D2}\ncondition:\n   any of them\n}\n\n```\n\n-----\n\nWe can validate that we can detect Beacon even while it is in its stealthy sleep state (both\n32- and 64-bit variants):\n\nTo build this into a more robust detection, we could regularly scan all processes on the\nsystem (or entire enterprise). This could be done with the following powershell one-liner:\n```\npowershell -command \"Get-Process | ForEach-Object {c:\\yara64.exe my_rules.yar\n$_.ID}\"\n\n## Wrapping up\n\n```\nSignature-based detection, while often looked down upon, is a valuable detection strategy\n— especially when we consider in-memory scanning. With only a handful of signatures, we\ncan detect Cobalt Strike regardless of configuration or stealth features enabled with an\neffective false positive rate of zero.\n\n### Reference hashes\n```\n7d2c09a06d731a56bca7af2f5d3badef53624f025d77ababe6a14be28540a17a\n277c2a0a18d7dc04993b6dc7ce873a086ab267391a9acbbc4a140e9c4658372a\nA0788b85266fedd64dab834cb605a31b81fd11a3439dc3a6370bb34e512220e2\n2db56e74f43b1a826beff9b577933135791ee44d8e66fa111b9b2af32948235c\n3d65d80b1eb8626cf327c046db0c20ba4ed1b588b8c2f1286bc09b8f4da204f2\n\n## Learn more about Elastic Security\n\n```\nFamiliarize yourself (if you haven't already) with the powerful protection, detection, and\n[response capabilities of Elastic Agent. Start your free 14-day trial (no credit card required)](https://cloud.elastic.co/registration?elektra=en-security-page)\nor [download our products, free, for your on-prem deployment. And take advantage of](https://www.elastic.co/downloads/)\nour [Quick Start training to set you up for success.](https://www.elastic.co/training/elastic-security-quick-start)\n\n**We're hiring**\n\nWork for a global, distributed team where finding someone like you is just a Zoom\nmeeting away. Flexible work with impact? Development opportunities from the start?\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-03-16 - Detecting Cobalt Strike with memory signatures.pdf"
+    ],
+    "report_names": [
+        "2021-03-16 - Detecting Cobalt Strike with memory signatures.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "5d2bd376-fcdc-4c6a-bc2c-17ebbb5b81a4",
+            "created_at": "2022-10-25T16:07:23.667223Z",
+            "updated_at": "2025-03-27T02:02:09.916086Z",
+            "deleted_at": null,
+            "main_name": "GCHQ",
+            "aliases": [
+                "Government Communications Headquarters",
+                "Operation Socialist"
+            ],
+            "source_name": "ETDA:GCHQ",
+            "tools": [
+                "Prax",
+                "Regin",
+                "WarriorPride"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "870f6f62-84f5-48ca-a18e-cf2902cd6924",
+            "created_at": "2022-10-25T15:50:23.303818Z",
+            "updated_at": "2025-03-27T02:00:55.435309Z",
+            "deleted_at": null,
+            "main_name": "APT32",
+            "aliases": [
+                "APT32",
+                "SeaLotus",
+                "OceanLotus",
+                "APT-C-00",
+                "Canvas Cyclone"
+            ],
+            "source_name": "MITRE:APT32",
+            "tools": [
+                "Mimikatz",
+                "ipconfig",
+                "Kerrdown",
+                "Cobalt Strike",
+                "SOUNDBITE",
+                "OSX_OCEANLOTUS.D",
+                "KOMPROGO",
+                "netsh",
+                "RotaJakiro",
+                "PHOREAL",
+                "Arp",
+                "Denis",
+                "Goopy"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "af509bbb-8d18-4903-a9bd-9e94099c6b30",
+            "created_at": "2023-01-06T13:46:38.585525Z",
+            "updated_at": "2025-03-27T02:00:02.866727Z",
+            "deleted_at": null,
+            "main_name": "APT32",
+            "aliases": [
+                "TIN WOODLAWN",
+                "OceanLotus Group",
+                "OceanLotus",
+                "Sea Lotus",
+                "G0050",
+                "Cobalt Kitty",
+                "SeaLotus",
+                "ATK17",
+                "Ocean Lotus",
+                "Ocean Buffalo",
+                "POND LOACH",
+                "Canvas Cyclone",
+                "APT-C-00",
+                "APT-32",
+                "APT 32"
+            ],
+            "source_name": "MISPGALAXY:APT32",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f1518ac1-4710-4dd1-a422-e3801e4806cb",
+            "created_at": "2024-05-01T02:03:08.147856Z",
+            "updated_at": "2025-03-27T02:05:17.421275Z",
+            "deleted_at": null,
+            "main_name": "TIN WOODLAWN",
+            "aliases": [
+                "Cobalt Kitty",
+                "OceanLotus",
+                "WOODLAWN ",
+                "APT32 "
+            ],
+            "source_name": "Secureworks:TIN WOODLAWN",
+            "tools": [
+                " Denis",
+                " Goopy",
+                " JEShell",
+                " KerrDown",
+                " Mimikatz",
+                " Ratsnif",
+                " Remy",
+                " Rizzo",
+                " RolandRAT",
+                "Cobalt Strike"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536170,
+    "ts_updated_at": 1743041550,
+    "ts_creation_date": 1653693503,
+    "ts_modification_date": 1653693503,
+    "files": {
+        "pdf": "https://archive.orkl.eu/6d87dc0a06d16c1433bf39f13037d27814f0bf95.pdf",
+        "text": "https://archive.orkl.eu/6d87dc0a06d16c1433bf39f13037d27814f0bf95.txt",
+        "img": "https://archive.orkl.eu/6d87dc0a06d16c1433bf39f13037d27814f0bf95.jpg"
+    }
+}

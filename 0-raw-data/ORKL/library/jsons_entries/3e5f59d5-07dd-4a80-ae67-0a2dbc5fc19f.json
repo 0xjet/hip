@@ -1,0 +1,319 @@
+{
+    "id": "3e5f59d5-07dd-4a80-ae67-0a2dbc5fc19f",
+    "created_at": "2022-10-25T16:48:14.363765Z",
+    "updated_at": "2025-03-27T02:15:06.274679Z",
+    "deleted_at": null,
+    "sha1_hash": "eeb029f9c371d643f873c820de334e46f7bf65b1",
+    "title": "",
+    "authors": "",
+    "file_creation_date": "2018-11-29T09:38:57Z",
+    "file_modification_date": "2018-11-29T09:38:57Z",
+    "file_size": 3242445,
+    "plain_text": "# RESEARCH\n\n## 数 据 驱 动 安 全\n\n\n## 蔓灵花（BITTER）APT组织使用InPage软件漏洞针对巴基斯坦的攻 击及团伙关联分析\n\n### By 360威胁情报中心 | 事件追踪\n\n 概述\n\n近期，360威胁情报中心监控到一系列针对巴基斯坦地区的定向攻击活动，而相关的恶意程序主要利用包含了\n\nInPage文字处理软件漏洞CVE-2017-12824的诱饵文档（.inp）进行投递，除此之外，攻击活动中还使用了Office\n\nCVE-2017-11882漏洞利用文档。InPage是一个专门针对乌尔都语使用者（巴基斯坦国语）设计的文字处理软件，卡\n\n巴斯基曾在2016年11月首次曝光了利用该软件漏洞进行定向攻击的案例[6]，而利用该文字处理软件漏洞的野外攻击最\n\n早可以追溯到2016年6月[14]。\n\n通过对这批InPage漏洞利用文档及相关攻击活动的分析，我们关联到幕后的团伙正是360公司在2016年披露\n\n的“蔓灵花”APT组织[5]，并且经过进一步分析，攻击活动中的多个样本还与“摩诃草”、Bahamut和Confucius等APT\n\n组织有很强的关联性，这不禁让人对这些南亚来源的APT组织的同源性产生更多的联想。\n\n### 相关时间线\n\n360威胁情报中心梳理了近两年来利用InPage漏洞进行定向攻击的关键事件时间点：\n\n### InPage漏洞分析（CVE-2017-12824）\n\n用于漏洞分析的InPage漏洞利用文档在VirusTotal上的查杀情况如下：\n\n\n-----\n\nInPage是一个专门针对乌尔都语使用者设计的文字处理软件，而与之相关的在野攻击样本涉及的漏洞编号为：\n\nCVE-2017-12824。\n\n360威胁情报中心对该漏洞分析后发现，漏洞是由于InPage文字处理软件处理文档流时，未对需要处理的数据类\n\n型（Type）进行检查，导致越界读，通过精心构造的InPage文档可以触发执行任意代码。\n\n我们使用InPage 2015软件环境对该漏洞进行了详细分析，过程如下。\n\nInPage 2015\n\n### 漏洞成因：越界读（Out-Of-Bound Read）\n\nCVE-2017-12824漏洞的本质是Out-Of-Bound Read，InPage文字处理程序在处理文档中的InPage100流时未\n\n对需要处理的数据类型（Type）进行检查，而需要处理的数据类型（Type）是通过InPage文档中的某个字段指定\n\n的。这样攻击者可以通过设置一个超出Type范围的值来使得InPage程序发生越界读错误。\n\n漏洞文档（.inp）中触发漏洞的关键数据结构如下，0x7E和0x72代表了需要处理的文档流中的某一类Type，我们\n\n将0x7E标记为Type1，0x72标记为Type2：\n\n而InPage处理一个.inp文件的主要过程如下：\n\nInPage首先会调用Ole!StgCreateDocfile函数解析整个.inp文件，然后调用Ole! COleStreamFile::OpenStream打\n\n开InPage文档中的InPage100数据流：\n\n\n-----\n\n而所有InPage100流相关的处理逻辑将在PraseInPage100_432750函数中进行，并利用回调函数\n\nInPage100Read_440ED0读取流中的数据：\n\n最终通过函数sub_453590处理触发漏洞的Type数据，也就是前面提到的0x7E和0x72。下图中的buf则是通过调\n\n用InPage100Read_440ED0读取到的包含Type的数据：\n\n而漏洞函数sub_453590则会根据Type1和Type2（0x7E和0x72两个字节）选择对应的处理流程，首先根据Type1\n\n读取函数指针数组，然后根据Type2从函数指针数组中读取函数，最后调用该函数处理数据：\n\n我们再来看看上图中的dword_656A28的赋值及范围：\n\n\n-----\n\n可以看到程序在处理漏洞利用文档时的Type1 = ECX(0x1F8)>>2 = 0x7E(126)，Type2 = EDI(0x72)：\n\n通过IDA Pro查找dword_656A28[0x7E]的赋值：\n\n可以看到dword_656E60数组实际大小为30（0x1E）：\n\n\n-----\n\n将导致访问dword_656E60[0x72]，而由于0x72>30(0x1E)，则发生了越界读错误。\n\n### 漏洞利用\n\n由于攻击者将文档中的Type2设置为了0x72，通过寻址计算后，则会越界访问函数地址0x00455AFA处的代码：\n\n可以看到dword_656E60[0x72]（0x455AFA）正好是一段pop retn指令：\n\n这段pop retn指令序列正好起到了“跳板”地址的作用，由于执行Type相关的处理函数时，传入的参数（指针：\n\n0x031E383F）正好指向InPage文档中某个数据流，攻击者可以将这段可控的数据流填充为ShellCode，那么pop\n\nretn指令执行完后将直接返回到攻击者设置的ShellCode中执行：\n\n而InPage程序没有开启DEP和ASLR保护，这导致ShellCode将被直接执行：\n\n### 利用InPage漏洞的4类攻击框架分析\n\n360威胁情报中心对近期针对巴基斯坦地区利用InPage漏洞进行定向攻击的相关样本进行了详细分析，发现这一\n\n批漏洞样本的生成时间、InPage100文档流大小、初始ShellCode、相关流的标签全部一致，几乎可以确认这一系列的\n\n漏洞样本具有相同的来源。\n\n\n-----\n\n通过对这批InPage漏洞利用文档及相关恶意代码的分析，我们发现漏洞文档携带的恶意代码分别使用了4类不同\n\n的攻击框架：4类完全不同的后门程序。相关的分析如下。\n\n### wscspl全功能后门程序\n\n360威胁情报中心捕获的一个诱饵文档名为“SOP for Retrieval of Mobile Data Records.inp”（用于移动数据记\n\n录检索的SOP）的CVE-2017-12824漏洞利用文档，最终会下载执行一个名为wscspl的全功能后门程序。\n\n相关漏洞利用文档信息如下：\n\nMD5 863f2bfed6e8e1b8b4516e328c8ba41b\n\n文件名 SOP for Retrieval of Mobile Data Records.inp\n\nShellCode\n\n漏洞触发成功后，ShellCode会通过搜素特殊标识“27862786”来定位主功能ShellCode，之后会从\n\nkhurram.com.pk/js/drv下载Payload并保存到c:\\conf\\Smss.exe执行：\n\nDownloader\n\nMD5 c3f5add704f2c540f3dd345f853e2d84\n\n编译时间 2018.9.24\n\nPDB路径 C:\\Users\\Asterix\\Documents\\VisualStudio2008\\Projects\\28NovDwn\\Release\\28NovDwn.pdb\n\n下载回来的EXE文件主要用于与C2通信并获取其他模块执行，执行后首先会设置注册表键值（键:\n\nHKCU\\Environment，键值: AppId，数据：c:\\intel\\drvhost.exe）\n\n\n-----\n\n再通过将自身添加到注册表自启动项实现持久化：\n\n并判断当前进程路径是否为c:\\intel\\drvhost.exe，若不是则拷贝自身到该路径下并执行：\n\n当进程路径满足条件后，则从注册表获取机器GUID、计算机用户名等信息加密后拼接成一个字符串：\n\n\n-----\n\n此时C2服务器返回以”AXE:#”开头的指令，本地程序通过判断指令中是否为“#”或者“.”， 以此来确定是否有后续\n\n的木马插件可以下载执行：\n\n若”AXE:#”后跟了字符串内容，则下载执行该插件\n\n而在360威胁情报中心分析人员调试分析的过程中，我们成功获取到一个名为“wscspl”的可以执行的插件：\n\nBackdoor - wscspl\n\nMD5 1c2a3aa370660b3ac2bf0f41c342373b\n\n编译时间 2018.9.13\n\n原始文件名 winsvc.exe\n\n该主功能木马则与360公司在2016年披露的“蔓灵花”APT组织[5]所使用的木马功能一致。该木马共支持包含上传\n\n硬盘列表、查找、读取、创建指定文件、枚举进程列表、结束指定进程在内的17种命令。木马功能分析如下：\n\n\n-----\n\n定时器一：主要负责请求C&C：wcnchost.ddns.net的IP，若请求成功，则把IP保存到全局变量里，并把标识\n变量置1：\n\n定时器二：检查标识变量的值，若是1就尝试连接C&C：\n\n随后创建两个线程：\n\n\n-----\n\n线程二：检测全局变量dword_C9618是否有数据，若有数据则发送该变量数据到C&C\n\n命令执行代码片段如下：\n\n\n-----\n\n3000 获取RAT状态信息\n\n3001 获取计算机硬盘信息\n\n3002 获取指定目录下的文件列表信息\n\n3004 获取RAT日志1\n\n3005 创建指定文件\n\n3006 向创建文件写入数据\n\n3007 打开指定文件\n\n3009 读取指定文件内容\n\n3012 创建远程控制台\n\n3013 执行远程命令\n\n3015 获取RAT日志2\n\n3016 结束远程控制台\n\n3017 关闭指定句柄\n\n3019 获取存在UPD活动链接的进程\n\n3021 获取RAT日志3\n\n3032 结束指定进程\n\n3023 获取系统中进程信息\n\n3025 获取RAT日志4\n\n### Visual Basic后门程序\n\n另外一个捕获到的名为AAT national assembly final.inp 的CVE-2017-12824漏洞利用文档则会释放执行Visual\n\nBasic编写的后门程序。\n\n相关漏洞利用文档信息如下：\n\nMD5 ce2a6437a308dfe777dec42eec39d9ea\n\n文件名 AAT national assembly final.inp\n\nShellCode\n\n漏洞触发后的ShellCode首先通过内存全局搜素字符串“LuNdLuNd”定位主ShellCode：\n\n\n-----\n\n定位到主ShellCode后获取需要使用的API函数，并通过创建互斥量“QPONMLKJIH”保证只有一个实例运行：\n\n然后提取文档中包含的一个DLL模块，使用内存加载的方式执行：\n\nDropper\n\nMD5 43920ec371fae4726d570fdef1009163\n\nPDP路径 c:\\users\\mz\\documents\\visualstudio2013\\Projects\\Shellcode\\Release\\Shellcode.pdb\n\n内存加载的DLL文件是一个Dropper，包含两个资源文件，”Bin”以及”Bin2”：\n\n\n-----\n\n其中Bin文件是Visual Basic编写的后门程序，而Bin2则是漏洞触发后释放打开的正常的inp诱饵文件，相关诱饵\n\n文档内容如下：\n\n\n-----\n\nBackdoor - smtpldr.exe\n\nMD5 694040b229562b8dca9534c5301f8d73\n\n编译时间 2018.7.4\n\n原始文件名 smtpldr.exe\n\nBin文件是Visual Basic编写的后门程序，主要用于获取命令执行，木马运行后首先\n\n从\"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\\"获取当前系统已安装的应用名：\n\n之后判断安装应用中是否包含卡巴斯基、诺顿、趋势科技等相关杀软应用：\n\n\n-----\n\n然后通过WMI执行select * from win32_computersystem命令获取应用程序信息，并通过判断名称中是否包\n\n含”virtual”字样来检测虚拟机环境：\n\n若检测处于虚拟机环境下，则弹窗显示not a valid file并退出：\n\n\n-----\n\n若检测通过后则在%Start%目录下创建”SMTP Loader.lnk”实现自启动：\n\n最后则会与C&C： referfile.com进行通信，获取后续指令执行：\n\n### Delphi后门程序\n\n360威胁情报中心通过大数据还关联到一批使用Delphi编写的后门程序，也是通过InPage漏洞利用文档进行传\n\n播，相关样本信息如下：\n\nMD5 fec0ca2056d679a63ca18cb132223332\n\n\n-----\n\n在%Start%目录下创建Adobe creative suit.lnk文件，并指向自身实现持久化：\n\n该后门程序会在%Ducument%文件夹下创建users.txt文件，并随机写入30个字节的字符串：\n\n木马程序会获取计算机用户名，并将计算机用户名经加密处理后保存到%Ducument%/SyLog.log文件中：\n\n之后与C2：errorfeedback.com进行通信，以POST的方式发送SyLog.log文件的内容：\n\n当C2返回Success时，再次以HTTP GET请求的方式与C2通信，若返回一段字符串，则继续\n\n从”errorfeedback.com/ MarkQuality455 /TTGKWoFdyQHEwpyYKmfVGtzQLfeqpJ /字符串”下载后续Payload进\n\n\n-----\n\n### 使用Cobalt Strike的后门程序\n\n另外一个捕获到的InPage漏洞利用文档最终则会执行Cobalt Strike生成的后门程序，相关文档信息如下：\n\nMD5 74aeaeaca968ff69139b2e2c84dc6fa6\n\n文件类型 InPage漏洞利用文档\n\n发现时间 2018.11.02\n\nShellCode\n\n漏洞触发成功后，ShellCode首先通过特殊标识“LuNdLuNd”定位到主ShellCode，随后内存加载附带的DLL并执\n\n行。\n\nDropper\n\nMD5 ec834fa821b2ddbe8b564b3870f13b1b\n\nPDB路径 c:\\users\\mz\\documents\\visualstudio2013\\Projects\\Shellcode\\Release\\Shellcode.pdb\n\n内存加载的DLL文件与上述的Visual Basic/Delphi后门一样，也是从资源释放木马文件并执行：\n\n\n-----\n\nDownloader - winopen.exe\n\nMD5 09d600e1cc9c6da648d9a367927e6bff\n\n编译时间 2018.10.12\n\n释放执行的Downloader名为winopen.exe，其会从jospubs.com/foth1018/simple.jpg获取具有正常JPEG文件头\n\n的加密文件，若成功获取，则从JPEG 文件第49字节开始与0x86异或解密：\n\n解密后的文件是一个DLL文件，然后加载执行该DLL。DLL程序首先会进行运行环境判断，检测加载DLL的进程是\n\n否为rundll32.exe：\n\n\n-----\n\n若加载进程不为rundll32.dll，则在C:\\ProgramData\\Adobe64下释放名为aflup64.dll的后门程序：\n\n之后在启动目录下创建start.lnk文件，LNK文件目标为 rundll32.exe\n\n“C:\\\\ProgramData\\\\Adobe64\\\\aflup64.dll”,IntRun，以此实现自启动：\n\n\n-----\n\nBackdoor - aflup64.dll\n\nMD5 91e3aa8fa918caa9a8e70466a9515666\n\n编译时间 2018.10.12\n\n导出函数IntRun 会再次重复前面的行为，获取JPEG文件，异或解密后执行。因为是通过rundll32启动，所以会进\n\n入另一分支，首先创建互斥量“9a5f4cc4b39b13a6aecfe4c37179ea63”：\n\n然后在%TEMP%目录下创建“nnp74DE.tmp”文件，之后通过执行命令tasklist，ipconfig ./all，dir来获取系统进\n\n程信息、网络信息、文件列表等，将所获取到的信息保存到“nnp74DE.tmp”中：\n\n然后获取机器ID、系统版本、系统当前时间，并以“tag FluffyBunny”开头连接所有获取的信息，并用Base64编\n\n码后连接C&C并上传：\n\n\n-----\n\n信息传输成功后，会返回字符串”OK”的Base64编码：\n\n如果请求上线不成功，则会循环请求上线。上线成功后会进入第二阶段，发送计算名-用户名的Base64编码数据\n\n到jospubs/foth1018/go.php，并获取命令执行：\n\n可以获取的相关命令格式为“数字:参数”形式，共支持5个命令，相关命令列表如下：\n\n\n-----\n\n105 获取文件内存加载\n\n115 获取参数文件内容\n\n117 删除Start.lnk文件\n\n120 下载文件落地到%temp%目录下，并删除Start.lnk\n\nPlugins - jv77CF.tmp\n\nMD5 c9c1ec9ae1f142a8751ef470afa20f15\n\n编译时间 2018.4.3\n\n在360威胁情报中心分析人员的调试过程中，成功获取到一个落地执行的木马插件。木马插件会从pp5.zapto.org\n\n继续获取加密后的文件：\n\n\n-----\n\n成功获取后，经异或解密后执行，解密后的文件是由Cobalt Strike生成的远控后门：\n\n\n-----\n\n### 利用CVE-2017-11882漏洞的攻击样本分析\n\n通过360威胁情报中心大数据平台进行拓展，我们发现了一个属于同一系列攻击活动的Office CVE-2017-11882\n\n的漏洞利用文档。该文档名为“SOP for Retrieval of Mobile Data Records.doc”，这与释放wscspl木马程序（与蔓\n\n灵花同源）的InPage漏洞利用文档同名，只不过该漏洞文档针对微软Office进行攻击。\n\nMD5 61a107fee55e13e67a1f6cbc9183d0a4\n\n\n-----\n\n包含漏洞的Objdata对象信息如下：\n\n漏洞成功触发执行后会通过与SOP for Retrieval of Mobile Data Records.inp（InPage）漏洞利用文件相同的\n\n下载地址获取后续Payload执行：\n\n### 溯源与关联\n\n360威胁情报中心通过对这批InPage漏洞利用文档及相关攻击活动的分析，关联到使用wscspl后门程序进行定向\n\n攻击的幕后团伙正是360公司在2016年披露的“蔓灵花”（BITTER）APT组织[5]，并且经过进一步分析，该系列攻击\n\n活动中的多个样本还与“摩诃草”、Bahamut和Confucius等APT组织有很强的关联性。\n\n### “蔓灵花”（BITTER）APT组织\n\n360威胁情报中心针对攻击时间较近的几个InPage漏洞文档深入分析后发现，漏洞文档最终释放的木马程序正是\n\n360公司在2016年曝光的“蔓灵花”APT组织所使用的后门程序[5]，也就是上述分析的wscspl全功能后门程序。\n\n\n-----\n\n并且其中的多个C&C地址在360威胁情报中心的内部分析平台中也和“蔓灵花”APT组织强相关，这批C&C地址被\n\n多次使用在针对中国发起的攻击活动中。故相关的攻击活动可以确认为“蔓灵花”所为。\n\n### 与\"Confucius\"的关联\n\nDelphi后门攻击框架中使用的C&C地址errorfeedback.com在趋势科技探究Confucius和摩诃草的相似度[10]中出\n\n现，该域名曾被趋势披露为Confucius使用。\n\n### 与\"摩诃草\"的关联\n\n通过上述对Delphi后门攻击框架的深入分析和关联，我们还发现该攻击框架和样本同样出现在了Palo Alto在2017\n\n年分析的InPage攻击样本中[13]，Palo Alto认为该攻击框架和后门程序可能和“摩诃草”相关。\n\n### 与\"Bahamut\"的关联\n\n360威胁情报中心分析到攻击活动中的一个漏洞文档“AAT national assembly final.inp”最终执行的木马程序\n\n（Visual Basic后门程序）使用了域名referfile.com作为C2，该C2为Cisco Talos安全研究团队在2018年7月公开的\n\n《一例针对印度iOS用户的定向攻击活动》[9]中被披露，而Talos安全研究团队关联到该域名正好也是被一个Visual\n\nBasic后门程序所使用，且相关的网络资产疑似为APT组织\"Bahamut\"所有。\n\n### 总结及猜想\n\n360威胁情报中心通过对相同来源（漏洞利用文档在生成时间、ShellCode、InPage100流大小、流的固定特征）\n\n的一系列针对巴基斯坦的攻击样本分析后发现，同一来源的攻击样本分别使用了至少4套不同的恶意代码框架，并分\n\n别与“蔓灵花”（BITTER）、“摩诃草”、“Confucius”、“Bahamut”APT组织产生了或多或少的关联。或许这些APT组\n\n织应该归属于同一组织？亦或者这些APT组织拥有相同的数字武器来源（APT组织幕后的支持者向这些APT团伙派发\n\n相同的漏洞利用生成 具）\n\n\n-----\n\n蔓灵花（BITTER） 摩诃草（PatchWork） Confucius Bahamut\n\n攻击目标 中国，巴基斯坦 中国，巴基斯坦为主 南亚 南亚（主要巴基斯坦），中东\n\n攻击平台 PC/Android PC/Android PC/Android PC/Android/iOS\n\n恶意代码实现 C Delphi/C# Delphi Delphi/VB\n\n攻击入口 鱼叉攻击 社交网络，鱼叉攻击 社交网络 社交网络，鱼叉攻击\n\n### IOC\n\n\nInPage漏洞利用文档\n\n\n863f2bfed6e8e1b8b4516e328c8ba41b\n\n\nce2a6437a308dfe777dec42eec39d9ea\n\n\n74aeaeaca968ff69139b2e2c84dc6fa6\n\n\nOffice漏洞利用文档\n\n\n61a107fee55e13e67a1f6cbc9183d0a4\n\n\n木马程序\n\n\nc3f5add704f2c540f3dd345f853e2d84\n\n\nf9aeac76f92f8b2ddc253b3f53248c1d\n\n\n8dda6f85f06b5952beaabbfea9e28cdd\n\n\n25689fc7581840e851c3140aa8c3ac8b\n\n\n1c2a3aa370660b3ac2bf0f41c342373b\n\n\n43920ec371fae4726d570fdef1009163\n\n\n694040b229562b8dca9534c5301f8d73\n\n\nfec0ca2056d679a63ca18cb132223332\n\n\nec834fa821b2ddbe8b564b3870f13b1b\n\n\n09d600e1cc9c6da648d9a367927e6bff\n\n\n91e3aa8fa918caa9a8e70466a9515666\n\n\n4f9ef6f18e4c641621f4581a5989284c\n\n\nafed882f6af66810d7637ebcd8287ddc\n\n\nC&C\n\n\nkhurram.com.pk\n\n\nth tt lk\n\n\n-----\n\nnethosttalk.com\n\n\nnewmysticvision.com\n\n\nwcnchost.ddns.net\n\n\nreferfile.com\n\n\nerrorfeedback.com\n\n\nJospubs.com\n\n\ntraxbin.com\n\n\nreferfile.com\n\n\n### 参考\n\n[1]. https://ti.360.net/\n\n[2]. http://www.inpage.com/\n\n[3]. https://en.wikipedia.org/wiki/InPage\n\n[4]. https://ti.360.net/blog/articles/analysis-of-apt-campaign-bitter/\n\n[5]. https://www.anquanke.com/post/id/84910\n\n[6]. https://www.kaspersky.com/blog/inpage-exploit/6292/\n\n[7]. https://cloudblogs.microsoft.com/microsoftsecure/2018/11/08/attack-uses-malicious-inpage\ndocument-and-outdated-vlc-media-player-to-give-attackers-backdoor-access-to-targets/\n\n[8]. https://blog.talosintelligence.com/2018/07/Mobile-Malware-Campaign-uses-Malicious-MDM.html\n\n[9]. https://blog.talosintelligence.com/2018/07/Mobile-Malware-Campaign-uses-Malicious-MDM\nPart2.html\n\n[10]. https://blog.trendmicro.com/trendlabs-security-intelligence/confucius-update-new-tools-and\ntechniques-further-connections-with-patchwork/\n\n[11]. https://documents.trendmicro.com/assets/appendix-confucius-update-new-tools-techniques\nconnections-patchwork-updated.pdf\n\n[12]. https://researchcenter.paloaltonetworks.com/2016/09/unit42-confucius-says-malware-families\nget-further-by-abusing-legitimate-websites/\n\n[13]. https://researchcenter.paloaltonetworks.com/2017/11/unit42-recent-inpage-exploits-lead-multiple\nmalware-families/\n\n[14].\n\nhttps://www.virustotal.com/gui/file/9bf55fcf0a25a2f7f6d03e7ba6123d5a31c3e6c1196efae453a74d6fff9d43b\n\nb/submissions\n\n\n-----\n\n分享到：\n\n首页 蔓灵花（BITTER）APT组织使用InPage软件漏洞针对巴基斯坦的攻击及团伙关联分析\n\n\n-----",
+    "language": "ZH",
+    "sources": [
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2018/2018.11.29.Attack_Pakistan_By_Exploiting_InPage/CN_version.pdf"
+    ],
+    "report_names": [
+        "CN_version"
+    ],
+    "threat_actors": [
+        {
+            "id": "caf95a6f-2705-4293-9ee1-6b7ed9d9eb4c",
+            "created_at": "2022-10-25T15:50:23.472432Z",
+            "updated_at": "2025-03-27T02:00:55.479021Z",
+            "deleted_at": null,
+            "main_name": "Confucius",
+            "aliases": [
+                "Confucius",
+                "Confucius APT"
+            ],
+            "source_name": "MITRE:Confucius",
+            "tools": [
+                "WarzoneRAT"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "732bfd4b-8c15-42a5-ac4b-14a9a4b902e9",
+            "created_at": "2022-10-25T16:07:23.38079Z",
+            "updated_at": "2025-03-27T02:02:09.771357Z",
+            "deleted_at": null,
+            "main_name": "Bahamut",
+            "aliases": [],
+            "source_name": "ETDA:Bahamut",
+            "tools": [
+                "Bahamut",
+                "DownPaper"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf6cb670-bb69-473f-a220-97ac713fd081",
+            "created_at": "2022-10-25T16:07:23.395205Z",
+            "updated_at": "2025-03-27T02:02:09.777308Z",
+            "deleted_at": null,
+            "main_name": "Bitter",
+            "aliases": [
+                "T-APT-17",
+                "TA397"
+            ],
+            "source_name": "ETDA:Bitter",
+            "tools": [
+                "Artra Downloader",
+                "ArtraDownloader",
+                "Bitter RAT",
+                "BitterRAT",
+                "Dracarys"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "655f7d0b-7ea6-4950-b272-969ab7c27a4b",
+            "created_at": "2022-10-27T08:27:13.133291Z",
+            "updated_at": "2025-03-27T02:00:55.490812Z",
+            "deleted_at": null,
+            "main_name": "BITTER",
+            "aliases": [
+                "T-APT-17"
+            ],
+            "source_name": "MITRE:BITTER",
+            "tools": [
+                "ZxxZ"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f99641e0-2688-47b0-97bc-7410659d49a0",
+            "created_at": "2023-01-06T13:46:38.802141Z",
+            "updated_at": "2025-03-27T02:00:02.922907Z",
+            "deleted_at": null,
+            "main_name": "Bahamut",
+            "aliases": [],
+            "source_name": "MISPGALAXY:Bahamut",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "ada9e5d3-1cb2-4b70-a3c8-96808c304ac8",
+            "created_at": "2022-10-25T15:50:23.6515Z",
+            "updated_at": "2025-03-27T02:00:55.513513Z",
+            "deleted_at": null,
+            "main_name": "Windshift",
+            "aliases": [
+                "Windshift",
+                "Bahamut"
+            ],
+            "source_name": "MITRE:Windshift",
+            "tools": [
+                "WindTail"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "7a8dbc5e-51a8-437a-8540-7dcb1cc110b8",
+            "created_at": "2022-10-25T16:07:23.482856Z",
+            "updated_at": "2025-03-27T02:02:09.827887Z",
+            "deleted_at": null,
+            "main_name": "Confucius",
+            "aliases": [],
+            "source_name": "ETDA:Confucius",
+            "tools": [
+                "ApacheStealer",
+                "ByeByeShell",
+                "ChatSpy",
+                "Confucius",
+                "MY24",
+                "Sneepy",
+                "remote-access-c3",
+                "sctrls",
+                "sip_telephone",
+                "swissknife2"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "7ea1e0de-53b9-4059-802f-485884180701",
+            "created_at": "2022-10-25T16:07:24.04846Z",
+            "updated_at": "2025-03-27T02:02:10.090459Z",
+            "deleted_at": null,
+            "main_name": "Patchwork",
+            "aliases": [
+                "APT-C-09",
+                "ATK 11",
+                "Capricorn Organisation",
+                "Chinastrats",
+                "Dropping Elephant",
+                "Maha Grass",
+                "Quilted Tiger",
+                "TG-4410",
+                "Thirsty Gemini",
+                "Zinc Emerson"
+            ],
+            "source_name": "ETDA:Patchwork",
+            "tools": [
+                "AndroRAT",
+                "Artra Downloader",
+                "ArtraDownloader",
+                "AutoIt backdoor",
+                "BADNEWS",
+                "BIRDDOG",
+                "Bahamut",
+                "Bozok",
+                "Bozok RAT",
+                "Brute Ratel",
+                "Brute Ratel C4",
+                "CinaRAT",
+                "Crypta",
+                "ForeIT",
+                "JakyllHyde",
+                "Loki",
+                "Loki.Rat",
+                "LokiBot",
+                "LokiPWS",
+                "NDiskMonitor",
+                "Nadrac",
+                "PGoShell",
+                "PowerSploit",
+                "PubFantacy",
+                "Quasar RAT",
+                "QuasarRAT",
+                "Ragnatela",
+                "Ragnatela RAT",
+                "SocksBot",
+                "TINYTYPHON",
+                "Unknown Logger",
+                "WSCSPL",
+                "Yggdrasil"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "9c884c88-2c9f-49c5-856a-2383ad1d8ef8",
+            "created_at": "2024-05-01T02:03:08.152Z",
+            "updated_at": "2025-03-27T02:05:17.422887Z",
+            "deleted_at": null,
+            "main_name": "ZINC EMERSON",
+            "aliases": [
+                "Dropping Elephant ",
+                "EHDevel ",
+                "Manul ",
+                "Monsoon ",
+                "Operation Hangover ",
+                "Patchwork ",
+                "TG-4410 ",
+                "Viceroy Tiger ",
+                "Confucius "
+            ],
+            "source_name": "Secureworks:ZINC EMERSON",
+            "tools": [
+                " Hanove",
+                " Mac OS X KitM Spyware",
+                " Proyecto2",
+                " YTY Backdoor",
+                "Enlighten Infostealer"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "c81067e0-9dcb-4e3f-abb0-80126519c5b6",
+            "created_at": "2022-10-25T15:50:23.285448Z",
+            "updated_at": "2025-03-27T02:00:55.42906Z",
+            "deleted_at": null,
+            "main_name": "Patchwork",
+            "aliases": [
+                "Hangover Group",
+                "Dropping Elephant",
+                "Chinastrats",
+                "Operation Hangover"
+            ],
+            "source_name": "MITRE:Patchwork",
+            "tools": [
+                "NDiskMonitor",
+                "QuasarRAT",
+                "BackConfig",
+                "TINYTYPHON",
+                "AutoIt backdoor",
+                "PowerSploit",
+                "BADNEWS",
+                "Unknown Logger",
+                "Socksbot"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716494,
+    "ts_updated_at": 1743041706,
+    "ts_creation_date": 1543484337,
+    "ts_modification_date": 1543484337,
+    "files": {
+        "pdf": "https://archive.orkl.eu/eeb029f9c371d643f873c820de334e46f7bf65b1.pdf",
+        "text": "https://archive.orkl.eu/eeb029f9c371d643f873c820de334e46f7bf65b1.txt",
+        "img": "https://archive.orkl.eu/eeb029f9c371d643f873c820de334e46f7bf65b1.jpg"
+    }
+}

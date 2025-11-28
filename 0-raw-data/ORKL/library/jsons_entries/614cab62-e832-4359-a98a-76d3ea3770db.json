@@ -1,0 +1,83 @@
+{
+    "id": "614cab62-e832-4359-a98a-76d3ea3770db",
+    "created_at": "2023-01-12T15:01:39.228118Z",
+    "updated_at": "2025-03-27T02:09:29.505313Z",
+    "deleted_at": null,
+    "sha1_hash": "b44cb319e91205889ef0fdb66f807ab2fe1bc822",
+    "title": "2021-10-27 - Cobalt Strike- Using Known Private Keys To Decrypt Traffic – Part 2",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:54:14Z",
+    "file_modification_date": "2022-05-28T19:54:14Z",
+    "file_size": 1157449,
+    "plain_text": "# Cobalt Strike: Using Known Private Keys To Decrypt Traffic – Part 2\n\n**blog.nviso.eu/2021/10/27/cobalt-strike-using-known-private-keys-to-decrypt-traffic-part-2/**\n\n[Blogpost series: Cobalt Strike: Decrypting Traffic](https://blog.nviso.eu/series/cobalt-strike-decrypting-traffic/)\n_We decrypt Cobalt Strike traffic using one of 6 private keys we found._\n\n\nOctober 27, 2021\n\n\nIn this blog post, we will analyze a Cobalt Strike infection by looking at a full packet capture that was taken during the infection. This analysis\nincludes decryption of the C2 traffic.\n\nIf you haven’t already, we invite you to read part 1 first: [Cobalt Strike: Using Known Private Keys To Decrypt Traffic – Part 1.](https://blog.nviso.eu/2021/10/21/cobalt-strike-using-known-private-keys-to-decrypt-traffic-part-1/)\n\n[For this analysis, we are using capture file 2021-02-02-Hancitor-with-Ficker-Stealer-and-Cobalt-Strike-and-NetSupport-RAT.pcap.zip, this is](https://www.malware-traffic-analysis.net/2021/02/02/index.html)\n[one of the many malware traffic capture files that Brad Duncan shares on his web site Malware-Traffic-Analysis.net.](https://www.malware-traffic-analysis.net/index.html)\n\nWe start with a minimum of knowledge: the capture file contains encrypted HTTP traffic of a Cobalt Strike beacon communicating with its team\nserver.\n\n[If you want to know more about Cobalt Strike and its components, we highly recommend the following blog post.](https://www.mandiant.com/resources/defining-cobalt-strike-components)\n\nFirst step: we open the capture file with Wireshark, and look for downloads of a full beacon by stager shellcode.\n\nAlthough beacons can come in many forms, we can identify 2 major categories:\n\n1. A small piece of shellcode (a couple of hundred bytes), aka the stager shellcode, that downloads the full beacon\n2. The full beacon: a PE file that can be reflectively loaded\n\nIn this first step, we search for signs of stager shellcode in the capture file: we do this with the following display filter: http.request.uri matches\n_“/….$”._\n\nFigure 1:\n\npacket capture for Cobalt Strike traffic\nWe have one hit. The path used in the GET request to download the full beacon, consists of 4 characters that satisfy a condition: the byte[value of the sum of the character values (aka checksum 8) is a known constant We can check this with the tool metatool py like this:](https://blog.didierstevens.com/2021/04/18/metatool-py/)\n\n\n-----\n\nFigure 2: using metatool.py\n\n[More info on this checksum process can be found here.](https://isc.sans.edu/forums/diary/Finding+Metasploit+Cobalt+Strike+URLs/27204/)\nThe output of the tool shows that this is a valid path to download a 32-bit full beacon (CS x86).\nThe download of the full beacon is captured too:\n\nFigure 3: full beacon download\nAnd we can extract this download:\n\n\n-----\n\nFigure 4: export HTTP objects\n\nFigure 5: selecting download\n\n\nEbHm for saving\n\n\n-----\n\nFigure 6: saving selected download to disk\n[Once the full beacon has been saved to disk as EbHm.vir, it can be analyzed with tool 1768.py. 1768.py is a tool that can decode/decrypt](https://blog.didierstevens.com/2021/10/11/update-1768-py-version-0-0-8/)\nCobalt Strike beacons, and extract their configuration. Cobalt Strike beacons have many configuration options: all these options are stored in\nan encoded and embedded table.\n\nHere is the output of the analysis:\n\nFigure 7: extracting beacon configuration\n\n\n-----\n\net s ta e a c ose oo at so e o t e opt o s\n\nFirst of all, option 0x0000 tells us that this is an HTTP beacon: it communicates over HTTP.\nIt does this by connecting to 192.254.79[.]71 (option 0x0008) on port 8080 (option 0x0002).\nGET requests use path /ptj (option 0x0008), and POST requests use path /submit.php (option 0x000a)\nAnd important for our analysis: there is a known private key (Has known private key) for the public key used by this beacon (option 0x0007).\n\nThus, armed with this information, we know that the beacon will send GET requests to the team server, to obtain instructions. If the team\nserver has commands to be executed by the beacon, it will reply with encrypted data to the GET request. And when the beacon has to send\nback output from its commands to the team server, it will use a POST request with encrypted data.\n\nIf the team server has no commands for the beacon, it will send no encrypted data. This does not necessarily mean that the reply to a GET\nrequest contains no data: it is possible for the operator, through profiles, to masquerade the communication. For example, that the encrypted\ndata is inside a GIF file. But that is not the case with this beacon. We know this, because there are no so-called malleable C2 instructions in\nthis profile: option 0x000b is equal to 0x00000004 -> this means no operations should be performed on the data prior to decryption (we will\nexplain this in more detail in a later blog post).\n\nLet’s create a display filter to view this C2 traffic: http and ip.addr == 192.254.79[.]71\n\nFigure 8: full\n\nbeacon download and HTTP requests with encrypted Cobalt Strike traffic\nThis displays all HTTP traffic to and from the team server. Remark that we already took a look at the first 2 packets in this view (packets 6034\nand 6703): that’s the download of the beacon itself, and that communication is not encrypted. Hence, we will filter these packets out with the\nfollowing display filter:\n\n_http and ip.addr == 192.254.79.71 and frame.number > 6703_\n\nThis gives us a list of GET requests with their reply. Remark that there’s a GET request every minute. That too is in the beacon configuration:\n60.000 ms of sleep (option 0x0003) with 0% variation (aka jitter, option 0x0005).\n\n\n-----\n\nrequests with encrypted Cobalt Strike traffic\nWe will now follow the first HTTP stream:\n\n\nFigure 9: HTTP\n\nFigure 10: following HTTP stream\n\nFigure 11: first HTTP stream\n\n\nThis is a GET request for /ptj that receives a STATUS 200 reply with no data. This means that there are no commands from the team server for\nthis beacon for now: the operator has not issued any commands at that point in the capture file.\n\n\n-----\n\ne a t e Coo e eade o t e G equest s oo s e a S 6 st g\nKN9zfIq31DBBdLtF4JUjmrhm0lRKkC/I/zAiJ+Xxjz787h9yh35cRjEnXJAwQcWP4chXobXT/E5YrZjgreeGTrORnj//A5iZw2TClEnt++gLMyMHwgjsnvg\n\nThat value is encrypted metadata that the beacon sends as a BASE64 string to the team server. This metadata is RSA encrypted with the\npublic key inside the beacon configuration (option 0x0007), and the team server can decrypt this metadata because it has the private key.\n[Remember that some private keys have been “leaked”, we discussed this in our first blog post in this series.](https://blog.nviso.eu/2021/10/21/cobalt-strike-using-known-private-keys-to-decrypt-traffic-part-1/)\n\n[Our beacon analysis showed that this beacon uses a public key with a known private key. This means we can use tool cs-decrypt-metadata.py](https://blog.didierstevens.com/2021/10/22/new-tool-cs-decrypt-metadata-py/)\nto decrypt the metadata (cookie) like this:\n\nFigure 12: decrypting beacon metadata\nWe can see here the decrypted metadata. Very important to us, is the raw key: caeab4f452fe41182d504aa24966fbd0. We will use this key to\ndecrypt traffic (the AES adn HMAC keys are derived from this raw key).\n\nMore metadata that we can find here is: the computername, the username, …\n\nWe will now follow the HTTP stream with packets 9379 and 9383: this is the first command send by the operator (team server) to the beacon:\n\nFigure 13: HTTP stream with encrypted\n\ncommand\nHere we can see that the reply contains 48 bytes of data (Content-length). That data is encrypted:\n\n\n-----\n\nFigure 14: hexadecimal view of HTTP stream\n\nwith encrypted command\n[Encrypted data like this, can be decrypted with tool cs-parse-http-traffic.py. Since the data is encrypted, we need to provide the raw key (option](https://github.com/DidierStevens/Beta/blob/master/cs-parse-http-traffic.py)\n-r caeab4f452fe41182d504aa24966fbd0) and as the packet capture contains other traffic than pure Cobalt Strike C2 traffic, it is best to provide\na display filter (option -Y http and ip.addr == 192.254.79.71 and frame.number > 6703) so that the tool can ignore all HTTP traffic that is not C2\ntraffic.\n\nThis produces the following output:\n\n\n-----\n\nFigure 15: decrypted commands and results\nNow we can see that the encrypted data in packet 9383 is a sleep command, with a sleeptime of 100 ms and a jitter factor of 90%. This means\nthat the operator instructed the beacon to beacon interactive.\n\nDecrypted packet 9707 contains an unknown command (id 53), but when we look at packet 9723, we see a directory listing output: this is the\noutput result of the unknown command 53 being send back to the team server (notice the POST url /submit.php). Thus it’s safe to assume that\ncommand 53 is a directory listing command.\n\nThere are many commands and results in this capture file that tool cs-parse-http-traffic.py can decrypt, too much to show here. But we invite\nyou to reproduce the commands in this blog post, and review the output of the tool.\n\nThe last command in the capture file is a process listing command:\n\n\n-----\n\nFigure 16: decrypted process listing command and result\n**Conclusion**\n\nAlthough the packet capture file we decrypted here was produced more than half a year ago by Brad Duncan by running a malicious Cobalt\nStrike beacon inside a sandbox, we can decrypt it today because the operators used a rogue Cobalt Strike package including a private key,\nthat we recovered from VirusTotal.\n\nWithout this private key, we would not be able to decrypt the traffic.\n\nThe private key is not the only way to decrypt the traffic: if the AES key can be extracted from process memory, we can also decrypt traffic. We\nwill cover this in an upcoming blog post.\n\n**About the authors**\n\nDidier Stevens is a malware expert working for NVISO. Didier is a SANS Internet Storm Center senior handler and Microsoft MVP, and has\n[developed numerous popular tools to assist with malware analysis. You can find Didier on Twitter and](https://twitter.com/DidierStevens) [LinkedIn.](https://be.linkedin.com/in/didierstevens)\n\n[You can follow NVISO Labs on Twitter to stay up to date on all our future research and publications.](https://twitter.com/NVISO_Labs)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-10-27 - Cobalt Strike- Using Known Private Keys To Decrypt Traffic – Part 2.pdf"
+    ],
+    "report_names": [
+        "2021-10-27 - Cobalt Strike- Using Known Private Keys To Decrypt Traffic – Part 2.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535699,
+    "ts_updated_at": 1743041369,
+    "ts_creation_date": 1653767654,
+    "ts_modification_date": 1653767654,
+    "files": {
+        "pdf": "https://archive.orkl.eu/b44cb319e91205889ef0fdb66f807ab2fe1bc822.pdf",
+        "text": "https://archive.orkl.eu/b44cb319e91205889ef0fdb66f807ab2fe1bc822.txt",
+        "img": "https://archive.orkl.eu/b44cb319e91205889ef0fdb66f807ab2fe1bc822.jpg"
+    }
+}

@@ -1,0 +1,62 @@
+{
+    "id": "48e481a8-7e03-4a23-a24c-3f02e0abffc7",
+    "created_at": "2023-01-12T15:00:01.452712Z",
+    "updated_at": "2025-03-27T02:05:38.425341Z",
+    "deleted_at": null,
+    "sha1_hash": "fdc347f32f9e4e553459705ee2b0fd752d88a996",
+    "title": "2019-09-05 - l0rdix C2 traffic decryptor",
+    "authors": "",
+    "file_creation_date": "2022-05-28T02:44:00Z",
+    "file_modification_date": "2022-05-28T02:44:00Z",
+    "file_size": 139568,
+    "plain_text": "# Malware-Analysis-Scripts/decrypt_l0rdix_c2.py at master\n · cryptogramfan/Malware-Analysis-Scripts · GitHub\n\n**[github.com/cryptogramfan/Malware-Analysis-Scripts/blob/master/decrypt_l0rdix_c2.py](https://github.com/cryptogramfan/Malware-Analysis-Scripts/blob/master/decrypt_l0rdix_c2.py)**\n\ncryptogramfan\n\n#!/usr/bin/env python\n\n#\n\n# A script that identifies, decrypts and extracts L0rdix RAT command and control (C2)\n\n# traffic from a supplied PCAP file.\n\n#\n\n# To speed up parsing, trim your PCAP to only HTTP ports using tcpdump,\n\n# for example:\n\n#\n\n# $ tcpdump -r l0rdix_c2.pcap -w l0rdix_c2_http.pcap 'tcp port 80 or 8080 or 3128'\n\n#\n\n# Requirements:\n\n# pyshark-legacy\n\n\n-----\n\n# pycryptodome\n\n#\n\n# Author.....: Alex Holland (@cryptogramfan)\n\n# Date.......: 2019-07-27\n\n# Version....: 0.1.6\n\n# License....: CC BY 4.0\n\n# Reference_1: https://www.bromium.com/an-analysis-of-l0rdix-rat-panel-and-builder/\n\n# Reference_2: https://www.bromium.com/decrypting-l0rdix-rats-c2/\n\nimport sys\n\nimport argparse\n\nimport pyshark\n\nimport urllib\n\nimport re\n\nimport hashlib\n\nimport binascii\n\nimport uuid\n\nfrom Crypto.Cipher import AES\n\nfrom base64 import b64decode\n\nparser = argparse.ArgumentParser(description=\"\\nUsage: python decrypt_l0rdix_c2.py p <l0rdix_c2.pcap> -k <OPERATOR_KEY>\")\n\nparser.add_argument(\"-p\", dest=\"pcap_file\", help=\"PCAP containing encrypted L0rdix\nC2 traffic.\", required=True)\n\nparser.add_argument(\"-k\", dest=\"operator_key\", help=\"UTF-8 operator key extracted\nfrom a L0rdix bot or panel. If no key is supplied, the default key \\\"3sc3RLrpd17\\\" will be\nused.\", default=\"3sc3RLrpd17\")\n\nparsed_args = parser.parse_args()\n\noperator_key = parsed_args.operator_key\n\n\n-----\n\naes_key = hashlib.sha256(operator_key).digest()\n\niv = b'\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00'\n\nparameters = []\n\nhostnames = []\n\nimgs = []\n\ntry:\n\npcap = pyshark.FileCapture(parsed_args.pcap_file, keep_packets=False,\ndisplay_filter='http.request.method == POST && http.request.uri.path == \"/connect.php\"\n&& count(http.request.uri.query.parameter) >= 10')\n\nprint \"[+] Parsing PCAP...\"\n\nexcept:\n\nprint(parser.description)\n\nexit(0)\n\ntry:\n\nprint \"[+] Searching for L0rdix C2 traffic...\"\n\nfor packet in pcap:\n\n# Enumerate hosts\n\nquery = packet['HTTP']\n\nhostnames.append(query.host)\n\n# Enumerate parameters\n\nquery = query.request_uri_query\n\nquery = urllib.unquote(query)\n\nquery = re.sub(\"~\", \"+\", query)\n\nquery = re.sub(\"^h=\", \"\", query)\n\nfound_parameters = re.split(\"&[a-z]{1,2}=\", query)\n\n\n-----\n\nparameters.extend(found_parameters)\n\nexcept:\n\nprint \"[!] Error, exiting.\"\n\nexit(0)\n\nif not hostnames:\n\nprint \"[+] No L0rdix C2 traffic found.\"\n\nexit(0)\n\nelse:\n\nprint \"[+] Found references to L0rdix C2 servers (%d):\\n\" % (len(hostnames))\n\nfor hostname in hostnames:\n\nprint hostname\n\nif not parameters:\n\nprint \"[+] No L0rdix URI parameters found.\"\n\nexit(0)\n\nelse:\n\nprint \"\\n[+] Found L0rdix C2 traffic (%d strings):\\n\" % (len(parameters))\n\nfor parameter in parameters:\n\nprint parameter\n\ntry:\n\nprint \"[+] Searching for screenshots...\"\n\nfor packet in pcap:\n\n# Enumerate screenshots\n\nimg = packet['URLENCODED-FORM']\n\nimg = urllib.unquote(img.value)\n\n\n-----\n\nimg = b64decode(img)\n\nimg = bytearray(img)\n\nimg_name = str(uuid.uuid4()) + '.jpg'\n\nimgs.append(img_name)\n\n# Dump screenshots\n\nf = open(img_name, 'w+b')\n\nf.write(img)\n\nf.close()\n\nexcept:\n\nprint \"[!] Error, exiting.\"\n\nexit(0)\n\nif not imgs:\n\nprint \"[+] No L0rdix screenshots found.\"\n\nexit(0)\n\nelse:\n\nprint \"[+] Dumped L0rdix screenshots in current directory (%d):\\n\" % (len(imgs))\n\nfor img_name in imgs:\n\nprint img_name\n\nprint \"\\n[+] Decrypting strings using operator key (UTF-8): \" + operator_key\n\nprint \"[+] AES key (hex): \" + binascii.hexlify(bytearray(aes_key))\n\nprint \"[+] IV (hex): \" + binascii.hexlify(bytearray(iv))\n\nprint \"[+] Decrypted L0rdix C2 traffic (%d strings):\\n\" % (len(parameters))\n\nfor parameter in parameters:\n\ncipher = AES.new(aes_key, AES.MODE_CBC, iv)\n\n\n-----\n\nciphertext = b64decode(parameter)\n\ndecrypted = cipher.decrypt(ciphertext)\n\ndecrypted = decrypted.rstrip()\n\nprint decrypted\n\nprint \"[+] Finished, exiting.\"\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-09-05 - l0rdix C2 traffic decryptor.pdf"
+    ],
+    "report_names": [
+        "2019-09-05 - l0rdix C2 traffic decryptor.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535601,
+    "ts_updated_at": 1743041138,
+    "ts_creation_date": 1653705840,
+    "ts_modification_date": 1653705840,
+    "files": {
+        "pdf": "https://archive.orkl.eu/fdc347f32f9e4e553459705ee2b0fd752d88a996.pdf",
+        "text": "https://archive.orkl.eu/fdc347f32f9e4e553459705ee2b0fd752d88a996.txt",
+        "img": "https://archive.orkl.eu/fdc347f32f9e4e553459705ee2b0fd752d88a996.jpg"
+    }
+}

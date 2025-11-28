@@ -1,0 +1,162 @@
+{
+    "id": "80ed7e97-cd42-43d7-aab0-797201cfa55f",
+    "created_at": "2023-01-12T15:05:47.536831Z",
+    "updated_at": "2025-03-27T02:06:05.211936Z",
+    "deleted_at": null,
+    "sha1_hash": "522d1d6440febff21bf79cb7e685d739deb749be",
+    "title": "2021-07-21 - Analysis of malware (wiper) with Japanese file names related to the Tokyo Olympics",
+    "authors": "",
+    "file_creation_date": "2022-05-29T10:34:39Z",
+    "file_modification_date": "2022-05-29T10:34:39Z",
+    "file_size": 1523897,
+    "plain_text": "# 東京五輪に関係する日本語のファイル名を持つマルウェア (ワイパー)の解析\n\n**mbsd.jp/research/20210721/blog/**\n\n東京五輪に関係するファイルを装った以下のファイル名を持つマルウェアが2021年07月20\n日(火) 15時頃、VirusTotalにアップロードされたことを確認しました。\n\n【至急】東京オリンピック開催に伴うサイバー攻撃等発生に関する被害報告につい\nて.exe\n\n早速ですが、本記事では該当検体の解析結果を共有します。\n\n該当のファイルはVirusTotalにフランスからアップロードされており、ジェネリック検出が\n多いもののすでに複数のアンチウイルス製品によって検知されていることを確認していま\nす。\n\n\n-----\n\n図１ VirusTotalにアップロードされた不審なファイル\n\n上記のファイルのプロパティには以下の通り何も情報が付与されていません。\n\n図２ プロパティ情報\n\n該当ファイルはアイコンを見る限りPDFのように見えますが、アイコン偽装されており、フ\nォルダの詳細表示で見た場合は以下のように拡張子がEXEであることがわかります。\n\n\n-----\n\n図３ フォルダの詳細表示で見た場合のファイルの様子\n\nしかしファイル名が長いことで、フォルダの表示方法によっては以下のように拡張子が見え\nなくなるため、アイコンだけで判断し誤って実行してしまう可能性があります。\n\n図4 拡張子が見えなくなる表示方法の例\n\nそれではファイルを解析していきますが、このマルウェアはUPXでパッキングされていま\nす。\n\n図５ UPXでパッキングされた実行ファイル\n\nアンパック後のファイルはVisual C++で開発されたEXEであることがわかります。\n\n\n-----\n\n図６ UPXをアンパッキングした実行ファイル\n\nこのマルウェアは実行されると以下の項目などにより、自身が解析環境で動かされていない\nか、または自身が解析されていないかを確認する多数のアンチデバッグ機能があります。\n\n1. GetTickCountによるコードの処理経過時間のチェック(指定時間以上かどうか)\n2. GetTickCountによるコードの処理経過時間のチェック(指定時間以内かどうか)\n3. IsDebuggerPresentを用いた解析チェック\n4. CheckRemoteDebuggerPresentを用いた解析チェック\n5. VMwareのバックドアI/Oポートを用いた仮想環境チェック\n6. PEBのNtGlobalFlagを用いたデバッグチェック\n7. Windowクラスを用いた多数の解析ツールの起動チェック\n8. プロセス名による多数の解析ツールの起動チェック\n9. ドライバの存在確認を用いたProcessMonitorの起動チェック\n\n上にあげたそれぞれのアンチデバッグ機能を含め、以下に処理の流れを解説していきます。\n\nまず、GetTickCountによるコードの処理経過時間のチェックですが、現在の時間を取得（α\nとする）した後、16秒間スリープを実施、その直後の時間(βとする)の時間を取得し、αとβ\nの時間の差分を計算します。そしてその計算結果が15秒未満の数値になっていた場合は、サ\nンドボックスなどのアンチデバッグ対策でスリープ短縮が行われていると判断し、マルウェ\nアは終了します。\n\n図7 GetTickCountによるコードの処理経過時間のチェック\n\n以下は15秒未満となっているかを確認する処理部分です。\n\n図8 15秒未満かどうかをチェックする処理\n\nその後、IsDebuggerPresentおよびCheckRemoteDebuggerPresentを用いて自身が解析され\nているかどうかをチェックします。\n\n\n-----\n\nまたこの際、4.5秒以内に処理が通過しないと解析していると判断し自身を終了します。\n\n図9 IsDebuggerPresentおよびCheckRemoteDebuggerPresentによるチェック\n\nまた、以下の命令 (0x5658 = “VX”)を用いてVMwareのバックドアI/Oポートをチェックする\nことで仮想環境でないかをチェックします。\n\n図10 VMwareのバックドアI/Oポートをチェックする処理\n\nそして、PEBのNtGlobalFlagという値をチェックすることでデバッグ中かを確認します。プ\nログラムがデバッグされている場合はNtGlobalFlagの値が0x70(112)になるためその値にな\nっているかどうかをチェックしています。\n\n図11 NtGlobalFlagをPEBから取得する処理\n\n図12 NtGlobalFlagの値が0x70(112)かどうかをチェックする処理\n\nさらに、GetClassNameAとEnumWindowsというWindowsAPIを使用し、以下の文字列を含\nむWindowクラスをチェックすることでマルウェア解析ツールが起動していないかどうかを\n確認します。\n\n\"PROCMON_WINDOW_CLASS\"\n\"OllyDbg\"\n\"TIdaWindow\"\n\n\n-----\n\nWinDbgFrameClass\n\"FilemonClass\"\n\"ID\"\n\"RegmonClass\"\n\"PROCEXPL\"\n\"TCPViewClass\"\n\"SmartSniff\"\n\"Autoruns\"\n\"CNetmonMainFrame\"\n\"TFormFileAlyzer2\"\n\"ProcessHacker\"\n\nこのWindowクラスを用いて検索する手口は従来からあるものの、一般的なプロセス名を用\nいてチェックする方法よりも変更しづらい情報のため効果的であると言えます。\n\n図13 EnumWindowsによるウインドウクラス列挙\n\n以下は、WindowクラスをGetClassNameにより取得し比較する処理部分となります。\n\n図14 GetClassNameAで比較するウインドウクラス名\n\nその後、マルウェア解析ツールである以下のプロセス名が起動していないかをチェックしま\nす。これらのリストを見ると比較的網羅性の高いマルウェア解析ツールのリストとなってお\nり、執拗に解析されないようにしていることがわかります。\n\n\n-----\n\nWireshark.exe\napateDNS.exe\nAutoruns.exe\nbindiff.exe\nidaq.exe\nidaq64.exe\nProcmon.exe\nx64dbg.exe\nx32dbg.exe\nollydbg.exe\nImmunityDebugger.exe\nVBoxTray.exe\nVBoxService.exe\nmsedge.exe\nVirtualBox.exe\njavaw.exe\nx96dbg.exe\nidaw.exe\nwindbg.exe\ndnSpy.exe\nHxD.exe\nScylla_x64.exe\nScylla_x86.exe\nregmon.exe\nprocexp.exe\nprocexp64.exe\nTcpview.exe\nsmsniff.exe\nFakeNet.exe\nnetmon.exe\nPEiD.exe\nLordPE.exe\nPE-bear.exe\nPPEE.exe\ndie.exe\ndiel.exe\npexplorer.exe\ndepends.exe\nResourceHacker.exe\nFileAlyzer2.exe\nprocesshacker.exe\nRegshot-x64-Unicode.exe\n\n\n-----\n\n以下は上記のプロセスチェックに関する挙動の処理です。\n\n図15 プロセスチェックを行う処理\n\nその後、以下のProcess Monitorに関するデバイスファイルの存在をチェックすることで、\n念を重ねて解析環境ではないかを確認する挙動があります。\n\n\\\\\\\\.\\\\Global\\\\ProcmonDebugLogger\n\n図16 Process Monitorに関するデバイスファイルの存在チェック\n\nこれら一連のアンチデバッグチェックを全て終えると以下のメイン処理に遷移します。\n\n**■メインの処理**\n\n\n-----\n\nこのマルウェアのメインとなる目的はユーザーのファイルを削除することであり、＜ユーザ\nーフォルダ＞配下(サブフォルダも含む)にある全ての対象ファイルを削除します。\n\nその際に削除対象となる具体的な削除対象の拡張子を含む、全てのコマンドは以下となりま\nす。これらを見ると文書系ファイルが削除対象として多く並んでいることがわかります。\n\n\"del /S /Q *.doc c:¥¥users¥¥%username%¥¥ > nul\"\n\"del /S /Q *.docm c:¥¥users¥¥%username%¥¥ > nul\"\n\"del /S /Q *.docx c:¥¥users¥¥%username%¥¥ > nul\"\n\"del /S /Q *.dot c:¥¥users¥¥%username%¥¥ > nul\"\n\"del /S /Q *.dotm c:¥¥users¥¥%username%¥¥ > nul\"\n\"del /S /Q *.dotx c:¥¥users¥¥%username%¥¥ > nul\"\n\"del /S /Q *.pdf c:¥¥users¥¥%username%¥¥ > nul\"\n\"del /S /Q *.csv c:¥¥users¥¥%username%¥¥ > nul\"\n\"del /S /Q *.xls c:¥¥users¥¥%username%¥¥ > nul\"\n\"del /S /Q *.xlsx c:¥¥users¥¥%username%¥¥ > nul\"\n\"del /S /Q *.xlsm c:¥¥users¥¥%username%¥¥ > nul\"\n\"del /S /Q *.ppt c:¥¥users¥¥%username%¥¥ > nul\"\n\"del /S /Q *.pptx c:¥¥users¥¥%username%¥¥ > nul\"\n\"del /S /Q *.pptm c:¥¥users¥¥%username%¥¥ > nul\"\n\"del /S /Q *.jtdc c:¥¥users¥¥%username%¥¥ > nul\"\n\"del /S /Q *.jttc c:¥¥users¥¥%username%¥¥ > nul\"\n\"del /S /Q *.jtd c:¥¥users¥¥%username%¥¥ > nul\"\n\"del /S /Q *.jtt c:¥¥users¥¥%username%¥¥ > nul\"\n\"del /S /Q *.txt c:¥¥users¥¥%username%¥¥ > nul\"\n\"del /S /Q *.exe c:¥¥users¥¥%username%¥¥ > nul\"\n\"del /S /Q *.log c:¥¥users¥¥%username%¥¥ > nul\"\n\n削除はsystemコマンドを用いて以下のように行われます。\n\n図17 Word文書ファイルを削除する処理の例\n\n気になる特徴として、本マルウェアは以下のように日本で使用される一太郎の文書ファイル\nが削除対象に含まれていることから、日本の環境での実行を想定していることが推測されま\nす。\n\n\n-----\n\n図18 太郎文書ファイルを削除する処理\n\n動作中は、ファイルの削除操作を示す以下のコマンド文字列が画面に表示されます。\n\n図19 画面に表示されるウインドウ\n\nまた、curlコマンドを用いて海外の成人用サイトへのアクセスを見えないように裏で発生さ\nせます。この際、サイレントを意味する-sコマンドが用いられます。\n\n図20 curlコマンドの処理\n\n上記curlコマンドは環境により32回または64回繰り返します。\n\n成人向けのサイトへのアクセスを裏で発生させつつファイルを破壊するという一連の処理か\nら、そうした海外サイトへの不用意なアクセスにより事故的に発生したインシデントのよう\nに見せかけようとする意図も垣間見えます。\n\n最後に以下のコマンドによりcmd.exeを使用して自身を削除し終了します。\n\n（解析環境であると判断された場合もこの処理に遷移します）\n\n\n-----\n\n図21 自身を削除する処理\n\n本マルウェアの挙動は以上となります。\n\nこのマルウェアはアイコン偽装されていることや、ユーザーフォルダ配下のみを削除対象と\nすることから、管理者権限を持たないユーザーの手によって感染させる意図があると考えら\nれます。\n\nまたこのマルウェアは、ファイルを削除するというメイン挙動から、削除や破壊を目的とす\nるマルウェアの一種「ワイパー」であると言えます。ワイパーはその挙動からランサムウェ\nアと見間違えるケースもありますが、それぞれ目的が大きく異なり、平昌オリンピックにお\nいてOlympicDestroyerというワイパーが出現したように、オリンピックのようなイベントに\nおいてはランサムウェアと同時にワイパーも注意すべきマルウェアと言えるでしょう。\n\nなお、このマルウェアが実際の攻撃を意図して用意されたものかどうかは不明ですが、こう\nして見てみると、不自然に映るほど様々なアンチデバッグを寄せ集めて作ったように見え、\nまるで対応者の解析能力をはかるCTFの検体を模倣したもののようにも感じます。万一この\n検体がいたずらで作成されたものであったとしても、実際に破壊を発生させるという行為は\n事実であり、他のマルウェアと変わらぬ明確な脅威であることに変わりはありません。\n\n※参考情報として、プログラムの開発時間を示すTime Date Stampは2021-07-20\n05:52:05(UTC)であり、VirusTotalへのサブミッションは2021-07-20 06:02:18(UTC)であるこ\nとが確認されています。Time Date Stampは偽装することが可能であるため断言はできませ\nんが、これらの時系列を信頼するならばこのマルウェアは作成されてまもなく10分程で\nVirusTotalにアップロードされた可能性があり得ます。\n\n\n-----\n\nその他、東京オリンピックの生中継を装ったフィッシングサイトが続々と出現している状況\nも見えていますが、従来から言われている通り話題性のあるイベント期間はそれに便乗した\n脅威が多数出てくる可能性が高いため、引き続き類似の便乗マルウェアも含め注視が必要で\nす。\n\nハッシュ値：\n\nSHA-256：fb80dab592c5b2a1dcaaf69981c6d4ee7dbf6c1f25247e2ab648d4d0dc115a97\n\n[記事一覧へ戻る](https://www.mbsd.jp/research/)\n\n\n-----",
+    "language": "JA",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-07-21 - Analysis of malware (wiper) with Japanese file names related to the Tokyo Olympics.pdf"
+    ],
+    "report_names": [
+        "2021-07-21 - Analysis of malware (wiper) with Japanese file names related to the Tokyo Olympics.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535947,
+    "ts_updated_at": 1743041165,
+    "ts_creation_date": 1653820479,
+    "ts_modification_date": 1653820479,
+    "files": {
+        "pdf": "https://archive.orkl.eu/522d1d6440febff21bf79cb7e685d739deb749be.pdf",
+        "text": "https://archive.orkl.eu/522d1d6440febff21bf79cb7e685d739deb749be.txt",
+        "img": "https://archive.orkl.eu/522d1d6440febff21bf79cb7e685d739deb749be.jpg"
+    }
+}

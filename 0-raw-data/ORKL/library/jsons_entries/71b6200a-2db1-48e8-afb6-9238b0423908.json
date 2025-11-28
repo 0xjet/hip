@@ -1,0 +1,156 @@
+{
+    "id": "71b6200a-2db1-48e8-afb6-9238b0423908",
+    "created_at": "2022-10-25T16:48:21.256208Z",
+    "updated_at": "2025-03-27T02:16:06.738859Z",
+    "deleted_at": null,
+    "sha1_hash": "6eaba42a64f8c2e1868e6edf441fffe082a4959d",
+    "title": "",
+    "authors": "",
+    "file_creation_date": "2017-02-28T06:40:41Z",
+    "file_modification_date": "2017-02-28T06:40:41Z",
+    "file_size": 985838,
+    "plain_text": "[Resources (/resources) > News (/resources/news) > Deep Dive on the DragonOK Rambo Backdoor](http://www.morphick.com/resources)\n\n## Deep Dive On The DragonOK Rambo Backdoor\n\n Nick Hoffman And Jeremy Humble F E B R U A R Y 1 5, 2 0 1 7\n\n### Summary:\n\nRecent new reporting was released on the DragonOK group which unveiled the many versions of the\n\nSysget backdoor as well as the IsSpace backdoor. One of the samples we looked at\nSHA256:e154e62c1936f62aeaf55a41a386dbc293050acec8c4616d16f75395884c9090\n\ncontained a family of backdoors that hasn’t been referenced in public documents In this post we will\n\n\n-----\n\nThis backdoor has several aliases in the community; Sophos calls the embedded components\n“Brebsd-A” and several others reference the code as simply “Rambo”.\n\n### RTF Dropper\n\nThe initial dropper for this malware is a malicious RTF �le containing many DragonOK shellcode\n\ntechniques.\n\nBoth the api hashing (ROR 7) and the save path section of code are identical. The code is also using\n\nthe same payload marker of 0xbabababa.\n\nShellcode hashing routine\n\nThe save path shellcode that is also unique to this group:\n\n\n-----\n\nAnd the payload marker searching:\n\nWithout diving into all the intricacies of how this shellcode works it will eventually decode a payload\nand exec it. The parser that PAN provided will also work when extracting the payload from this\ndocument.\n\n### Rambo:\n\nQuickly after starting up, Rambo proceeds to enter a busy-loop making 2 million small malloc calls\nand then freeing each allocation. This ties up the malware for a couple minutes in order to throw off\nAV emulators (which will only emulate so many instructions). This also helps evade most sandboxes.\nNow that many sandbox systems short-circuit the sleep call, more malware is moving from sleeping\n\nto busy loops in order to use up the short time slice that a sandbox can devote to each sample.\n\n\n-----\n\nvictim machine. The initial binary SHA256:\n\n7571642ec340c4833950bb86d3ded4d4b7c2068347e8125a072c5a062a5d6b68 is a\n\ndropper that unpacks the 3 different parts, achieves persistence and starts execution. The dropper\nis also copied as the method of persistence.\n\nThe key\n\nHKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\FaultChec\n\nis established at the persistence key with the key value pointing at C:\\Users\\\n\n<username>\\AppData\\Local\\Temp\\<filename>\n\nRambo will then fetch its con�guration by reading in the last 260 bytes of itself.\n\nThe key “sd�popdfjkaweriopasdfnkl” is loaded, which is eventually used to decrypt the buffer using\n\ntiny encryption algorithm (TEA).\n\nEven though the whole string is referenced as a string, only the �rst 16 characters are used as the\nfunctional key. Perhaps this is a misunderstanding of the author, or an attempt to throw off analysts.\n\nThe steps of the TEA decryption can be seen below.\n\n\n-----\n\nThe decryption of the code can be translated to python with the following snippet. (To get the\n\ndecryption working, we had to make some patches to the opensource PyTea implementation, a\n\nmodi�ed copy of the script that is used is posted at the end of this blogpost)\n\n\n-----\n\nfrom ctypes import *\n\nfrom pprint import pprint\n\nimport sys\n\nimport tea\n\nimport re\n\nimport struct\n\ndef ascii_strings(data):\n\nstrings = []\n\nfor match in re.finditer(r'[\\x20-\\x80\\n\\r\\t]{16,64}',data):\n\nstrings.append(match.group()[:16])\n\nreturn strings\n\ndef to_c_array(data):\n\n''' Converts a string to a list of c_uint32s '''\n\nc_array = []\n\nchar_array = [hex(ord(char))[2:] for char in data]\n\nfor index in range(0, len(char_array), 4):\n\nblock = char_array[index:index + 4]\n\nhex_value = '0x' + ''.join(block)\n\nc_array.append(c_uint32(int(hex_value, 16)))\n\nreturn c_array\n\nwith open(sys.argv[1], 'rb') as fp:\n\ndata = fp.read()\n\nciphertext = data[-260:]\n\npadding = len(ciphertext)%8\n\nciphertext += '\\x00'*padding\n\n\n-----\n\nfor key in ascii_strings(data):\n\n#print 'trying key %s' % (key)\n\ntry:\n\nplaintext = tea.decrypt(ciphertext, key,verbose=False)\n\nif \".dll\" in plaintext.lower() or '.exe' in plaintext.lower():\n\nbreak\n\nexcept:\n\npass\n\nplaintext = plaintext[:-padding]\n\nprint '[*]\\tDecrypted with key \"%s\"\\nConfig:' % (key)\n\nconfig = {}\n\nconfig['loader'] = {'name': plaintext[:0x20].rstrip('\\x00'),\n\n'offset': struct.unpack('<L', plaintext[0xc8:0xcc])[0]}\n\nconfig['sideloader'] = {'name': plaintext[0x20:0x40].rstrip('\\x00'),\n\n'offset': struct.unpack('<L', plaintext[0xd0:0xd4])[0]}\n\nconfig['backdoor'] = {'name': plaintext[0x40:0x60].rstrip('\\x00'),\n\n'offset': struct.unpack('<L', plaintext[0xd8:0xdc])[0]}\n\nconfig['loader']['length'] = config['sideloader']['offset'] - config['loader']['offset\n\nconfig['sideloader']['length'] = config['backdoor']['offset'] - config['sideloader'][\n\nconfig['backdoor']['length'] = len(data) - config['backdoor']['offset'] - 260\n\npprint(config)\n\nprint\n\nfor key, component in config.items():\n\nwith open(component['name'], 'wb') as fp:\n\nprint '[*]\\tDropping %s' % (component['name'])\n\nfp.write(data[component['offset']:component['offset']+component['length']])\n\nR i th b i t ill i ld i th f ll i i f ti d d th 3 t\n\n\n-----\n\nConfig:\n\n{'backdoor': {'length': 14336, 'name': 'vmwarebase.dll', 'offset': 37056},\n\n'loader': {'length': 5120, 'name': 'HeartDll.dll', 'offset': 12800},\n\n'sideloader': {'length': 19136, 'name': 'vprintproxy.exe', 'offset': 17920}}\n\n[*]  Dropping vmwarebase.dll\n\n[*]  Dropping vprintproxy.exe\n\n[*]  Dropping HeartDll.dll\n\n\nThe con�guration contains the names of the dropped �les and the offsets of each �le. Marked up, the\ncon�guration will resemble the following.\n\nOnce the con�guration is decoded the malware will carve each �le out and write them to disk.\n\nRambo (and the embedded components) make heavy use of stack strings to evade basic triage (ie,\nstrings) from revealing a lot of information.\n\n\n-----\n\nThe mutex is created with the value of {63SP948C­C21F­2R56­8176­2G0AC5OE03F4}. Once\n\nthe mutex is created, WinExec is called starting HeartDll.dll with the DllRegisterServer argument.\n\n### HeartDll.dll\n\n\n-----\n\n11668a0666636b3c40b61986bf132a8ca6ab448fddcaa9e4ed22f6ca7f7b8a50) is a\n\nsmall executable (roughly 5k in size).  This is responsible to starting vprintproxy (which ultimately\nsideloads vmwarebase.dll).\n\nUpon initial execution, HeartDll.dll will create a mutex (statically con�gured) of {53A7Y6CC­C8EF­\n\nW089­CN21­220AQCD303F3}\n\nAt the startup of HeartDll.dll it’ll load 4 different commands into a buffer.\n\nbsd -1\n\nbre -1\n\nesd +2\n\nere +2\n\nHeartDll.dll will write “bsd -1” to �le 1.txt which will seed a command for the backdoor when it starts\nexecuting.\n\nFirst the dll will locate the current working directory and manually build the string “vprintproxy.exe”\n\nHeart will write the contents of 1.txt into a �le named 222.txt. Once this is done then heart will call\nWinExec on vprintproxy.exe which will in turn sideload the malicious vmwarebase.dll.\n\nAt this point, it’ll enter an in�nite loop of sleeping and attempting to read the �le 3.txt. Which\n\ncontains startup information from vmwarebase.dll. It’ll loop through the various expect log messages\nand then exit.\n\n\n-----\n\nThis is legit executable that is signed by VMWare that the authors use to sideload vmwarebase.dll\n\nThe imports directly load vmwarebase.dll\n\n### vmwarebase.dll\n\nVmwarebase.dll is loaded up via vprintproxy.exe and contains much of the functionality of this family.\n\nWhen loading up, it’ll decode its con�guration via a simple xor loop.\n\n\n-----\n\nIn this case the decoded c2 is busserh.mancely.com.\n\nDuring its execution, the malware will use the same loop to decode its port information (443 & 80)\n\nand other con�guration information.\n\nOnce the con�guration information is parsed, the malware will load up the same debug messages as\nHeartDll.dll (bre -1, bsd -1, ere +2, and esd +2), these are used primary as communication between\n\nHeartDll.dll\n\nIt’ll attempt to read 1.txt, and if the information in 1.txt matches “bsd -1”, the malware will recon\n\ninformation off the host and send it to the c2 controller.\n\n### Host Recon\n\nIn the main reconnaissance function, the malware will grab the system proxy settings from the\n\nregistry key “Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\\ProxyServer”. By\n\npulling this information, this may ensure a slightly higher success rate of communicating out in a\ncorporate environment. As the case with all these binaries, it makes heavy use of manually building\n\nstack strings to evade the simple strings tool.\n\n\n-----\n\nRambo will continue to gather the hostname and IP of the system. Gather a list of processes (with a\nPID of greater than 10) by calling CreateToolhelp32Snapshot. It’ll also grab the Windows version\n\nand CPU arch.\n\nPrior to encryption, the contents of the buffer before it’s sent out to the C2 contains the following\n\ninformation:\n\n10.152.X.X|##HOSTNAME##d##OPOP<*<smss.exe>>csrss.exe>>wininit.exe>>csrss.exe>>winlogon\n\n### C2 communications\n\nThe data that is harvested from the host is sent to the C2 controller and encrypted using an AES key\nof \\x12\\x44\\x56\\x38\\x55\\x82\\x56\\x85\\x23\\x25\\x56\\x45\\x52\\x47\\x45\\x86. In ascii, (while not all\n\ncharacters are printable), the string will be “\\x12DV8U\\x82V\\x85#%VERGE\\x86”.\n\nOnce the function is �nished, it’ll write “esd +2” to the �le 222.txt.\n\n### Download and Execute\n\nIf the �le 1.txt contains the command “bre -1” the malware will continue down a different path of\nexecution.\n\nThe malware will generate a random �lename (8 characters long), by using a lookup table. It’ll\n\ngenerate indexes into the string\n\n“123456789 b d f hijkl ABCDEFGHIJKLMNOPQRSTUVWXYZ” d i l\n\n\n-----\n\nThe proxy settings are read again and a simple connect is performed. If the connect succeeds “ok” is\n\nsent.\n\nThe recv call is performed and a �le is downloaded, written to the temporary �le name and exec’d\n\nusing the following hardcoded command.\n\ncmd.exe /c rundll32.exe <filename>,FSSync_ScreeActive\n\n\n-----\n\n-----\n\nalthough some information can be gained from static analysis. The �le would need to be PE DLL with\nan exported function of FSSync_ScreeActive. This is most likely the function in which the authors will\n\nload a more robust stage 2 backdoor.\n\nWhen the command is completed, “ere +2” is written to 222.txt\n\n### Summary:\n\nRambo is a unique backdoor with features that are the result of some odd design decisions. In the\n\ninitial dropper the con�guration containing offsets and �lenames are encoded with TEA, however the\n\nbinaries are not encoded at all. It uses AES to encode the host information that is sent out over the\nnetwork, however the C2 is hidden with a single byte XOR. While they may not make much sense to a\n\nreverse engineer, it gives some idea to the information that the author doesn’t want to be easily\n\nrecovered. By writing commands to temporary �les and trying to communicate between multiple\nprocesses, the authors turn a simple stage 1 implant into something that is confusing and more\n\ndif�cult to study.\n\nMature security programs research edge cases and newly discovered code in order to understand\n\ntools, tactics and procedures of successful advanced groups that will inevitably become more\ncommon in the future.\n\n### Indicators of Compromise:\n\nIndicator Type Descripti\n\nbusserh.mancely.com Domain [Comman]\n\nControl\n\n\nEmail\ngosuper@excite.co.jp\nAddress\n\n\nRegistran\nbusserh.m\n\n\nResolutio\n108.61.117.31 IP\n\nbusserh.m\n\nC:\\Users\\<user>\\AppData\\Local\\Temp\\HeartDll.dll Filename\n\nC:\\Users\\<user>\\AppData\\Local\\Temp\\vprintproxy.exe Filename\n\nC:\\Users\\<user>\\AppData\\Local\\Temp\\vmwarebase.dll Filename\n\nC:\\Users\\<user>\\AppData\\Local\\Temp\\222.txt Filename\n\nC:\\Users\\<user>\\AppData\\Local\\Temp\\3.txt Filename\n\n\n-----\n\n7571642ec340c4833950bb86d3ded4d4b7c2068347e8125a072c5a062a5d6b68Hash Main Dro\n\nHash of\n5bfcd2cc01a5b930fc704a695f0fe38f1bca8bdfafd8b7d931a37428b5e86f35 Hash\n\nvmwareb\n\nHash of\n\n\n76405617acc7fa6c51882fe49d9b059900c10fc077840df9f6a604bf4fab85ba Hash\n\n\nvprintpro\nexecutab\n\n\n11668a0666636b3c40b61986bf132a8ca6ab448fddcaa9e4ed22f6ca7f7b8a50 Hash Hash of H\n\n### Additional Notes:\n\nIn the symbol table for Rambo (vmwarebase.dll) it appears that the authors left in the original\n\ncompiled name of the executable (FirstBlood.tmp) which accounts for the naming convention.\n\nThe functions that contain the name are the functions that were overwritten from the legit\nvmwarebase.dll as to not break the functionality of vprintproxy.exe.\n\n\n-----\n\nvaddr=0x10001431 paddr=0x00000831 ord=001 fwd=NONE sz=0 bind=GLOBAL type=FUNC name=Fir\n\nvaddr=0x10001431 paddr=0x00000831 ord=002 fwd=NONE sz=0 bind=GLOBAL type=FUNC name=Fir\n\nvaddr=0x10001431 paddr=0x00000831 ord=003 fwd=NONE sz=0 bind=GLOBAL type=FUNC name=Fir\n\nvaddr=0x10001431 paddr=0x00000831 ord=004 fwd=NONE sz=0 bind=GLOBAL type=FUNC name=Fir\n\nvaddr=0x10001431 paddr=0x00000831 ord=005 fwd=NONE sz=0 bind=GLOBAL type=FUNC name=Fir\n\nvaddr=0x10001431 paddr=0x00000831 ord=006 fwd=NONE sz=0 bind=GLOBAL type=FUNC name=Fir\n\nvaddr=0x10001431 paddr=0x00000831 ord=007 fwd=NONE sz=0 bind=GLOBAL type=FUNC name=Fir\n\nvaddr=0x10001431 paddr=0x00000831 ord=008 fwd=NONE sz=0 bind=GLOBAL type=FUNC name=Fir\n\nvaddr=0x10001431 paddr=0x00000831 ord=009 fwd=NONE sz=0 bind=GLOBAL type=FUNC name=Fir\n\nvaddr=0x10001431 paddr=0x00000831 ord=010 fwd=NONE sz=0 bind=GLOBAL type=FUNC name=Fir\n\nvaddr=0x10001431 paddr=0x00000831 ord=011 fwd=NONE sz=0 bind=GLOBAL type=FUNC name=Fir\n\nvaddr=0x10001431 paddr=0x00000831 ord=012 fwd=NONE sz=0 bind=GLOBAL type=FUNC name=Fir\n\nvaddr=0x10001431 paddr=0x00000831 ord=013 fwd=NONE sz=0 bind=GLOBAL type=FUNC name=Fir\n\nvaddr=0x10001431 paddr=0x00000831 ord=014 fwd=NONE sz=0 bind=GLOBAL type=FUNC name=Fir\n\nvaddr=0x10001431 paddr=0x00000831 ord=015 fwd=NONE sz=0 bind=GLOBAL type=FUNC name=Fir\n\n### Modi�ed PyTEA\n\n\n-----\n\n#################################################################################\n\n# Python implementation of the Tiny Encryption Algorithm (TEA)\n\n# By Moloch\n\n#\n\n# About: TEA has a few weaknesses. Most notably, it suffers from\n\n#    equivalent keys each key is equivalent to three others,\n\n#    which means that the effective key size is only 126 bits.\n\n#    As a result, TEA is especially bad as a cryptographic hash\n\n#    function. This weakness led to a method for hacking Microsoft's\n\n#    Xbox game console (where I first encountered it), where the\n\n#    cipher was used as a hash function. TEA is also susceptible\n\n#    to a related-key attack which requires 2^23 chosen plaintexts\n\n#    under a related-key pair, with 2^32 time complexity.\n\n#\n\n#    Block size: 64bits\n\n#     Key size: 128bits\n\n#\n\n##################################################################################\n\nimport os\n\nimport getpass\n\nimport platform\n\nimport struct\n\nfrom random import choice\n\nfrom hashlib import sha256\n\nfrom ctypes import c_uint32\n\nfrom string import ascii_letters, digits\n\n\n-----\n\nif platform.system().lower() in [ linux, darwin ]:\n\nINFO = \"\\033[1m\\033[36m[*]\\033[0m \"\n\nWARN = \"\\033[1m\\033[31m[!]\\033[0m \"\n\nelse:\n\nINFO = \"[*] \"\n\nWARN = \"[!] \"\n\n### Magical Constants\n\nDELTA = 0x9e3779b9\n\nSUMATION = 0xc6ef3720\n\nROUNDS = 32\n\nBLOCK_SIZE = 2 # number of 32-bit ints\n\nKEY_SIZE = 4\n\n### Functions ###\n\ndef encrypt_block(block, key, verbose=False):\n\n'''\n\nEncrypt a single 64-bit block using a given key\n\n@param block: list of two c_uint32s\n\n@param key: list of four c_uint32s\n\n'''\n\nassert len(block) == BLOCK_SIZE\n\nassert len(key) == KEY_SIZE\n\nsumation = c_uint32(0)\n\ndelta = c_uint32(DELTA)\n\nfor index in range(0, ROUNDS):\n\nsumation.value += delta.value\n\nblock[0].value += ((block[1].value << 4) + key[0].value) ^ (block[1].value + s\n\nblock[1] value += ((block[0] value << 4) + key[2] value) ^ (block[0] value + s\n\n\n-----\n\nreturn block\n\ndef decrypt_block(block, key, verbose=False):\n\n'''\n\nDecrypt a single 64-bit block using a given key\n\n@param block: list of two c_uint32s\n\n@param key: list of four c_uint32s\n\n'''\n\nassert len(block) == BLOCK_SIZE\n\nassert len(key) == KEY_SIZE\n\nsumation = c_uint32(SUMATION)\n\ndelta = c_uint32(DELTA)\n\nfor index in range(0, ROUNDS):\n\nblock[1].value -= ((block[0].value << 4) + key[2].value) ^ (block[0].value + s\n\nblock[0].value -= ((block[1].value << 4) + key[0].value) ^ (block[1].value + s\n\nsumation.value -= delta.value\n\nif verbose: print(\"\\t<-- Decrypting block round %d of %d\" % (index + 1, ROUNDS\n\nreturn block\n\ndef to_c_array(data):\n\n''' Converts a string to a list of c_uint32s '''\n\nc_array = []\n\nfor index in range(0, len(data)/4):\n\nchunk = data[index*4:index*4+4]\n\npacked = struct.unpack(\">L\", chunk)[0]\n\nc_array.append(c_uint32(packed))\n\nreturn c_array\n\ndef to_string(c_array):\n\n\n-----\n\noutput\n\nfor block in c_array:\n\noutput += struct.pack(\">L\", block.value)\n\nreturn output\n\ndef random_chars(nchars):\n\nchars = ''\n\nfor n in range(0, nchars):\n\nchars += choice(ascii_letters + digits)\n\nreturn chars\n\ndef add_padding(data, verbose=False):\n\npad_delta = 4 - (len(data) % 4)\n\nif verbose:\n\nprint(INFO + \"Padding delta: %d\" % pad_delta)\n\ndata += random_chars(pad_delta)\n\ndata += \"%s%d\" % (random_chars(3), pad_delta)\n\nreturn data\n\ndef encrypt(data, key, verbose=False):\n\n'''\n\nEncrypt string using TEA algorithm with a given key\n\n'''\n\ndata = add_padding(data, verbose)\n\ndata = to_c_array(data)\n\nkey = to_c_array(key.encode('ascii', 'ignore'))\n\ncipher_text = []\n\nfor index in range(0, len(data), 2):\n\nif verbose:\n\nprint(INFO + \"Encrypting block %d\" % index)\n\n\n-----\n\nblock = encrypt_block(block, key, verbose)\n\nfor uint in block:\n\ncipher_text.append(uint)\n\nif verbose:\n\nprint(INFO + \"Encryption completed successfully\")\n\nreturn to_string(cipher_text)\n\ndef decrypt(data, key, verbose=False):\n\ndata = to_c_array(data)\n\nkey = to_c_array(key.encode('ascii', 'ignore'))\n\nplain_text = []\n\nfor index in range(0, len(data), 2):\n\nif verbose:\n\nprint(INFO + \"Encrypting block %d\" % index)\n\nblock = data[index:index + 2]\n\ndecrypted_block = decrypt_block(block, key, verbose)\n\nfor uint in decrypted_block:\n\nplain_text.append(uint)\n\ndata = to_string(plain_text)\n\nif verbose:\n\nprint(INFO + \"Decryption compelted successfully\")\n\nreturn data\n\ndef get_key(password=''):\n\n''' Generate a key based on user password '''\n\nif 0 == len(password):\n\npassword = getpass.getpass(INFO + \"Password: \")\n\nsha = sha256()\n\nsha update(password + \"Magic Static Salt\")\n\n\n-----\n\nreturn ''.join([char for char in sha.hexdigest()[::4]])\n\ndef encrypt_file(fpath, key, verbose=False):\n\nwith open(fpath, 'rb+') as fp:\n\ndata = fp.read()\n\ncipher_text = encrypt(data, key, verbose)\n\nfp.seek(0)\n\nfp.write(cipher_text)\n\nfp.close()\n\ndef decrypt_file(fpath, key, verbose=False):\n\nwith open(fpath, 'rb+') as fp:\n\ndata = fp.read()\n\nplain_text = decrypt(data, key, verbose)\n\nfp.close()\n\nfp = open(fpath, 'w')\n\nfp.write(plain_text)\n\nfp.close()\n\n### UI Code ###\n\nif __name__ == '__main__':\n\nfrom argparse import ArgumentParser\n\nparser = ArgumentParser(\n\ndescription='Python implementation of the TEA cipher',\n\n)\n\nparser.add_argument('-e', '--encrypt',\n\nhelp='encrypt a file',\n\ndest='epath',\n\ndefault=None\n\n\n-----\n\nparser.add_argument('-d', '--decrypt',\n\nhelp='decrypt a file',\n\ndest='dpath',\n\ndefault=None\n\n)\n\nparser.add_argument('--verbose',\n\nhelp='display verbose output',\n\ndefault=False,\n\naction='store_true',\n\ndest='verbose'\n\n)\n\nargs = parser.parse_args()\n\nif args.epath is None and args.dpath is None:\n\nprint('Error: Must use --encrypt or --decrypt')\n\nelif args.epath is not None:\n\nprint(WARN + 'Encrypt Mode: The file will be overwritten')\n\nif os.path.exists(args.epath) and os.path.isfile(args.epath):\n\nkey = get_key()\n\nencrypt_file(args.epath, key, args.verbose)\n\nelse:\n\nprint(WARN + 'Error: target does not exist, or is not a file')\n\nelif args.dpath is not None:\n\nprint(WARN + 'Decrypt Mode: The file will be overwritten')\n\nif os.path.exists(args.dpath) and os.path.isfile(args.dpath):\n\nkey = get_key()\n\ndecrypt_file(args.dpath, key, args.verbose)\n\nelse:\n\nprint(WARN + 'Error: target does not exist or is not a file')\n\n\n-----\n\n#### [PREVIOUS][ (/Resources/News/Endgame-And-Morphick-Closing-Gap-]\n# \n\n#### Advanced-Cyber-Threat-Response)\n\n NEXT\n# [ (/Resources/News/Strategic-Intelligence)]\n\nRELATED POSTS\n\n|Col1| NEXT (/Resources/News/Strategic-Intelligence)|\n|---|---|\n\n\n**Morphick and Endgame Launch Ad... (/resources/news/morphick-and-endgame-**\n**launch-advanced-managed-endpoint-detection-response-managed-edr)**\n\nAlliance to help reduce strain on organizations to retain and train expert security talent Cincinnati,\nOH &...\n\nNEWS\n\nLEARN MORE [ (/RESOURCES/NEWS/MORPHICK-AND-ENDGAME-LAUNCH-ADVANCED-MANAG](http://www.morphick.com/resources/news/morphick-and-endgame-launch-advanced-managed-endpoint-detection-response-managed-edr)\n\n\n-----\n\n**Endgame and Morphick: Closing... (/resources/news/endgame-and-morphick-**\n**closing-gap-advanced-cyber-threat-response)**\n\nIn my recently released book Facing Cyber Threats Head On, I spend a lot of time discussing how\ncontemporary cyber...\n\nNEWS\n\nLEARN MORE [ (/RESOURCES/NEWS/ENDGAME-AND-MORPHICK-CLOSING-GAP-ADVANCED-CY](http://www.morphick.com/resources/news/endgame-and-morphick-closing-gap-advanced-cyber-threat-response)\n\n\n**RSA 2017 - Morphick (/rsa2017)**\n\nOne Service to prevent, detect, and respond to attacks Morphick closes the gap in the �ght\nagainst cyber threats by...\n\nNEWS\n\nLEARN MORE  (/RSA2017)\n\n\n**[Consumerization of Hacking (/resources/news/consumerization-hacking)](http://www.morphick.com/resources/news/consumerization-hacking)**\n\nWhen dealing with technology, there is at least one thing that is universally true: what was once\ndif�cult and...\n\nNEWS\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2017/2017.02.15.deep-dive-dragonok-rambo-backdoor/Deep%20Dive%20on%20the%20DragonOK%20Rambo%20Backdoor%20_%20Morphick%20Cyber%20Security.pdf"
+    ],
+    "report_names": [
+        "Deep Dive on the DragonOK Rambo Backdoor _ Morphick Cyber Security"
+    ],
+    "threat_actors": [
+        {
+            "id": "5ffe400c-6025-44c2-9aa1-7c34a7a192b0",
+            "created_at": "2023-01-06T13:46:38.469688Z",
+            "updated_at": "2025-03-27T02:00:02.84172Z",
+            "deleted_at": null,
+            "main_name": "DragonOK",
+            "aliases": [
+                "Moafee",
+                "BRONZE OVERBROOK",
+                "G0017",
+                "G0002",
+                "Shallow Taurus"
+            ],
+            "source_name": "MISPGALAXY:DragonOK",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "7ebda3c6-1789-4d84-97cf-47fb18a0cb28",
+            "created_at": "2022-10-25T15:50:23.78829Z",
+            "updated_at": "2025-03-27T02:00:55.547275Z",
+            "deleted_at": null,
+            "main_name": "DragonOK",
+            "aliases": [
+                "DragonOK"
+            ],
+            "source_name": "MITRE:DragonOK",
+            "tools": [
+                "PoisonIvy",
+                "PlugX"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "60d9c778-488b-459e-a2f6-9e48c607ba45",
+            "created_at": "2022-10-25T16:47:55.606462Z",
+            "updated_at": "2025-03-27T02:05:17.281676Z",
+            "deleted_at": null,
+            "main_name": "BRONZE OVERBROOK",
+            "aliases": [
+                "DragonOK ",
+                "Samurai Panda ",
+                "Temp.DragonOK ",
+                "Danti "
+            ],
+            "source_name": "Secureworks:BRONZE OVERBROOK",
+            "tools": [
+                " DDKONG",
+                " HelloBridge",
+                " IsSpace",
+                " NFLog Trojan",
+                " PLAINTEE",
+                " PlugX",
+                " Rambo",
+                "Aveo"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "340d1673-0678-4e1f-8b75-30da2f65cc80",
+            "created_at": "2022-10-25T16:07:23.552036Z",
+            "updated_at": "2025-03-27T02:02:09.85925Z",
+            "deleted_at": null,
+            "main_name": "DragonOK",
+            "aliases": [
+                "Bronze Overbrook",
+                "Shallow Taurus"
+            ],
+            "source_name": "ETDA:DragonOK",
+            "tools": [
+                "Agent.dhwf",
+                "CT",
+                "Chymine",
+                "Darkmoon",
+                "Destroy RAT",
+                "DestroyRAT",
+                "FF-RAT",
+                "FormerFirstRAT",
+                "Gen:Trojan.Heur.PT",
+                "HTran",
+                "HUC Packet Transmit Tool",
+                "HelloBridge",
+                "IsSpace",
+                "KHRAT",
+                "Kaba",
+                "Korplug",
+                "Mongall",
+                "NFlog",
+                "NewCT",
+                "NfLog RAT",
+                "PlugX",
+                "Poison Ivy",
+                "Rambo",
+                "RedDelta",
+                "SPIVY",
+                "Sogu",
+                "SysGet",
+                "TIGERPLUG",
+                "TVT",
+                "Thoper",
+                "TidePool",
+                "Xamtrav",
+                "brebsd",
+                "ffrat",
+                "pivy",
+                "poisonivy"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716501,
+    "ts_updated_at": 1743041766,
+    "ts_creation_date": 1488264041,
+    "ts_modification_date": 1488264041,
+    "files": {
+        "pdf": "https://archive.orkl.eu/6eaba42a64f8c2e1868e6edf441fffe082a4959d.pdf",
+        "text": "https://archive.orkl.eu/6eaba42a64f8c2e1868e6edf441fffe082a4959d.txt",
+        "img": "https://archive.orkl.eu/6eaba42a64f8c2e1868e6edf441fffe082a4959d.jpg"
+    }
+}

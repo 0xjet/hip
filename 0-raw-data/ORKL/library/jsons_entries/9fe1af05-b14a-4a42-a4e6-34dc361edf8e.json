@@ -1,0 +1,162 @@
+{
+    "id": "9fe1af05-b14a-4a42-a4e6-34dc361edf8e",
+    "created_at": "2023-01-12T15:09:15.821431Z",
+    "updated_at": "2025-03-27T02:05:35.604255Z",
+    "deleted_at": null,
+    "sha1_hash": "484c6ea639946e8966337afbe6f2a3f1d300daa8",
+    "title": "2022-04-27 - Reverse Engineering PsExec for fun and knowledge",
+    "authors": "",
+    "file_creation_date": "2022-05-27T23:04:16Z",
+    "file_modification_date": "2022-05-27T23:04:16Z",
+    "file_size": 5131160,
+    "plain_text": "# Reverse Engineering PsExec for fun and knowledge\n\n**[cybergeeks.tech/reverse-engineering-psexec-for-fun-and-knowledge/](https://cybergeeks.tech/reverse-engineering-psexec-for-fun-and-knowledge/)**\n\nSummary\n\nPsExec is a tool developed by Mark Russinovich that can be used to execute applications on\nremote systems. This post’s purpose is to give details about the inner workings of PsExec for\nresearch purposes only. This is not an extensive analysis of every argument that PsExec\nuses, and we only provide details about the general usage of the tool. The idea of Reverse\nEngineering PsExec was initially proposed in the following tweet:\n[https://twitter.com/DebugPrivilege/status/1512851119688531976.](https://twitter.com/DebugPrivilege/status/1512851119688531976)\n\n**Disclaimer: Our approach is not intended to break the Sysinternals Software License**\n[mentioned at https://docs.microsoft.com/en-us/sysinternals/license-terms. The binary was](https://docs.microsoft.com/en-us/sysinternals/license-terms)\nnot decompiled using IDA Pro (disassembled code only).\n\n**Analyst:** [@GeeksCyber](https://twitter.com/GeeksCyber)\n\nTechnical analysis\n\nSHA256:\n3B08535B4ADD194F5661E1131C8E81AF373CA322CF669674CF1272095E5CAB95\n\nThe blog post is split into two parts. The first part presents a situation where PsExec is\nrunning on a remote machine specified by a computer name or an IP address.\n\n**First process: psexec.exe \\\\192.168.164.130 -u test -p test -h cmd.exe**\n\nThe GetModuleFileNameW API is utilized to retrieve the path of the executable:\n\nFigure 1\nThe process extracts version information size for PsExec by calling the\nGetFileVersionInfoSizeW routine:\n\nFigure 2\n\n\n-----\n\nThe version information for PsExec is copied to a buffer using GetFileVersionInfoW:\n\nFigure 3\nThe translation array is retrieved from the version-information resource:\n\nFigure 4\nThe InternalName string is extracted by calling the VerQueryValueW function (see figure 5).\n040904B0 is a combination of 0x409 (English – United States language) and 0x4B0\n(UTF_16).\n\nFigure 5\nA similar approach is used to extract FileVersion, FileDescription, LegalCopyright, and\nCompanyName.\n\nThere is a function call to GetVersion, and the return value is expected to be < 0x80000000;\notherwise, it prints the “PsExec requires Windows NT/2000/XP/2003.” message:\n\nFigure 6\nThe file performs a comparison between the command line arguments and “/accepteula” (or\n“-accepteula”):\n\n\n-----\n\nFigure 7\n\nRegCreateKeyW is utilized to create the “Software\\Sysinternals\\PsExec” registry key\n(0x8000001 = HKEY_CURRENT_USER):\n\nFigure 8\nThe PsExec executable is looking for a registry value called “EulaAccepted”, which\ndetermines whether the user has accepted the EULA (License Agreement):\n\nFigure 9\nThe executable loads the “Riched32.dll” module into the address space of the process:\n\nFigure 10\nThe DialogBoxIndirectParamW routine is utilized to create a modal dialog box based on a\ndialog box template:\n\n\n-----\n\nFigure 11\nThe text of the window’s title bar is changed to “PsExec License Agreement” by calling the\nSetWindowTextW API:\n\nFigure 12\nThe binary obtains a handle to a control in the dialog box created above using GetDlgItem:\n\nFigure 13\nThe process sends the TTM_GETTOOLINFO (0x435) message to the window in order to get\nthe current tooltip definition:\n\nFigure 14\nThe anchor highlight setting for the window’s toolbar is set by sending the\n**TB_SETANCHORHIGHLIGHT (0x449) message to the window:**\n\nFigure 15\nThe PsExec License Agreement window appears on the screen, and we need to accept the\nterms in order to continue the execution:\n\n\n-----\n\nFigure 16\n\nThe PsExec executable destroys the modal dialog box created earlier using EndDialog:\n\nFigure 17\nRegSetValueExW is used to set the value of the “EulaAccepted” registry value to 1:\n\nFigure 18\nThe binary extracts the NetBIOS name of the local computer via a function call to\nGetComputerNameW:\n\nFigure 19\nThere is a second (redundant) call to GetVersion; however, a different message is printed\nthis time:\n\n\n-----\n\nFigure 20\nFor example, if an argument is too long, then PsExec displays a message that contains a\ntypo:\n\nFigure 21\n\nThe executable retrieves the command-line string for the process by calling the\nGetCommandLineW routine:\n\nFigure 22\nGetFullPathNameW is used to extract the full path and file name of PsExec:\n\nFigure 23\nThe file retrieves the address of “CreateRestrictedToken” and other export functions via a call\nto GetProcAddress:\n\nFigure 24\n\n\n-----\n\nThe function that contains the switch statement, which chooses an execution flow depending\non the command line arguments, is shown below (IDA Pro graph):\n\nFigure 25\n\nFirstly, every argument that starts with “-” is compared with “accepteula”, “low”,\n“belownormal”, “normal”, “abovenormal”, “high”, “realtime”, and “background”.\n\nEvery argument that starts with “-” is converted to uppercase using _toupper. The\n0xFFFFFFBF constant is added to the return value, and then the result is supposed to be\nbetween 0x0 and 0x17 (23 in decimal). Just based on this simple calculus, the “-y” and “-z”\narguments couldn’t be valid:\n\nFigure 26\nIn the case of invalid parameters, the process prints out the instructions for parameters:\n\n\n-----\n\nFigure 27\nThere is a comparison between the local computer name and the computer name\\IP address\npassed as a parameter:\n\nFigure 28\nThe NetIsServiceAccount function is used to test whether the user name passed as a\nparameter exists in the Netlogon store on the local machine:\n\n\n-----\n\nFigure 29\nThe executable creates an unnamed event object by calling the CreateEventW API:\n\nFigure 30\nA new function is added to the list of handler functions for the current process:\n\nFigure 31\nAn intermediary message that gives details about what action will occur next is displayed\n(these messages aren’t visible during normal execution because they’re deleted after the\naction is complete):\n\nFigure 32\nThe PsExec process makes a connection to the IPC$ share on the remote machine using\nthe WNetAddConnection2W API. The credentials passed as parameters must be valid on\nthe remote host:\n\nFigure 33\n\n\n-----\n\nThe binary determines the location of a resource called PSEXESVC via a function call to\nFindResourceW:\n\nFigure 34\nThe resource is loaded in memory, and a pointer to the specified resource in memory is\nretrieved by calling the following functions: LoadResource, SizeofResource, and\nLockResource (see figure 35).\n\nFigure 35\nThe executable creates a file called “PSEXESVC.exe” in the ADMIN$ share on the remote\nmachine:\n\nFigure 36\nThe above file is populated using the _fwrite function (see figure below) . The hash of the file\nis 6A6A9AA6ED43EB3F857392459C7B05A5A0DF89E00A3214D333949A561BCFF368 and\nwe’ll describe its purpose in the upcoming paragraphs.\n\nFigure 37\nThe binary retrieves a handle to the standard output device using GetStdHandle\n(0xFFFFFFF5 = STD_OUTPUT_HANDLE):\n\nFigure 38\nGetConsoleScreenBufferInfo is utilized to obtain information about the console screen buffer:\n\n\n-----\n\nFigure 39\nThe next action of PsExec is to start the PSEXESVC service on the remote host, as\nhighlighted below:\n\nFigure 40\nThe binary establishes a connection to the service control manager on the remote machine\nby calling the OpenSCManagerW routine (0xF003F = SC_MANAGER_ALL_ACCESS):\n\nFigure 41\nA new service called “PSEXESVC” is created by the process on the remote host (0xF01FF =\n**SERVICE_ALL_ACCESS, 0x10 = SERVICE_WIN32_OWN_PROCESS, 0x3 =**\n**SERVICE_DEMAND_START):**\n\nFigure 42\nThe number of milliseconds that have elapsed since the system was started is extracted via\na function call to GetTickCount:\n\nFigure 43\nThe executable opens the newly created service using OpenServiceW (0xF01FF =\n**SERVICE_ALL_ACCESS):**\n\n\n-----\n\nFigure 44\nThe “PSEXESVC” service is started using the StartServiceW routine:\n\nFigure 45\nThe file retrieves the current status of the above service by calling the\nQueryServiceStatus API:\n\nFigure 46\nThe next step of the execution flow is connecting with the PsExec service on the remote\ncomputer:\n\nFigure 47\nThe PsExec executables opens the “\\pipe\\PSEXESVC” pipe from the remote machine\n(0xC0000000 = GENERIC_READ | GENERIC_WRITE, 0x3 = OPEN_EXISTING):\n\nFigure 48\nThe pipe mode is modified by calling the SetNamedPipeHandleState API (0x2 =\n**PIPE_READMODE_MESSAGE):**\n\n\n-----\n\nFigure 49\nInterestingly, there are some indirect calls (jmp instructions instead of call instructions) that\nappear in the code. For example, the RtlInitUnicodeString function is used to initialize the\n“\\Device\\LanmanRedirector\\<Computer name\\IP Address>\\ipc$” Unicode string:\n\nFigure 50\nThe file opens the “\\\\192.168.164.130\\ipc$” share using NtOpenFile (0x100001 =\n**FILE_READ_DATA | SYNCHRONIZE, 0x1 = FILE_SHARE_READ, 0x90 =**\n**FILE_SYNCHRONOUS_IO_ALERT | FILE_CREATE_TREE_CONNECTION):**\n\nFigure 51\nPsExec obtains connection information by calling the NtFsControlFile function with a specific\ncontrol code 0x1401a3 = FSCTL_NETWORK_GET_CONNECTION_INFO:\n\nFigure 52\nThere is a second call to NtFsControlFile that sends another control code 0x1401AC =\n**FSCTL_NETWORK_DELETE_CONNECTION:**\n\n\n-----\n\nFigure 53\nThe major and minor version numbers of the OS are retrieved using the GetVersion API:\n\nFigure 54\nThe information extracted above is written to the “\\pipe\\PSEXESVC” pipe by calling\nTransactNamedPipe:\n\nFigure 55\nThe binary acquires a handle to a key container within a particular CSP (cryptographic\nservice provider) via a call to CryptAcquireContextW (0x18 = PROV_RSA_AES):\n\nFigure 56\nCryptCreateHash is utilized to create a hash object (0x8004 = CALG_SHA1):\n\nFigure 57\nThe executable hashes a buffer that contains 16 bytes (probably generated based on the\nGetTickCount call) and the “Sysinternals Rocks” string:\n\n\n-----\n\nFigure 58\nAn AES256 key is derived from the SHA1 hash using CryptDeriveKey (0x6610 =\n**CALG_AES_256):**\n\nFigure 59\nThe process identifier is obtained via a function call to GetCurrentProcessId:\n\nFigure 60\nAn event object called “Global\\PSEXESVC-<Computer Name\\IP address>-<Process ID>” is\ncreated:\n\nFigure 61\nPsExec displays a message that states the process name passed as a parameter is going to\nbe started on the remote host:\n\nFigure 62\nA buffer that contains the following information is encrypted using the AES256 algorithm\n(figure 63): size of the buffer – 8, process ID in hex, local computer name, and the process\nthat will be spawned.\n\n\n-----\n\nFigure 63\nThe encrypted buffer size and the encrypted buffer are written to the\n“\\\\192.168.164.130\\pipe\\PSEXESVC” pipe:\n\nFigure 64\n\nFigure 65\nPsExec waits until an instance of the “\\\\192.168.164.130\\pipe\\PSEXESVC-<Local computer\nname>-<Process ID>-stdin” pipe is available for connection (see figure below). This pipe and\nthe others that correspond to the standard output\\error are created by the PSEXESVC\nprocess started on the remote host. The entire execution flow will be explained in the 2nd\npart of the blog post, when we’ll also analyze the execution of that process.\n\nFigure 66\nThe executable opens the above named pipe using CreateFileW (0x40000000 =\n**GENERIC_WRITE, 0x3 = OPEN_EXISTING):**\n\n\n-----\n\nFigure 67\nA similar approach is applied to the “\\\\192.168.164.130\\pipe\\PSEXESVC-<Local computer\nname>-<Process ID>-stdout” and “\\\\192.168.164.130\\pipe\\PSEXESVC-<Local computer\nname>-<Process ID>-stderr” pipes, with only one notable different – the requested access is\n0x80000000 (GENERIC_READ).\n\nThe binary retrieves a pseudo handle for the current process via a call to\nGetCurrentProcess:\n\nFigure 68\nA new thread is created by the process. Please note that the starting address of the thread is\ndifferent than the actual relevant function, which is sub_404240 in this case (0x4 =\n**CREATE_SUSPENDED):**\n\nFigure 69\nThe thread handle is duplicated using DuplicateHandle (0x10000000 = GENERIC_ALL):\n\nFigure 70\n\n\n-----\n\nThe CreateThread API is used to create two threads that will eventually execute the\nsub_4043D0 and sub_404190 functions (0x4 = CREATE_SUSPENDED):\n\nFigure 71\n\nFigure 72\nThe PsExec executable changes the title for the console window using SetConsoleTitleW:\n\nFigure 73\nThe binary performs a call to WaitForMultipleObjects in order to suspend the process until\nthe above threads finish and the event object created above is in the signaled state:\n\nFigure 74\n**Thread activity – sub_404190 (handling the standard input)**\n\nThe thread obtains a handle to the standard input device by calling the GetStdHandle routine\n(0xFFFFFFF6 = STD_INPUT_HANDLE):\n\nFigure 75\n\n\n-----\n\nPsExec checks whether the event object is in the signaled state via a function call to\nWaitForSingleObject:\n\nFigure 76\nThe executable reads a character from the console input buffer using the ReadConsoleW\nfunction:\n\nFigure 77\nOur objective is to run the “whoami” command in the command prompt. As we can see\nbelow, the process encrypts the command byte-by-byte using the AES algorithm:\n\nFigure 78\nThe length of the encrypted data and then the actual data from above are written to the\n“\\\\192.168.164.130\\pipe\\PSEXESVC-<Local computer name>-<Process ID>-stdin” pipe:\n\nFigure 79\n\nFigure 80\n\n\n-----\n\nThe server end of the above pipe instance is disconnected from the process using\nDisconnectNamedPipe:\n\nFigure 81\n**Thread activity – sub_4043D0 (handling the standard error)**\n\nThe thread reads 4 bytes from the “\\\\192.168.164.130\\pipe\\PSEXESVC-<Local computer\nname>-<Process ID>-stderr” pipe:\n\nFigure 82\nThe server end of the above pipe instance is disconnected from the process using\nDisconnectNamedPipe:\n\nFigure 83\n**Thread activity – sub_404240 (handling the standard output)**\n\nThe thread reads 4 bytes from the “\\\\192.168.164.130\\pipe\\PSEXESVC-<Local computer\nname>-<Process ID>-stdout” pipe:\n\nFigure 84\nThe ReadFile API is utilized to read encrypted data from the above pipe:\n\nFigure 85\n\n\n-----\n\nThe buffer is decrypted using the AES algorithm via a call to CryptDecrypt:\n\nFigure 86\n\nFigure 87\n\nMultiByteToWideChar is used to map character strings to UTF-16 (wide character) strings:\n\nFigure 88\nThe process retrieves a handle to the standard output device using GetStdHandle\n(0xFFFFFFF5 = STD_OUTPUT_HANDLE):\n\nFigure 89\nThe buffer that was decrypted above is written to the standard output via a call to WriteFile:\n\nFigure 90\nFigure 91 reveals that we get a shell on the remote machine using the above method:\n\nFigure 91\n\n\n-----\n\nWe continue with the analysis of the main thread.\n\nThe PsExec process sets the event object to the signaled state using SetEvent:\n\nFigure 92\nThere is a second call to WaitForMultipleObjects that suspends the process until two of the\nabove threads finish:\n\nFigure 93\nThe process reads 4 bytes from the “\\\\192.168.164.130\\pipe\\PSEXESVC” pipe:\n\nFigure 94\nIn the case of successful command execution, the remote PSEXESVC.exe process sends\nthe result through the above pipe (in this case, the username).\n\nIn the case of an error, the binary retrieves the thread’s last-error code value using the\nGetLastError API:\n\nFigure 95\nThe error message is formatted by calling the FormatMessageA routine (0x1300 =\n**FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS |**\n**FORMAT_MESSAGE_ALLOCATE_BUFFER, 0x3B = ERROR_UNEXP_NET_ERR, 0x400**\n= LANG_USER_DEFAULT):\n\n\n-----\n\nFigure 96\nThe error message is written to the standard output:\n\nFigure 97\n\nFigure 98\nThe WNetCancelConnection2W API is utilized to cancel the existing network connection:\n\nFigure 99\n**Second process: psexec.exe -c -f -s win.exe**\n\nWe’ll only highlight the differences between running PsExec on the local machine and the\nfirst case.\n\nThe process retrieves the content of the %PATH% environment variable by calling the\nGetEnvironmentVariableW function:\n\nFigure 100\nGetFileAttributesW is used to obtain file system attributes for the specified file:\n\n\n-----\n\nFigure 101\nAn intermediary message that gives details about what action will occur next is displayed:\n\nFigure 102\nThe binary initializes the use of the Winsock DLL using the WSAStartup routine:\n\nFigure 103\nThe gethostname function is utilized to extract the standard host name for the local machine:\n\nFigure 104\nPsExec retrieves host information corresponding to the local host:\n\nFigure 105\nThe local IP address in hex is converted into an ASCII string in dotted-decimal format:\n\nFigure 106\nThe executable extracts the path of the System directory via a function call to\nGetSystemDirectoryW:\n\nFigure 107\n\n\n-----\n\nThe same workflow of extracting the PSEXESVC resource as in the first case is repeated.\nHowever, this time the parameter is C:\\Windows\\PSEXESVC.exe, which is created and\npopulated using _wfopen and _fwrite:\n\nFigure 108\nThe process obtains a handle to the standard output device using GetStdHandle\n(0xFFFFFFF5 = STD_OUTPUT_HANDLE):\n\nFigure 109\nGetConsoleScreenBufferInfo is used to retrieve information about the console screen buffer:\n\nFigure 110\nThe next step of the process is to start the PSEXESVC service on the local machine, as\nhighlighted below:\n\nFigure 111\nThe OpenSCManagerW API is utilized to establish a connection to the service control\nmanager on the local computer (0xF003F = SC_MANAGER_ALL_ACCESS):\n\nFigure 112\nA new service called “PSEXESVC” is created on the local host (0xF01FF\n= SERVICE_ALL_ACCESS, 0x10 = SERVICE_WIN32_OWN_PROCESS, 0x3\n= SERVICE_DEMAND_START):\n\n\n-----\n\nFigure 113\nThe PsExec process starts the new service by calling the StartServiceW API:\n\nFigure 114\nThe QueryServiceStatus routine is used to obtain the current status of the above service:\n\nFigure 115\nThe process prints the next step in the command line prompt:\n\nFigure 116\nThe binary opens the “\\pipe\\PSEXESVC” pipe from the local machine via a function call to\nCreateFileW (0xC0000000 = GENERIC_READ | GENERIC_WRITE, 0x3\n= OPEN_EXISTING):\n\nFigure 117\n\n\n-----\n\nDue to the fact that -c was passed as a parameter, the next step is copying the file\nspecified as a parameter to the local host:\n\nFigure 118\nThe file is copied to the ADMIN$ share using CopyFileW:\n\nFigure 119\nThe PsExec process will execute the binary from above, as described in figure 120.\n\nFigure 120\nWe’re going to describe the activity of the PSEXESVC.exe process that was started earlier.\nThe only difference between this case and the first one is that the process is running on the\nlocal machine instead of the remote host.\n\nThe PSEXESVC.exe process reads data from the “\\pipe\\PSEXESVC” pipe via a function call\nto ReadFile:\n\nFigure 121\nThe file decrypts the encrypted data using CryptDecrypt (see figure 122). The encryption\nalgorithm is AES256, and the key is derived based on the same approach as in the first\ncase.\n\nFigure 122\n\n\n-----\n\nThe resulting buffer contains the size of the buffer – 8, PsExec process ID in hex, local\ncomputer name, and the file that will be executed:\n\nFigure 123\n\nPSEXESVC.exe creates 3 named pipes called “\\\\.\\pipe\\PSEXESVC-<Local computer\nname>-<PSEXESVC Process ID>-stdin\\stdout\\stderr” using the\nCreateNamedPipeW function (0x80001 = FILE_FLAG_FIRST_PIPE_INSTANCE |\n**PIPE_ACCESS_INBOUND, 0x6 = PIPE_TYPE_MESSAGE |**\n**PIPE_READMODE_MESSAGE):**\n\nFigure 124\nConnectNamedPipe is used to enable the named pipe server process (PSEXESVC) to wait\nfor a client process (psexec.exe) to connect to the pipes:\n\nFigure 125\nThe OpenProcessToken function opens the access token associated with the current\nprocess (0xB = TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY):\n\nFigure 126\n\n\n-----\n\nThe binary creates a new access token that duplicates the above token by calling the\nDuplicateTokenEx routine (0x2000000 = MAXIMUM_ALLOWED, 0x1 = TokenPrimary):\n\nFigure 127\nThe Wow64DisableWow64FsRedirection API is utilized to disable file system redirection for\nthe current thread:\n\nFigure 128\nThe process forces the system not to display the critical-error-handler messages via a call to\nSetErrorMode (0x1 = SEM_FAILCRITICALERRORS):\n\nFigure 129\nThe CreatePipe function is repeatedly used to create three anonymous pipes:\n\nFigure 130\nThe write handles’ properties are modified using SetHandleInformation (0x1 =\n**HANDLE_FLAG_INHERIT):**\n\nFigure 131\nThe PSEXESVC process executes the file passed through the named pipe using the\nCreateProcessAsUserW API (0x414 = CREATE_UNICODE_ENVIRONMENT |\n**CREATE_NEW_CONSOLE | CREATE_SUSPENDED):**\n\n\n-----\n\nFigure 132\nThe execution of the above thread is resumed via a function call to ResumeThread. As in the\nfirst case, the process creates three similar threads, and their execution will not be detailed\nagain: sub_404B90, sub_404AD0, and sub_404D10.\n\nPsExec writes the confirmation that the new process was successfully started (including the\nprocess ID) and then waits for the process to finish:\n\nFigure 133\nThe “PSEXESVC” service is stopped by calling the ControlService API (0x1 =\n**SERVICE_CONTROL_STOP):**\n\nFigure 134\nThe executable deletes the “PSEXESVC” service via a call to DeleteService:\n\nFigure 135\nDeleteFileW is used to delete the PSEXESVC.exe file created earlier:\n\nFigure 136\nReferences\n\n\n-----\n\n[MSDN: https://docs.microsoft.com/en-us/windows/win32/api/](https://docs.microsoft.com/en-us/windows/win32/api/)\n\nPsExec: [https://docs.microsoft.com/en-us/sysinternals/downloads/psexec](https://docs.microsoft.com/en-us/sysinternals/downloads/psexec)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-04-27 - Reverse Engineering PsExec for fun and knowledge.pdf"
+    ],
+    "report_names": [
+        "2022-04-27 - Reverse Engineering PsExec for fun and knowledge.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536155,
+    "ts_updated_at": 1743041135,
+    "ts_creation_date": 1653692656,
+    "ts_modification_date": 1653692656,
+    "files": {
+        "pdf": "https://archive.orkl.eu/484c6ea639946e8966337afbe6f2a3f1d300daa8.pdf",
+        "text": "https://archive.orkl.eu/484c6ea639946e8966337afbe6f2a3f1d300daa8.txt",
+        "img": "https://archive.orkl.eu/484c6ea639946e8966337afbe6f2a3f1d300daa8.jpg"
+    }
+}

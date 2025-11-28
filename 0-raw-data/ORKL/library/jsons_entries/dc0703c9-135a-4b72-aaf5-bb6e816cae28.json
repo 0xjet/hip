@@ -1,0 +1,245 @@
+{
+    "id": "dc0703c9-135a-4b72-aaf5-bb6e816cae28",
+    "created_at": "2023-01-12T15:08:06.307803Z",
+    "updated_at": "2025-03-27T02:17:00.046445Z",
+    "deleted_at": null,
+    "sha1_hash": "4ee386413e72f0374e6e446bf801ad7e005b1584",
+    "title": "2021-04-01 - COVID-19 Phishing With a Side of Cobalt Strike",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:40:43Z",
+    "file_modification_date": "2022-05-28T19:40:43Z",
+    "file_size": 489514,
+    "plain_text": "# COVID-19 Phishing With a Side of Cobalt Strike\n\n**[domaintools.com/resources/blog/covid-19-phishing-with-a-side-of-cobalt-strike](https://www.domaintools.com/resources/blog/covid-19-phishing-with-a-side-of-cobalt-strike#)**\n\n## Background\n\n[Multiple adversaries, from criminal groups to](https://www.domaintools.com/resources/blog/covidlock-mobile-coronavirus-tracking-app-coughs-up-ransomware) [state-directed](https://resources.malwarebytes.com/files/2020/04/200407-MWB-COVID-White-Paper_Final.pdf) [entities, engaged in malicious](https://www.trendmicro.com/en_us/research/20/d/gamaredon-apt-group-use-covid-19-lure-in-campaigns.html)\ncyber activity using COVID-19 pandemic themes since March 2020. Adversaries continue\nto leverage the pandemic, arguably the most significant issue globally as of this writing, in\nvarious ways. Yet the most persistent avenue remains using COVID-19 themes for building\n[malicious document files. Examples include lures associated with Cloud Atlas-linked activity](https://www.domaintools.com/resources/blog/the-continuous-conundrum-of-cloud-atlas)\n[and broader targeting of health authorities.](https://www.domaintools.com/resources/blog/identifying-network-infrastructure-related-to-a-who-spoofing-campaign)\n\nGiven the continued significance of the pandemic and persistent use of pandemic themes\nby adversaries, DomainTools researchers continuously monitor for items leveraging COVID19 content for malicious purposes. While conducting this research, DomainTools analysts\nidentified an interesting malicious document with what appeared to be unique staging and\nexecution mechanisms.\n\n## Initial Phishing Document\n\nOn 23 March 2021, DomainTools researchers encountered the following suspicious\nMicrosoft Excel file:\n\n\n-----\n\n```\nName: Vaksin_COVID_19_top_10.xls\nMD5: 9de48973af4acb5f998731a527e8721d\nSHA256: 0be5cdea09936a5437e0fc5ef72703c4ce10c6ceb0734261d11b05b92aaba2ff\n\n```\nInterestingly, recent and patched versions of Microsoft Office fail to open the file due to\nflagged security concerns. In older versions, users are prompted to execute Visual Basic for\nApplications (VBA) macros on opening which executes the following commands:\n\n[The above VBA macro executes the Microsoft findstr utility to look for several strings inside](https://docs.microsoft.com/en-us/windows-server/administration/windows-commands/findstr)\nthe document file, then redirects the output (the lines containing the strings, if found) to the\nfile “C:\\users\\public\\cmd”. Finally, the script calls the [Microsoft FTP utility and passes the](https://docs.microsoft.com/en-us/windows-server/administration/windows-commands/ftp)\nnewly-created file “cmd”, to it for execution. At first, this appears confusing and of rather\nlimited utility, until the XLS file is further examined.\n\n### Nested Command Execution\n\nViewing strings within the file, the following sequence appears:\n\nThe script works to extract commands embedded in the original spreadsheet to execute\nfollow-on system commands. In this case, the script writes the text string beginning with\n“TVNDRgAAAA” to a temporary file. The string is a base64-encoded object, which decodes\nto a [Windows Cabinet file. The script unpacks the Cabinet file via the Expands utility, then](https://docs.microsoft.com/en-us/windows/win32/msi/cabinet-files)\nexecutes one of the contained files. The executed file has the following characteristics:\n```\nName: Interupts.exe\nMD5: e6ca15e1e3044278ea91e32ae147964b\nSHA256: c30fa389edb7e67e76e1a23da32e6396334c9ec09a0fd120958a2c66e826b06c\n\n```\n\n-----\n\nOn further examination, the executable is a signed, legitimate binary. Originally named\n[“fsstm.exe,” the file is an application from security company F-Secure. The executable is](https://www.f-secure.com/us-en)\nnot alone within the Cabinet file though—three additional files are inside:\n```\nFSPMAPI.dll\n'~Vaksin_COVID_19_top_10.xls'\nwasmedic.NCEx.nu.etl\n\n```\nThe first, a Dynamic Linked Library (DLL), matches the name for the F-Secure Management\nAgent library. However, while the legitimate library is signed by F-Secure, like “fsstm.exe”,\nthe copy included in the Cabinet file is not. Instead, it appears that the DLL is a modified\nversion of the legitimate library. Based on dynamic and behavioral analysis, when\nInterrupts.exe launches, it loads the unsigned FSPMAPI.dll library, a technique referred to\nas [DLL Search Order Hijacking. In this technique, an adversary takes advantage of the](https://attack.mitre.org/techniques/T1574/001/)\ndefault search order for requested DLL’s by placing a DLL with the same name as the\ndesired entity in a folder with higher priority in the DLL search order than the legitimate item\n(if present). In this case, all items are written to the “c:\\users\\public\\cmd\\'' location, and the\nlegitimate (but renamed) executable will load the modified (but properly named) DLL.\n\nWhen observed, execution loads the DLL which then accesses the file\n“wasmedic.NCEx.nu.etl”. The file consists of encoded instructions which are decoded by\nthe DLL and then executed.\n\n### Post-Execution Observations\n\n\n-----\n\nAs part of execution, three items take place:\n\n1. A decoy version of the document is displayed to the user, while other processes take\n\nplace in the background.\n2. The malware establishes persistence on the victim machine through the creation of a\n\n“Run” key in the system registry.\n3. The malicious binary begins communicating with adversary-controlled network\n\ninfrastructure via domain fronting.\n\nThe decoy document ties in to the original name of the dropper document: information on\nCOVID-19 vaccines. In this case, the spreadsheet shows a list of available COVID-19\nvaccines and their alleged rank in terms of safety.\n\n\n-----\n\nWhile this is displayed, the malware establishes a persistence mechanism via a Registry\n“Run” key for the current user:\n```\nHKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\wbemgine\n<Path to Extracted Cabinet Files>\\Interupts.exe\n\n```\nThe above will execute the “Interupts.exe” binary when the user under which the\nspreadsheet was originally opened logs on. This will launch the sequence of events\ndescribed here again, implying that the Command and Control (C2) items detailed below\nare intended to serve as a check-in for receiving further commands or passing control over\nto an active entity.\n\n### Network Activity\n\nObserved network activity appears initially directed toward a legitimate Google-hosted\nresource, such as the following captured PCAP:\n\n\n-----\n\nHowever, further analysis of malware traffic and follow-on monitoring show that traffic is\nredirected to another resource, particularly either of the following subdomains of the same\nprimary domain:\n```\nSecurity[.]rabityli[.]com\nCenter[.]rabityli[.]com\n\n```\nAt the time of analysis and using DomainTools Passive DNS (pDNS) information, both\nsubdomains resolved to the same IP address: 51.77.34[.]201.\n\nUnfortunately, registration details do not provide significant additional information for\nanalysis or pivoting purposes:\n\n\n-----\n\nBased on the above information, we can identify possible adversary tendencies in the\nRegistrar (Namecheap), Name Server (registrar-servers[.]com), and hosting (the IP address\nis hosted through OVH in Poland) but these on their own are too broad to draw any firm\nconclusions.\n\nFurther analysis of actual traffic and follow-on activity shows additional interesting activity\nwhich highlights adversary operations and tradecraft.\n\n### Cobalt Strike Activity\n\nReviewing behavior and network activity, the malware payload loaded and executed\nperforms [domain fronting using the legitimate googlevideo[.]com domain in order to mask](https://resources.infosecinstitute.com/topic/domain-fronting/)\nactual network traffic directed to the rabityli[.]com subdomains. Specifically, the sample\n[deploys Cobalt Strike Beacon](https://www.cobaltstrike.com/help-http-beacon) [using domain fronting via](https://blog.cobaltstrike.com/2017/02/06/high-reputation-redirectors-and-domain-fronting/) [Google services for Command and](https://www.cyberark.com/resources/threat-research-blog/red-team-insights-on-https-domain-fronting-google-hosts-using-cobalt-strike)\nControl (C2) and follow-on operations.\n\nDomainTools analysts identified and extracted the Cobalt Strike Beacon configuration\nallowing for further review and confirmation of activity:\n\n\n-----\n\nThe configuration matches observed behaviors and identifies expected follow-on activity\nonce the adversary takes control of the implant. Among other observations:\n\nUse of fail-over C2 servers on the two observed subdomains off the same root\ndomain, rabityli[.]com.\nConfiguration of the domain fronting activity through specified parameters reflecting\nYouTube and Google Video services.\n\n\n-----\n\n[Specifying the Windows Compact tool as the temporary process for injecting further](https://docs.microsoft.com/en-us/windows-server/administration/windows-commands/compact)\n[payloads as part of the Cobalt Strike Malleable C2 profile.](https://www.cobaltstrike.com/help-malleable-postex)\n\nOverall functionality for the malicious document is now clear: provide a decoy document to\nthe user which leverages a signed binary and a modified DLL to execute a Cobalt Strike\nBeacon payload.\n\n## Pivoting to More Samples\n\nProper analysis cannot depend on a single sample for further research, such as linking the\nactivity to a potential adversary or behavioral cluster. To learn more about this activity and\nits perpetrator, DomainTools analysts followed several investigative paths: looking at\nsimilarly-structured or -behaving documents, and identifying potential delivery vectors.\n\n### Finding Similar Documents\n\nDomainTools analysts first looked for documents using similar infrastructure or techniques.\nAnalysis of potentially linked infrastructure shows no other samples currently associated\nwith either the domains or IP address identified in the C2 activity described previously.\n\nShifting perspective, the document itself contains several interesting identifiers based on\nstructure and function. Specifically, there are string patterns of interest that can be used to\nidentify additional samples: the sequence of hard-coded commands in the Shell portion of\nthe VBA script; the “findstr” parameter of “TVNDRgAAAA” that corresponds to the\nembedded Cabinet file; and the Application.Wait parameter.\n\nSearching through several malware repositories, DomainTools researchers identified three\nadditional samples through the previously-mentioned criteria:\n\n\n**D**\n**O**\n\n\n**SHA256**\n\n\n**File**\n**Name**\n\n\n06e2d46bcc4498fe7272e073fa313a0f62fcef283ca4b107b8960896cfdb7601 N/A 1\n2\n\n\n7bc5fb6bdf7e89e01b091bfaee8e16f476f8ee6c53d973c70f99f5eaa2b74eee Danh\nsach\nung\nvien\nBo\nChinh\ntri va\nBan Bi\nthu\nkhoa\nXIII.xls\n\n\n0\n2\n\n\n-----\n\n**D**\n**O**\n\n\n**SHA256**\n\n\n**File**\n**Name**\n\n\n729f12b7ca02aa43785645aa14c72f414d6336a13d14ed190d634b5724d00a08 Danh\nsach\nung\nvien\nBCT\nva\nBBT\nkhoa\nXIII.xls\n\nOf the three recovered samples that contain the same VBA, two are nonfunctional. The\nthird, which first appears in late December 2020, utilizes the same functionality and\nmethodology as the document described above, but with a different C2 destination:\nfril[.]zarykon[.]com and haikyu[.]zarykon[.]com at 185.225.17[.]201. Examined in\n[DomainTools Iris, we see the same generic registration patterns as for the previously-](https://www.domaintools.com/products/iris)\nidentified domain:\n\n\n2\n2\n\n\n-----\n\nThe combination of infrastructure similarities and document structure combine to link these\nitems together as part of a campaign running from at least December 2020 through March\n2021.\n\n### Observing Similar Delivery Vectors\n\nAdopting a different perspective, the original document was previously available for\ndownload at the following location:\n```\nhttp://f14-group-zf[.]zdn[.]vn/84ee4531354cda12835d/6104412318511785684\n\n```\nFirst, this implies that the original document was delivered via a malicious link (potentially\nsent through a phishing message) as opposed to via an attachment to a message. Second,\nthe root domain—zdn[.]vn—appears to be a Vietnamese hosting or Dynamic DNS (DDNS)\nprovider. In this situation, “zdn[.]vn” would be a legitimate (if potentially untrustworthy) root\ndomain, off of which an adversary could create subdomains for malicious purposes.\nLooking at links to the subdomain “f14-group-zf” off of the “zdn[.]vn” primary domain,\nDomainTools researchers identified a further two documents:\n\n\n**SHA256**\n\n\n**File**\n**Name**\n\n\n6a4f055a5f682ca6aa8791485e780fbe1bacef435e229c9b5040f53612a18720 NHẬN\nXÉT\nTHỂ\nDỤC.xls\n\n3301b2d67a086ea0a53ff16e5428939d020b0aca9ff6d83fd4cc9b795141337d PGV\nTBC+\nNVKD\n(CN HBT\n2021).xls\n\nWhile both are macro-enabled and perform functions that look malicious, neither result in a\ncomplete exploitation chain leading to command and control activity or any other obvious\nactivity. Given similar naming conventions and hosting as the malicious documents\nanalyzed previously, these items are obviously suspicious but at present they appear to be\nincomplete in functionality.\n\n## Possible Links to “Goblin Panda”\n\nExamining the specific techniques deployed in the documents analyzed thus far, several\nitems stand out as having long-standing precedents. Most notably, the execution pathway\nused leveraging the legitimate F-Secure file is not merely known, but was previously\nobserved in intrusions over five years prior.\n\n\n-----\n\nIn 2014, [analysts at Verint documented a campaign using a modified version of media](http://cyber.verint.com/wp-content/uploads/2016/05/Maleware_Fake-Scandal-1.pdf)\nplayer software to deliver an similar loader via DLL path hijacking of the same F-Secure\n[signed binary. In this case, the ultimate payload was a version of PlugX malware.](https://attack.mitre.org/software/S0013/) German\ngovernment authorities later identified similar activity—again using the legitimate F-Secure\nbinary as an initial execution mechanism—that same year.\n\nThe 2014 activity is interesting given the reflections in the current campaign, but the\nidentified intrusions were never linked to any entity. Other aspects of the current campaign\nbear resemblance to a specific threat actor: Goblin Panda.\n\n[Goblin Panda is a threat actor linked to unspecified Chinese entities, and has been active in](https://www.crowdstrike.com/blog/meet-crowdstrikes-adversary-of-the-month-for-august-goblin-panda/)\nsome form since at least 2013. Goblin Panda operations include extensive phishing\n[campaigns with a focus on Southeast Asian entities, although historically this](https://sebdraven.medium.com/goblin-panda-continues-to-target-vietnam-bc2f0f56dcd6) actor has\nrelied on Rich Text Format (RTF) documents. While also potentially associated with more\nambitious activities, the group appears focused on espionage operations with an emphasis\non Southeast Asian countries such as Vietnam.\n\nAnother common artifact of historical Goblin Panda operations is the use of DLL search\n[order hijacking. As documented by multiple](https://www.fortinet.com/blog/threat-research/rehashed-rat-used-in-apt-campaign-against-vietnamese-organizations) [entities,](https://www.anomali.com/blog/multiple-chinese-threat-groups-exploiting-cve-2018-0798-equation-editor-vulnerability-since-late-2018) [Goblin Panda frequently uses this](https://www.fortinet.com/blog/threat-research/cta-security-playbook--goblin-panda)\ntechnique to execute malicious payloads with a degree of trust via the initial, signed\nexecutable. Although the specific F-Secure item is not previously observed in historical\nGoblin Panda operations, and the identified 2014 activity is not linked to the entity, the\noverall technique as a follow-on from phishing is common.\n\nFinally, the oddity of leveraging older vulnerabilities and execution pathways—as seen in\nthe malicious documents in this campaign—is associated with previous Goblin Panda\noperations. As [noted by Fortinet researchers, Goblin Panda previously leveraged](https://www.fortinet.com/blog/threat-research/cta-security-playbook--goblin-panda)\nvulnerabilities over five years old as part of campaigns, with the likely understanding that\nintended victim environments had not patched or moved on to more recent, secure\nsoftware.\n\nCombined with targeting emphasis—two of the four lure documents identified are in\nVietnamese, implying targeting of Vietnam—the set of behaviors appears linked to historical\n[Goblin Panda tendencies. Targeting is confirmed as official Vietnamese](http://vinhyen.vinhphuc.gov.vn/ct/cms/hethongchinhtri/Lists/VaBanChiDao/Attachments/1326/cv163.pdf) [government](http://sotttt.vinhphuc.gov.vn/ct/module/ttdh/Lists/ttvbdh/Attachments/434/CV46stttt2021.pdf)\nnotifications exist alerting authorities to some of the documents identified in the previous\nanalysis.\n\nYet there remain concerns with drawing a direct link to Goblin Panda. For one, Goblin\nPanda is historically linked to either using weaponized RTF files or dropping payloads via\nOLE objects in Office documents, whereas the base64-encoded Cabinet file is a unique\n(and arguably more primitive) behavior. Additionally, while the documents analyzed in this\nreport utilize a fairly standard Registry “Run” key persistence mechanism, Goblin Panda\n\n\n-----\n\npreviously utilized less common pathways such as weaponizing the startup folder for\nMicrosoft Word. Finally, there are no existing examples of Goblin Panda activity leveraging\nCobalt Strike as a post-intrusion tool.\n\nOverall the identified campaign contains some overlaps with previously identified behaviors\nand targeting associated with Goblin Panda. However, other items almost appear to be a\nregression from Goblin Panda activities and diverge noticeably from this group’s actions.\nBased on the available evidence, while some connection may exist between this campaign\nand historical Goblin Panda activity, the current phishing campaign does not appear highly\ncorrelated with the group.\n\n## Conclusion\n\nCOVID-19 themed phishing and malicious documents will almost certainly remain a feature\nof the threat landscape for the duration of the pandemic. In this specific case, COVID-19\nlures—along with other items using medical themes—appear linked to intrusion activity\ntargeting Vietnamese entities from late 2020 through early 2021. While the activity in\nquestion may be linked to Goblin Panda behaviors, at present insufficient evidence exists to\nmake such a link definitively.\n\nOverall, defenders and analysts must continuously remain vigilant of opportunistic\ncampaigns leveraging current event themes and similar mechanisms. Furthermore, the use\nof Cobalt Strike in this activity highlights a continuing trend of various adversaries—from\ncriminal actors to state-sponsored entities—migrating post-intrusion operations to this\nplatform. Finally, while the network infrastructure used in this campaign did not enable\nidentification of additional, linked infrastructure, analysis and examination of such items\nthrough domain enrichment at time of observation can identify suspicious indicators in\nregistrar and other characteristics which can enable more rapid discovery and response.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-04-01 - COVID-19 Phishing With a Side of Cobalt Strike.pdf"
+    ],
+    "report_names": [
+        "2021-04-01 - COVID-19 Phishing With a Side of Cobalt Strike.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "b740943a-da51-4133-855b-df29822531ea",
+            "created_at": "2022-10-25T15:50:23.604126Z",
+            "updated_at": "2025-03-27T02:00:55.505366Z",
+            "deleted_at": null,
+            "main_name": "Equation",
+            "aliases": [
+                "Equation"
+            ],
+            "source_name": "MITRE:Equation",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "02c9f3f6-5d10-456b-9e63-750286048149",
+            "created_at": "2022-10-25T16:07:23.722884Z",
+            "updated_at": "2025-03-27T02:02:09.945869Z",
+            "deleted_at": null,
+            "main_name": "Inception Framework",
+            "aliases": [
+                "ATK 116",
+                "Blue Odin",
+                "Clean Ursa",
+                "Cloud Atlas",
+                "Inception Framework",
+                "Operation Cloud Atlas",
+                "Operation RedOctober",
+                "The Rocra"
+            ],
+            "source_name": "ETDA:Inception Framework",
+            "tools": [
+                "Lastacloud",
+                "PowerShower",
+                "VBShower"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "77b28afd-8187-4917-a453-1d5a279cb5e4",
+            "created_at": "2022-10-25T15:50:23.768278Z",
+            "updated_at": "2025-03-27T02:00:55.5423Z",
+            "deleted_at": null,
+            "main_name": "Inception",
+            "aliases": [
+                "Inception Framework",
+                "Cloud Atlas"
+            ],
+            "source_name": "MITRE:Inception",
+            "tools": [
+                "PowerShower",
+                "VBShower",
+                "LaZagne"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "04a7ebaa-ebb1-4971-b513-a0c86886d932",
+            "created_at": "2023-01-06T13:46:38.784965Z",
+            "updated_at": "2025-03-27T02:00:02.91817Z",
+            "deleted_at": null,
+            "main_name": "Inception Framework",
+            "aliases": [
+                "ATK116",
+                "Blue Odin",
+                "Clean Ursa",
+                "Cloud Atlas",
+                "G0100"
+            ],
+            "source_name": "MISPGALAXY:Inception Framework",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "236a8303-bf12-4787-b6d0-549b44271a19",
+            "created_at": "2024-06-04T02:03:07.966137Z",
+            "updated_at": "2025-03-27T02:05:17.410356Z",
+            "deleted_at": null,
+            "main_name": "IRON TILDEN",
+            "aliases": [
+                "Aqua Blizzard ",
+                "Armageddon",
+                "Blue Otso ",
+                "BlueAlpha ",
+                "Dancing Salome ",
+                "Gamaredon",
+                "Gamaredon Group",
+                "Hive0051 ",
+                "Primitive Bear ",
+                "Shuckworm ",
+                "Trident Ursa ",
+                "UAC-0010 ",
+                "UNC530 ",
+                "WinterFlounder ",
+                "ACTINIUM "
+            ],
+            "source_name": "Secureworks:IRON TILDEN",
+            "tools": [
+                "Pterodo"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "2c7ecb0e-337c-478f-95d4-7dbe9ba44c39",
+            "created_at": "2022-10-25T16:07:23.690871Z",
+            "updated_at": "2025-03-27T02:02:09.921431Z",
+            "deleted_at": null,
+            "main_name": "Goblin Panda",
+            "aliases": [
+                "1937CN",
+                "Conimes",
+                "Cycldek",
+                "Goblin Panda"
+            ],
+            "source_name": "ETDA:Goblin Panda",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "Agent.dhwf",
+                "BackDoor-FBZT!52D84425CDF2",
+                "BlueCore",
+                "BrowsingHistoryView",
+                "ChromePass",
+                "CoreLoader",
+                "Custom HDoor",
+                "Destroy RAT",
+                "DestroyRAT",
+                "DropPhone",
+                "FoundCore",
+                "HDoor",
+                "HTTPTunnel",
+                "JsonCookies",
+                "Kaba",
+                "Korplug",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "NBTscan",
+                "NewCore RAT",
+                "PlugX",
+                "ProcDump",
+                "PsExec",
+                "QCRat",
+                "RainyDay",
+                "RedCore",
+                "RedDelta",
+                "RoyalRoad",
+                "Sisfader",
+                "Sisfader RAT",
+                "Sogu",
+                "TIGERPLUG",
+                "TVT",
+                "Thoper",
+                "Trojan.Win32.Staser.ytq",
+                "USBCulprit",
+                "Win32/Zegost.BW",
+                "Xamtrav",
+                "ZeGhost",
+                "nbtscan"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "7d553b83-a7b2-431f-9bc9-08da59f3c4ea",
+            "created_at": "2023-01-06T13:46:39.444946Z",
+            "updated_at": "2025-03-27T02:00:03.093712Z",
+            "deleted_at": null,
+            "main_name": "GOBLIN PANDA",
+            "aliases": [
+                "Conimes",
+                "Cycldek"
+            ],
+            "source_name": "MISPGALAXY:GOBLIN PANDA",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536086,
+    "ts_updated_at": 1743041820,
+    "ts_creation_date": 1653766843,
+    "ts_modification_date": 1653766843,
+    "files": {
+        "pdf": "https://archive.orkl.eu/4ee386413e72f0374e6e446bf801ad7e005b1584.pdf",
+        "text": "https://archive.orkl.eu/4ee386413e72f0374e6e446bf801ad7e005b1584.txt",
+        "img": "https://archive.orkl.eu/4ee386413e72f0374e6e446bf801ad7e005b1584.jpg"
+    }
+}

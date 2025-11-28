@@ -1,0 +1,62 @@
+{
+    "id": "65831f57-55d5-49c0-aa12-359e3ca970da",
+    "created_at": "2023-01-12T15:05:14.560774Z",
+    "updated_at": "2025-03-27T02:09:18.786049Z",
+    "deleted_at": null,
+    "sha1_hash": "ea15763421b40c09100093b9eb1942725f7282df",
+    "title": "2020-07-23 - WastedLocker Ransomware- Abusing ADS and NTFS File Attributes",
+    "authors": "",
+    "file_creation_date": "2022-05-29T01:19:50Z",
+    "file_modification_date": "2022-05-29T01:19:50Z",
+    "file_size": 964387,
+    "plain_text": "# WastedLocker Ransomware: Abusing ADS and NTFS File Attributes\n\n**[labs.sentinelone.com/wastedlocker-ransomware-abusing-ads-and-ntfs-file-attributes/](https://labs.sentinelone.com/wastedlocker-ransomware-abusing-ads-and-ntfs-file-attributes/)**\n\nJim Walter\n\n## Background\n\nWastedLocker is a relatively new ransomware family which has been tracked in the wild\nsince April/May 2020. The name comes from the ‘wasted’ string which is appended to\n[encrypted files upon infection. Similar to families like Maze and](https://www.sentinelone.com/wp-content/uploads/maze-ransomware-update-extorting-and-exposing-victims/) [NetWalker, WastedLocker](https://www.sentinelone.com/wp-content/uploads/netwalker-ransomware-no-respite-no-english-required/)\nhas been attacking high-value targets across numerous industries. Their campaigns have\ntargeted several United States-based Fortune 500 companies as well.\n\n## Leveraging SocGholish & Cobalt Strike\n\nPayload delivery is achieved through multiple methodologies. Once attackers have gained a\nfoothold in the targeted environment, Cobalt Strike is often used to directly deliver the\nransomware payloads. We have also seen the actors behind WastedLocker leverage the\n[SocGholish framework, which is a JavaScript-based framework that allows attackers to](https://isc.sans.edu/forums/diary/Fake+browser+update+pages+are+still+a+thing/25774/)\nspread malware payloads masquerading as system or software updates.\n\nThe SocGholish toolset has been observed in use with a plethora of malware campaigns\nsince 2018. That is to say, it is not exclusive to WastedLocker. In the past, SocGholish has\nbeen used with NetSupport RAT, [Lokibot, and other commodity malware types and families.](https://www.sentinelone.com/wp-content/uploads/threat-intel-update-cyber-attacks-leveraging-the-covid-19-coronavirus-pandemic/)\n\n\n-----\n\nWebsites containing the malicious JavaScript code can then be used to deliver the malware\nonce users are enticed into visiting the site(s).\n\nOnce victims have been compromised via SocGholish, Cobalt Strike is used to laterally\nmove as well as gain additional profile data on the targeted hosts or environment. Prior to\ndelivering the WastedLocker payload, attackers typically disable core Windows Defender\n[features, as well as deleting Volume Shadow Copies. Additional LOTL-style tools are also](https://www.sentinelone.com/blog/how-do-attackers-use-lolbins-in-fileless-attacks/)\noften observed in the campaigns. For example, in some cases PsExec will be used to initiate\nthe launch of the WastedLocker ransomware. PowerShell and WMIC are also sometimes\nutilized in profiling and tuning the environment.\n\n## Hiding via NTFS’ Alternate Data Stream\n\nWastedLocker has an affinity for running with administrative privileges. If the payload is\nexecuted with non-administrative permissions, it will attempt to elevate privileges via UAC\nbypas (Mocking Trusted Directories).\n\nOnce elevated, the ransomware will write a copy of a random file from System32 to the\n```\n%APPDATA% directory. The newly copied file will have a random and hidden filename. This\n\n```\nprocess allows for the ransomware to copy itself into the file by way of an alternate data\nstream (ADS).\n\n\n-----\n\nThis is followed by the creation of a new folder in `%TEMP% which contains copies of`\nWINMM.DLL and WINSAT.EXE. The `%TEMP% copy of WINMM.DLL is then leveraged to`\nexecute the ransomware from the previously generated alternate data stream.\n\n## WastedLocker Encryption Routine\n\nThe encryption style does not differ significantly from other prominent ransomware families.\nWastedLocker will attempt to encrypt files on local as well as remote (network adjacent and\naccessible) and removable drives. Once the eligible drives are located, the ransomware will\nbegin the encryption process.\n\nAll file types are potential candidates for encryption; however, the ransomware does contain\na ‘whitelist’ of sorts, with directories and extensions to exclude from encryption. This\nfunctionality can vary across campaigns. Files are encrypted via AES (Cipher Block Chaining\nmode + IV / Initialization Vector) with keys generated for each encrypted file. The AES keys\n(+IV) are then encrypted using a RSA-4096 public key.\n\nThe ransom notes contain a base64 representation of the RSA public key. Encrypted files\nwill be renamed with a combination of the targeted companies name along with the string\n“wasted”. For example, if the non-existent company “Turbo Chicken Audio” were infected, the\nfiles would look something like “file.pdf.turbochickenaudiowasted’ (from file.pdf). The\nexample below shows a set of encrypted files post-infection (partially redacted for privacy).\n\n\n-----\n\nFor each encrypted file, an additional file will be created with “_info” appended to the end of\nthe file extension. These individual files are the ransom notes. Each ransom note also\ncontains the company/target name and an encoded copy of the public key specific to the\nhost. This is in addition to very limited instructions on how to engage the attackers and\npotentially “get the price for” the encrypted data. Victims are instructed to email the attackers\nfor further instructions.\n\nThe email addresses provided are associated with public, secure, email providers (ex:\nProtonMail, Eclipso, Tutanota, and Airmail). An example ransom note is below (partially\n_redacted for privacy)._\n\n\n-----\n\n## Additional Details\n\nIt is also important to note that some analyzed samples support specific command-line\nparameters. The following are examples of supported parameters:\n```\n-p (path) Encrypt specified folder/directory before continuing to the rest of the drive/device\n-r Multi-Purpose: Delete VSS, create a copy of the payload in SYSTEM32, create the\n\n```\nransomware’s service entry and execute\n```\n-f (path) Only encrypt file in the specified directory/folder\n\n```\nMost samples analyzed execute with the `-r parameter by default, such as:`\n\n```\nC:UsersadminxAppDataRoamingNetwork:bin -r\n\n```\n\nPersistence is achieved via system service. However, the service is removed once the\nencryption process has completed. Additional tools are used to manipulate the file system\nand suppress any requests for user input and/or confirmation. For example, `choice.exe is`\nleveraged to set file attributes as well as delete files (the service executable) when needed.\n\nExample:\n```\ncmd.exe (choice.exe) /c choice /t 10 /d y & attrib -h\n\"C:UsersxxxxxxAppDataRoamingIndex\" & del \"C:UsersxxxxxxAppDataRoamingIndex\"\n\n```\nExample:\n\n```\ncmd.exe (choice.exe)\" & del \"C:UsersxxxxxMusicwastlock_5.exe\"\n\n```\n\n-----\n\nUpon launching, and as part of the `-r parameter, the ransomware process has to take`\nownership of the copy of the payload dropped into SYSTEM32. This is achieved via\ncommands similar to the following:\n\n```\ntakeown.exe /F C:Windowssystem32Setup2.exe\n\n```\n\nBasic VSSADMIN commands are used for deletion of Volume Shadow copies; for example:\n\n```\nvssadmin.exe Delete Shadows /All /Quiet\n\n```\n\n## Conclusion\n\nWastedLocker is just one more example of the highly-aggressive ransomware families\n[following in the footsteps of REvil, NetWalker, and others. Prevention, in these attacks, is](https://www.sentinelone.com/wp-content/uploads/netwalker-ransomware-no-respite-no-english-required/)\nabsolutely critical. Stopping the attackers before they gain any traction is the most effective\nway to protect you and your sensitive data. This will especially be true should the actors\n[behind WastedLocker decide to leak the data of their victims. SentinelOne’s Endpoint](https://www.sentinelone.com/platform/)\nProtection and Singularity platform are the most robust and powerful tools at the disposal of\ntoday’s defenders.\n\n## Indicators & IOCs\n\n**MITRE ATT&CK**\n[Hide Artifacts: Hidden Files and Directories T1564](https://attack.mitre.org/techniques/T1564/001/)\nHide Artifacts: NTFS File Attributes [T1564](https://attack.mitre.org/techniques/T1564/004/)\n[System Services: Service Execution T1569](https://attack.mitre.org/techniques/T1569/002/)\n[Abuse Elevation Control Mechanism: Bypass User Access Control T1548](https://attack.mitre.org/techniques/T1548/002/)\nNative API [T1106](https://attack.mitre.org/techniques/T1106/)\n[Command and Scripting Interpreter T1059](https://attack.mitre.org/techniques/T1059/)\n[File Permissions Modification T1222](https://attack.mitre.org/techniques/T1222)\n[Command-Line Interface T1059](https://attack.mitre.org/techniques/T1059)\nData Encrypted for Impact [T1486](https://attack.mitre.org/techniques/T1486)\n[Inhibit System Recovery T1490](https://attack.mitre.org/techniques/T1490)\n\n**Hashes SHA256**\ned0632acb266a4ec3f51dd803c8025bccd654e53c64eb613e203c590897079b3\ne3bf41de3a7edf556d43b6196652aa036e48a602bb3f7c98af9dae992222a8eb\nbcdac1a2b67e2b47f8129814dca3bcf7d55404757eb09f1c3103f57da3153ec8\naa05e7a187ddec2e11fc1c9eafe61408d085b0ab6cd12caeaf531c9dca129772\n9056ec1ee8d1b0124110e9798700e473fb7c31bc0656d9fc83ed0ac241746064\n8897db876553f942b2eb4005f8475a232bafb82a50ca7761a621842e894a3d80\n887aac61771af200f7e58bf0d02cb96d9befa11deda4e448f0a700ccb186ce9d\n97a1e14988672f7381d54e70785994ed45c2efe3da37e07be251a627f25078a7\n\n\n-----\n\n85f391ecd480711401f6da2f371156f995dd5cff7580f37791e79e62b91fd9eb\n7a45a4ae68992e5be784b4a6da7acd98dc28281fe238f22c1f7c1d85a90d144a\n5cd04805f9753ca08b82e88c27bf5426d1d356bb26b281885573051048911367\n\n**Hashes SHA1**\n9292fa66c917bfa47e8012d302a69bec48e9b98c\nbe59c867da75e2a66b8c2519e950254f817cd4ad\n70c0d6b0a8485df01ed893a7919009f099591083\n4fed7eae00bfa21938e49f33b7c6794fd7d0750c\n763d356d30e81d1cd15f6bc6a31f96181edb0b8f\ne13f75f25f5830008a4830a75c8ccacb22cebe7b\nb99090009cf758fa7551b197990494768cd58687\n809fbd450e1a484a5af4ec05c345b2a7072723e7\ne62d3a4fe0da1b1b8e9bcff3148becd6d02bcb07\n91b2bf44b1f9282c09f07f16631deaa3ad9d956d\nf25f0b369a355f30f5e11ac11a7f644bcfefd963\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-07-23 - WastedLocker Ransomware- Abusing ADS and NTFS File Attributes.pdf"
+    ],
+    "report_names": [
+        "2020-07-23 - WastedLocker Ransomware- Abusing ADS and NTFS File Attributes.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535914,
+    "ts_updated_at": 1743041358,
+    "ts_creation_date": 1653787190,
+    "ts_modification_date": 1653787190,
+    "files": {
+        "pdf": "https://archive.orkl.eu/ea15763421b40c09100093b9eb1942725f7282df.pdf",
+        "text": "https://archive.orkl.eu/ea15763421b40c09100093b9eb1942725f7282df.txt",
+        "img": "https://archive.orkl.eu/ea15763421b40c09100093b9eb1942725f7282df.jpg"
+    }
+}

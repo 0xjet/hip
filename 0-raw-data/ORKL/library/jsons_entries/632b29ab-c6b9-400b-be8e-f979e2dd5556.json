@@ -1,0 +1,142 @@
+{
+    "id": "632b29ab-c6b9-400b-be8e-f979e2dd5556",
+    "created_at": "2023-01-12T15:01:32.927464Z",
+    "updated_at": "2025-03-27T02:09:30.091481Z",
+    "deleted_at": null,
+    "sha1_hash": "5895a54ce9ac595099a526e61dcd4d75b07c1fc5",
+    "title": "2018-07-23 - Deobfuscating Emotet’s powershell payload",
+    "authors": "",
+    "file_creation_date": "2022-05-28T05:11:08Z",
+    "file_modification_date": "2022-05-28T05:11:08Z",
+    "file_size": 94644,
+    "plain_text": "# Deobfuscating Emotet’s powershell payload\n\n**malfind.com/index.php/2018/07/23/deobfuscating-emotets-powershell-payload/**\n\nEmotet is a banking trojan, targeting computer users since around 2014. During that time it has changed its structure a lot. Lately we see\nmassive emotet spam campaigns, using multiple phishing methods to bait users to download and launch a malicious payload, usually in the\nform of a weaponized Word document.\n\n\nEmotet's chain of infection\n\n\nEmotet’s chain of infection\nFirst user receives a fake e-mail, trying to persuade him to click on the link, where the weaponized doc is being downloaded. Document is then\ntrying to trick user to enable content and allow macros in order to launch embedded VBA code. VBA is obfuscated. We can also deobfuscate\nit, but in the end it launches a powershell command. Let’s skip VBA deobuscation today, as I want to focus on powershell. We can obtain\npowershell command launched by VBA code without deobfuscation, by using any sandbox with powershell auditing.\n\n\n-----\n\nTypical Emotet\n\ndocument\nThe powershell code itself is obfuscated as well. The problem with just launching it in the virtual environment is that we probably won’t see\nevery network IoC this way. Of course there are ways to do it (just block dns requests, and malware should try every fail-over domain), but in\nmy opinion if there is time to do it – it is always better to deobfuscate code to better understand it.\n\n_Obfuscation is a way to make a malicious code unreadable. It has two purposes. First to trick antivirus signatures, second to make analysis of_\n_the code harder and more time-consuming._\n\nIn this post, I want to show three ways of obfuscation used by Emotet malware since December 2017.\n\n## 1. String replace method\n\nThis method uses multiple powershell’s “replace” operators to swap a bunch of junk strings with characters that in the end produce a valid\npowershell code\n\n\n-----\n\nExample 1. Code obfuscated with replace string\n\nmethod\nOf course you can deobfuscate it manually in any text editor, just by replacing every string with its equivalent or you can speed up a process\nwith correct regular expression. In the end you can put this regular expression in the python script and automate it completely. There are just\nfew things to consider when implementing it in python:\n\nString concatenations. These little ‘+’ can mess up with our regexp, so they have to be handled first\nChar type projection – sometimes for additional obfuscation, strings to be replaced are not typed directly to the powershell code, but they\nare converted from int to char. We have to handle that as well\nReplacing one part of the code can “generate” new replace operators – this is because “junk string” can be in the middle of replace\noperator (for example: -replFgJace, where FgJ is a string to be replaced with empty string). For this reason it is best to put regexp in the\nloop and perform replace operation as long as there is something to replace\n\n\n-----\n\nDeobfuscated code from example 1\n\n## 2. String compression\n\nThis method is quite simple as it uses powershell’s built-in class DeflateStream to decompress and execute a compressed stream.\n\n\n-----\n\nExample 2. Decompress string obfuscation\n\nmethod\nThe easiest way to deobfuscate this is to use powershell to simply decompress the string. Just remember to remove command between\n**first two parenthesis – its a an obfuscated Invoke-Expression cmdlet that will execute the code on your computer! Also, always use**\n**a safe (possibly disconnected from the network, unless you know what you are doing), virtualized environment when dealing with**\n**malicious** **code.**\n\n\n-----\n\nDecompression method\n\ndeobfuscation in powershell\nBut what if we’d like to have a portable python script that can deal with this type of deobfuscation? If we look at MSDN documentation, then we\nwill see that DeflateStream class follows RFC 1951 Deflate data format specification, and can actually be decompressed by using zlib library.\nThere is one catch: zlib’s decompress method by default expects correct zlib file header, which DeflateStream does not have, as it is not a file\nbut a stream. To force zlib to decompress a stream we can either add a header to it or simply pass a -zlib.MAX_WBITS (there is a minus at the\nbeginning!) argument to decompress function. zlib.MAX_WBITS (which is 15) argument with a negative value informs decompress function\nthat it should skip header bits.\n\n## 3. ASCII codes array\n\nHow does the computer represents strings? Well that is simple, as numbers. But numbers are much harder to read for human than strings, so\nthese numbers are later changed to strings by every program. But if obfuscation’s goal is to make code harder to read, then why don’t use this\ntrick to hide a true purpose of malicious code? This is the third obfuscation method I will present.\n\n\n-----\n\nExample 3. Ascii code array obfuscation method\n\nOn the example above we can see a long string, with a lot of numbers in it. If you are familiar with ASCII codes, you will probable recognize\nthem instantly. If not then your hint should be a type projection after a pipe that converts every given string from table first to int then to char.\nMethod presented in example 3, also uses a split operator, that splits a string by a given separator to further obfuscate the code. I saw\nsamples where a pure char array is used instead of a string that had to be split.\n\nTo deobfuscate this in python simply use similar split method (found in re library), and then map numbers to chars by using chr() function.\n\n\n-----\n\nAscii array with split method deobfuscation in python\n\n## A little more about the code\n\nSo now we deobfuscated the code, what we can gain from it? We can clearly see that this is a simple dropper, that uses WebClient class to\nconnect to hardcoded domains, download a binary to %TEMP% directory and then launch it. The break instruction combined with try-catch\nclause assures that this script will connect to the domains provided until a download operation is completed successfully. So if it gets a binary\nfrom the first domain on the list, we will never see others in dynamic analysis. This is why deobfuscation is important.\n\n## Invoke-Expression\n\nMany obfuscated powershell scripts (not only from Emotet) are using Invoke-Expression cmdlet to run an obfuscated string as a code. This is\nvery important when we are working with powershell malicious code in the windows console, because missed invoke-expression cmdlet will\nlaunch a code instead of just displaying it. Therefore it is always important to look for disguised Invoke-Expression cmdlets. Why disguised?\nBecause they are not always easy to spot. Firstly, powershell allows for usage of aliases for long commands. So for example built-in alias for\nInvoke-Expression is “iex”. But this is not the end! Powershell also allows to concatenate strings and use them as cmdlets, and strings can be\nstored in variables. You see the problem?\n\nLet’s return to example with DeflateString compression. there is a following line at the beginning of the script:\n```\n$vERBOsepreFErEncE.tOStRIng()[1,3]+'X'-JoIn''\n\n```\nIt takes a value of a powershell’s built-in variable $verbosepreference, converts it to string, takes 2nd and 4th char, concatenates it with ‘X’ and\nconcatenates them all together to one string using join operator.\n\nWhat is the default value of $verbosepreference? It turns out it is ‘SilentlyContinue’. Second and forth chars of this string are, you guessed it,\n‘i’ and ‘e’. When we concatenate them with ‘x’ we receive ‘iex’ – alias of Invoke-Expression cmdlet. Creepy? Kinda. this kind of tricks in\npowershell are very popular among malware developers.\n\n\n-----\n\nInvoke-Expression obfuscation\n\nexample\n**Homework: Can you spot an Invoke-Expression cmdlet in third example (ASCII table)?**\n\n## Deobfuscation script for Emotet\n\nI put my deobfuscation script for Emotet on GitHub. You can use it and modify it as you wish. For now it automatically detects and\ndeobfuscates all obfuscation methods described in this post.\n\n[https://github.com/lasq88/deobfuscate/](https://github.com/lasq88/deobfuscate/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2018/2018-07-23 - Deobfuscating Emotet’s powershell payload.pdf"
+    ],
+    "report_names": [
+        "2018-07-23 - Deobfuscating Emotet’s powershell payload.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "b740943a-da51-4133-855b-df29822531ea",
+            "created_at": "2022-10-25T15:50:23.604126Z",
+            "updated_at": "2025-03-27T02:00:55.505366Z",
+            "deleted_at": null,
+            "main_name": "Equation",
+            "aliases": [
+                "Equation"
+            ],
+            "source_name": "MITRE:Equation",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "08623296-52be-4977-8622-50efda44e9cc",
+            "created_at": "2023-01-06T13:46:38.549387Z",
+            "updated_at": "2025-03-27T02:00:02.859535Z",
+            "deleted_at": null,
+            "main_name": "Equation Group",
+            "aliases": [
+                "Tilded Team",
+                "EQGRP",
+                "G0020"
+            ],
+            "source_name": "MISPGALAXY:Equation Group",
+            "tools": [
+                "EquationLaser",
+                "EquationDrug",
+                "DoubleFantasy",
+                "TripleFantasy",
+                "GrayFish"
+            ],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "e0fed6e6-a593-4041-80ef-694261825937",
+            "created_at": "2022-10-25T16:07:23.593572Z",
+            "updated_at": "2025-03-27T02:02:09.879892Z",
+            "deleted_at": null,
+            "main_name": "Equation Group",
+            "aliases": [
+                "APT-C-40",
+                "Platinum Colony",
+                "Tilded Team"
+            ],
+            "source_name": "ETDA:Equation Group",
+            "tools": [
+                "Bvp47",
+                "DEMENTIAWHEEL",
+                "DOUBLEFANTASY",
+                "DanderSpritz",
+                "DarkPulsar",
+                "DoubleFantasy",
+                "DoubleFeature",
+                "DoublePulsar",
+                "Duqu",
+                "EQUATIONDRUG",
+                "EQUATIONLASER",
+                "EQUESTRE",
+                "Flamer",
+                "GRAYFISH",
+                "GROK",
+                "OddJob",
+                "Plexor",
+                "Prax",
+                "Regin",
+                "Skywiper",
+                "TRIPLEFANTASY",
+                "Tilded",
+                "UNITEDRAKE",
+                "WarriorPride",
+                "sKyWIper"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535692,
+    "ts_updated_at": 1743041370,
+    "ts_creation_date": 1653714668,
+    "ts_modification_date": 1653714668,
+    "files": {
+        "pdf": "https://archive.orkl.eu/5895a54ce9ac595099a526e61dcd4d75b07c1fc5.pdf",
+        "text": "https://archive.orkl.eu/5895a54ce9ac595099a526e61dcd4d75b07c1fc5.txt",
+        "img": "https://archive.orkl.eu/5895a54ce9ac595099a526e61dcd4d75b07c1fc5.jpg"
+    }
+}

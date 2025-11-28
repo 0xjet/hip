@@ -1,0 +1,76 @@
+{
+    "id": "88561afa-d90a-4085-9592-4e409cd72310",
+    "created_at": "2023-01-12T15:01:55.547218Z",
+    "updated_at": "2025-03-27T02:17:00.198087Z",
+    "deleted_at": null,
+    "sha1_hash": "a326900ec3e2c7b4ccfd8c8957ae2ffcd99280a1",
+    "title": "2022-05-22 - Introduction of a PE file extractor for various situations",
+    "authors": "",
+    "file_creation_date": "2022-06-06T13:03:45Z",
+    "file_modification_date": "2022-06-06T13:03:45Z",
+    "file_size": 403857,
+    "plain_text": "# Introduction of a PE file extractor for various situations\n\n**r136a1.info/2022/05/25/introduction-of-a-pe-file-extractor-for-various-situations/**\n\nMay 25, 2022 • [tool,](https://r136a1.info/categories/tool/) [malware](https://r136a1.info/categories/malware/)\n\nDuring a malware analysis, you may encounter the situation where a next stage payload is loaded or injected into another\nprocess. When this is the case, usually a raw PE file gets decrypted in memory that is used to build the memory module. The\ntrick is to find the procedure which decrypts the raw file with a debugger and dump the memory region which contains this\npayload. This allows you to easily extract the original PE file from the dump for further analysis. Thus, you usually don’t need to\nperform contorts like dumping the memory module of the payload and rebuild its import address table.\n\n[When I don’t extract a payload by hand, I’ve always used the combination of a debugger and PEExtract. In most cases,](http://web.archive.org/web/20101126155525/http://usar.pp.ru/download/)\nPEExtract works correctly and grabs the PE payloads. However, it has a few shortcomings like no support for signed PE files and\nits development also stopped in 2007. That’s why I’ve created `pe_extract.py to overcome those issues. While there are`\n[already scripts like this (e.g. pe-carv), I’ve added a few improvements and features:](https://bitbucket.org/Alexander_Hanel/pe-carv/)\n\nMultiple file scan support (e.g. for automatically created memory dumps)\nSkip likely incomplete page sized PEs (for automatically created memory dumps)\nSupport for XORed PE files\n\n## Use case 1 - Extract payload(s) from a manual memory dump\n\nTypical usage: `python pe_extract.py <FilePathToDump> (--extract-xored)`\n\nAs an example, let’s take a Cobalt Strike loader I dubbed FlyingTurtleLoader after its internal name `FlyingTurtle . The initial`\n64-bit DLL is a loader for a first stage EXE which in turn is the final loader for the Cobalt Strike beacon. Each stage is base64\nencoded, MSZIP compressed and the first stage additionally XOR encrypted.\n\nMalware (SHA-256):\n```\n938cb440f0652bc90384847320f0a4e6faaa004410e23098e4825da6dd5cb2a2\n\n```\nAs initially described, when you analyze a loader or multi-stage malware sample, there’s usually a raw PE file written to a memory\n[buffer at some point. The following x64dbg screenshots show the XOR encrypted first stage EXE payload in the](https://x64dbg.com/) `Dump 3`\nwindow:\n\nAt this point, you can already go to the memory region that contains the encrypted payload (Follow in Memory Map) and save it to\ndisk (Dump Memory to File). You don’t even need to find the final routine which decrypts the payload (XOR bytes with 0x65), as\nthis can be done by `pe_extract.py . You just need to run the script with the` `--extract-xored argument and it extracts the`\ndecrypted final loader. According to its PDB path and the empty Cobalt Strike config data, this is a test tool:\n```\nC:\\test\\FlyingTurtle\\x64\\Release\\FlyingTurtle.pdb\n\n## Use case 2 - Extract payload(s) from on-disk file(s)\n\n```\n\n-----\n\nTypical usage: `python pe_extract.py <FilePathToDump> --extract-xored (--extract-overlays)`\n\nSometimes, there is malware that keeps one or more payloads unencrypted in its PE sections. Or the payloads are encrypted\nwith a simple XOR algorithm. When this is the case, you can easily extract them and make a initial assessment what the purpose\nof the malware might be by looking at them. For PE extration, this is the best case because the embedded files can be pulled out\nreliably.\n\nAgain, as an example, we use a Cobalt Strike loader I dubbed K32Loader according to this specific API function that it uses\ncalled `K32GetProcessImageFileNameW . It disguises itself as a legitimate looking Windows file and keeps other legit signed files`\nalong with the actual Cobalt Strike beacon loader in its resources section. The legit files do not serve any purpose except to make\n[the malware look less suspicious. The final beacon loader DLL is run by a shellcode created with the help of sRDI. The final](https://github.com/monoxgas/sRDI)\nloader contains the AES encrypted Cobalt Strike beacon.\n\nMalware (SHA-256):\n```\n2016258b9aea66a204a4374aeef2d5f7a0c6857ee92491a12440ce8487aaf938 (Sample 1)\n6344b05fe37649d87617e5ba26cd90a3d9b4bff28904df89a6b9028265c9db65 (Sample 2)\ne8eb5597550ba347114a67cb5173c389aeb3addff8f2f5eaefb634e18508526a (Sample 3)\n\n```\nThe sample’s embedded files are described in the following table:\n\n\n**Final DLL**\n**loader name**\n\n\n**1st stage**\n**DLL**\n**masked**\n**as** **1st stage signed files**\n\n\n**Sample** **Stages**\n\n\n**Initial DLL**\n**masked as** **Initial DLL signed files**\n\n\n1 2 Windows\n```\n          MsMpRes.dll\n\n```\n\nWindows `MsMpRes.dll` Not\nmasked\n(internal\nname\n\n\n- `Protections-`\n```\n                Remover.dll\n\n```\n\n[The following EXE Explorer screenshot shows the embedded files in sample 3:](https://www.mitec.cz/exe.html)\n\n\n-----\n\nThe resources named `100 and` `300 are the signed` `ICManagement.dll and` `DetectionFeedback.dll files from Sophos.`\nThe resource named `200 is the reflective loader shellcode with the embedded Cobalt Strike loader named` `astraGem.dll .`\nThis file contains the additional signed Windows files `MessagingDataModel2.dll and` `midimap.dll in its resource section.`\n\nWhen we use `pe_extract.py on each file, we get all the unencrypted embedded files except for the Cobalt Strike beacon as`\nit’s encrypted.\n\nBeacon domains:\n```\ndns.minimephotos[.]co.uk\norchardstanks[.]com\nbellennium[.]com\nenergy-sciences[.]org\n\n## Use case 3 - Extract payload(s) from automatically created memory dumps\n\n```\nTypical usage: `python pe_extract.py <FolderPathToDumps> (--extract-overlays) (--extract-all)`\n\nNowadays, more and more sandboxes contain the ability to scan for malware in memory. Usually, this is done by dumping\nmemory images to disk and scan those for any malware patterns. Based on the quality of the mechanism that triggers the dump\nprocedure, you have a bigger or smaller amount of dump files that hopefully contain one or more (decrypted) payloads. One such\na sandbox is Virustotal’s Zenbox that is capable of creating memory dumps during a sample analysis.\n\n[As an example, we use a Matanbuchus sample.](https://malpedia.caad.fkie.fraunhofer.de/details/win.matanbuchus)\n\nMalware (SHA-256):\n```\nd9e6395917a1d1103c40f710310de0cf64c370d167def378e9b88f3af247a1b0\n\n```\nIt’s a signed MSI file disguised as a Symantec Protection Engine installer and contains two files. The first file named\n```\nnotify.vbs shows a fake error message when run. The second file named main.dll is a signed Matanbuchus loader\n\n```\ndisguised as a Visual Studio installer. The signatures are as follows (MSI file on the left, `main.dll on the right):`\n\nThe following Virutotal screenshot shows the option to download the memdump of this file:\n\n\n-----\n\n[Unfortunately, this feature is limited to enterprise accounts.](https://developers.virustotal.com/reference/file-behaviour-memdump)\n\nIn this extraction case, just provide the folder path which contains the memory dumps as an argument and `pe_extract.py`\nscans each file for embedded PEs. When we do that, we get five extracted DLLs. From the FDMP files, we have two versions of\n```\nmain.dll with the signature information cut. From the SDMP files, we have an additional version of main.dll with a cut\n\n```\nsignature and two versions of the main Matanbuchus module.\n\nThe first main module file is the raw PE decrypted during the loading routine (see introduction). It contains the usual\nMatanbuchus strings in cleartext:\n```\nAgent.ADNJ\nAgent.Matanbuchus \nB:\\Loader\\Matanbuchus\\Main module\\Belial project\\MatanbuchusLoader\\MatanbuchusLoaderFiles\\Matanbuchus\\json.hpp\n\n```\nThe second main module file is a memory dump of the raw PE that contains additional (decrypted) strings:\n\n\n-----\n\n```\n        y y\n/cAUtfkUDaptk/ZRSeiy/requets/index.php\nstatsazure.xyz\n23.227.196.227\n87.236.146.125\nicLJkdnBDX\nqmG\nRunning exe\nStarting the exe with parameters\nHigh start exe\nRunDll32 & Execute\nRegsvr32 & Execute\nRun CMD in memory\nRun PS in memory\nMemLoadDllMain || MemLoadExe\nMemLoadShellCode\nMemLoadShellCode #2\nRunning dll in memory #2 (DllRegisterServer)\nRunning dll in memory #3 (DllInstall(Install))\nRunning dll in memory #3 (DllInstall(Unstall))\nCrypt update & Bots upgrade\nUninstall\nGp\nPk\nvM\nVs\nbN\nJb\nNSeyDX\nLos\nwP6\ncBF\nVz\n3m7x\nELj\nEo6\nQ6X6\ntW\nacG\n3CEk\nDS2x\nFto\nf1da\n3fe11\nzkC7\n\n```\nThese strings were obfuscated at compile time. They get only revealed when the string decryption procedures are executed\nduring the (C++) initialization phase. You can see the decrypted strings in the `.data section when you set a breakpoint on`\n```\nDllMain and run the raw PE sample in a debugger. This obfuscation method was introduced several years ago in a project\n\n```\n[called ADVobfuscator.](https://github.com/andrivet/ADVobfuscator)\n\n[We can see a few additions by examining those strings and comparing them to the previous version. A new memory shellcode](https://medium.com/@DCSO_CyTec/a-deal-with-the-devil-analysis-of-a-recent-matanbuchus-sample-3ce991951d6a)\nloading mechanism ( MemLoadShellCode #2 ) appears to be the most obvious new feature.\n\nWe can also see some strings that were decrypted using a different method:\n\n\n-----\n\n```\n g\nv1.4.0\nDAN03\n%02X-%02X-%02X-%02X-%02X-%02X\n%USERDOMAIN%\nUser\nAdmin\nkernel32\nIsWow64Process\n32 Bit\n64 Bit\n%LOGONSERVER%\nPOST\nHTTP/1.1\nHost:\nUser-Agent:\nWindows-Update-Agent/11.0.10011.16384 Client-Protocol/2.0\nContent-Length:\nContent-Type: application/x-www-form-urlencoded\nAccept-Language: en-US\n\n```\nMatanbuchus domains:\n```\nstatsazure[.]xyz\nazuretelemetry[.]xyz\n\n## Conclusion\n\n```\nWith `pe_extract.py you have a tool that can save you some time during a malware analysis session and make things easier.`\nIt speeds up the analysis process a bit and can help make a first assessment of an unkown malware. It can also be useful to\ncreate Yara rules, especially when the retrieved PE file comes from a memory dump and contains decrypted data. This\ninformation is a goldmine for in-memory detection signatures.\n\n## Script download\n```\npe.extract.py can be found on my Github page: pe_extract\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-05-22 - Introduction of a PE file extractor for various situations.pdf"
+    ],
+    "report_names": [
+        "2022-05-22 - Introduction of a PE file extractor for various situations.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d9b39228-0d9d-4c1e-8e39-2de986120060",
+            "created_at": "2023-01-06T13:46:39.293127Z",
+            "updated_at": "2025-03-27T02:00:03.042341Z",
+            "deleted_at": null,
+            "main_name": "BelialDemon",
+            "aliases": [
+                "Matanbuchus"
+            ],
+            "source_name": "MISPGALAXY:BelialDemon",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535715,
+    "ts_updated_at": 1743041820,
+    "ts_creation_date": 1654520625,
+    "ts_modification_date": 1654520625,
+    "files": {
+        "pdf": "https://archive.orkl.eu/a326900ec3e2c7b4ccfd8c8957ae2ffcd99280a1.pdf",
+        "text": "https://archive.orkl.eu/a326900ec3e2c7b4ccfd8c8957ae2ffcd99280a1.txt",
+        "img": "https://archive.orkl.eu/a326900ec3e2c7b4ccfd8c8957ae2ffcd99280a1.jpg"
+    }
+}

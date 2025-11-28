@@ -1,0 +1,87 @@
+{
+    "id": "9a2cb694-a376-48f3-9997-7cdbd87d3d25",
+    "created_at": "2023-01-12T15:08:58.948826Z",
+    "updated_at": "2025-03-27T02:16:41.182661Z",
+    "deleted_at": null,
+    "sha1_hash": "3b7a1d900e72d0a2955cc70a756c84ac7ce28231",
+    "title": "2019-03-06 - DE-Cr1pt0r tool - The Cr1pt0r ransomware decompiled decryption routine",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:44:24Z",
+    "file_modification_date": "2022-05-28T19:44:24Z",
+    "file_size": 454984,
+    "plain_text": "# DE-Cr1pt0r tool - The Cr1pt0r ransomware decompiled decryption routine\n\n**[resolverblog.blogspot.com/2019/03/de-cr1pt0r-tool-cr1pt0r-ransomware.html](https://resolverblog.blogspot.com/2019/03/de-cr1pt0r-tool-cr1pt0r-ransomware.html)**\n\n## Hello Everybody,\n after so many articles( 1 - 2 - 3 ) about my research on this Cr1ptor ransomware finally there is a tiny way to decrypt your files.\n\n SPOILER ALERT:\n This is a very early alpha release, is destined to programmers not directly to the victims.\n Calm down, this will not be quick and/or easy at all but there is only a theorical chance. Probably you'll need few months, years, your son's life of computational work to brute the key. This is not a solution.\n\n Let's start from the beginning:\n as I wrote in the last article I got chance to have a pair of valid keys to run some tests on my Raspberry PI VM.\n Before to talk about the source code, I need you to focus on the encrypted files's structure:\n\n\n-----\n\n## Basically this ransomware append after encryption 0x7A bytes. This is important because of this: This is how the Decryption routine looks initially (where I made some gusses..):\n\n Studying the code from here is completely INSANE..........well, I did it anyway (tens hours of hard work) helped by the libsodium documentation I figured out the exact pseudo code of the decompilation routine built in the ransomware and what do it exactly do. After a few IDA corrections here is where I landed:\n\n\n-----\n\n## Most of functions now looks familiar, especially those concerning libsodium and files manipulation. Starting from here, I've ported the code into a C application to reproduce the decryption.Once figured out which kind of encryption the ransomware adopted, I've started to write a C program and from the libsodium documentation there was something interesting:\n\n Well, this looks similar to our ransomware implementation, except for the fact that he's doing some manipulation on the top of the pseudo code, in fact this code example is not sufficient. A sealed box implementation seems to anticipate the code we seen:\n\n Good. We now have so many pieces of the puzzle. Its time to put them togheter. What do we need to decrypt the files?\n\n\n-----\n\n## Take a closer look at the crypto_box_seal_open function. Do you remember the encrypted structure? CIPHERTEXT_LEN, from the bottom of file is 0x50. We have it. recipient_pk, from the bottom of the file and is 0x20. We have it. recipient_sk, from the end of.....No. Unfortunaly we haven't the secret key. The result decrypted array is then used to decrypt the rest of the file more or less as decribed on the libsodium documentation secret-key_cryptography -> \"Stream encryption/file encryption\" on github. To procede with\n```\ncrypto_secretstream_xchacha20poly1305_init_pull(&st, header, key) != 0)\n\n we need the header and the key. The header is actually stored into the encrypted file as the same as the example shows. So we have it. the key....the key is the \"decrypted\" crypto_box_seal_open resoult! We have it.\n\n Since the fact I had a working keypair, I had everything I need to run some tests with the good old DEV-C++ IDE. Once set up the code, I found a very strange behaviour of libsodium which brings me to a correct decryption with 3 different private keys!(!?!?!?!?!?) O.o\n\n Is due to a libsodium bug?! IDK! I hope some of you knows (and tells me) the reason of such behaviour, by the way victims does not have the private key and this strange behaviour of libsodium motivated me to implement a brute force routine into the code (to MAYBE find a working decryption sk with humanly acceptable timing).\n\n```\n\n-----\n\n## And here is the result (skipping the brute force routine)!\n\n (and yes, the original file was filled by a junky 0xAA 😊)Here is the main source (I do not share the encryption routine to avoid a Cr1pt0r x86 porting)\n\n\n-----\n\n```\n#include \n#include \n#include \n#include \n#include \n#include \n#include \n#include \n#define UINT64_MAX (18446744073709551615ULL)\n#define CHUNK_SIZE 4096\n#define crypto_stream_chacha20_ietf_KEYBYTES 32U\nvoid rvereseArray(unsigned char *arr, int start, int end) \n{\n  while (start < end) \n  { \n    unsigned char temp = arr[start]; \n    arr[start] = arr[end]; \n    arr[end] = temp; \n    start++; \n    end--; \n  } \n}   \nvoid printArray(unsigned char arr[], int size) \n{\n int i; \n for (i=0; i < size; i++) \n  printf(\"%02x \", arr[i]); \n printf(\"\\n\"); \n} \nstatic int\ndecrypt(const char *target_file, const char *source_file, const unsigned char\nkey[crypto_secretstream_xchacha20poly1305_KEYBYTES])\n{\n  unsigned char buf_in[CHUNK_SIZE + crypto_secretstream_xchacha20poly1305_ABYTES];\n  unsigned char buf_out[CHUNK_SIZE];\n  unsigned char header[crypto_secretstream_xchacha20poly1305_HEADERBYTES];\n  crypto_secretstream_xchacha20poly1305_state st;\n  FILE     *fp_t, *fp_s, *fp_s1;\n  unsigned long long out_len;\n  size_t     rlen;\n  int      eof;\n  int      ret = -1;\n  unsigned char tag = 0x0;\n#define MESSAGE (const unsigned char *) \"Message\"\n#define MESSAGE_LEN 15\n#define CIPHERTEXT_LEN (crypto_box_SEALBYTES + MESSAGE_LEN)\n\n```\n\n-----\n\n```\nunsigned char recipient_pk[crypto_box_PUBLICKEYBYTES];\n//My pk\n//unsigned char recipient_pk[crypto_box_PUBLICKEYBYTES];={0x3D, 0x3F, 0x78, 0x63,\n0x3E, 0xA6, 0xA7, 0x99, 0xC4, 0xDC, 0xF2, 0x52, 0x2D, 0x90, 0x21, 0xC5,\n0x10, 0x31, 0xDE, 0x6B, 0xA3, 0xEB, \n       //0xCF, 0x06, 0x1C, 0xC5, 0xCA, 0xF8, 0xF8, 0x43, 0xC5,\n0x2F};//; /* Bob's public key */\n//\n//recipient_sk decrypt the files also with recipient_sk[0]=0xDB (the original byte)\nthan 0xDD and also 0xDC\n// unsigned char recipient_sk[crypto_box_SECRETKEYBYTES]={ 0xDB, 0xA2, 0xD4, 0x74\n, 0xC0, 0xB7, 0x2B, 0x62, 0x0E, 0xCD, 0xC8, 0x7F, 0x43, 0xEA, 0xAB, 0x2E,\n0x24, \n//0x65, 0x00, 0x91, 0x74, 0xDC, 0x03, 0xB4, 0x22, 0xC8, 0x48, 0x30, 0x1F,\n0x19, 0xDD, 0x78 }; //; /* Bob's secret key */\nunsigned char recipient_sk[32]=\n{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};\nunsigned char ciphertext[80];\n//var50h\nlong filelen;\nfp_s1 = fopen(\"enc\", \"rb\");\n  if(fp_s1==0){ printf(\"Encrypted files not found\"); return 1;}\n  fseek(fp_s1, 0xFFFFFFD6, SEEK_END);     \n  //filelen = ftell(fp_s1);\n fread(recipient_pk, 1, 0x20, fp_s1);\n fseek(fp_s1, 0xFFFFFF86, SEEK_END); \n fread(ciphertext, 1, 0x50, fp_s1);\n//because the new key is 32dec bytes long\nunsigned char decrypted[32];\n//brute start\n//Bruteforce the 32byte key. Thanks to GeDaMo from IRC ##programming @ freenode\n//\n uint64_t i[4] = { 0, 0,0,0 };\n// uint64_t i[4] = {0xDBA2D474C0B72B62,  0x0ECDC87F43EAAB2E,  \n0x2465009174DC03B4,  0x22C848301F19DD78 };\n   int exit=0;\n printf(\"DE-Cr1pt0r Tool By RE-Solver @solver_re:\\r\\n Bruteforcing \\r\\n \");\n do {\n  i[1] = 0;\n do {\n  i[2] = 0;\n do {\n i[3] = 0;\n   do {\n\n```\n\n-----\n\n```\nmemcpy(&recipient_sk[23],&i[3],sizeof(i[3]));\nrvereseArray(&recipient_sk[23],0,8);\nmemcpy(&recipient_sk[15],&i[2],sizeof(i[2]));\nrvereseArray(&recipient_sk[15],0,8);\nmemcpy(&recipient_sk[7],&i[1],sizeof(i[1]));\nrvereseArray(&recipient_sk[7],0,8);\nmemcpy(&recipient_sk,&i[0],sizeof(i[0]));\nrvereseArray(recipient_sk,0,7);\n//printArray(recipient_sk, 32);\nif(crypto_box_seal_open(decrypted, ciphertext, 0x50u, recipient_pk, recipient_sk) ==\n0)\n{printf(\"Found: \");printArray(recipient_sk, 32);exit=1;break;}\n      } while (i[3]++ < UINT64_MAX&&exit==0);\n    } while (i[2]++ < UINT64_MAX&&exit==0);\n  } while (i[1]++ < UINT64_MAX&&exit==0);\n } while (i[0]++ < UINT64_MAX&&exit==0);\n //END brute\n//from the decompilated program this was the original routine, because of the\nbruteforce is added as a comment now\n/*\nif (crypto_box_seal_open(decrypted, ciphertext, 0x50u, recipient_pk, recipient_sk) !=\n0) {\n  // message corrupted or not intended for this recipient \n   printf (\"message corrupted or not intended for this recipient %s\",decrypted);}\n*/   \n  fp_s = fopen(source_file, \"rb\");\n  fp_t = fopen(target_file, \"wb\");\n  if(fp_s==0 || fp_t==0){printf(\"Encrypted files not found\");\n goto ret;}\n  fread(header, 1, 0x18, fp_s);\n  if (crypto_secretstream_xchacha20poly1305_init_pull(&st, header, decrypted) != 0)\n{\n    goto ret; /* incomplete header */\n  }\n  do {\n    rlen = fread(buf_in, 1, 0x1011, fp_s);\n    eof = feof(fp_s);\n    //tag = 0x0;\n    int value=crypto_secretstream_xchacha20poly1305_pull(&st, buf_out, &out_len,\n&tag, buf_in, rlen, NULL,0);\n    if (value != 0) {\n      goto ret; /* corrupted chunk */\n    }\n    if (tag == 3 && ! eof) { //crypto_secretstream_xchacha20poly1305_TAG_FINAL ->\n3\n      goto ret; /* premature end (end of file reached before the end of the\nstream) */\n\n```\n\n-----\n\n```\n    }\n    fwrite(buf_out, 1, (size_t) out_len, fp_t);\n  } while (! eof);\n  ret = 0;\nret:\n  fclose(fp_t);\n  fclose(fp_s);\n  fclose(fp_s1);\n  return ret;\n}\nint\nmain(void)\n{\n  unsigned char key[crypto_secretstream_xchacha20poly1305_KEYBYTES];\n  if (sodium_init() != 0) {\n    return 1;\n  }\n  crypto_secretstream_xchacha20poly1305_keygen(key);\n  if (decrypt(\"enc.outtmp\", \"enc.tmp\", 0x0) != 0) {\n   printf(\"Something goes wrong.\");\n    return 1;\n  }\n  printf(\"Decrypted! RE Solver\");\n  return 0;\n}\n\n## IDE: DEV-C++ libsodium library: libsodium-1.0.17-mingw.tar.gz Remember to link the library into the Project/Project Options\n\n Compiled tool: https://www.sendspace.com/file/275c70 sha256: 4066fa0d402a8458f7784e89ba979929ee1d7efd761b3cabe9705784aa8af865\n\n usage: Copy an encrypted file into the same folder of the tool and rename it as enc (with no extensions). Copy the same encrypted file and rename it as enc.tmp and strip the last 0x7A from the end of the file. If you're lucky within some weeks you'll have the key printed on the console and the encrypted.outtmp decrypted file created on the same folder dir.\n\n Next step: create a file named privkey and write the hex key (with no spaces) into a text file and put it in the Cr1pt0r folder. From the same folder, rename the file pubkey as pubkey_backup and turn on your D-Link nas again.\n\n Note: My GF is waiting me since days, she has been so patient. A special Thanks to her. 😊 I'm sorry but I do not support the tool usage or others kind of requests.Since the fact that code is released under GPL, everyone can compile, improve, modify the code. (And I hope it\n\n```\n\n-----\n\n## happens).\n\n Follow me on Twitter @solver_re Hire me! Job offers are welcome. Cheers, RE Solver\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-03-06 - DE-Cr1pt0r tool - The Cr1pt0r ransomware decompiled decryption routine.pdf"
+    ],
+    "report_names": [
+        "2019-03-06 - DE-Cr1pt0r tool - The Cr1pt0r ransomware decompiled decryption routine.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d4ac28d1-66eb-4f2d-9f9b-a72394349fd0",
+            "created_at": "2023-01-06T13:46:38.667954Z",
+            "updated_at": "2025-03-27T02:00:02.887442Z",
+            "deleted_at": null,
+            "main_name": "APT4",
+            "aliases": [
+                "PLA Navy",
+                "MAVERICK PANDA",
+                "BRONZE EDISON",
+                "SODIUM",
+                "Salmon Typhoon"
+            ],
+            "source_name": "MISPGALAXY:APT4",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "6fbff48b-7a3e-4e54-ac22-b10f11e32337",
+            "created_at": "2022-10-25T16:07:23.318008Z",
+            "updated_at": "2025-03-27T02:02:09.734465Z",
+            "deleted_at": null,
+            "main_name": "APT 4",
+            "aliases": [
+                "APT 4",
+                "Bronze Edison",
+                "Maverick Panda",
+                "Salmon Typhoo",
+                "Sodium",
+                "Sykipot",
+                "TG-0623",
+                "Wisp Team"
+            ],
+            "source_name": "ETDA:APT 4",
+            "tools": [
+                "Getkys",
+                "Sykipot",
+                "Wkysol",
+                "XMRig"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536138,
+    "ts_updated_at": 1743041801,
+    "ts_creation_date": 1653767064,
+    "ts_modification_date": 1653767064,
+    "files": {
+        "pdf": "https://archive.orkl.eu/3b7a1d900e72d0a2955cc70a756c84ac7ce28231.pdf",
+        "text": "https://archive.orkl.eu/3b7a1d900e72d0a2955cc70a756c84ac7ce28231.txt",
+        "img": "https://archive.orkl.eu/3b7a1d900e72d0a2955cc70a756c84ac7ce28231.jpg"
+    }
+}

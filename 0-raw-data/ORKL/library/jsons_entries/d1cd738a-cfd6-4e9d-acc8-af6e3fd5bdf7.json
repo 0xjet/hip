@@ -1,0 +1,67 @@
+{
+    "id": "d1cd738a-cfd6-4e9d-acc8-af6e3fd5bdf7",
+    "created_at": "2023-01-12T15:02:37.232123Z",
+    "updated_at": "2025-03-27T02:05:52.334636Z",
+    "deleted_at": null,
+    "sha1_hash": "649558686fdd79e363d9bb8a9f39ffbd28260c8c",
+    "title": "2016-12-19 - Dismantling a Nuclear Bot",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:10:21Z",
+    "file_modification_date": "2022-05-28T19:10:21Z",
+    "file_size": 1242847,
+    "plain_text": "# Dismantling a Nuclear Bot\n\n**arbornetworks.com/blog/asert/dismantling-nuclear-bot/**\n\n\n-----\n\nDismantling a Nuclear Bot\n\n\nby [ASERT Team on December 19th, 2016](https://www.netscout.com/blog/asert/asert-team)\nA recent [tweet mentioned that a new banking malware called “Nuclear Bot” has started to](https://twitter.com/Bry_Campbell/status/805142112148791297)\nappear for sale on underground marketplaces. Its price starts around $2500 which is more\n[than double the price of another recent entry to the market. This post dismantles a sample of](http://asert.arbornetworks.com/flokibot-flock-bots/)\nthis malware to determine whether we need to take Bert the Turtle’s advice to duck and\ncover.\n\n**Sample**\n\n[The sample analyzed for this post is available on VirusTotal. It has a helpful debugging](https://www.virustotal.com/en/file/ff83aaa74ec364f4c2403409a28df93ef97e8a61ba79fdb1c94d7081f48e794e/analysis/)\nstring:\n\n_E:\\Nuclear\\Bot\\Release\\Dropper.pdb_\n\nIt also phones home to a command and control (C2) server with an identifying login panel:\n\n\n-----\n\nIn the rest of this post we'll be discussing the dropper, bot, and webinject components of\nNuclear Bot.\n\n**Dropper Component**\n\nThe first component is the dropper component. It starts by manually loading a bunch of\nWindows libraries. The library names are obfuscated with XOR and a hardcoded key. The\nfollowing Python snippet decodes an example obfuscated string to “ntdll.dll”:\n```\nkey = \"\\x03\\x0E\\x18\\f\\x1A\\x1F\"\nencbuf = \"mz|`v1gbt\"\nplainbuf= []\nfor i, c in enumerate(encbuf):\n  plain = ord(c) ^ ord(key[i % len(key)])\n  plainbuf.append(chr(plain & 0xff))\nprint \"\".join(plainbuf)\n\n```\nAfter the libraries are loaded, it will resolve a bunch of functions from them using API\nhashing. The following Python snippet hashes an example function “LoadLibraryA” to its\nhash “0x3b7225fc”:\n\n\n-----\n\n```\nname LoadLibraryA \nhash_val = 0\nfor i, c in enumerate(name):\n  if i & 1:\n    v6 = (~(ord(c) ^ (hash_val >> 5) ^ (hash_val << 11))) & 0xffffffff\n  else:\n    v6 = (ord(c) ^ (hash_val >> 3) ^ (hash_val << 7)) & 0xffffffff\n  hash_val ^= v6\nhash_val = hash_val & 0x7fffffff\nprint hex(hash_val)\n\n```\nNext it generates a bot ID based on the root volume serial number, an example of which is:\n\n_{496E9266-9266-1717986918}_\n\nIt will then perform three types of anti-analysis:\n\n1. Detecting common analysis software such as IDA Pro and Sysinternals tools\n2. Detecting common sandbox and virtual machines\n3. Detecting debugging via a timing check\n\nIf it detects it is being run in an analysis environment it will delete itself. Persistence is setup\nby copy itself to the “%appdata%” directory and setting up a\n“Software\\Microsoft\\Windows\\CurrentVersion\\Run” entry in the user’s registry.\n\nAfter things are setup, an svchost (-k netsvcs) process is started and a DLL is injected into it.\nThe DLL is stored compressed in the dropper and is decompressed using the\nRtlDecompressBuffer Windows API.\n\nBefore transitioning to the next component some system information is written to a\n“<botid>.txt” text file in \"%appdata%\" where “<botid>” is replaced with the bot’s ID. The\nsystem information is pipe delimited and consists of:\n\ninfo\nWindows version\nComputer name\nUsername\nisWow64 status\nis Admin status\n\n**Bot Component**\n\n[The injected DLL or “bot” component is available at VirusTotal. It uses the same library](https://virustotal.com/en/file/25a361f297c6d399410b47af5504f4bb2c9327de55168a31154fbee21fa4b186/analysis/1482176976/)\nloading and function resolving technique as in the dropper. After this initial setup an empty\nHTTP POST request is sent to the C2 server:\n\n\n-----\n\nThe reply from the C2 server will be a hex string that will be used as an XOR key to\nobfuscate further C2 communications. The following Python snippet describes the\nobfuscation:\n```\nkey = \"920e9b92bb97c06fbaf1c4854db682898a85cb1e\"\ninbuf = \"ping\"\noutbuf = []\nfor i, c in enumerate(inbuf):\n  b = ord(c) ^ ord(key[i % len(key)])\n  outbuf.append(chr(b & 0xff))\nprint \"\".join(outbuf)\n\n```\nNext the system information from the “<botid>.txt” file is read and sent to the C2 server:\n\n\n-----\n\nCommands are polled with a “ping” command. The response is pipe delimited where the first\nfield denotes the command number and the rest are command arguments. The following\ncommands have been identified:\n\n0 – Download and execute\n1 – VNC\n2 – SOCKS4 proxy\n3 – Update self\n\nIn addition to the above commands, Nuclear Bot has “man-in-the-browser” (MitB)\nfunctionality that in conjunction with webinjects—rules denoting what websites to target and\nhow—lets it social engineer and steal credentials from financial and other websites. The MitB\ncode is stored as a compressed DLL in either the “.x86” or “.x64” PE file section of the bot’s\nfile:\n\n\n-----\n\nIt can be\n\ndecompressed using RtlDecompressBuffer as before and the x86 DLL used for this analysis\n[is also available on VirusTotal. Based on a debug string, the developer calls this DLL](https://virustotal.com/en/file/53af22828a2a1190105c6846ae9e32ab6ce87388b77838d456432ee6e9de7343/analysis/1482177083/)\n“Engine32”.\n\n**Engine**\n\nhe “engine” DLL is first injected into explorer.exe. In explorer.exe, the CreateProcessW\nWindows API is hooked so that it can control future process creation. The function hook first\ndetermines what process is being created. Next it passes execution to the real\nCreateProccessW function so that the process is created. Finally, if the process is a web\nbrowser (Internet Explorer, Firefox, Chrome, or Opera) it will open a named pipe where the\npipe name is the bot’s ID and writes the newly created web browser’s process ID (PID) to it.\nThe other end of the pipe is opened by the above bot component and once it receives a PID\nit will inject the “engine” component into that process—this is how the MitB component gets\ninto web browsers.\n\nOnce injected into a web browser it will determine which web browser it is and hook the\nappropriate functions—e.g. InternetConnectW, HttpOpenRequestW, InternetReadFile, etc. in\nInternet Explorer and PR_Read and PR_Write in Firefox. These hooks monitor the victim’s\nweb browsing (HTTPS doesn’t matter at this layer of communications) and continuously\ncompares traffic to its list of webinjects. If a match is found the malicious webinject code is\ninjected in the webpage, the modified web page is shown to the victim, and credential theft\ncan happen.\n\nNuclear Bot downloads webinjects from its C2 by sending an “injects” command. The\nreturned data is a JSON file that looks like this:\n\n\n-----\n\n**Conclusion**\n\nThis post was a dismantling of a new banking malware known as Nuclear Bot. As usual with\nnew malware it is too soon to assess how active and widespread this new family will\nbecome. It is even more difficult to assess based on this sample and campaign as it is very\nlikely a “test botnet” used for development and not an in the wild weaponized campaign. This\nis based on the “Hello World” webinject it is using and also the numerous MessageBox\nfunction calls that pop up throughout the execution of the malware:\n\n\n-----\n\nWhile it is probably a bit too soon to heed Bert’s advice, recent advertisements for the bot\nhave suggested bug fixes and updated versions so it is worth keeping an eye on.\n\nPosted In\n\nAnalysis\nBotnets\nInteresting Research\nMalware\nReverse Engineering\nthreat analysis\n\n## Subscribe\n\n_Sign up now to receive the latest notifications and updates from NETSCOUT's ASERT._\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2016/2016-12-19 - Dismantling a Nuclear Bot.pdf"
+    ],
+    "report_names": [
+        "2016-12-19 - Dismantling a Nuclear Bot.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "8670f370-1865-4264-9a1b-0dfe7617c329",
+            "created_at": "2022-10-25T16:07:23.69953Z",
+            "updated_at": "2025-03-27T02:02:09.929725Z",
+            "deleted_at": null,
+            "main_name": "Hades",
+            "aliases": [
+                "Operation TrickyMouse"
+            ],
+            "source_name": "ETDA:Hades",
+            "tools": [
+                "Brave Prince",
+                "Gold Dragon",
+                "GoldDragon",
+                "Lovexxx",
+                "Olympic Destroyer",
+                "Running RAT",
+                "RunningRAT",
+                "SOURGRAPE",
+                "running_rat"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535757,
+    "ts_updated_at": 1743041152,
+    "ts_creation_date": 1653765021,
+    "ts_modification_date": 1653765021,
+    "files": {
+        "pdf": "https://archive.orkl.eu/649558686fdd79e363d9bb8a9f39ffbd28260c8c.pdf",
+        "text": "https://archive.orkl.eu/649558686fdd79e363d9bb8a9f39ffbd28260c8c.txt",
+        "img": "https://archive.orkl.eu/649558686fdd79e363d9bb8a9f39ffbd28260c8c.jpg"
+    }
+}

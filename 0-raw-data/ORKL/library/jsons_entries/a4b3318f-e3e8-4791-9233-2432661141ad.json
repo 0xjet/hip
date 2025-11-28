@@ -1,0 +1,93 @@
+{
+    "id": "a4b3318f-e3e8-4791-9233-2432661141ad",
+    "created_at": "2023-01-12T15:01:02.884724Z",
+    "updated_at": "2025-03-27T02:09:34.12168Z",
+    "deleted_at": null,
+    "sha1_hash": "eaad09eb9fe20f5691158aec30e443e3c5f6fbf7",
+    "title": "2016-10-11 - Remsec driver analysis - Part 3",
+    "authors": "",
+    "file_creation_date": "2022-05-27T21:13:45Z",
+    "file_modification_date": "2022-05-27T21:13:45Z",
+    "file_size": 302841,
+    "plain_text": "# Remsec driver analysis - Part 3\n\n**[artemonsecurity.blogspot.com/2016/10/remsec-driver-analysis-part-3.html](https://artemonsecurity.blogspot.com/2016/10/remsec-driver-analysis-part-3.html)**\n\nIn two previous blog posts I've described 32-bit plugin that was mentioned by Kaspersky in\ntheir [technical analysis. The plugin is called kgate and it has some interesting features,](https://securelist.com/files/2016/07/The-ProjectSauron-APT_Technical_Analysis_KL.pdf)\nincluding, exploiting 32-bit Agnitum driver to run rootkit driver, run 32-bit or 64-bit kernel\nmode code by non-standart way. It's hard to say how stable this code works on live system,\nbecause authors use undocumented Windows kernel functions like ObCreateObject\nand ObInsertObject for creating new DriverObject.\n\nThere is one more 64-bit plugin that is called xkgate and it is used for compromising 64-bit\nWindows versions. Unlike kgate plugin, xkgate contains valid timestamp in PE header - 20\nAug 2014 (08:34:04). Both plugins contain code with identical functions in their .krwkr64\nand .krdrv64 sections, but looks like xkgate plugin was written later than kgate.\nAlthough, kgate plugin has zeroed timestamp in PE-header, its file contains one timestamp\ninside - Oct 28 2013. This means that operators have switched from kgate plugin, which was\ndeveloped to load Ring 0 code for both x32 and x64 platforms, to special edition for x64 that\nis called extended kgate.\n\nLike kgate plugin, xkgate also contains timestamp inside its file - Aug 19 2014. This\ntimestamp confirms for us that date of compilation in PE header of xkgate is\nvalid, although they differ by one day. I think the reason for this difference is that timestamp\ninside file contains time data for debug purpose and was set by authors in manual mode.\nScreenshot below shows this fact.\n\n\n-----\n\nThe plugin also contains Ring 0 code in two separate sections named .krwkr64 and .krdrv64.\nSection .rdata stores whole AVAST! Virtualization Driver file aswsnx.sys, which is used by\nxkgate for loading own kernel mode code. Section .avit contains code for communication\nwith AVAST driver from \"trusted\" process.\n\nBelow you can see information about digital signatures of legitimate drivers Outpost and\nAVAST! that have been used by Remsec authors for loading Ring 0 code.\n\nAccording to the language that has been used in debug comments for both plugins, authors\nwere native English speakers. But it is not clear why they don't remove debug information\nfrom it Below you can see strings which are present into xkgate\n\n\n-----\n\n_Load error: Access Denied_\n_Load error: Unsupported OS_\n_Load error: Invalid plugin image format!_\n_Load error: Plugin entry point not found!_\n_Load error: Failed to resolve kernel functions!_\n_Load error: Out of memory!_\n_Load error: Status unsuccessful!_\n_Load error: Failed to run plugin (%#x)_\n_Unsupported OS! Only Windows 2000 and later supported!_\n_Unable to determine 32/64-bit OS!_\n_Invalid plugin name: path not allowed, try using -n._\n_Invalid plugin name: suffix not allowed, try using -n._\n_Unable to load kernel plugin %s!_\n_Unable to build argv!_\n_Plugin successfully executed!_\n_GateDriver is currently disabled on x64 systems due to driver signing restrictions!_\n\nIn table below you can see characteristics of both plugins.\n\n\n-----\n\nFrom the table above you can see that some IOCTLs functions are not used by attackers.\n\nAs I mentioned above, xkgate leverages Avast driver for executing Ring 0 code which\n\n\n-----\n\ndoesn t drop to FS. There is function fnLoadAvast that is responsible for loading Avast driver\nin proper way. It also does some actions for reproducing correct environment for it. Unlike\nexploiting Agnitum driver, this situation is more hard for exploitation. Let's look more detailed.\n\nFirst action that fnLoadAvast does, it tries to create mutex with name Global\\yRg7d3x and\nchecks a result of WaitForSingleObject to prevent doing same actions again.\n\nNext, the code calls fnDropAvastDriverAndPrepareEnv function that does following actions:\n\nCreates directory \\SystemRoot\\Temp\\aswSnx for dropping AVAST related files.\nDrops aswSnx.sys to FS.\nDrops snx_lconfig.xml to FS.\nDrops snx_gconfig.xml.\nCreates empty file snxhk.dll.\nCreates aswSnx.exe and writes to it content of notepad.exe.\n\n\n-----\n\nNext, fnLoadAvast calls fnCreateAvastServiceAndLoadDriver for creating AVAST service key\nin registry.\n\nIt creates key System\\CurrentControlSet\\Services\\aswSnx.\nCreates parameter ImagePath with path to \\SystemRoot\\Temp\\aswSnx\\aswSnx.sys.\nCreates parameter Type.\nCreates subkey Parameters.\nCreates parameter DataFolder inside subkey with value \\??\n\\Global\\GLOBALROOT\\SystemRoot\\Temp\\aswSnx.\nCreates parameter ProgramFolder with value \\??\n\\Global\\GLOBALROOT\\SystemRoot\\Temp\\aswSnx.\nCreates key subkey Instances.\nCreates parameter DefaultInstance inside Instances key.\nCreates parameters Altitude and Flags.\nLoads aswSnx.sys with NtLoadDriver.\n\nAfter aswSnx.sys was loaded, fnLoadAvast removes snxhk.dll and snxhk64.dll files from FS\nwith help of NtSetInformationFile. Next step is creating process aswSnx.exe, which actually\nis notepad.exe. After that it opens handle on AVAST device \\Device\\aswSnx.\n\n\n-----\n\nAfter creating aswSnx.exe (notepad) process in suspended state, it duplicates handle\nto \\Device\\aswSnx from current plugin process into new process aswSnx.exe. As you\nalready guessed, next step is copying code for communicating with AVAST driver into\naswSnx.exe. Copied code is located in special .avit section and performs DeviceIoControl\nthat triggers code execution of Ring 0 rootkit code from AVAST driver.\n\nInto loaded Ring 0 code, we can see already known to us function for dispatching\nFastDeviceControl request.\n\n\n-----\n\nAs you can see, both Agnitum and AVAST! drivers became exploitable for Remsec authors,\nbecause both don't use check of caller process based on digital signature properly. Although,\nnotepad.exe is signed with Microsoft digital certificate that means AVAST! can check digital\nsignature of caller process in IRP_MJ_CREATE handler, but doesn't check the name of\nsigner.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2016/2016-10-11 - Remsec driver analysis - Part 3.pdf"
+    ],
+    "report_names": [
+        "2016-10-11 - Remsec driver analysis - Part 3.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "a0d369c1-f0b7-4c70-a3a5-77aabbd17979",
+            "created_at": "2022-10-25T15:50:23.311311Z",
+            "updated_at": "2025-03-27T02:00:55.438117Z",
+            "deleted_at": null,
+            "main_name": "Strider",
+            "aliases": [
+                "ProjectSauron"
+            ],
+            "source_name": "MITRE:Strider",
+            "tools": [
+                "Remsec"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "99845f58-2c39-46f7-8369-bb621ebb7002",
+            "created_at": "2022-10-25T16:07:24.238844Z",
+            "updated_at": "2025-03-27T02:02:10.14785Z",
+            "deleted_at": null,
+            "main_name": "Strider",
+            "aliases": [
+                "ProjectSauron"
+            ],
+            "source_name": "ETDA:Strider",
+            "tools": [
+                "Backdoor.Remsec",
+                "ProjectSauron",
+                "Remsec"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "c1ac2a5e-0225-47a4-8ac5-5fa898c96bde",
+            "created_at": "2023-01-06T13:46:38.472883Z",
+            "updated_at": "2025-03-27T02:00:02.84253Z",
+            "deleted_at": null,
+            "main_name": "ProjectSauron",
+            "aliases": [
+                "Sauron",
+                "Project Sauron",
+                "G0041"
+            ],
+            "source_name": "MISPGALAXY:ProjectSauron",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535662,
+    "ts_updated_at": 1743041374,
+    "ts_creation_date": 1653686025,
+    "ts_modification_date": 1653686025,
+    "files": {
+        "pdf": "https://archive.orkl.eu/eaad09eb9fe20f5691158aec30e443e3c5f6fbf7.pdf",
+        "text": "https://archive.orkl.eu/eaad09eb9fe20f5691158aec30e443e3c5f6fbf7.txt",
+        "img": "https://archive.orkl.eu/eaad09eb9fe20f5691158aec30e443e3c5f6fbf7.jpg"
+    }
+}

@@ -1,0 +1,99 @@
+{
+    "id": "7f987fde-1fe1-44fb-992b-7f895525e6a1",
+    "created_at": "2023-01-12T15:08:12.920281Z",
+    "updated_at": "2025-03-27T02:17:01.264888Z",
+    "deleted_at": null,
+    "sha1_hash": "ef7eb6b33ef2dfb4c940db6b80815a3c012545a7",
+    "title": "2022-08-29 - AsyncRAT- Using Fully Undetected Downloader",
+    "authors": "",
+    "file_creation_date": "2022-10-02T12:03:07Z",
+    "file_modification_date": "2022-10-02T12:03:07Z",
+    "file_size": 1989824,
+    "plain_text": "# AsyncRAT: Using Fully Undetected Downloader\n\n**[netskope.com/blog/asyncrat-using-fully-undetected-downloader](https://www.netskope.com/blog/asyncrat-using-fully-undetected-downloader)**\n\nGustavo Palazolo August 29, 2022\n\n## Summary\n\n[AsyncRAT is an open-source remote administration tool released on GitHub in January](https://malpedia.caad.fkie.fraunhofer.de/details/win.asyncrat)\n2019. It’s designed to remotely control computers via encrypted connection, providing\ncomplete control via functionalities such as:\n\nView and record screen\nKeylogger\nUpload, download and execute files\nChat communication\nPersistence mechanisms\nDisable Windows Defender\nShutdown / Restart the machine\nDOS attack\n\nAlthough the official GitHub repository contains a legal disclaimer, AsyncRAT is popularly\n[used by attackers and even some APT groups. Netskope Threat Labs recently came across](https://www.trendmicro.com/it_it/research/22/d/new-apt-group-earth-berberoka-targets-gambling-websites-with-old.html)\na [FUD (Fully Undetected) Batch script which is downloading AsyncRAT from an Amazon S3](https://twitter.com/malwrhunterteam/status/1559881926688784385)\n\n\n-----\n\nBucket. At the time of our analysis, the Batch script wasn t being detected by any of the\nantivirus engines on VirusTotal. The attacker used some simple techniques to make the\nscript fly under the radar, as we will describe later in this analysis.\n\nThe downloaded file (second stage) is a PowerShell script that creates and uses multiple\nfiles to execute AsyncRAT, which is injected into a legitimate process.\n\nIn this blog post, we will analyze the complete infection flow of AsyncRAT, from the FUD BAT\n[downloader spotted by the MalwareHunterTeam to the last payload.](https://twitter.com/malwrhunterteam)\n\n## Stage 01 – FUD Downloader\n\n[The first stage is a batch script that contains zero detections on VirusTotal.](https://www.virustotal.com/gui/file/16b4a6fec76b452f77a6832871ff2e906d673e557a0e6c2673fc952181d1319b)\n\nFUD AsyncRAT downloader.\nAlthough no AV vendor is detecting the file, it contains many detections via Sigma and IDS\nrules, as well as by sandboxes used by VirusTotal.\n\n\n-----\n\nSigma rules detecting malicious behavior.\nThe file not being detected is likely due to a long string added in the file multiple times (more\nthan 100) by the attacker.\n\nCommented strings added to the file.\nThe string is always the same and is in Japanese. Doing a rough translation, this string\nseems to be nonsense words added by the attacker.\n\n\n-----\n\nRough\n\ntranslation from the string found multiple times in the file.\nThe malicious command is quite simple and it can be found within the nonsense strings. It’s\nslightly obfuscated, which probably contributes to the absence of detection.\n\nCommand executed by the batch file.\nThe command downloads and executes the second stage via PowerShell from an Amazon\nS3 bucket.\n\n## Stage 02 – PowerShell\n\nThe file downloaded from the Amazon S3 bucket is a PowerShell script. As we demonstrated\nin the diagram in the summary section, this script creates multiple files to execute the last\nstage.\n\nFirst, it creates a folder named “Not” in “C:\\ProgramData”.\n\nSecond stage creating a directory.\n\nThen, it creates five files in this directory. The primary goal of this stage is to run another\nPowerShell script in a chained execution, described below:\n\n1. File “xx.vbs” is executed by the second stage;\n\n\n-----\n\n2. File xx.vbs executes file xx.bat ;\n3. File “xx.bat” executes file “Bin.vbs” via scheduled task;\n4. File “Bin.vbs” executes file “Bin.bat”;\n5. And finally, “Bin.bat” executes “Bin.ps1” via PowerShell.\n\nChained execution to run “Bin.ps1”.\nThere are two PE files within the last PowerShell script.\n\nPE files within the last PowerShell script\n\n\nTwo\n\n\n-----\n\nThe first file is known as RunPE and it s used to inject AsyncRAT into a legitimate process,\nwhich is the second PE file in the script.\n\nPowerShell running RunPE.\nThe PowerShell script loads RunPE directly into memory, so none of the PE files are written\ninto disk.\n\n## Stage 03 – RunPE\n\n[This file is responsible for injecting AsyncRAT into another process using Process Hollowing.](https://attack.mitre.org/techniques/T1055/012/)\nIt’s developed in .NET and protected with Confuser.\n\nRunPE details.\nThe PowerShell script in the second stage loads RunPE in memory and calls a method\nnamed “Execute” from “GIT.local”. The method receives the path of the targeted executable\n(“C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\aspnet_compiler.exe”) and the\nAsyncRAT bytes in the arguments.\n\n\n-----\n\nMethod executed by the\n\nPowerShell.\nAfter removing part of the obfuscation, we can confirm that AsyncRAT is being injected via\nProcess Hollowing.\n\nSome of the API calls used for Process Hollowing.\n\n## Stage 04 – AsyncRAT\n\nAs previously mentioned, AsyncRAT is an open-source remote administration tool developed\nin .NET, and it’s often abused by attackers. The specific sample analyzed in this blog post\nwas likely compiled on July 22, 2022.\n\n\n-----\n\nAsyncRAT sample delivered by the FUD Batch script.\nThis sample doesn’t contain any obfuscation or protection, so it’s not difficult to understand\nthe code once decompiled.\n\nDecompiled AsyncRAT sample.\n\nWe can summarize AsyncRAT’s main execution flow in six-steps:\n\n1. Initialize its configuration (decrypts the strings);\n2. Verifies and creates a Mutex (to avoid running duplicated instances);\n3. If enabled in the settings, exits if a virtualized or analysis environment is detected;\n4. If enabled in the settings, establishes persistence;\n5. If enabled in the settings, sets its own process as critical;\n6. Starts the communication with the server.\n\n\n-----\n\nAsyncRAT main\n\nmethod.\nAsyncRAT’s configuration is decrypted within the “InitializeSettings” method.\n\nAsyncRAT method that initializes the configuration.\nAsyncRAT uses AES-256 in CBC mode to decrypt the strings.\n\n\n-----\n\nAsyncRAT method that decrypts data using AES.\nThis function reads a base64 encoded string, where the first 32 bytes represents the HMAC,\nthe following 16 bytes the decryption IV, and the remaining bytes are the encrypted data.\n\nAsyncRAT variables storing encrypted data.\n[We created a Python script that can be used to decrypt AsyncRAT strings using the same](https://github.com/netskopeoss/NetskopeThreatLabsIOCs/tree/main/AsyncRAT/script)\nalgorithm.\n\n\n-----\n\nDecrypting AsyncRAT configuration.\nThe anti-analysis feature of this sample is disabled, but AsyncRAT provides the option to\ndetect virtualized and analysis environments via simple techniques, such as checking the\ndisk size, checking the OS manufacturer and model, etc.\n\nAsyncRAT anti-analysis method.\nIt’s also able to establish persistence via registry or a scheduled task.\n\n\n-----\n\nAsyncRAT persistence mechanisms.\nFurthermore, AsyncRAT stores the C2 address and port within its configuration. However, it\nalso provides the option to download this information from Pastebin.\n\nMethod to download C2 address and port from Pastebin.\nAfter all the steps executed by the main function, which we summarized earlier, AsyncRAT\nstarts an encrypted communication with the C2 server. Once connected, the attacker has full\ncontrol over the device through GUI, as shown in the example below.\n\n\n-----\n\nExample of AsyncRAT controller.\n\n## Conclusions\n\nIn this blog post, we analyzed the complete attack flow of AsyncRAT, from the downloader to\nthe last payload. In this scenario, the attacker used simple techniques to make the\ndownloader fly under the radar, being detected by none of the engines on VirusTotal.\nFurthermore, since AsyncRAT is open-source, one could easily change its code to add or\nremove functionalities as needed.\n\nBatch scripts like this are commonly used by attackers as an initial foothold. We expect an\nincrease in the use of this file type and others (such as LNK and VBS) after Microsoft\n[released a protection against malicious Microsoft Office macros, which are also popularly](https://www.netskope.com/blog/microsoft-office-vba-blocked-by-default-in-files-from-the-internet)\nabused to deliver malware. Netskope Threat Labs always recommends users avoid opening\nfiles of unknown origin, especially those received by email. For organizations, we strongly\nrecommend security training for employees and to use a secure web gateway with advanced\nthreat protection, being able to scan and detect malicious files in real-time.\n\n## Protection\n\nNetskope Threat Labs is actively monitoring this campaign and has ensured coverage for all\nknown threat indicators and payloads.\n\n**Netskope Threat Protection**\n\nGeneric.AsyncRAT.B.80EDEB92\n\n\n-----\n\n**Netskope Advanced Threat Protection provides proactive coverage against this**\nthreat.\n\nGen.Malware.Detect.By.StHeur indicates a sample that was detected using static\nanalysis\nGen.Malware.Detect.By.Sandbox indicates a sample that was detected by our\ncloud sandbox\n\n## IOCs\n\n[All the IOCs related to this campaign and scripts can be found in our GitHub repository.](https://github.com/netskopeoss/NetskopeThreatLabsIOCs/tree/main/AsyncRAT)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-08-29 - AsyncRAT- Using Fully Undetected Downloader.pdf"
+    ],
+    "report_names": [
+        "2022-08-29 - AsyncRAT- Using Fully Undetected Downloader.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "452d2d74-e812-45d6-b0fe-b8a6cc4ebd01",
+            "created_at": "2022-10-25T16:07:23.562676Z",
+            "updated_at": "2025-03-27T02:02:09.865955Z",
+            "deleted_at": null,
+            "main_name": "Earth Berberoka",
+            "aliases": [
+                "GamblingPuppet"
+            ],
+            "source_name": "ETDA:Earth Berberoka",
+            "tools": [
+                "Agent.dhwf",
+                "AngryRebel",
+                "AsyncRAT",
+                "CinaRAT",
+                "Destroy RAT",
+                "DestroyRAT",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "Kaba",
+                "Korplug",
+                "Moudour",
+                "Mydoor",
+                "PCRat",
+                "PlugX",
+                "PuppetLoader",
+                "Quasar RAT",
+                "QuasarRAT",
+                "RedDelta",
+                "Sogu",
+                "TIGERPLUG",
+                "TVT",
+                "Thoper",
+                "Trochilus RAT",
+                "Xamtrav",
+                "Yggdrasil",
+                "oRAT"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "2664d6f5-f918-4978-87f8-f6afad7402c6",
+            "created_at": "2023-01-06T13:46:39.393669Z",
+            "updated_at": "2025-03-27T02:00:03.073942Z",
+            "deleted_at": null,
+            "main_name": "Earth Berberoka",
+            "aliases": [
+                "GamblingPuppet"
+            ],
+            "source_name": "MISPGALAXY:Earth Berberoka",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536092,
+    "ts_updated_at": 1743041821,
+    "ts_creation_date": 1664712187,
+    "ts_modification_date": 1664712187,
+    "files": {
+        "pdf": "https://archive.orkl.eu/ef7eb6b33ef2dfb4c940db6b80815a3c012545a7.pdf",
+        "text": "https://archive.orkl.eu/ef7eb6b33ef2dfb4c940db6b80815a3c012545a7.txt",
+        "img": "https://archive.orkl.eu/ef7eb6b33ef2dfb4c940db6b80815a3c012545a7.jpg"
+    }
+}

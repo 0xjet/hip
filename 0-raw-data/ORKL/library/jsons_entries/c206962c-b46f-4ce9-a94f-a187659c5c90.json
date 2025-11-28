@@ -1,0 +1,182 @@
+{
+    "id": "c206962c-b46f-4ce9-a94f-a187659c5c90",
+    "created_at": "2023-01-12T15:09:17.207158Z",
+    "updated_at": "2025-03-27T02:14:34.189457Z",
+    "deleted_at": null,
+    "sha1_hash": "7689fedd26c5b8b5c0620e31caa41f143b831923",
+    "title": "2020-07-15 - The Defective Domain Generation Algorithm of BazarBackdoor",
+    "authors": "",
+    "file_creation_date": "2022-05-27T21:08:43Z",
+    "file_modification_date": "2022-05-27T21:08:43Z",
+    "file_size": 650376,
+    "plain_text": "# The Defective Domain Generation Algorithm of BazarLoader\n\n**[johannesbader.ch/blog/the-buggy-dga-of-bazarbackdoor/](https://johannesbader.ch/blog/the-buggy-dga-of-bazarbackdoor/)**\n\n**Edit 2020-07-19: Cybereason published an excellent article A Bazar of Tricks: Following**\nTeam9’s Development Cycles. The article shows that the DGA is part of Bazar Loader, which\nwill try to download Bazar Backdoor. I therefore renamed most instances of BazarBackdoor\nto BazarLoader.\n\n[When I analyzed the domain generation algorithm of BazarLoader, I noticed a sample that](https://johannesbader.ch/blog/the-dga-of-bazarbackdoor/)\ngenerates bizarre “domains”:\n\n\n-----\n\n```\n efggkzjhggm.bazaar\n]`egkjzeggkl.bazaar\n_`eigkzegigm.bazaar\n^`ggilzeigin.bazaar\nbceeijbhgeil.bazaar\n_acgkjzfegkl.bazaar\na`gggkaeiggm.bazaar\n`cehimzhghio.bazaar\n``ceikzeeeim.bazaar\n`edgjlzjfgjn.bazaar\n_ccghjzheghl.bazaar\na`eijjaegijl.bazaar\n^aegjkzfggjm.bazaar\na`geikaeieim.bazaar\n_dghhkziihhm.bazaar\n\n```\nTwo things are obviously wrong:\n\n1. There is no top level domain `.bazaar . There is a Persian tld .ﺑﺎزار which translates to`\n\nbazaar, but that won’t work of course.\n2. Some second level domains contain special characters which makes them invalid too.\n\nThe first error is easy to explain: the authors meant to use `.bazar, which is a valid`\nEmerDNS domain. The second mistake is more interesting. The authors must have noticed\nthe occasional special characters too. But they probably couldn’t find the root cause and\ninstead programmed a workaround that fixes some, but not all, characters.\n\nHere is the sample with the broken DGA that I looked at:\n\n**MD5**\n18d635a8ca7caefb4f4513650a31efc9\n\n**SHA1**\nd555233122a277fb89797ab2293efbe2a0c75f7f\n\n**SHA256**\n2e99ed535a9f73bafab151ec409de04c953a0187cb8e4063317617befa09068d\n\n**Size**\n377 KB (386224 Bytes)\n\n**Compile Timestamp**\n2020-06-17 09:20:56 UTC\n\n**Links**\n[VirusTotal](https://www.virustotal.com/gui/file/2e99ed535a9f73bafab151ec409de04c953a0187cb8e4063317617befa09068d)\n\n**Filenames**\nDD45.exe, Preview_Report.exe (VirusTotal)\n\n**Detections**\n\n\n-----\n\n**Virustotal: 41/76 as of 2020-07-09 13:47:45 - Trojan.Trickster.Gen (ALYac),**\nTrojan.Win32.Mansabo.4!c (AegisLab), Trojan:Win32/Mansabo.e7acfbbd (Alibaba),\nTrojan/Win32.Mansabo (Antiy-AVL), Trojan.Mansabo (CAT-QuickHeal),\nTrojan.Win32.Mansabo.fef (Kaspersky), Trojan:Win32/Trickbot.A!Cert (Microsoft),\nTrojanSpy.Win64.TRICKBOT.ENJ (TrendMicro), TrojanSpy.Win64.TRICKBOT.ENJ\n(TrendMicro-HouseCall), Trojan.Mansabo (VBA32), Trojan.Win32.Mansabo.fef (ZoneAlarm)\n\nThe domain generation algorithm in this faulty version is the same as the one documented\n[here. The only place that is different is shown in the following screenshot comparison. The](https://johannesbader.ch/blog/the-dga-of-bazarbackdoor/)\nfaulty DGA is on the left, the fixed on the right. Can you spot the problem?\n\nThe divisions by invariant multiplication are hard to read, but notice the right site being much\nshorter even tough the calculation is basically the same. This is because compiler\noptimization was able to strip some minor corrections that are only necessary for large\nnumbers. Here the decompiled code after some renaming and cleaning up:\n\n\n-----\n\n```\n j_1 0;\n i_1 = 0;\n do\n {\n  r = 0;\n  [...]\n  bcrypt_BCryptGenRandom(0i64, &r, 4i64);\n  offset_letter = i_1 + 'a';\n  i_1 += 2;\n  character = r % 25 / (j_1 + 6) + offset_letter;\n  r = r % 25 / (j_1 + 6);\n  j_2 = j_1++;\n  *(szDomain + 2 * j_2) = character;\n } while ( i_1 < 12u );\n\n```\nThis is the same code as for the fixed DGA, except for how the random numbers are\ngenerated:\n\n1. The faulty DGA generates 4 random bytes using a call to `BCryptGenRandom .`\n2. The fixed DGA generates a random value with a call to `GetTickCount, and extracting`\n\nthe lowest 15 bits.\n\nThe problem with the first approach is, that the number will be `0x80000000 or larger in 50%`\nof the cases. Since it is a signed number, it becomes negative. And the remainder of a\nnegative number for a positive divisor is negative. The fixed version doesn’t have this\nproblem, because the integer overflow does not happen. When extending the random\nnumber ranges to the negative, we get these character sets:\n\n**index** **random number range** **potential characters**\n\n0 -4–4 ]^_`abcde\n\n1 -3–3 `abcdef\n\n2 -3–3 bcdefgh\n\n3 -2–2 efghi\n\n4 -2–2 ghijk\n\n5 -2–2 ijklm\n\nThe malware authors used the following patch instead of fixing the integer overflow.\n\n\n-----\n\n```\nl 6i64;\ndo {\n  c = *(&szSeedStr[-6] + wDomain - a2) + *(wDomain - 6) - '0';\n  *wDomain = c;\n  if ( c < 'a' )\n   *wDomain = 'z';\n  ++wDomain;\n  --l;\n} while ( l );\n\n```\nThe patch is an if condition that replaces characters below “a” — that includes all special\ncharacters generated by the faulty DGA — with “z”. This resolves the problem for the last\nhalf of the second level domain (in particular, the 7th and 8th letter, the rest are not affected\nby the bug). However, the first half of the second level domain remains unmodified.\n\nThe following Python reimplementation generates all possible domains for a given date. Note\nthat due to the extended random ranges, there are about 55000 domains per month instead\nof 2160 for the fixed version. So even if the correct tld would have been used, then the\nnumber of domains would have been a problem for the attackers — as they have no way of\npredicting which ones are used in what order.\n\n\n-----\n\n```\nimport argparse\nfrom datetime import datetime\nfrom itertools import product\ndef dga(date):\n  month = date.month\n  year = date.year\n  date_str = \"{0:02d}{1:04d}\".format(12-month, year-18)\n  valid_chars = [\n   \"]^_`abcde\",\n   \"`abcdef\",\n   \"bcdefgh\",\n   \"efghi\",\n   \"ghijk\",\n   \"ijklm\"\n  ]\n  valid_chars = [list(_) for _ in valid_chars]\n  for part1 in product(*valid_chars):\n    domain = \"\".join(part1)\n    for i, c in enumerate(part1):\n      r = ord(c) + int(date_str[i])\n      if r < ord('a'):\n        domain += 'z'\n      else:\n        domain += chr(r)\n    domain += \".bazaar\"\n    yield domain\nif __name__==\"__main__\":\n  parser = argparse.ArgumentParser()\n  parser.add_argument(\"-d\", \"--date\", help=\"date when domains are generated, e.g.,\n2020-06-28\")\n  args = parser.parse_args()\n  if args.date:\n    d = datetime.strptime(args.date, \"%Y-%m-%d\")\n  else:\n    d = datetime.now()\n  for domain in dga(d):\n    print(domain)\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-07-15 - The Defective Domain Generation Algorithm of BazarBackdoor.pdf"
+    ],
+    "report_names": [
+        "2020-07-15 - The Defective Domain Generation Algorithm of BazarBackdoor.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "3fff98c9-ad02-401d-9d4b-f78b5b634f31",
+            "created_at": "2023-01-06T13:46:38.376868Z",
+            "updated_at": "2025-03-27T02:00:02.818071Z",
+            "deleted_at": null,
+            "main_name": "Cleaver",
+            "aliases": [
+                "Cobalt Gypsy",
+                "G0003",
+                "Operation Cleaver",
+                "Op Cleaver",
+                "Tarh Andishan",
+                "Alibaba",
+                "TG-2889"
+            ],
+            "source_name": "MISPGALAXY:Cleaver",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536157,
+    "ts_updated_at": 1743041674,
+    "ts_creation_date": 1653685723,
+    "ts_modification_date": 1653685723,
+    "files": {
+        "pdf": "https://archive.orkl.eu/7689fedd26c5b8b5c0620e31caa41f143b831923.pdf",
+        "text": "https://archive.orkl.eu/7689fedd26c5b8b5c0620e31caa41f143b831923.txt",
+        "img": "https://archive.orkl.eu/7689fedd26c5b8b5c0620e31caa41f143b831923.jpg"
+    }
+}

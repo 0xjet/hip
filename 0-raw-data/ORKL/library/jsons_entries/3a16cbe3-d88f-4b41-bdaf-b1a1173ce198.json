@@ -1,0 +1,158 @@
+{
+    "id": "3a16cbe3-d88f-4b41-bdaf-b1a1173ce198",
+    "created_at": "2023-01-12T15:05:17.077618Z",
+    "updated_at": "2025-03-27T02:05:29.66887Z",
+    "deleted_at": null,
+    "sha1_hash": "df13ebafc87811020e4eb4d8515653963495be9d",
+    "title": "2020-02-13 - A Deep Dive Into Wakeup On Lan (WoL) Implementation of Ryuk",
+    "authors": "",
+    "file_creation_date": "2022-05-29T00:53:02Z",
+    "file_modification_date": "2022-05-29T00:53:02Z",
+    "file_size": 2124587,
+    "plain_text": "# A Deep Dive Into Wakeup On Lan (WoL) Implementation of Ryuk\n\n**[blogs.quickheal.com/deep-dive-wakeup-lan-wol-implementation-ryuk/](https://blogs.quickheal.com/deep-dive-wakeup-lan-wol-implementation-ryuk/)**\n\nFebruary 13, 2020\n\nQuick Heal Security Labs recently came across a variant of Ryuk Ransomware which\ncontains an additional feature of identifying and encrypting systems in a Local Area Network\n(LAN). This sample targets the systems which are present in sleep as well as the online state\nin the LAN. This sample is packed with a custom packer. The final unpack routine which\nextracts the payload of Ryuk Ransomware is as shown below.\n\n\n-----\n\nFig 1:Final Unpack Routine\n\nThe payload contains two stages of the decryption routine. Basically, 1 stage is the input tost\n2nd stage and starts with decrypt “advapi32.dll” obfuscated string and its related function\nnames such as CryptCreateHash, CryptHashData, CryptDestroyHash to reverse md5 hash\nof “5d65e9cb5bc2a9b609299d8758d915ab” which is hardcoded in the file.\n\n\nFig 2:De-obfuscation of 1st stage obfuscated string\n\n\n-----\n\nFig 3:After de-obfuscation\n\nThe reverse md5 lookup of 5d65e9cb5bc2a9b609299d8758d915ab is 1560ddd.During\nreverse md5 lookup process sample takes high processor utilization, as malware tries to\ncalculate the md5 hash of each value from 0 to 1560ddd and compare it with\n5d65e9cb5bc2a9b609299d8758d915ab.\n\n“1560ddd” as an input to the below mathematical function which will generate 2nd stage key\nstack and is used to de-obfuscate all the strings used in payload, while 1 stage key stackst\nalready presents in the file.\n\n\nFig 4:Generation of Stage-2 key stack\n\n\n-----\n\nWe have used IDA python to decrypt all obfuscated strings and rename window APIs,\nfunction names for better static analysis of payload as shown in below fig.\n\nFig 5:Part of Obfuscated and De-Obfuscate strings\n\nFig 6:After Renaming APIs and Obfuscate Strings\n\n**Execution Part:**\n\nAfter resolution of APIs and their related functions, it will check for the command line\nargument (CLA) to be “8” and “LAN”. If not, then it drops its self-copy in the current location\nwith a random filename and executes it by invoking “ShellExecuteW”.\n\nFig 7:Child Process Created with CLA “8 LAN”\n\n\n-----\n\nThe above command-line arguments are an interesting part of the Ryuk variant i.e. Wake on\nLan (WoL). It is a hardware feature that allows a computer to be turned ON or awakened by\na network packet. The packet is usually sent to the target computer by a program executed\non a device connected to the same LAN. This feature is used for administrative functions that\nwant to push system updates or to execute some scheduled tasks when the system is\nawakened. For sending WoL Packets, it collects system ARP (Address Resolution Protocol)\ntable by calling GetIpNetTable, then extract IPv4 address from ARP structure and then send\nWoL packets for each valid IP address entry.\n\nFig 8:Extracting ARP Table of System\n\nFig 9:Structure Of ARP Table\n\nWe can get the ARP entry of a system by executing “ARP -A” in cmd.After extracting a valid\nIPv4 address, it will send the magic packet to the target host. This packet is sent over the\nUser Datagram Protocol (UDP) socket with socket option SO_BROADCAST using\n\n\n-----\n\ndestination port 7. The WoL magic packet starts with FF FF FF FF FF FF followed by target s\ncomputer MAC address.\n\nFig 10:Magic Packet for WoL\n\nFig 11:Magic Packet for WoL Implemented by Ryuk\n\nAfter successful in WoL operation, it tries to mount the remote device c$/administrative share\n— if it can mount the share, it will then proceed to encrypt remote host’s drive. But before the\nstart of encryption, it checks whether it is running inside VM or not by enumerating process\nand services.\n\n\n-----\n\nFig 12:Enumerate Process and Service for Checking Virtual Machines\n\nIt will then proceed for importing the RSA 2048-bit Public key hardcoded in the file and\ndeleting the shadow copy by invoking “WMIC” and “vssadmin” as shown in below fig.\n\nFig 13:Importing RSA Public Key and Deleting Shadow Copy\n\nIt has also tried to move laterally to other hosts in the network by checking the IP address\nassigned to the system.Once the IPv4 Address belongs to the range of 172.16. or 192.168.\n(Private IPv4 addresses typically assigned in LAN environment), it will then send the\n“IcmpEchoRequest” packet using the “IcmpSendEcho” API to target IPv4 address, instead of\nusing the native ping command.\n\nIf it has access to that host/system which is available online in LAN, it will encrypt those\nsystems as well. For the encryption process, it has used a combination of RSA-2048 bit and\nAES-256-bit, it will generate different AES keys for each file using the “CryptGenKey” API.\n\n\n-----\n\nFig 14:Generating AES 256 bit Using CryptGenKey\n\nAfter file encryption it will write marker “HERMES” in the file, to identify if the file has\nencrypted or not. Ryuk is the successor to Hermes Ransomware as they have a similarity in\nmost of its implementation. It will append the encrypted AES key in Microsoft SIMPLEBLOB\nformat to the footer of the file.\n\nFig 15:Encrypted File Structure\n\n**Conclusion:**\n\nBy using WoL and Ping scanning APIs to wake up the system and move laterally in-network,\nRyuk has tried to encrypt the maximum number of systems. These features signify the focus\nof this ransomware to increase its monetization by infecting as many systems as possible.\n\nRyuk was initially associated with the APT Group and remained undetected for months and\none day it evolves to encrypt all network devices, and now with WoL, it wakes up the system\nin LAN to increase its success of encrypting a larger number of systems.\n\n\n-----\n\n**How Quick Heal protects its users from such attacks:**\n\nQuick Heal products are built with the following multi-layered security that helps counter such\nattacks.\n\n**1. Anti-Ransomware**\n\nSpecially designed to counter ransomware attacks, this feature detects ransomware by\ntracking its execution sequence.\n\n**2. Firewall**\n\nBlocks malicious attempts to breach network connections.\n\n**3. IDS/IPS**\n\nDetects RDP brute force attempts and blocks the remote attacker IP for a defined period.\n\n**4.Virus Protection**\n\nOnline virus protection service detects the known variants of the ransomware.\n\n**5. Behaviour-based Detection System**\n\nTracks the activity of executable files and blocks malicious files.\n\n**6. Back-Up and Restore**\n\nHelps you take regular backups of your data and restore it whenever needed.\n\n**IoC:**\n\n987336D00FDBEC3BCDB95B078F7DE46F\n\n**Detection name:**\n\nTrojan.HermezRI.S10666632\n\n**Goutam Tripathy**\n\n[Follow @GoutamT29](https://twitter.com/GoutamT29)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-02-13 - A Deep Dive Into Wakeup On Lan (WoL) Implementation of Ryuk.pdf"
+    ],
+    "report_names": [
+        "2020-02-13 - A Deep Dive Into Wakeup On Lan (WoL) Implementation of Ryuk.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "2646f776-792a-4498-967b-ec0d3498fdf1",
+            "created_at": "2022-10-25T15:50:23.475784Z",
+            "updated_at": "2025-03-27T02:00:55.479958Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "BlackTech",
+                "Palmerworm"
+            ],
+            "source_name": "MITRE:BlackTech",
+            "tools": [
+                "Kivars",
+                "PsExec",
+                "TSCookie",
+                "Flagpro",
+                "Waterbear"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d3a7123c-f519-49a0-a234-de24a1ef052a",
+            "created_at": "2022-10-25T16:47:55.545211Z",
+            "updated_at": "2025-03-27T02:05:17.254744Z",
+            "deleted_at": null,
+            "main_name": "BRONZE CANAL",
+            "aliases": [
+                "CTG-6177 ",
+                "Circuit Panda ",
+                "Palmerworm ",
+                "Shrouded Crossbow ",
+                "BlackTech"
+            ],
+            "source_name": "Secureworks:BRONZE CANAL",
+            "tools": [
+                " DRIGO",
+                " Flagpro",
+                " Gh0stTimes",
+                " PLEAD",
+                " Spiderpig",
+                " Waterbear",
+                "Bifrose"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "75024aad-424b-449a-b286-352fe9226bcb",
+            "created_at": "2023-01-06T13:46:38.962724Z",
+            "updated_at": "2025-03-27T02:00:02.964002Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "CIRCUIT PANDA",
+                "Temp.Overboard",
+                "G0098",
+                "Red Djinn",
+                "HUAPI",
+                "Palmerworm",
+                "T-APT-03",
+                "Manga Taurus",
+                "Earth Hundun"
+            ],
+            "source_name": "MISPGALAXY:BlackTech",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "efa7c047-b61c-4598-96d5-e00d01dec96b",
+            "created_at": "2022-10-25T16:07:23.404442Z",
+            "updated_at": "2025-03-27T02:02:09.781478Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "BlackTech",
+                "Circuit Panda",
+                "Earth Hundun",
+                "Manga Taurus",
+                "Operation PLEAD",
+                "Operation Shrouded Crossbow",
+                "Operation Waterbear",
+                "Palmerworm",
+                "Radio Panda",
+                "Red Djinn",
+                "T-APT-03",
+                "TEMP.Overboard"
+            ],
+            "source_name": "ETDA:BlackTech",
+            "tools": [
+                "BIFROST",
+                "BUSYICE",
+                "BendyBear",
+                "Bluether",
+                "CAPGELD",
+                "DRIGO",
+                "Deuterbear",
+                "Flagpro",
+                "GOODTIMES",
+                "Gh0stTimes",
+                "IconDown",
+                "KIVARS",
+                "LOLBAS",
+                "LOLBins",
+                "Linopid",
+                "Living off the Land",
+                "TSCookie",
+                "Waterbear",
+                "XBOW",
+                "elf.bifrose"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535917,
+    "ts_updated_at": 1743041129,
+    "ts_creation_date": 1653785582,
+    "ts_modification_date": 1653785582,
+    "files": {
+        "pdf": "https://archive.orkl.eu/df13ebafc87811020e4eb4d8515653963495be9d.pdf",
+        "text": "https://archive.orkl.eu/df13ebafc87811020e4eb4d8515653963495be9d.txt",
+        "img": "https://archive.orkl.eu/df13ebafc87811020e4eb4d8515653963495be9d.jpg"
+    }
+}

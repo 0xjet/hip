@@ -1,0 +1,157 @@
+{
+    "id": "47c55bca-8ec4-4ac9-95d3-198240ef8bea",
+    "created_at": "2023-01-12T15:10:20.030667Z",
+    "updated_at": "2025-03-27T02:16:44.345702Z",
+    "deleted_at": null,
+    "sha1_hash": "d7265b257b9898ebcb178ceb0553245a93679a1d",
+    "title": "2021-11-25 - A Deep Dive Into SoWaT- APT31’s Multifunctional Router Implant",
+    "authors": "",
+    "file_creation_date": "2022-05-28T03:11:42Z",
+    "file_modification_date": "2022-05-28T03:11:42Z",
+    "file_size": 2356308,
+    "plain_text": "# A Deep Dive Into SoWaT: APT31’s Multifunctional Router Implant\n\n**imp0rtp3.wordpress.com/2021/11/25/sowat/**\n\nBy imp0rtp3 November 25, 2021\n\n## Executive Summary\n\nAPT31 is long known to use Operational Relay Boxes (ORBs) and compromise\nrouters.\nThis report examines in detail their only publicly known router implant, dubbed\n“SoWaT”\nThe implant is capable to function as RAT, a tunnel and a proxy.\nExtensive verification and double-encryption procedures signal a TA trying to evade\neven the most capable defender\nThe implant’s code reveals a long development history most likely over several years\n\n\n-----\n\n## Introduction\n\n### APT31\n\n[APT31, aka Zirconium, is an interesting Chinese threat actor, operating almost separately](https://malpedia.caad.fkie.fraunhofer.de/actor/apt31)\nany other Chinese TA. The group is targeting various types of targets of interest to the\nChinese government. Notably, the group has been subject to several governmental\nattribution statements, including Germany, France, Norway, Australia.\n\nAPT31 Timeline, taken with permission from sekoia.io\nSekoia published on the 10/11/21 a great [report expanding on previous report by the French](https://info.sekoia.io/hubfs/%5BMarketing%5D%20-%20Ebook-analyse/BRINT%20APT31.pdf)\nANSSI, The timeline above was copied with permission from them.\n\nIt is long known that APT31 is using ORBs (Operational Relay Boxes) for their network\noperations, specifically hacked routers. Still, there is no public research into how they are\noperate those ORBs. With this reports I try to shed some light into the groups capabilities on\nnetwork devices and potential detection and prevention options.\n\nSoWaT checking how far off the clock is\n\n### SoWaT\n\nThe implant, I dubbed “SoWaT” because of its use of the custom file called “swt”, is an ELF\nfile for 32-bit MIPS based processors. According to the research done by Sekoia, it was most\nlikely used for Pakedge routers, as they represent the vast majority of attacked routers and\noften run a Linux based OS on MIPS32 processors.\n\n[The implant was first mentioned in a tweet by](https://twitter.com/billyleonard/status/1417910729005490177) [billy leonard as a router implant found by](https://twitter.com/billyleonard)\ngoogle TAG team and was attributed to APT 31. Sekoia reaffirmed that attribution in their\nreport.\n\n\n-----\n\nAccording to the upload time (Nov. 2019) and compilation information of the sample, it was\nmost likely compiled during the fist half of 2019. The compilation used the February 2019\n[version of cross-compilation tool Buildroot.](https://buildroot.org/)\n\n## Execution Flow\n\n### TLS Server and Client\n\nSoWaT communicates with the attacker using TLS, where it can function as a client or as a\nserver, If the implant has a command line argument it start a server on the port given.\nRegardless of that, it tries to connect to a list of servers specified in its encrypted\nconfiguration (See Configuration File) every hour.\nSome functions of the implant can only be run if the implant is in server mode.\n\nIn both modes, the implant uses certificates and keys parsed from “swt” (See swt). The CA\nkeys to the chain to authenticate the attacker and uses the public and private key for its own.\n\n\n-----\n\nWhen SoWaT works as server, it sends a Client certificate request, accepting only\nconnections client certificates by the CA from “swt”.\nIf it attempts to connect as client, it expects the server to send a client certificate request and\nin response it verifies itself using the private key in “swt”\n\nAll components of the TLS connection are implemented by the popular library mbedtls. The\nspecific settings of SoWaT cause the connection to have a unique JA3 and JARM signature,\nsee IOCs.\n\n### Command Loop\n\nInterestingly, The main execution function of SoWat isn’t exclusively used to execute\ncommand from the attacker but also called from withing the implant itself. This way\ncomplicates understanding . Functions in bold are function which were most likely intended\nto be used by the attacker.\n\nAfter the TLS connection is successful, SoWaT waits for commands.\n\nAny message needs to have the following basic structure:\n\nCommand Message Univerval Structure\nAll Network protocol structures from here forward are in big endian.\n\nAccording to the Message size, the implant allocates data and waits for all the data before\nexecuting the command.\n\nThe are 16 possible commands:\n\nFunction num. Description\n\n0 connect to the servers detailed in the configuration\n\n1 Unkown, most likely internal functions\n\n2 Unkown, most likely internal functions\n\n**3** Connect to new server with new certificate\n\n4 Unkown, most likely internal functions\n\n**5** start proxy functions\n\n\n-----\n\n**6** query proxy port\n\n**7** run RAT\n\n**8** reconnect again to Servers in configuration\n\n**10** Write current connection IPs to “config” file\n\n**11** Get information about all current TLS connections\n\n12 Unkown, likely internal functions\n\n13 Unkown, likely internal functions\n\n15 Update Count of hours without connection\n\n**16** Exit process\n\n**17** If functions as server, delete all and exit process\n\nFunctions in bold are also called by the implant itself.\n\nThis command switch place can be confusing, as it combines both function called by the\nimplant for itself and also function that can be called by the attacker. Moreover, some of the\nfunction seem to be largely overlapping, most likely because of code added in different parts\nof the development. The RAT and Proxy functions have their own section, I will describe here\nother notable functions:\n\nFunction 3\n\nThe function expects a buffer containing 482-byte long chunks of data detailing a connection\nto initiate, with the following structure:\n\nFunction 15\n\nThe function is called hourly by the implant. It checks whether there were any successfull\nconnections to the implant in the last 24 hours and if there weren’t it calls Function 17. It is\nunlikely that the function is intended to be called by the attacker directly.\n\nFunction 17\n\nThis killswitch tries to delete any artifact of the malware: it deletes the entrie current working\ndirectory and runs swt to revert any opened ports.\n\n\n-----\n\n## RAT\n\nFunction num. explanation\n\n0 Execute command, send output back (“exc_cmd”)\n\n1 Change IP of server\n\n2 Write file “$(CWD)/s”\n\n3, 5 Add IP to configuration and reconnect to that file\n\n4 Delete all files and exit\n\n6 Write to file path chosen by the attacker\n\n7 Add IP to configuration and write file\n\n8 read file\n\nAs you can see, the functions are quite simple. Of some interest is function 2, which writes to\na file named “s” in the current working directory. I have not seen any other reference to that\nfile\n\n\n-----\n\nFunction number 2\n\n**RAT messages**\n\nWhen SoWat receives a RAT message, it first checks if it’s the server or the client in the\nconnection. if it’s the client it skips the verification, if it functions as a server it does require\nverification.\n\nThis is the message fromat for the verification:\n\nThe verification process occurs as follows:\n\n\n-----\n\n1. Check whether the Signed checksum was signed with the Private key of the Client\n\ncertificate\n[2. Calculate the CRC64 Jones checksum of the command data,](http://www0.cs.ucl.ac.uk/staff/d.jones/crcnote.pdf)\n3. Compare the message checksum to the CRC64 checksum it calculated.\n\nOnly if the message is verified the command is ran,\n\n## Proxy\n\nSoWaT can function in two different proxy modes:\n\n**1. Attacker <-> Attacker**\n\n**2. Attacker <-> Victim**\n\nThe names of the modes comes only from reversing their internal logic and and analysis of\npotential uses. While the Attacker <-> Victim mode is quite clear, the Attacker <-> Attacker\nmode is complicated and it is possible that its purpose is different, though it still works in the\nway detailed below..\n\nIn both modes, the command data needs to to be encrypted using the private key of the\nclient (which it also used to verify itself in the TLS handshake).\n\nThe command data, before encryption, is structured in this way:\n\nI have written a script which can connect to SoWaT and perform as both sides of the proxy,\nSee Scripts.\n\n**Attacker <-> Victim Proxy**\n\n\n-----\n\n1. The Attacker connects to SoWaT with TLS and client certificate validation\n2. The Attacker send a proxy initiation command, with the relevant data (encrypted):\n\n1. Attacker proxy listening port port and IP\n2. 32 byte ChaCha Key to encrypt communication later.\n3. SoWat initiates a raw unencrypted TCP socket with the attacker according to the data\n\nit got in the proxy command. The attacker sends back the victim connection port and\nattacker listening port.\n4. A malicious program, running on a victim attempts to connect to its server. Its server IP\n\nis the SoWaT’s address. As soon as it initiates a TCP session with the implant, the\nimplant initiates a new TCP session with the attacker.\n\nThe malware encrypts the TCP data from the victim before forwarding it to the attacker\nand decrypts the data from the attacker before forwarding to the victim. The data is\nencrypted using the ChaCha Key set by the attacker in step 2.\n5. Step 4 can happen simultaneously with up to 5 victims, where each victim prompts the\n\nORB to create a new session with the attacker.\n\n\n-----\n\nIt is important to note that steps 3 onward are not necessarily with the same attacker as\nsteps 1,2. The attacker of steps 3 onward needs only to know at what port to listen to\nSoWaT.\n\n**Attacker <-> Attacker Proxy**\n\n1. Attacker 1 (A1) connects to SoWaT with TLS and client certificate validation\n2. A1 send a proxy initiation command, with the relevant data (encrypted):\n\n1. A2 proxy listening port and IP\n3. SoWaT connects to Attacker 2 (A2) using TLS and sends its client certificate.\n4. SoWaT sends A2 the port for the next stage.\n5. A2 sends command 6 to SoWaT, which prompts the implant to send A1 its stage 1 port.\n\n\n-----\n\n6. Both attackers initiate a TCP connection with SoWat each with the destination ports the\n\nimplant assigned them\n\n1. A1 sends command to run stage to the implant, which prompts it to send A2 its\n\nstage 2 port\n7. A2 sends the ORB a command to send A1 its stage 2 port\n8. A1 initiates a TCP connection with its stage 2 port and sends two bytes: {02 00} in\n\norder to signal the implant to move forward with this stage.\n9. A1 initiates a new TCP connection to the same port as in step 8. A2 initiates a TCP\n\nconnection to the stage2 port it has been given\n10. The attackers can communicate with each other through the sockets, and SoWaT\n\nservers as a proxy (without encryption).\n\nAs In the previous mode, steps 6 onwards can be done by a third attacker and do not need\nnecessarily to continue with A1 which initiaited the proxy command.\n\n**But why so complicated?**\n\nI do not have a definite answer as to why the proxy intiation process is so complicated,\nexpecially the attacker <-> attacker mode. Two Hyptotheses:\n\n1. Defense & SIGINT evasion\n\n1. Because of the difficult process until finally able to use the proxy, it is much\n\nharder for defendersn proactive hunter or anyone wandering in the internet to use\nit or exfiltrate attackers’ data this way.\n2. Finding open ports is becoming irelevant as even if the first port used by the\n\nattacker is always the same it is open for a very short time, and the other ports\nare then random\n3. When having a lot of data, it is harder for some man in the middle to parse every\n\npaket to understand what the final proxy port is, which can make it more\ncomplicate to capture the relevant attacker traffic.\n2. Compatability and legacy – It’s possible it was easier for the developers to keep in\n\nplace old code and to just wrap it with their additions, as it does not have any\nsubstantial impact on efficiency.\n\n## Additional Findings\n\n### The Implant File\n\nThe implant, available on Virustotal, is an ELF file compiled for the MIPS processor\narchitecture. The ELF is statically linked, with the libraries uClibc, libec, mbedtls, libc-ares\nand potentially others. While the code is in no matter obfuscated, the stripped binary\ncomplicates reversing.\n\n**Configuration File**\n\n\n-----\n\nSoWaT assumes a configuration file encrypted using ChaCha20 protocol named conf in its\ncurrent working directory. The file needs to be exactly 386 bytes long, and constructed in this\nway:\n\n**Nonce – Some 12-byte random value which serves as salt for the chacha20 encryption. See**\n[ChaCha.](https://en.wikipedia.org/wiki/Salsa20#ChaCha_variant)\n**Buffer size – size of the entire structure, in big endian.**\n\nThe Configuration is decrypted using the following hard-coded key:\n```\n53 14 3D 23 94 78 A9 68 2F 68 C9 A2 1A 93 3C 5B 39 52 2D 1D E0 63 59 1C 30 44 A2 6A\n2A 3F A2 95\n\n```\nThere are up to 10 IP,Port couples, which represent each an attacker-controlled server the\nimplant may try to connect to.\nThe structure of the configuration is probably due to compatibility reasons. it is possible that\nthe first 260 bytes were once used to sign the configuration, as that exact buffer length is\nused in other places for verification.\n\n### The “swt” file\n\nThe implant depends on a file named “swt” located also in the current working diretory.\n\nI am not in possesion of that file but from examining SoWaT’s use of it is clear It contains a\nCA certificate, and a signed server certificate and private key. Moreover, it’s also an\nexecutable file. From context, it has likely some functionality which opens ports in the\nrouter’s firewall or changes its routing so to allow SoWaT to listen to incoming connections in\na custom set port.\n\n**How SoWaT listens**\n\nIn order to open a listening socket the implant has a specific procedure:\n\n\n-----\n\nSetup of socket\n\n1. It creates a basic socket object (AF_INET, SOCK_DGRAM)\n2. It sets the option SO_REUSEADDR to true.\n\n1. SO_REUSEADDR allows other processes to create another socket listening on\n\nthe same port.\n3. The socket is bound to an open port or to a port directed by the function caller\n4. “./swt port <bound port>” is executed as a child process\n\n1. This behavior indicated that the “swt” executable most likely has some ability to\n\nalter the firewall or forwarding table of the router.\n\n**Dead Code**\n\n\n-----\n\nThe implant contains a lot of dead code, which bears resemblance to the malicious code ran.\nMost likely, this code was used in a previous version of the implant and was included\nbecause of compilation flags.\n\nUnused Logging\n\nfunction\nThe implants’ function and architecture show a comprehensive and advanced codebase,\nrelying on many custom structs, and running different tasks simultaneously.\n\nThe implant contains very few custom strings, which is quite unusual in router malware,\nwhose developers are less afraid of detection and analysis.\nThe appearance of strings in an unsystematic way, and the use of status codes may hint that\nthe threat actor has been detected and analyzed in the past and changed their implant to\navoid detection.\n\n### Execution Path\n\nThe implant doesn’t give any direct hint to how it was executed. Upon deeper inspection, the\nstring “Usage : ntpclient destination” stands out. which is referenced by a basic print_usage\nfunction. This function is never called. Most likely, it is an artifact left by accident by the\nThreat actor.\n\n[The executable lacks the functionality of every ntpclient, i.e. setting the time on the machine,](https://timetoolsltd.com/ntp/ntp-client/)\nso it was not possible for the implant to masquerade as a that.\nIt is possible that previous versions of the binary replaced the original ntpclient and so would\nbe started as a daemon, running ntpclient functionality along the malicious functionality.\nAlternatively, is is possible that the executable was just named ntpclient and the Usage was\nthere to try make it look legitimate to a suspecting IT technician.\n\n\n-----\n\nIn the directory the implant is run from 2 files are expected:\n“swt”\n“conf”\n\nWhen a kill command is sent, the malware deletes its entrie current working directory, this\nmeans that it’s likely the attacker dedicate an empty or new folder for their implant\n\n## Detection\n\n1. Check for processes with suspicious names or running from unusual paths.\n2. I have written YARA rules to detect both unique string and code of the implant,\n\n[available on my github](https://github.com/imp0rtp3/yara-rules/blob/main/2021-11-25%20SoWaT/sowat.yar)\n\n**AV Detection**\n\nAs of the time of this writing, the original implant sample was detected by 33 out of 61 AV\nengines in VT.\n\nUploading the same sample, with some strings deleted, but fully functional yielded very\ndifferent results: only 6 AV vendors detected most of these samples.\n\nEssentialy, this means all but the 6 AV vendors are highly unlikely to detect the next SoWaT\nimplant if uploaded to VT.\n\nnum. 1 2 5 4 5\n\ndetection 6 8 6 6 18\n\n\nchange changed\nmost\nstrings\n\n\nremoved\nonly\nunused\nstrings\n\n\nremoved\nall unique\nstrings\n\n\nremoved all unique\nstrings and\nencryption key\n\n\nchange file hash\nby appending\nsome bytes\n\n\nlink [link](https://www.virustotal.com/gui/file/59e2a0b708b79508954a2b0234c37b49c76e8f5afad8575706142aaceb3a3b84?nocache=1) [link](https://www.virustotal.com/gui/file/d2a6597e38513e8a5fea1d7a457b8f3eb8445d3e6cf68cb6bff39716328ad191?nocache=1) [link](https://www.virustotal.com/gui/file/1b300d30a44fd4245ffa0df1e943fc9c5d2046f043dc19586a2663a83c526336?nocache=1) [link](https://www.virustotal.com/gui/file/50809fc28aeefe6c4e1c50fa435a54eade3b747405b9aeabed506d7f2d6f172b?nocache=1) [link](https://www.virustotal.com/gui/file/0cb509a43795a9cb881b8d72b4f62ed7ba5165884688bdeeece1ac84536a31c0?nocache=1)\n\nThe 6 AVs that have shown consistent detections are (in alphabetical order):\n\nAhnLab\nDrWeb\nESET\nJiangmin\nKaspersky\n\n\n-----\n\nZillya\n\nIt is important to note that checking if an AV detect a file in VT does not mean whether an AV\nis good or bad, as in real network AVs detect activity based on many other indicator and not\njust files.\nNevertheless, this comparison is important in my opinion, especially regarding router\nmalware. it’s common that no AV is installed on the network device and to check a\nsuspicious file one can only upload the file to VT or to their own AV portal.\n\n## Prevention\n\nThe NSA has [published in 2020 a great resource detailing how to harden network devices](https://media.defense.gov/2020/Aug/18/2002479461/-1/-1/0/HARDENING_NETWORK_DEVICES.PDF)\n\n## Conclusions\n\n**Development timeline**\n\nI can assess with high confidence that SoWaT has had several developmental builds before,\nfor the following reasons:\n\n1. Dead code: Most likely because of a wrong compilation flag the implant contains a lot\n\nof dead code, which has a striking resemblance to code that is actually used by the\nimplant. I believe this indicates previous build of the threat actor where they formulated\nand changed the body of their build.\n2. Overlap in functionality: both the RAT and command switcher have function which do\n\nalmost the same, in a different manner. It is most likely because of backward\ncompatibility.\n3. Unnecessary complex code: The code contains a lot of structures and sub-functions\n\nwhich seem to indicate features that were added later to the codebase.\n\n**Targets**\n\nIt is likely that SoWaT is also deployed to other router vendors or linux based servers:\n\n1. The implant expects all incoming communication to be formatted as big endian. This\n\ndoes seem a little strange considering that most likely the attacker is also working on a\nlittle-endian based computer. It’s possible that the attacker used that for comfort\nreasons, but another reason could be that the communication protocols were initially\nwritten for a big-endian devices.\n2. The implant is fully system-independent and could be run on any linux kernel. The OS\n\ndependent part is most likely in the “swt” binary, which changes the firewall of the\nspecific device. The separation between OS-dependent and OS-independent\nexecutables does hint that the independent executable is also ran elsewhere.\n\n**Verification and Encryption**\n\n\n-----\n\nThroughout the research of the sample it is clear that the developers paid much attention to\nencryption and verification. Several remarks on that:\n\n1. The implant does not use AES at all and uses only ChaCha for symmetric encryption.\n\nThat is not only true for the configuration and proxy, but also its TLS supports only one\nciphersuite (TLS_DCDHE_RSA_WITH_CHACHA20_POLY1305_SHA256). Most likely,\nit means the developers deliberately compiled the executable without any AES support.\nThis could be for reasons of efficiency (ChaCha tends to be faster), but also possible\nthat they trust ChaCha to be more secure than AES.\n2. The usage of verification and encryption even though TLS is used cannot be explained\n\nas an old procedure used before the developers used TLS, because the encryption and\nverification rely on Client certificate only available throught the TLS handshake. Two\nother possible explanations are:\n\n1. The attackers do not trust the TLS protocol so they try additional security\n\nmeasures\n2. Previously a 3rd party successfully did a MiTM attack using a cracked or stolen\n\nattacker CA certificate stolen from the attackers. encrypting or verfying data with\nthe client certificate private key makes it difficult for the 3rd party to do that again.\n\n## Summary\n\n1. While certainly far from the only router implant, SoWaT underlines that threat actors\n\nmove to commercially available tools (such as cobalt strike) where it fits them, but do\nnot stop in-house development and research where needed. The fact that the implant\nwas likely developed over multiple years underlines that it is likely not to be thrown\naway easily.\n2. Routers are detection and prevention-wise almost a black hole. The fact that the\n\ncompromised routers operate as ORBs and most of the time do not harm the\norganization to whom the router belongs makes prevention and detection even more\ncomplicated. Shedding more light and discourse into these may help in developing and\ndistributing more detection and prevention options.\n3. This research is far from complete. Any researchers with questions or information are\n\nwelcome to contact me, and I’ll be happy to share the IDA database and any other\nrelevant data.\n\n## APPENDIX A – IOCs\n\n**SHA256**\n\n[1d60edb577641ce47dc2a8299f8b7f878e37120b192655aaf80d1cde5ee482d2 (VT)](https://www.virustotal.com/gui/file/1d60edb577641ce47dc2a8299f8b7f878e37120b192655aaf80d1cde5ee482d2/detection)\n\n**File names**\n\nswt\n\ns\n\n\n-----\n\nconf\nlog\n\n**JA3 – e1f787e2b6ec64bf23157522c2e8073d**\n**JARM – 3fd3fd0003fd3fd0003fd3fd3fd3fd755a2cec4b52fb1bce1ac7f1e48c8a7d**\n\n## APPENDIX B – Scripts\n\n APPENDIX C – Internal Structures\n\n\n-----\n\n```\nstruct sowat_info{\n     DWORD current command_num;\n     DWORD calling_method;\n     union message{\n     * char client_response;\n     * char server_response;\n     };\n     union message_len{\n     DWORD client_response_len;\n     DWORD server_response_len;\n     };\n     char client_public_key[460];\n     * global_connection_infromation global_connection_infromation;\n     DWORD unknown; // initiated as -1\n     DWORD sock_fd_read;\n     * char connection_init_msg;\n     * client_to_server client_to_server;\n     * void command_run(sowat_info * sowat_info); \n};\nstruct cert_info\n{\n     * void unknown;\n     * mbedtls_x509_crt mbedtls_x509_crt_in_connection;\n     * mbedtls_pk_context mbedtls_pk_context_in_connection;\n};\nstruct global_connection_infromation\n{\n     * internal_conn_info internal_conn_info;\n     * DICT known_public_keys;\n     * cert_info cert_info;\n     * char decrypted_configuration;\n     * ev_loop main_loop;\n     DWORD time_delta; // delta between global time and machine time\n     DWORD hours_counter;\n};\nstruct internal_conn_info\n{\n     QWORD pk_crc64_jones;\n     DWORD connection_ip;\n     WORD connection_port;\n     DWORD unknown; //set to 12\n     DWORD time_of_conn_init;\n     char public_key[460];\n};\nstruct proxy {\n     BYTE prx_command;\n     DWORD fd_socket_0;\n     DWORD fd_socket_1;\n     DWORD unknown;\n     DWORD tls_server_IP;\n\n```\n\n-----\n\n```\n     WORD socket_2_1_port;\n     WORD socket_0_port;\n     WORD socket_1_port;\n     WORD socket_2_0_port;\n     char chacha_encryption_key[32];\n     * ev_io prx_cb_1;\n     * ev_io prx_0_cb0;\n     DWORD fd_socket_prx_1;\n     DWORD time_last_recv_pack1;\n     DWORD time_last_recv_pack2;\n     DWORD time_last_recv_pack3;\n     * ev_loop prx_ev_loop;\n     WORD prx_2_listen_port;\n     DICT used_ports;\n     QWORD unknown;\n     WORD socket_1_port;\n     DICT unknown;\n};\nstruct DICT{\n     void * djb2_hashtable;\n     DWORD num_keys;\n};\nstruct dict_hash_obj{\n     DWORD djb2; // djb2 hash\n     * void value;\n     * dict_hash_obj next;\n     char key[4];\n};\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-11-25 - A Deep Dive Into SoWaT- APT31’s Multifunctional Router Implant.pdf"
+    ],
+    "report_names": [
+        "2021-11-25 - A Deep Dive Into SoWaT- APT31’s Multifunctional Router Implant.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aacd5cbc-604b-4b6e-9e58-ef96c5d1a784",
+            "created_at": "2023-01-06T13:46:38.953463Z",
+            "updated_at": "2025-03-27T02:00:02.961301Z",
+            "deleted_at": null,
+            "main_name": "APT31",
+            "aliases": [
+                "JUDGMENT PANDA",
+                "BRONZE VINEWOOD",
+                "Red keres",
+                "Violet Typhoon",
+                "TA412"
+            ],
+            "source_name": "MISPGALAXY:APT31",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "9e6186dd-9334-4aac-9957-98f022cd3871",
+            "created_at": "2022-10-25T15:50:23.357398Z",
+            "updated_at": "2025-03-27T02:00:55.452383Z",
+            "deleted_at": null,
+            "main_name": "ZIRCONIUM",
+            "aliases": [
+                "APT31",
+                "Violet Typhoon"
+            ],
+            "source_name": "MITRE:ZIRCONIUM",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "774f15f7-832e-4cd4-a1fa-ec6a838f2a40",
+            "created_at": "2022-10-25T16:47:55.641406Z",
+            "updated_at": "2025-03-27T02:05:17.29791Z",
+            "deleted_at": null,
+            "main_name": "BRONZE VINEWOOD",
+            "aliases": [
+                "Judgment Panda ",
+                "ZIRCONIUM ",
+                "APT31 "
+            ],
+            "source_name": "Secureworks:BRONZE VINEWOOD",
+            "tools": [
+                " HanaLoader",
+                " Metasploit",
+                " Mimikatz",
+                " Reverse ICMP shell",
+                " Trochilus",
+                "DropboxAES RAT"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "dc7ee503-9494-4fb6-a678-440c68fd31d8",
+            "created_at": "2022-10-25T16:07:23.349177Z",
+            "updated_at": "2025-03-27T02:02:09.748159Z",
+            "deleted_at": null,
+            "main_name": "APT 31",
+            "aliases": [
+                "APT 31",
+                "Bronze Vinewood",
+                "Judgment Panda",
+                "Red Keres",
+                "RedBravo",
+                "TA412",
+                "Violet Typhoon",
+                "Zirconium"
+            ],
+            "source_name": "ETDA:APT 31",
+            "tools": [
+                "9002 RAT",
+                "Agent.dhwf",
+                "AngryRebel",
+                "CHINACHOPPER",
+                "China Chopper",
+                "Destroy RAT",
+                "DestroyRAT",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "GrewApacha",
+                "HOMEUNIX",
+                "HiKit",
+                "HidraQ",
+                "Homux",
+                "Hydraq",
+                "Kaba",
+                "Korplug",
+                "McRAT",
+                "MdmBot",
+                "Moudour",
+                "Mydoor",
+                "PCRat",
+                "PlugX",
+                "RedDelta",
+                "Roarur",
+                "Sakula",
+                "Sakula RAT",
+                "Sakurel",
+                "SinoChopper",
+                "Sogu",
+                "TIGERPLUG",
+                "TVT",
+                "Thoper",
+                "Trochilus RAT",
+                "Xamtrav"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536220,
+    "ts_updated_at": 1743041804,
+    "ts_creation_date": 1653707502,
+    "ts_modification_date": 1653707502,
+    "files": {
+        "pdf": "https://archive.orkl.eu/d7265b257b9898ebcb178ceb0553245a93679a1d.pdf",
+        "text": "https://archive.orkl.eu/d7265b257b9898ebcb178ceb0553245a93679a1d.txt",
+        "img": "https://archive.orkl.eu/d7265b257b9898ebcb178ceb0553245a93679a1d.jpg"
+    }
+}

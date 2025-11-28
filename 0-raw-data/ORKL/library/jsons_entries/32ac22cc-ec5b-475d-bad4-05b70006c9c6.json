@@ -1,0 +1,62 @@
+{
+    "id": "32ac22cc-ec5b-475d-bad4-05b70006c9c6",
+    "created_at": "2023-01-12T15:10:12.28885Z",
+    "updated_at": "2025-03-27T02:09:18.316272Z",
+    "deleted_at": null,
+    "sha1_hash": "388bebe82934371f3afe5ab8a94d40d25a57c38c",
+    "title": "2021-11-15 - ProxyShell, QBot, and Conti Ransomware Combined in a Series of Cyberattacks",
+    "authors": "",
+    "file_creation_date": "2022-05-29T01:11:57Z",
+    "file_modification_date": "2022-05-29T01:11:57Z",
+    "file_size": 4816268,
+    "plain_text": "# ProxyShell, QBot, and Conti Ransomware Combined in a Series of Cyber Attacks\n\n**[truesec.com/hub/blog/proxyshell-qbot-and-conti-ransomware-combined-in-a-series-of-cyber-attacks](https://www.truesec.com/hub/blog/proxyshell-qbot-and-conti-ransomware-combined-in-a-series-of-cyber-attacks)**\n\nThe cybercrime ecosystem continues to evolve. In 2021, we have seen threat actors\ngenerally being faster and spending less dwell time in breached environments. Even as the\ngrowth of the cybercrime industry has led to more specialization among cybercriminals, the\nspeed and automation have increased. The ransomware industry is now taking on the\nappearance of an assembly line.\n\nWe are now observing a series of cyber attacks that are all related and end up in an\nencryption with the Conti ransomware. This ongoing attack likely involves cooperation\nbetween two or more threat actors, and yet the handover time from one threat actor to\nanother is only a few hours, and even just minutes in one case.\n\n## Attack Overview\n\nFirst, unpatched Exchange servers are exploited using ProxyShell. Compromised servers\nare then used to spread phishing emails delivering Datoploader (aka Squirrelwaffle) and the\nQBot trojan. The threat actor here is likely an access broker specializing in selling access to\nother cybercriminals.\n\n\n-----\n\nAttack Overview - Stage 1 - ProxyShell Exploit\nAccess to infected computers is then handed over to a different group, which then proceeds\nto launch Cobalt Strike beacons managed from a different infrastructure. This threat actor is\nlikely an affiliate of the Conti gang (or \"pentester\" as they call it) whose job it is to escalate in\nthe internal network.\n\n\n-----\n\nAttack Overview - Stage 2 - Access Handover\nIn the final stage the Conti gang takes over, deletes backups, and ultimately deploys the\nConti ransomware.\n\n\n-----\n\nAttack Overview - Stage 3 - Conti Ransomware\n\n## ProxyShell and Mass Phishing\n\nProxyShell is nothing new, but there are still systems that have not been patched in the past\nfew months.\n\nWe have identified multiple cases of Exchange servers compromised with ProxyShell\n(chaining CVE-2021-34473, CVE-2021-34523, and CVE-2021-31207) in September and\nOctober.\n\nStarting from early November, the compromised Exchange servers have been used to\nlaunch phishing attacks.\n\nAlthough the content of the phishing emails looks very suspicious, this attack hijacks existing\nemail threads and also adjusts the language based on the language appearing in the email\nthread. This makes it more likely for a victim to follow the instructions.\n\nAn example in English is shown below.\n\n\n-----\n\nExample of a phishing email in English\nThe following example is in Swedish, as the hijacked conversation was in Swedish.\n\nExample of a phishing email in Swedish\nThe links in the emails vary a lot and cannot be used to consistently identify phishing emails\nas part of this campaign.\n\nHowever, we have identified that the following MessageClass property seems to be\nconsistently used in all phishing emails.\n\nMessageClass property in phishing email messages\nWe can therefore search for MessageClass:IPM.Blabla in the following logs on the\nExchange server to find likely phishing emails being sent.\n\nExchange\n\nMessage Tracking logs\n\n## Datoploader and QBot Infections\n\nThe links in the email direct the victims to websites serving malicious .ZIP files.\n\n\n-----\n\nThe .ZIP files contain macro-enabled Excel (.XLS) files, as shown below.\n\nMacro enabled Excel file\nAs in any other classic phishing attack, when opened, the XLS files present an image to the\nuser, with instructions to enable macro execution.\n\nThe XLS macros are obfuscated by building each of the actual command characters from\ncontent of various cells in the document.\n\nObfuscated macro\nWhen executed, the macros create the directory “C:\\Datop”, download three files to this\ndirectory, and run them using regsvr32.exe.\n\n\n-----\n\nDeobfuscated macro\n\nExecution using regsvr32.exe\n\n## Persistence\n\nSo far we have identified two ways that the malware made itself persistent. An autorun\nregistry key launching regsvr32.exe to execute a DLL, and a scheduled task launching\nPowerShell which in turn starts regsvr32.exe in the same way.\n\nPersistence - Registry Autorun Key\n\n\n-----\n\nPersistence - Scheduled Task\n\n## Cobalt Strike\n\nWithin minutes (sometimes hours) from the Datoploader / QBot infection, the threat actor\nlaunched Cobalt Strike. This seems to be a plugin built into Qbot.\n\n\n-----\n\nQBot debug messages\n\n## Enumeration and Lateral Movement\n\nShortly after the Cobalt Strike execution, the threat actor starts manually interacting with the\ncompromised network, first by enumerating and escalating within Active Directory, and later\nby deploying Cobalt Strike on additionally compromised servers. Escalation to domain admin\nis quickly achieved.\n\nAs an additional backdoor into some of the compromised systems, the threat actor creates a\nlocal account named ‘Crackenn’.\n\nThe threat actor uses the following command to enumerate workstations in the domain:\n```\n$so = New-Object System.DirectoryServices.DirectorySearcher; $so.filter = \\\"(&\n(samAccountType=805306369))\\\"; $so.FindAll() | Select -Property @{N='Name'; E=\n{$_.properties.samaccountname}},@{N='OS'; E=\n{$_.properties.operatingsystem}},@{N='Descr'; E=\n{$_.properties.description}},@{N='LastTime'; E={;\n[datetime]::FromFileTime($_.properties.lastlogontimestamp -as\n[string]).ToString('yyyy-MM-dd HH:mm')}},@{N='IP'; E=\n{$_.properties.ipv4address}},@{N='ManagedBy'; E=\n{$_.properties.managedby}},@{N='primarygroup'; E={$_.properties.primarygroup}} |\nExport-csv ccccOUT.csv -encoding utf8\n\n```\nAdditionally, the following command is used to retrieve all computers within the domain.\n```\nimport-module activedirectory; Get-ADComputer -Filter * -Properties * | Sort\nOperatingSystem | Select-Object Name, OperatingSystem, ipv4Address, LastLogonDate |\nExport-csv some.csv -encoding utf8 -Force\n\n```\n\n-----\n\nOnce high privileges are obtained, the threat actor uses both Cobalt Strike beacons and\nRemote Desktop (RDP) connections to identify sensitive business data to exfiltrate.\n\nThe last stage of the attack is the deployment of the Conti ransomware.\n\n## What To Do if You Received the Phishing Emails\n\nIf users in your organization have received emails like the ones described in this article,\nensure that a thorough analysis is performed on the accounts and computers of the\nindividuals receiving the emails.\n\nAt the very least, check the indicators of compromise below. Consider, however, that files\nand domains used in these campaigns constantly change. A consistent indicator so far has\nbeen the presence of the directory “C:\\Datop” on computers infected with Datoploader from\nthe phishing attack.\n\nKeep in mind that if you find indicators of compromise, it is not sufficient to clean/reinstall the\nsystem. It is likely that the compromised system was used to spread to additional computers\nin the network. Perform a thorough investigation or ask for help if you don’t have in-house\nincident response capabilities.\n\n## Indicators of Compromise\n\nMessageClass in phishing email messages\n\nMessageClass:IPM.Blabla\n\nDirectory for Datoploader\n\nC:\\Datop\n\nZIP files delivering Datoploader\n\nbda187d62d5e48c3dee06ee11397e2456457d0b3c766dc6b453abb32f1d49196\n(minimaaliquid-2738715.zip)\nb2b4f9f38cee7243679afce0348ac7217abb73285fe69b15950c114964c9f131\n(omnisvelit-2738715 (1).zip)\na1b79c1dff2c7e1175611f6d1d45f05a2cee74e3d2ee45b913f73e30f8a9a66e\n(omnisvelit-2738715.zip)\ncb59bf0e135fc620aeddd8334b537150b7057f06375fe2f86ca91e722f7006f3\n(uteligendi-2387259 (1).zip)\nd4dd05bd12e85fca9bfd823e093b16ec8eac9fb65db9e61015788f7fe688f920\n(uteligendi-2387259.zip)\n6a20d87b61401bc7985aed6d951efee66388a9d522e0e15aed6f5d846953dbf9\n(content-1824738050.xls)\n\n\n-----\n\n95847fc69ddc4736d817430ffb49f8c41eb8bc5a03fa40e7081748f28f95f1c2 (content1848283165.xls)\nb298f3497cf739a73350e8007220083f9e37a13e12390c5624b0075ea880e9db\n(content-1845165288.xls)\n236338b58b929694a29321802754e6e5a37fffd88798b7ef5d768bc5adcde93b (content1861748987.xls)\n705a292bb67b7a344d32937ca8cf86a1a10f9b25689fdf2df1401ffb4bdfd40d (content1860852480.xls)\n\nURLs in macros\n\nhxxps[:]//decinformatica[.]com/AsqpQT6a2fl/t.html\nhxxps[:]//novamiron[.]com.ar/SpV029NncEoH/t.html\nhxxps[:]//mooca.imprimeja[.]com.br/uqJeyCxO9/t.html\nhxxps[:]//taketuitions.com/dTEOdMByori/j.html\nhxxps[:]//constructorachg.cl/eFSLb6eV/j.html\nhxxps[:]//oel.tg/MSOFjh0EXRR8/j.html\n\nAccount created by threat actor\n\nCrackenn\n\nCobalt Strike servers\n\n51.89.227.111\n89.238.185.9\n185.253.96.124\n45.141.84.223\n\nFiles used during escalation\n\nccccOUT.csv (Output of AD enum)\nadfind.ps1 (Script to import activedirectory module and run Get-ADComputer with Properties *)\n84CE00208FE4E2B46B26E4C9E058DF5341E90DA1FB1C0DBCBF207DB87F3DD991\n(adfind.ps1)\nhv22.ps1 (Powershell function that scans the environment for forests and returns a list\nof Hyper-V Hosts within all domains of those forests)\nB37DFF29C62659E90034740F2BCA514F09C8EC3E507B8E0807933EE427875ACA\n(hv22.ps1)\nppp.ps1 (Script to perform scanning activities)\npc.csv (Referenced in ppp.ps1)\na1.txt (Referenced in ppp.ps1)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-11-15 - ProxyShell, QBot, and Conti Ransomware Combined in a Series of Cyberattacks.pdf"
+    ],
+    "report_names": [
+        "2021-11-15 - ProxyShell, QBot, and Conti Ransomware Combined in a Series of Cyberattacks.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536212,
+    "ts_updated_at": 1743041358,
+    "ts_creation_date": 1653786717,
+    "ts_modification_date": 1653786717,
+    "files": {
+        "pdf": "https://archive.orkl.eu/388bebe82934371f3afe5ab8a94d40d25a57c38c.pdf",
+        "text": "https://archive.orkl.eu/388bebe82934371f3afe5ab8a94d40d25a57c38c.txt",
+        "img": "https://archive.orkl.eu/388bebe82934371f3afe5ab8a94d40d25a57c38c.jpg"
+    }
+}

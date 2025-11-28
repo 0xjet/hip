@@ -1,0 +1,42 @@
+{
+    "id": "019b8900-e8dd-4ec8-ad10-09174ffc7619",
+    "created_at": "2023-01-12T15:04:13.613501Z",
+    "updated_at": "2025-03-27T02:05:56.008022Z",
+    "deleted_at": null,
+    "sha1_hash": "c40aa44d94ec8bb5f76c89f5d2342783e0f2c734",
+    "title": "2021-07-25 - Scanning your iPhone for Pegasus, NSO Group's malware",
+    "authors": "",
+    "file_creation_date": "2022-05-28T23:35:06Z",
+    "file_modification_date": "2022-05-28T23:35:06Z",
+    "file_size": 491365,
+    "plain_text": "# Scanning your iPhone for Pegasus, NSO Group's malware\n\n**[arkadiyt.com/2021/07/25/scanning-your-iphone-for-nso-group-pegasus-malware/](https://arkadiyt.com/2021/07/25/scanning-your-iphone-for-nso-group-pegasus-malware/)**\n\n### Arkadiy Tetelman A security blog\n\nJul 25th, 2021 | 7 minute read\nIn collaboration with more than a dozen other news organizations The Guardian recently\n[published an exposé about Pegasus, a toolkit for infecting mobile phones that is sold to](https://theguardian.com/world/2021/jul/18/revealed-leak-uncovers-global-abuse-of-cyber-surveillance-weapon-nso-group-pegasus)\ngovernments around the world by NSO Group. It’s used to target political leaders and their\nfamilies, human rights activists, political dissidents, journalists, and so on, and surreptitiously\ndownload their messages/photos/location data, record their microphone, and otherwise spy\n[on them. As part of the investigation, Amnesty International wrote a blog post with their](https://www.amnesty.org/en/latest/research/2021/07/forensic-methodology-report-how-to-catch-nso-groups-pegasus/)\nforensic analysis of several compromised phones, as well as an open source tool, Mobile\nVerification Toolkit, for scanning your mobile device for these indicators. MVT supports both\niOS and Android, and in this blog post we’ll install and run the scanner against my iOS\ndevice.\n\n## Choosing your options\n\nFor iPhones, MVT can either run against a device backup or a full file system dump (which is\nonly available from jailbroken devices). The device backup method has access to less\nforensic data than the filesystem dump but has the benefit that you don’t need to jailbreak\n[your device. MVT conveniently documents which forensic artifacts are available to which](https://mvt.readthedocs.io/en/latest/ios/records.html)\nmethod - the following artifacts are not available when using the backup method:\n\ncache_files.json\nnet usage json\n\n\n-----\n\nsafari_favicon.json\nversion_history.json\nwebkit_indexeddb.json\nwebkit_local_storage.json\nwebkit_safari_view_service.json\n\nThe same documentation link also explains what data each file contains and where it’s\nsourced from, and Amnesty’s blog post describes in more detail how each data type is\nrelevant for detecting Pegasus. For instance for the Safari favicon data\n( safari_favicon.json ) they write:\n\nAlthough Safari history records are typically short lived and are lost after a few months\n(as well as potentially intentionally purged by malware), we have been able to\nnevertheless find NSO Group’s infection domains in other databases of Omar Radi’s\nphone that did not appear in Safari’s History. For example, we could identify visits\nthrough Safari’s Favicon.db database, which was left intact by Pegasus\n\nSo if you have a jailbroken device you will get more complete Pegasus detection with the\nfilesystem dump approach, but since my device is not jailbroken I’ll go with the device\nbackup approach - it’s better than nothing. In fact there is no publicly known jailbreak\navailable for my iPhone model and version of iOS, so I don’t have a choice.\n\n## Creating and checking your backup\n\nTo create and check your iPhone backup you can:\n\nBuild the MVT docker image:\n```\ngit clone https://github.com/mvt-project/mvt.git\ncd mvt\ndocker build -t mvt .\n\n```\nCreate your backup:\n\nThe backup can be created either directly in Finder (prior to MacOS Big Sur this was done\n[through iTunes), or using a library called libimobiledevice.](https://libimobiledevice.org/)\n\n\n-----\n\nFor the Finder approach plug your phone into your laptop, navigate to it in Finder, and click\n“Back Up Now” with these settings checked:\n\nMVT only operates against decrypted backups so in the next step we’ll be decrypting\neverything anyway, but [encrypted backups export more device data (such as your browsing](https://support.apple.com/en-us/HT205220)\nhistory or wifi settings) so encrypting your backup will give you better detection.\n\nAfter the backup is created click “Manage Backups”, then right click on your backup and\nselect “Show In Finder”, and copy the folder to somewhere easily accessible (say, to your\ndesktop).\n\nOr, if you’d prefer to create a backup using libimobiledevice instead of Finder:\n\nMVT automatically includes libimobiledevice in its Docker image but even with their\ninstructions I couldn’t get it to recognize my iPhone from inside Docker, so I installed it on my\nMacOS host:\n```\n # Install latest libimobiledevice\n brew install --HEAD libimobiledevice\n # Make a working directory\n mkdir -p ~/Desktop/mvt\n # Enable backup encryption - you'll be prompted for a password\n idevicebackup2 -i backup encryption on\n # Backup the device\n idevicebackup2 backup --full ~/Desktop/mvt/\n\n```\nNow we can scan our backup:\n\n\n-----\n\n```\ndocker run \\\n # Mount your desktop working directory into Docker\n -v ~/Desktop/mvt:/home/cases/mvt \\\n # Run the MVT image\n -it mvt\n# Download Amnesty International's indicators of compromise\nwget https://raw.githubusercontent.com/AmnestyTech/investigations/master/2021-0718_nso/pegasus.stix2 -O pegasus.stix2\n# We'll save our results here\nmkdir mvt/results\n# Decrypt the backup\nmvt-ios decrypt-backup \\\n # The backup password you created\n -p '<password>' \\\n # The directory to save the decrypted backup to\n -d mvt/decrypted \\\n # The encrypted backup to decrypt\n mvt/00008101-0018545E26F1003A/\n# Scan the decrypted backup\nmvt-ios check-backup \\\n # Path to our downloaded IoCs\n --iocs pegasus.stix2 \\\n # Where to save the results\n --output mvt/results \\\n # Path to the backup to scan\n mvt/decrypted\n\n```\nAnd lastly we can interpret the results:\n\nIf everything ran successfully you should have a number of json files in the mvt/results folder\non your desktop. Any filenames ending in `_detected.json indicate that some trace of`\nPegasus was found, and all other json files contain debug data about your scan results. If\nyou have no `_detected.json files then there were no Pegasus indicators found:`\n\nP.S. If you enjoy this kind of content feel free to follow me on Twitter: [@arkadiyt](https://twitter.com/arkadiyt)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-07-25 - Scanning your iPhone for Pegasus, NSO Group's malware.pdf"
+    ],
+    "report_names": [
+        "2021-07-25 - Scanning your iPhone for Pegasus, NSO Group's malware.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673535853,
+    "ts_updated_at": 1743041156,
+    "ts_creation_date": 1653780906,
+    "ts_modification_date": 1653780906,
+    "files": {
+        "pdf": "https://archive.orkl.eu/c40aa44d94ec8bb5f76c89f5d2342783e0f2c734.pdf",
+        "text": "https://archive.orkl.eu/c40aa44d94ec8bb5f76c89f5d2342783e0f2c734.txt",
+        "img": "https://archive.orkl.eu/c40aa44d94ec8bb5f76c89f5d2342783e0f2c734.jpg"
+    }
+}

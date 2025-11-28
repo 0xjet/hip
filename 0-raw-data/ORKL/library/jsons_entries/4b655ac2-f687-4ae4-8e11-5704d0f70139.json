@@ -1,0 +1,171 @@
+{
+    "id": "4b655ac2-f687-4ae4-8e11-5704d0f70139",
+    "created_at": "2022-10-25T16:48:14.952203Z",
+    "updated_at": "2025-03-27T02:15:41.631986Z",
+    "deleted_at": null,
+    "sha1_hash": "aa49d07c40e3bf8da6779a1d08eeda6efcce3706",
+    "title": "Reverse-engineering DUBNIUM",
+    "authors": "Microsoft",
+    "file_creation_date": "2016-06-30T20:23:50Z",
+    "file_modification_date": "2016-06-30T20:23:50Z",
+    "file_size": 768704,
+    "plain_text": "**blogs.technet.microsoft.com/mmpc/2016/06/09/reverse-engineering-dubnium-2/**\n\nJune 9, 2016\n\nDUBNIUM (which shares indicators with what Kaspersky researchers have called DarkHotel) is one of the activity\ngroups that has been very active in recent years, and has many distinctive features.\n\nWe located multiple variants of multiple-stage droppers and payloads in the last few months, and although they are\nnot really packed or obfuscated in a conventional way, they use their own methods and tactics of obfuscation and\ndistraction.\n\nIn this blog, we will focus on analysis of the first-stage payload of the malware.\n\nAs the code is very complicated and twisted in many ways, it is a complex task to reverse-engineer the malware.\nThe complexity of the malware includes linking with unrelated code statically (so that their logic can hide in a big,\nbenign code dump) and excessive use of an in-house encoding scheme. Their bootstrap logic is also hidden in plain\nsight, such that it might be easy to miss.\n\nEvery sub-routine from the malicious code has a “memory cleaner routine” when the logic ends. The memory\nsnapshot of the process will not disclose many more details than the static binary itself.\n\nThe malware is also very sneaky and sensitive to dynamic analysis. When it detects the existence of analysis\ntoolsets, the executable file bails out from further execution. Even binary instrumentation tools like PIN or\nDynamoRio prevent the malware from running. This effectively defeats many automation systems that rely on at\nleast one of the toolsets they check to avoid. Avoiding these toolsets during analysis makes the overall investigation\neven more complex.\n\nWith this blog series, we want to discuss some of the simple techniques and tactics we’ve used to break down the\nfeatures of DUBNIUM.\n\nWe acquired multiple versions of DUBNIUM droppers through our daily operations. They are evolving slowly, but\nbasically their features have not changed over the last few months.\n\nIn this blog, we’ll be using sample SHA1: dc3ab3f6af87405d889b6af2557c835d7b7ed588 in our examples and\nanalysis.\n\n### Hiding in plain sight\n\nThe malware used in a DUBNIUM attack is committed to disguising itself as Secure Shell (SSH) tool. In this\ninstance, it is attempting to look like a certificate generation tool. The file descriptions and other properties of the\nmalware look convincingly legitimate at first glance.\n\nWhen it is run, the program actually dumps out dummy certificate files into the file system and, again, this can be\nvery convincing to an analyst who is initially researching the file.\n\nThe binary is indeed statically linked with OpenSSL library, such that it really does look like an SSH tool. The\n\n\n-----\n\nThe following is an example of one of these functions – note\nit even has string references to the source code file name.\n\nIt can be extremely time-consuming just going through the\ndump of functions that have no meaning at all in the code –\nand this is only one of the more simplistic tactics this\nmalware is using.\n\nWe can solve this problem using binary similarity\ncalculation. This technique has been around for years for\nvarious purposes, and it can be used to detect code that\nsteals copyrighted code from other software.\n\nThe technique can be used to find patched code snippets in\nthe software and to find code that was vulnerable for attack.\nIn this instance, we can use the same technique to clean up\nunnecessary code snippets from our advanced persistent\nthreat (APT) analysis and make a reverse engineer’s life\neasier.\n\n\nFigure 1: SSH tool disguise\n\n\nFigure 2 Create dummy certificate files\n\n\nMany different algorithms exist for binary similarity calculation, but we are going to use one\nof the simplest approach here. The algorithm will collect the op-code strings of each\ninstruction in the function first (Figure 5). It will then concatenate the whole string and will\nuse a hash algorithm to get the hash out of it. We used the SHA1 hash in this case.\n\nFigure 6 shows the Python-style pseudo-code that calculates the hash for a function.\nSometimes, the immediate constant operand is a valuable piece of information that can be\nused to distinguish similar but different functions and it also includes the value in the hash\nstring. It is using our own utility function RetrieveFunctionInstructions which returns a list of\nop-code and operand values from a designated function.\n\n01 def CalculateFunctionHash(self,func_ea):\n02   hash_string=''\n03   for (op, operand) in\nself.RetrieveFunctionInstructions(func_ea):\n04      hash_string+=op\n05      if len(drefs)==0:\n06         for operand in operands:\n07             if operand.Type==idaapi.o_imm:\n08                hash _string+=('%x' % operand.Value)\n09\n10   m=hashlib.sha1()\n11 m update(op string)\n\n\nFigure 3: DUBNIUM\n\nfunctions list\n\n\n-----\n\nWith these hash values calculated for the DUBNIUM binary,\nwe can compare these values with the hash values from the\noriginal OpenSSL library. We identified from the compilergenerated meta-data that the version the sample is linked to\nis openssl-1.0.1l-i386-win. After gathering same hash from\nthe OpenSSL library, we could import symbols for the\nmatched functions. In this way, removed most of the\nfunctions from our analysis scope.\n\n(This blog is continued on the next page)\n\n[Pages: Page 1, Page 2, Page 3](https://blogs.technet.microsoft.com/mmpc/2016/06/09/reverse-engineering-dubnium-2/2/)\n\n\nFigure 4: Code snippet that is linked from OpenSSL library\n\n\nFigure 5: Op code in the instructions\n\n\nFigure 7: OpenSSL\n\nfunctions\n\n\n-----\n\n**blogs.technet.microsoft.com/mmpc/2016/06/09/reverse-engineering-dubnium-2/2/**\n\n### Persistently encoded strings\n\n\nJune 9, 2016\n\n\nThe other issue when reverse-engineering DUBNIUM binaries is that it encodes every single string that is used in\nthe code (Figure 8). There is no clue on the functionality of purpose of the binary by just looking at the string’s table.\nWe had to decode each of these strings to understand what the binary is intended to do. This may not be technically\ndifficult, but it does require a lot of time and effort.\n\n\nFigure 9 shows how these encoded strings are used. For\nexample, address 0x142C11C has an instruction that loads\nan encoded string which is decoded as\n“hook_disable_retaddr_check”. The encoded string is\npassed in ecx register to the decoder function\n(decode_string). Note that the symbol names for the\nfunctions were made by us during the analysis.\n\n\nFigure 8: Encoded strings\n\n\nBecause the decode_string function is excessively used\nand encoded gibberish strings are always passed to it, we\ncan be confident that the function is truly a string decoder.\nThe decode_string function looks like Figure 10. There are\nsome approaches that can be taken for decoding these\n\nFigure 9: Excessive use of encoded strings\n\nfiles: you could port the code to C or Python and run them\nthrough encoded strings, or you could reuse the code\nsnippet itself and pass the encoded string to the decoder function. We took the second option and reused the\nexisting code for decoding strings, for faster analysis of the sample.\n\nFor example, we have an encoded string at address 0x013C992C.\n\nThe decode_string function is located at 0x01437036 in our case. The ecx register will point to the encoded string\nand edx is the destination buffer address for the decoded string. We just came up with the right place on the stack\nwith enough buffer, which in this case is esp+0x348.\n\nlea edx,[esp+0x348] – pointer to stack buffer address\nmov ecx, 0x013C992C – pointer to encoded string\ncall 0x01437036 – call to decode_string\n\nAs the instructions above will decode the encoded string for us, we can use Windbg to run our code. First we\nprepared a virtual machine environment, because we can possibly run malicious routines from the sample. As there\nare some possibilities that the decode string f nction is dependent on some initiali ation ro tines called at start p\n\n\n-----\n\nguarantee that our own decode_string call will be surely called with proper setup. That\naddress we came up with is 0x0142BFEE (Figure 12).\n\nHere’s where our breakpoint is hit at this address.\n\nNow we need to write the memory over with our own code.\n\nThe memory location where eip is pointing looks like the following.\n\nBasically, we put the breakpoint on the entry of the decode_string and exit of the\nfunction. With the entry of the function, we save the edx register value to a temporary\nregister and use it to dump out the decoded string memory location at the exit point.\n\n\nFigure 10: decode_string\n\nroutine\n\n\nNow we have a handy way to decrypt the strings we have.\nJust after a few IDAPython scripts that retrieve all possible\nencoded strings and automatically generates the assembly\ncode that calls decode_string, we can come up with a new\nIDA listing that shows the decoded string as the comment.\n\n(This blog is continued on the next page)\n\n[Pages: Page 1, Page 2, Page 3](https://blogs.technet.microsoft.com/mmpc/2016/06/09/reverse-engineering-dubnium-2/)\n\n\nFigure 11: Encoded string\n\n\nFigure 12: First breakpoint\n\n\nFigure 13: Breakpoint on 0142bfee hit\n\n\nFigure 14: Use ‘a’ command to write instructions over the current eip\n\nlocation\n\n\nFigure 15: New disassembly code\n\n\n-----\n\nFigure 16: Breakpoints and dump of decoded string\n\nFigure 17: Decoded strings\n\n\n-----\n\n**blogs.technet.microsoft.com/mmpc/2016/06/09/reverse-engineering-dubnium-2/3/**\n\n### Memory cleanup\n\n\nJune 9, 2016\n\n\nEven after encoding every single string related to malicious code, the DUBNIUM malware goes one more step to\nhide its internal operations. When it calls decode_string to decode an encoded string, it will use the local stack\nvariable to save the decoded string. Whenever the function returns, it calls fill_memory_with_random_bytes function\nfor every local variable it used, so that the stack is cleared from decoded strings.\n\n\nThe memory cleaner function generates random bytes and\nfills the memory area. This can be very simple, and but still\ncan be very annoying to malware analysts because, even\nwith memory snapshot, we can’t acquire any meaningful\nstrings out of it. It’s not easy to get a clue of what this binary\nis doing internally by just skimming through a memory\nsnapshot.\n\n### Various environment check\n\nOnce we have decoded the string, further reverse\nengineering becomes trivial. It is no more complicated than\nany other malware we observe on a daily basis. The\nDUBNIUM binary checks for the running environment very\nextensively. It has a very long list of security products and\nother software it detects, and it appears that it detects all\nmajor antimalware and antivirus vendor process names.\n\n\nFigure 18: Calling memory cleaner function\n\n\nFigure 18b: Calling memory cleaner function\n\n\nOne other very interesting fact is the presence of process names that are associated with software mainly used in\nChina. For example, QQPCRTP.exe and QQPCTray.exe are from a messaging software by a company based in\nChina. Also, ZhuDongFangYu.exe, 360tray.exe and 360sd.exe process names are used by security products that\noriginate from China. From the software it detects, we get the impression that the malware is focusing on a specific\ngeolocation as its target.\n\n\nAside from security programs and other programs used\ndaily that can be used to profile its targets, the DUBNIUM\nmalware also checks for various program analysis tools\nincluding Pin and DynamoRIO. It also checks for a virtual\nmachine environment. If some of these are detected, it quits\nits execution. Overall, the malware is very cautious and\ndeterministic in running its main code.\n\n\nFigure 19: Extensive list of process names\n\n\n-----\n\nto get a better understanding on the network activity of the malware, we manually patched the routine so it would\nnot detect the Fiddler mutex.\n\n### Second payload download\n\n\nThe DUBNIUM samples are distributed in various ways,\none instance was using a zero-day exploit that targets\nAdobe Flash, in December 2015. We also observed the\nmalware is distributed through spear-phishing campaigns\nthat involve social engineering with LNK files.\n\n\nFigure 20: Fiddler mutex check\n\n\nAfter downloading this payload, it would check the running\nenvironment and will only proceed with the next stage when it determines the target is a valid one for its purpose.\n\nIf software and environment check passes, the first stage payload will try to download the second stage payload\nfrom the command and control (C&C) server. It will pass information such as the IP, MAC address, hostname and\nWindows language ID to the server, and the server will return the encoded second stage payload.\n\n\nThe way the first stage payload downloads the second\npayload is both interesting and unique. It doesn’t access the\nInternet directly from the code, but it uses the systeminstalled mshta.exe binary. Mshta.exe is often used by\nmalware to run VBscript for malicious purposes, but using it\nfor downloading a general purpose payload is not so\ncommon. This is because mshta.exe doesn’t support\ndownloading URL contents directly to an arbitrary location.\n\nDUBNIUM spawns the mshta.exe process with the URL to\ndownload and waits for some time, after that it opens the\n_mshta.exe process and goes through open file handles to_\nfind a handle for the temporary file that is associated with\nthe downloaded contents.\n\n\nFigure 21: 2nd payload download traffic\n\n\nFigure 22: Encoded strings of the client information\n\n\nThis is a very inconvenient way to download a payload from the Internet, but it is useful for hiding the originating\nprocess for network activities. Sometimes network security programs check for the process name and their digital\nsignature to check if they have the right to access outside the network. In that case, this feature will be very handy\nfor the malware.\n\n\nAs you can see from the figures below, it uses processrelated documented and undocumented APIs to retrieve file\nhandles from the mshta.exe process, resolves their names\nand uses filename heuristics to check if it is a response file\nor not.\n\n\nFigure 23: mshta.exe execution code\n\n\n-----\n\nThe cache filename will be retrieved and opened to retrieve\nthe payload from the C&C server.\n\n### Conclusion\n\nOverall, the functionality of the DUBNIUM first stage\npayload is not so advanced in its functionality. It is a very\nsimple downloader for the second stage payload.\n\nHowever, the way it operates is very strategic:\n\nIt hides in plain sight.\n\nIt is very careful in initiating the next stage of the attack.\n\nIt checks many different security products and userinstalled programs that are bound to specific\ngeolocations and cultures.\n\nIt encodes every string that can be useful for quick\nanalysis.\n\nIt encodes outbound web traffic.\n\nIt doesn’t use high class encryption – but it does use an\nexcessive amount of in-house string scrambling\nalgorithms.\n\nIt checks for many popular virtual environments and\nautomatic analysis systems that are used for malware\nanalysis, including VMware, Virtualbox and Cuckoo\nSandbox\n\nIt checks for popular dynamic analysis tools like PIN\ntool, DynamoRIO and other emulators.\n\n\nFigure 26: Using mshta.exe to download additional payload\n\n\nFigure 24: API calls to retrieve handle file name in mshta.exe\n\nprocess\n\n\nFigure 25: Cache filename\n\n\nIn conclusion, this is the first stage payload with more of\nreconnaissance purpose and it will trigger next stage attack only when it decides the environment is safe enough for\nattack.\n\n## Appendix – Indicators of compromise\n\nWe discovered the following SHA1s in relation to DUBNIUM:\n\n35847c56e3068a98cff85088005ba1a611b6261f\n\n09b022ef88b825041b67da9c9a2588e962817f6d\n\n7f9ecfc95462b5e01e233b64dcedbcf944e97fca\n\ncad21e4ae48f2f1ba91faa9f875816f83737bcaf\n\n\n-----\n\nb42ca359fe942456de14283fd2e199113c8789e6\n\n0ac65c60ad6f23b2b2f208e5ab8be0372371e4b3\n\n1949a9753df57eec586aeb6b4763f92c0ca6a895\n\n259f0d98e96602223d7694852137d6312af78967\n\n4627cff4cd90dc47df5c4d53480101bdc1d46720\n\n561db51eba971ab4afe0a811361e7a678b8f8129\n\n6e74da35695e7838456f3f719d6eb283d4198735\n\n8ff7f64356f7577623bf424f601c7fa0f720e5fb\n\na3bcaecf62d9bc92e48b703750b78816bc38dbe8\n\nc9cd559ed73a0b066b48090243436103eb52cc45\n\ndc3ab3f6af87405d889b6af2557c835d7b7ed588\n\ndf793d097017b90bc9d7da9a85f929422004f6b6\n\n8ff7f64356f7577623bf424f601c7fa0f720e5fb\n\n6ccba071425ba9ed69d5a79bb53ad27541577cb9\n\n_-Jeong Wook Oh_\n\n_MMPC_\n\n[Pages: Page 1, Page 2, Page 3](https://blogs.technet.microsoft.com/mmpc/2016/06/09/reverse-engineering-dubnium-2/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "d63ae2b7-445f-460d-965d-2676dacdb6de",
+            "created_at": "2022-10-25T15:59:19.552139Z",
+            "updated_at": "2022-10-25T15:59:19.552139Z",
+            "deleted_at": null,
+            "name": "APTnotes",
+            "url": "https://github.com/aptnotes/data",
+            "description": "APTnotes data",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://app.box.com/s/f0xelxxs6ey9nms9fox1uugy8nuof40t"
+    ],
+    "report_names": [
+        "Microsoft_DUBNIUM(06-09-2016)"
+    ],
+    "threat_actors": [
+        {
+            "id": "1dadf04e-d725-426f-9f6c-08c5be7da159",
+            "created_at": "2022-10-25T15:50:23.624538Z",
+            "updated_at": "2025-03-27T02:00:55.508759Z",
+            "deleted_at": null,
+            "main_name": "Darkhotel",
+            "aliases": [
+                "Darkhotel",
+                "DUBNIUM",
+                "Zigzag Hail"
+            ],
+            "source_name": "MITRE:Darkhotel",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "b13c19d6-247d-47ba-86ba-15a94accc179",
+            "created_at": "2024-05-01T02:03:08.149923Z",
+            "updated_at": "2025-03-27T02:05:17.422065Z",
+            "deleted_at": null,
+            "main_name": "TUNGSTEN BRIDGE",
+            "aliases": [
+                "DUBNIUM ",
+                "DarkHotel ",
+                "CTG-1948 "
+            ],
+            "source_name": "Secureworks:TUNGSTEN BRIDGE",
+            "tools": [
+                "Nemim"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "2b4eec94-7672-4bee-acb2-b857d0d26d12",
+            "created_at": "2023-01-06T13:46:38.272109Z",
+            "updated_at": "2025-03-27T02:00:02.790029Z",
+            "deleted_at": null,
+            "main_name": "DarkHotel",
+            "aliases": [
+                "DUBNIUM",
+                "Fallout Team",
+                "Luder",
+                "Tapaoux",
+                "Shadow Crane",
+                "APT-C-06",
+                "SIG25",
+                "Karba",
+                "Nemim",
+                "Nemin",
+                "G0012",
+                "ATK52",
+                "T-APT-02",
+                "TUNGSTEN BRIDGE",
+                "Zigzag Hail"
+            ],
+            "source_name": "MISPGALAXY:DarkHotel",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c0cedde3-5a9b-430f-9b77-e6568307205e",
+            "created_at": "2022-10-25T16:07:23.528994Z",
+            "updated_at": "2025-03-27T02:02:09.847683Z",
+            "deleted_at": null,
+            "main_name": "DarkHotel",
+            "aliases": [
+                "APT-C-06",
+                "ATK 52",
+                "CTG-1948",
+                "Dubnium",
+                "Fallout Team",
+                "Higaisa",
+                "Luder",
+                "Operation DarkHotel",
+                "Operation Daybreak",
+                "Operation Inexsmar",
+                "Operation PowerFall",
+                "Operation The Gh0st Remains the Same",
+                "SIG25",
+                "Shadow Crane",
+                "T-APT-02",
+                "Tungsten Bridge",
+                "Zigzag Hail"
+            ],
+            "source_name": "ETDA:DarkHotel",
+            "tools": [
+                "Asruex",
+                "DarkHotel",
+                "DmaUp3.exe",
+                "GreezeBackdoor",
+                "Karba",
+                "Nemain",
+                "Nemim",
+                "Ramsay",
+                "Retro",
+                "Tapaoux",
+                "Trojan.Win32.Karba.e",
+                "Virus.Win32.Pioneer.dx",
+                "igfxext.exe",
+                "msieckc.exe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716494,
+    "ts_updated_at": 1743041741,
+    "ts_creation_date": 1467318230,
+    "ts_modification_date": 1467318230,
+    "files": {
+        "pdf": "https://archive.orkl.eu/aa49d07c40e3bf8da6779a1d08eeda6efcce3706.pdf",
+        "text": "https://archive.orkl.eu/aa49d07c40e3bf8da6779a1d08eeda6efcce3706.txt",
+        "img": "https://archive.orkl.eu/aa49d07c40e3bf8da6779a1d08eeda6efcce3706.jpg"
+    }
+}

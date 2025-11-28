@@ -1,0 +1,76 @@
+{
+    "id": "212ff032-2545-4dbc-a8cb-5e746c1893ee",
+    "created_at": "2023-01-12T15:00:36.801274Z",
+    "updated_at": "2025-03-27T02:17:00.210014Z",
+    "deleted_at": null,
+    "sha1_hash": "b05c8fff47a8f1f8ac68aced22158b1bd6f8f453",
+    "title": "2022-06-23 - Matanbuchus Loader Resurfaces",
+    "authors": "",
+    "file_creation_date": "2022-08-18T04:02:25Z",
+    "file_modification_date": "2022-08-18T04:02:25Z",
+    "file_size": 1941891,
+    "plain_text": "# Matanbuchus Loader Resurfaces\n\n**blog.cyble.com/2022/06/23/matanbuchus-loader-resurfaces/**\n\nJune 23, 2022\n\n## Malware Variant Delivering Cobalt Strike Beacons via Spam Campaigns\n\n[Researchers discovered that Matanbuchus, a malware loader, was available on Russian-speaking](https://unit42.paloaltonetworks.com/matanbuchus-malware-as-a-service/)\ncybercrime forums for a rental price of $2500 from February 2021.\n\nRecently, Cyble Research Labs came across a [Twitter post where a researcher observed this malware](https://twitter.com/Unit42_Intel/status/1537904451108818946?s=20&t=BElCC9iZ55U4c7p3UQ7HJg)\nspreading through spam campaigns. Additionally, it downloads Cobalt Strike Beacons as payloads in\ncompromised systems. Figure 1 shows the infection chain of the Matanbuchus malware.\n\n\n-----\n\nFigure 1 – Infection\n\nChain of Matanbuchus\nThe Matanbuchus infection starts through spam emails containing a ZIP attachment. This ZIP attachment\ncontains an HTML file.\n\nFigure 2 – Spam Email with ZIP Attachment\n\nUpon executing the HTML file, it decodes the base64 content embedded in the file and drops a ZIP file in\nthe Downloads folder.\n\nHowever, there is a code present in the HTML file which shows that the ZIP file is in the OneDrive location,\nas shown below.\n\nFigure 3 – ZIP Attachment in HTML Page\n\nThe ZIP file contains an MSI installer file. After extraction, it shows a fake error message upon the\nexecution of the MSI file, as shown below.\n\nFigure 4 – Adobe Fake Error Message\n\nHowever, in the background, the MSI installer drops a Dynamic Link Library (DLL) and VBS file in the\nfollowing locations.\n\n\n-----\n\n_C:\\Users\\<Admin>\\AppData\\Local\\AdobeFontPack\\main.dll_\n_C:\\Users\\<Admin>\\AppData\\Local\\AdobeFontPack\\notify.vbs_\n\nThe malware uses the VBS file to show fake error messages.\n\nFigure 5 – Dropped DLL and VBS files\n\nAdditionally, the malware downloads another DLL file with an NLS extension from\n**_https[:]//telemetrysystemcollection[.]com in the below location. C:\\Users\\<Admin>\\AppData\\Local\\x86\\_**\n_<4-digit Hex Value>.nls_\n\nThe downloaded file is a copy of main.dll, which is another way to get the latest version of this malware\nfrom the remote server.\n\nFigure 6 – Dropped Copy of Malware\n\nDLL File with .nls Extension\nAfter dropping the DLL files, the MSI file launches regsvr32.exe and loads the malicious main.dll file to\ndownload the actual Matanbuchus malware.\n\nThe below figure shows the process chain of the MSI file.\n\nFigure 7 – Process\n\nChain\n\n## Technical Analysis\n\nWe have taken the below sample hash for analysis :\n(SHA256), 14debc481aa0a26d3a0bdeed0e56b3ae9e301220f2606aae624d57a9d0617d6f\n\nWe found that the malicious binary is a 32-bit DLL file based on static analysis.\n\nThe main function of dropped DLL files (main.dll) is to act as a loader and download the actual\nMatanbuchus DLL from the C&C server.\n\nBefore downloading the DLL file, it calls APIs such as IsProcessorFeaturePresent(),\n_GetSystemTimeAsFileTime(), IsDebuggerPresent(), QueryPerformanceCounter() and cpuid to ensure_\nthat the malware is not running under a controlled environment such as VMware, Sandbox, etc.\n\n\n-----\n\nFigure 8 – Anti-debug Check\n\nThe malware executes an export function called HackCheck(), which runs a decryption loop on encrypted\nstrings and prints the output using the OutputDebugStringA() API. The below figure shows the encrypted\nstring and decryption code.\n\nFigure 9 – HackCheck Function\n\nTo establish persistence, the malware creates a scheduled task to run the 8c01.nls file with a specific\nfunction by using the following command line.\n\n_%windir%\\system32\\regsvr32.exe -n -i:”UpdateСheck” “C:\\Users\\_\n_<Admin>\\AppData\\Local\\x86\\8c01.nls”_\n\nThis scheduled task checks the malware version and downloads the latest version from the remote server\nevery 60 seconds.\n\nFigure 10 –\n\nScheduled Task Entry for Persistence\nThen, the malware connects to the below URL and receives this base64-encoded response:\n\n_“hxxp://telemetrysystemcollection[.]com/m8YYdu/mCQ2U9/home.aspx”_\n\nThe malware decodes the base64 content, an XOR encrypted binary that will be decrypted using a\nhardcoded key FuHZu4rQgn3eqLZ6FB48Deybj49xEUCtDTAmF.\n\n\n-----\n\nThe decrypted content is the actual Matanbuchus malware that will be mapped into the same process and\nexecuted using the export function DllRegisterServer.\n\nThe below figure shows the URL, XOR key, and export function names during runtime.\n\nFigure 11 – URL and\n\nXOR key to download Actual Matanbuchus DLL\nThe below figure shows the hardcoded strings related to Matanbuchus present in the memory of\n_regsvr32.exe. This indicates that the actual payload is loaded and executed in the memory without ever_\ndropping it on the disk.\n\nFigure 12 –\n\nHardcoded Matanbuchus Strings\nThe Matanbuchus payload is responsible for executing other exe payloads as well as loading and\nexecuting shellcodes and malicious DLL files.\n\n### Network Activities\n\nThe Matanbuchus payload connects to C&C server\n**_hxxp://collectiontelemetrysystem[.]com/cAUtfkUDaptk/ZRSeiy/requets/index.php and sends the_**\nbase64-encoded POST request.\n\nThe decoded base64 content is in JSON, as shown in Figure 13.\n\nThe JSON values are encrypted using the RC4 key and encoded using base64. These will further be\ndecrypted on the server-side. This gives the TA victim details such as MAC address, computer name, etc.\n\n\n-----\n\nFigure 13 – POST Request to C&C Server\n\nFinally, Matanbuchus malware downloads two Cobalt Strike Beacons from the C&C servers.\n\n**First Cobalt-Strike Beacon:**\n\nThe malware first downloads a file “cob23_443.txt” from hxxp://144.208.127[.]245/cob23_443.txt. This is\na hexadecimal binary file that will further be converted to ASCII characters and then downloads Cobalt\nStrike Beacons from hxxps://extic[.]icu/empower/type.tiff.\n\nThe below figure shows the network communication which downloads the first Cobalt Strike Beacon.\n\nFigure 14 – C&C\n\ndetails of First Cobalt-Strike Payload\n\n**Second Cobalt-Strike Beacon:**\n\nAfter downloading the first beacon, Matanbuchus downloads a second Cobalt Strike DLL file named\n“cob_220_443.dll” from another URL:\n\n**_hxxp://144.208.127[.]245/cob_220_443.dll_**\n\nThe below figure shows the network communication that downloads the second Cobalt Strike Beacon.\n\n\n-----\n\nFigure 15 – C&C\n\ndetails of Second Cobalt-Strike Payload\n\n## C&C Commands\n\nThe Matanbuchus malware executes the following C&C commands.\n\n_Running exe_\n_Starting the exe with parameters_\n_High start exe_\n_RunDll32 & Execute_\n_Regsvr32 & Execute_\n_Run CMD in memory_\n_Run PS in memory_\n_MemLoadDllMain || MemLoadExe_\n_MemLoadShellCode_\n_MemLoadShellCode #2_\n_Running dll in memory #2 (DllRegisterServer)_\n_Running dll in memory #3 (DllInstall(Install))_\n_Running dll in memory #3 (DllInstall(Unstall))_\n_Crypt update & Bots upgrade_\n_Uninstall_\n\n## Conclusion\n\nThreat Actors use various techniques to deploy their malicious payloads into the victim’s system. In this\ncase, we observed the TAs used Matanbuchus malware loader to deliver Cobalt Strike Beacons.\n\nCyble Research Labs will closely monitor the Matanbuchus malware group and other TAs and analyze\nthem to better understand their motivations and TTPs.\n\n## Our Recommendations\n\nWe have listed some essential cybersecurity best practices that create the first line of control against\nattackers. We recommend that our readers follow the best practices given below:\n\nAvoid downloading files from unknown websites.\nUse a reputed anti-virus and internet security software package on your connected devices,\nincluding PC, laptop, and mobile.\n\n\n-----\n\nRefrain from opening untrusted links and email attachments without first verifying their authenticity.\nEducate employees in terms of protecting themselves from threats like phishing’s/untrusted URLs.\nMonitor the beacon on the network level to block data exfiltration by malware or TAs.\nEnable Data Loss Prevention (DLP) Solution on the employees’ systems.\n\n## MITRE ATT&CK® Techniques\n\n**Tactic** **Technique ID** **Technique Name**\n\nInitial Access [T1566](https://attack.mitre.org/techniques/T1566/) Phishing\n\n\nExecution [T1204](https://attack.mitre.org/techniques/T1204/)\n\n[T1059](https://attack.mitre.org/techniques/T1059/)\n\n\nUser Execution\n\nCommand and Scripting Interpreter\n\n\nPersistence [T1053](https://attack.mitre.org/techniques/T1053/) Scheduled Task/Job\n\nDefence Evasion [T1497](https://attack.mitre.org/techniques/T1497/) Virtualization/Sandbox Evasion\n\nLateral Movement [T1021](https://attack.mitre.org/techniques/T1021/) Remote Services\n\nCNC [T1071](https://attack.mitre.org/techniques/T1071/) Application Layer Protocol\n\n## Indicator Of Compromise (IOCs)\n\n**Indicators** **Indicator**\n\n**Type**\n\n\n**Description**\n\nSpam email\n\nEmail\nAttachment\nZIP file\n\nHTML file\n\nZIP file from\nHTML\n\nMSI file\n\nDLL file\n\nVBS file\n\n\n5698e2786aafbda7e252d89829250112\n\n2521a69b98265e08c30f1d175f29865801e2aa15\nd19ebb3abfbef6365accb6368973b8d10779cbf80a72fd28c8f2b9dd223ac288\n\n41049c329659e51ccca47c13b8021c14\n\n50dd607fb2147457fb5978a591e9d2f46b412d24\n72426e6b8ea42012675c07bf9a2895bcd7eae15c82343b4b71aece29d96a7b22\n\n3e757306c45b710d739a802fbd1fb69f\n\n60c1dc0b885ac77b8f670b636c8d404654362354\nd0e2e92ec9d3921dc73b962354c7708f06a1a34cce67e8b67af4581adfc7aaad\n\nf177b0ec8a79756f45f8cf0fb9b99c07\n\n1b18d12dc5c14e68b271164ff63647a6d2eb090d\n63242d49d842cdf699b0ec04ad7bba8867080f8337d3e0ec7e768d10573142b3\n\nff82937564ff59eb6207f079cdc8e43d\n\n7cfe0a71c4a2508a1af80e640ec8b1b034edb604\nface46e6593206867da39e47001f134a00385898a36b8142a21ad54954682666\n\n8cb8cf84ab20159702e6803cd6ce364a\n\n05103f90540f3e8a9599e9f1ab6a11c791aec393\n14debc481aa0a26d3a0bdeed0e56b3ae9e301220f2606aae624d57a9d0617d6f\n\n0308aa2c8dab8a69de41f5d16679bb9b\n\nc6827bf44a433ff086e787653361859d6f6e2fb3\n0a7e8fd68575db5f84c18b9a26e4058323d1357e2a29a5b12278e4bfa6939489\n\n\nMD5\n\nSHA1\nSha256\n\nMD5\n\nSHA1\nSha256\n\nMD5\n\nSHA1\nSha256\n\nMD5\n\nSHA1\nSha256\n\nMD5\n\nSHA1\nSha256\n\nMD5\n\nSHA1\nSha256\n\nMD5\n\nSHA1\nSha256\n\n\n-----\n\n8cb8cf84ab20159702e6803cd6ce364a\n\n05103f90540f3e8a9599e9f1ab6a11c791aec393\n14debc481aa0a26d3a0bdeed0e56b3ae9e301220f2606aae624d57a9d0617d6f\n\n314a641ee6ef932f4c561388bd539090\n\nf20a688766f3c7105b64a6342277879d751de6f3\n1e9aaf1375d9f7403644b4bea2c6fe679579bf61945ba6bdb54cc7cd7b728211\n\n40d5b499d9213f44ca786d56b6e10907\n\n73b17544d1e42dc12d4af1d19343e2c7456a4a0b\n80e3212beed371025ba8c3eb32bea41de85d856941506f2a5255377069449c95\n\n97fc6726f396c4b86bc84ca97e787637\n\nad6e5024a0be6f69370e7a0482a2baa27c4a25be\na5b06297d86aee3c261df7415a4fa873f38bd5573523178000d89a8d5fd64b9a\n\n8fc15b030254c0d49f18d06c696d6986\n\n75f62f4d419b921bc081b5e8387665ac3cffd0d7\nbd68ecd681b844232f050c21c1ea914590351ef64e889d8ef37ea63bd9e2a2ec\n\n\nMD5\n\nSHA1\nSha256\n\nMD5\n\nSHA1\nSha256\n\nMD5\n\nSHA1\nSha256\n\nMD5\n\nSHA1\nSha256\n\nMD5\n\nSHA1\nSha256\n\n\nNLS file\n\n1st Cobalt\nStrike\nPayload\n\n2nd Cobalt\nStrike\nPayload\n\nXORed file\n\nDLL file from\nXORed file\n\n\nhxxp://telemetrysystemcollection[.]com/m8YYdu/mCQ2U9/home.aspx URL Matanbuchus\ntraffic\n\nhxxps://extic[.]icu/empower/type.tiff URL 1st Cobalt\nStrike URL\n\n## References\n\nhttps://isc.sans.edu/forums/diary/Malspam+pushes+Matanbuchus+malware+leads+to+Cobalt+Strike/2875\n2/\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-06-23 - Matanbuchus Loader Resurfaces.pdf"
+    ],
+    "report_names": [
+        "2022-06-23 - Matanbuchus Loader Resurfaces.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d9b39228-0d9d-4c1e-8e39-2de986120060",
+            "created_at": "2023-01-06T13:46:39.293127Z",
+            "updated_at": "2025-03-27T02:00:03.042341Z",
+            "deleted_at": null,
+            "main_name": "BelialDemon",
+            "aliases": [
+                "Matanbuchus"
+            ],
+            "source_name": "MISPGALAXY:BelialDemon",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535636,
+    "ts_updated_at": 1743041820,
+    "ts_creation_date": 1660795345,
+    "ts_modification_date": 1660795345,
+    "files": {
+        "pdf": "https://archive.orkl.eu/b05c8fff47a8f1f8ac68aced22158b1bd6f8f453.pdf",
+        "text": "https://archive.orkl.eu/b05c8fff47a8f1f8ac68aced22158b1bd6f8f453.txt",
+        "img": "https://archive.orkl.eu/b05c8fff47a8f1f8ac68aced22158b1bd6f8f453.jpg"
+    }
+}

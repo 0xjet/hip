@@ -1,0 +1,84 @@
+{
+    "id": "1c44c65f-33b0-4013-8184-ed3ce39779ae",
+    "created_at": "2023-01-12T15:06:16.391972Z",
+    "updated_at": "2025-03-27T02:14:13.672428Z",
+    "deleted_at": null,
+    "sha1_hash": "5b33c9d3b0409bfd7ca04cce044b1771abe29135",
+    "title": "2021-10-15 - BlackByte Ransomware – Pt 2. Code Obfuscation Analysis",
+    "authors": "",
+    "file_creation_date": "2022-05-28T15:54:40Z",
+    "file_modification_date": "2022-05-28T15:54:40Z",
+    "file_size": 1812369,
+    "plain_text": "# BlackByte Ransomware – Pt 2. Code Obfuscation Analysis\n\n**[trustwave.com/en-us/resources/blogs/spiderlabs-blog/blackbyte-ransomware-pt-2-code-obfuscation-analysis/](https://www.trustwave.com/en-us/resources/blogs/spiderlabs-blog/blackbyte-ransomware-pt-2-code-obfuscation-analysis/)**\n\nIn [Part 1 of our BlackByte ransomware analysis, we covered the execution flow of the first](https://www.trustwave.com/en-us/resources/blogs/trustwave-blog/blackbyte-ransomware-pt-1-in-depth-analysis/)\nstage JScript launcher, how we extracted BlackByte binary from the second stage DLL, the\ninner workings of the ransomware, and our decryptor code. In this blog, we will detail how\nwe analyzed and de-obfuscated the JScript launcher, BlackByte’s code, and strings.\n\n### De-obfuscating the JScript Launcher\n\nWe received the original launcher file from an incident response case. It was about 630 KB\nof JScript code which was seemingly full of garbage code – hiding the real intent.\n\nOur first approach to de-obfuscate the script was to simply scroll through the whole length\nof this obfuscated code, find some interesting blocks and figure out if there were any eval()\nfunction calls. We wanted to find an eval() call because this is where the script likely\nexecutes relevant code.\n\nAs seen in the screenshot below, we found that the first hundred lines of code were mostly\nunused, garbage code. At line 2494 is a blob of seemingly Base64 encoded strings (which\nturned out to be the main payload). Then at line 7511 is a lone eval() call.\n\n\n-----\n\n-----\n\n_Figure 1: Highlights of the obfuscated JScript code_\n\nThe next step was to trace back the code beginning from the eval() call at line 7511, finding\nthe references to the eval’s parameter variable name – “bnlpgh”, then start following the\nflow and references until we obtained the real code.\n\nHere is an initial flow we followed starting from the eval() call.\n\n_Figure 2. Code traceback starting from eval() call_\n\nFollowing the code in this fashion, we were able to distinguish the real code from the\ngarbage. We then prettified the code and renamed the variables to be readable. The code\nsnippet below reveals the first layer:\n\n\n-----\n\n-----\n\n_Figure 3. Beautified First layer of the obfuscated JScript launcher_\n\nAbove you may see in the first layer code our renamed variable - secondLayerEncoded this is a string that looks like it was encoded in Base64. Although that is true, it is a Base64\nstring that has been reversed.\n\nThe script creates an XML document object, and using this object, creates an HTML\nelement named “tmp”. Next, the script writes the decoded second layer from the variable\nassigned to secondLayerEncoded into the created element. It then reads it back as a\n“binaryStream” and finally runs it using eval().\n\nAfter decoding and prettifying the second layer, the result looks like this:\n\n_Figure 4. Beautified code of the second layer JScript code_\n\nThe second layer code reveals that it checks if .NET version 4.0.30319 framework is\ninstalled in the system, then proceeds to decode the malware payload (the Base64 strings\nshown in Figure 2 at line 2494). Afterward, it creates a memory stream object to where it\nwrites the decoded Base64 payload. To run it, it uses the Deserialize_2 method of the\nSystem.Runtime.Serialization.Formatters.Binary.BinaryFormatter COM object to load\nmanaged code via object Deserialization. When invoked, it creates an instance of\n“jSfMMrZfotrr” – a class from the malicious .NET DLL loader.\n\n\n-----\n\n## BlackByte: De-obfuscating the Code\n\nThe BlackByte binary itself is also heavily obfuscated, both the code and the strings.\n\n_Figure 5. BlackByte decompiled using dnSpy_\n\nThe code obfuscation needed some manual refactoring, and it proved to be tedious!\n\nBelow is a snippet of the most common code obfuscation technique we found in\nBlackByte’s code:\n\n_Figure 6. Sample of an obfuscated code_\n\nIn this function, we can remove the if condition in line 7 since it is always true:\n\n9. if ((46945 ^ 472736) == 491969)\n\n\n-----\n\nAnd in line 8, since sizeof(double) equals 8, our variable arg_46_0 will be equal to\n\n**-9992+8+9984 which is equals zero. So, we can refactor the code in line 10 like this:**\n\n13. Environment.Exit(arg_46_0); // is the same as Environment.Exit(0)\n\nTo make it readable, we rename the function and removing all unnessary code, it would\nlook like this:\n\n1. internal static void kill_process()\n2. {\n3.  try\n4.  {\n5.     Process.GetCurrentProcess().Kill();\n6.  }\n7.  catch\n8.  {\n9.     Environment.Exit(0);\n10.  }\n11.}\n\nThe same obfuscation technique has been used throughout the code. So, we can\npainstakingly and manually refactor every function to make it readable.\n\n### BlackByte: De-obfuscating the Strings\n\nAnother hurdle for analyzing this ransomware is the string obfuscation.\n\n_Figure 7. BlackByte's obfuscated string is represented as a function_\n\nIn the image above, each encrypted string is declared inside a public static object. The call\nto the method aCDscCCxGvmZ.k(encryptedString) is a call to a string reversal function,\nwhere it reverses the chunk of a Base64 string and then afterward joins those chunks\ntogether to form a complete Base64 encoded string.\n\nLet’s take for example this encoded string:\n\n\n-----\n\npublic static object P() {\n\nreturn aCDscCCxGvmZ.k(\"AAAACL+BAAAgD\") +\naCDscCCxGvmZ.k(\"K95vZqTDABAAA\") +\n\naCDscCCxGvmZ.k(\"YbZietcdo57Pk\") + aCDscCCxGvmZ.k(\"AAAAOQDrIJDAC\");\n\n}\n\nFirst step is to reverse each chunk:\n\nAAAACL+BAAAgD -> DgAAAB+LCAAAA\n\nK95vZqTDABAAA -> AAABADTqZv59K\n\nYbZietcdo57Pk -> kP75odcteiZbY\n\nAAAAOQDrIJDAC -> CADJIrDQOAAA\n\nThen join all together to form a complete Base64 string:\n\nDgAAAB+LCAAAAAAABADTqZv59KkP75odcteiZbYCADJIrDQOAAAA\n\nThe decoded base64 string is a GZip header starting at the 5 byte.th\n\n_Figure 8. First 4 bytes is the size of the decrypted string, and the following bytes are the_\n_GZIP compressed string._\n\nThe first four bytes of the data are the length of the decoded string. So, we can remove the\nfirst four bytes, then apply GZIP decompression to the remaining data.\n\n_Figure 9. GZIP header and the data following it_\n\nThe next step is to decrypt the output with RC4 algorithm with the key [0xCD 0x92 0xCC\n0x93 0xCD 0x98]. And finally, we get the decoded string “powershell.exe”\n\nA [CyberChef recipe below can help you with the string decoding. It accepts the whole](https://gchq.github.io/CyberChef/)\nobfuscated string function, parses the encoded string and decode it:\n\n\n-----\n\n\"args\": [\"User defined\", \"\\\"(.*?)\\\"\", true, true, false, false, false, false, \"List capture groups\"]\n},\n\n{ \"op\": \"Fork\",\n\n\"args\": [\"\\\\n\", \"\", false] },\n\n{ \"op\": \"Reverse\",\n\n\"args\": [\"Character\"] },\n\n{ \"op\": \"Merge\",\n\n\"args\": [] },\n\n{ \"op\": \"From Base64\",\n\n\"args\": [\"A-Za-z0-9+/=\", true] },\n\n{ \"op\": \"To Hex\",\n\n\"args\": [\"None\", 0] },\n\n{ \"op\": \"Find / Replace\",\n\n\"args\": [{ \"option\": \"Regex\", \"string\": \"^\\\\w{8}\" }, \"\", true, false, true, false] },\n\n{ \"op\": \"From Hex\",\n\n\"args\": [\"Auto\"] },\n\n{ \"op\": \"Gunzip\",\n\n\"args\": [] },\n\n{ \"op\": \"To Hex\",\n\n\"args\": [\"Space\", 0] },\n\n{ \"op\": \"RC4\",\n\n\"args\": [{ \"option\": \"Hex\", \"string\": \"CD 92 CC 93 CD 98\" }, \"Hex\", \"Latin1\"] }\n\n]\n\nCyberChef came in handy when analyzing this malware. But a scripting tool like Python can\nmake the de-obfuscation process faster. I’ll leave that as an exercise:\n\n\n-----\n\n_Figure 10: Decoding the string using CyberChef_\n\nTo end this blog, we'll leave some tips on how to approach obfuscated code like this:\n\n1. Analyze the code first and see what methods it uses.\n2. Find any string blobs, that may be a result of encryption or encoding. This may be\n\ndata, a series of hex bytes, or a base64 string. Look for any references to this and\nfollow through.\n3. For scripts, keep an eye on those evaluation expressions, we are talking about eval().\n\nYou can sometimes exploit this by replacing it with alert(), msgbox(), console.log(), or\na file write operation. And let the script run and see what it prints, however, this is\nextremely dangerous, so run it in a VM environment.\n4. Learn some encoding and encryption algorithms. Base64, RC4, AES, RSA, or even\n\nthe simplest bitwise operations like XOR and ROTATE will come in handy.\n5. And lastly, use a tool and debug it. It makes you understand how it works when you\n\nfollow the code.\n\nFor anyone interested, a decompiled source of BlackByte that we have partially deobfuscated can be downloaded from this Github link:\n\n[https://github.com/SpiderLabs/BlackByteDecryptor](https://github.com/SpiderLabs/BlackByteDecryptor)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-10-15 - BlackByte Ransomware – Pt 2. Code Obfuscation Analysis.pdf"
+    ],
+    "report_names": [
+        "2021-10-15 - BlackByte Ransomware – Pt 2. Code Obfuscation Analysis.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "5d2bd376-fcdc-4c6a-bc2c-17ebbb5b81a4",
+            "created_at": "2022-10-25T16:07:23.667223Z",
+            "updated_at": "2025-03-27T02:02:09.916086Z",
+            "deleted_at": null,
+            "main_name": "GCHQ",
+            "aliases": [
+                "Government Communications Headquarters",
+                "Operation Socialist"
+            ],
+            "source_name": "ETDA:GCHQ",
+            "tools": [
+                "Prax",
+                "Regin",
+                "WarriorPride"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "4e453d66-9ecd-47d9-b63a-32fa5450f071",
+            "created_at": "2024-06-19T02:03:08.077075Z",
+            "updated_at": "2025-03-27T02:05:17.381141Z",
+            "deleted_at": null,
+            "main_name": "GOLD LOTUS",
+            "aliases": [
+                "Hecamede ",
+                "BlackByte"
+            ],
+            "source_name": "Secureworks:GOLD LOTUS",
+            "tools": [
+                " Cobalt Strike",
+                " ExByte",
+                " MEGA",
+                " RDP",
+                " SoftPerfect Network Scanner",
+                "BlackByte"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535976,
+    "ts_updated_at": 1743041653,
+    "ts_creation_date": 1653753280,
+    "ts_modification_date": 1653753280,
+    "files": {
+        "pdf": "https://archive.orkl.eu/5b33c9d3b0409bfd7ca04cce044b1771abe29135.pdf",
+        "text": "https://archive.orkl.eu/5b33c9d3b0409bfd7ca04cce044b1771abe29135.txt",
+        "img": "https://archive.orkl.eu/5b33c9d3b0409bfd7ca04cce044b1771abe29135.jpg"
+    }
+}

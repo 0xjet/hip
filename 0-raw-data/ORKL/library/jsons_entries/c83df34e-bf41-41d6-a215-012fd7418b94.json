@@ -1,0 +1,59 @@
+{
+    "id": "c83df34e-bf41-41d6-a215-012fd7418b94",
+    "created_at": "2022-10-25T16:48:24.960338Z",
+    "updated_at": "2025-03-27T02:08:52.349489Z",
+    "deleted_at": null,
+    "sha1_hash": "bcbf65db4d9ef65d3e835ba3ad2823bac5116cd7",
+    "title": "New Campaign delivers orcus rat",
+    "authors": "",
+    "file_creation_date": "2019-01-30T06:53:22Z",
+    "file_modification_date": "0001-01-01T00:00:00Z",
+    "file_size": 1396053,
+    "plain_text": "# New Campaign delivers orcus rat\n\n**blog.morphisec.com/new-campaign-delivering-orcus-rat**\n\n_This post was authored by_ **_[Michael Gorelik,](https://twitter.com/smgoreli)_** **_[Alon Groisman and](https://twitter.com/alongros)_** **_[Bruno Braga.](https://twitter.com/brunomcbraga)_**\n\nA new, highly sophisticated campaign that delivers the Orcus Remote Access Trojan is\nhitting victims in ongoing, targeted attacks. Morphisec identified the campaign after\nreceiving notifications from its advanced prevention solution at several deployment sites.\n(Morphisec’s Moving Target Defense technology immediately stopped the threat.) The\nattack uses multiple advanced evasive techniques to bypass security tools. In a successful\nattack, the Orcus RAT can steal browser cookies and passwords, launch server stress tests\n(DDoS attacks), disable the webcam activity light, record microphone input, spoof file\nextensions, log keystrokes and more. (More about Orcus RAT below.)\n\nThe forensic data captured by Morphisec from the attack showed a high correlation to\nadditional samples in the wild, indicating a single threat actor is behind multiple\ncampaigns, including this one.\n\nThis threat actor specifically focuses on information stealing and .NET evasion. Based on\nunique strings in the malware, we have dubbed the actor PUSIKURAC. Before executing the\nattacks, PUSIKURAC registers domains through FreeDns services. It also utilizes legitimate\nfree text storage services like paste, signs its executables, heavily missuses commercial\n.NET packers and embeds payloads within video files and images.\n\nIn this blog we choose to focus and demystify one specific attack chain executed by the\nattacker. We will show the full attack chain, analyzing one of the more interesting malware\ndownloaders that we have investigated over the past year, including its delivered payload the Orcus RAT.\n\n# Technical explanation\n\n\n-----\n\npersistent VBscript executes a PowerShell script that downloads a .NET executable\nobfuscated and encrypted by ConfuserEx. The downloaded executable performs known\nUAC bypass through event viewer registry hijacking to get the highest privileges.\n\nThe running process with the highest privileges downloads a legitimate Ramadan-themed\nCoca-Cola advertising video, which contains an embedded .NET Orcus RAT.\n\nEach stage of the attack includes additional obfuscation and custom encryption steps, as\ndescribed below.\n\n### Downloader\n\nOne of the more interesting stages of the attack is the downloader System32Batch94ver1.exe (B4136B21B9E95FD1FA9C52BD897F4D2F). The .NET\ndownloader is signed by a non-valid Notepad++ certificate.\n\n\n-----\n\nThe downloader is encrypted by a known obfuscation framework (ConfuserEx) and further\nobfuscated by a custom algorithm that can transform strings representing binary number\npatterns to readable strings and byte arrays. The malware also has the functionality of\ndownloading additional stages from paste.ee & bit.ly under certain conditions.\n\n_ConfuserEx encrypted binary:_\n\nMost of the ConfuserEx unpackers didn’t fully work on this sample out of the box; we\nneeded to modify one of the unpackers. Following a successful control flow repair,\ndecryption of constants strings and the de-obfuscation of the names we identified a\n\n\n-----\n\nAs noted previous, we needed to apply some of the decoding algorithms implemented\nwithin the binary in order to deobfuscate the next stage binary patterns (similar patterns\nare downloaded from hxxps://paste[.]ee/r/O53RV). The identified strings revealed the\npersistency methods of the binary, privilege escalation techniques used to bypass UAC,\nand next stage artifacts embedded. Some of these strings are included in Table 1 below:\n\n\n-----\n\nAlthough the original string table includes much more information, we will focus on the\nstrings included in the table above.\n\nThe eventvwr.exe, mmc and mscfile registry hijack clearly indicate a known UAC bypass\ntechnique utilized by malware over the last 2 years – hijacking the mscfile registry key will\ncause the event viewer to execute the given process with highest privileges. The vmtoolsd\nand the Sandboxie strings indicate known anti-VM techniques. The _VBScript code_\n_templates, which are compiled by the .NET binary and the task schedule procedures, are_\nindicators for persistency and disconnection of the attack chain (as in the scenario we are\nanalyzing).\n\nThe last string was the only one that is not self-explainable and looked unique. This\nprompted us to use it as the name for the threat actor.\n\nWhile hunting for additional strings, we identified an interesting method that is responsible\nfor the AES decryption of one of the encrypted resources:\n\n\n-----\n\nThe function iterates over its four resources until it finds a resource stream that starts with\nthe leet cookie (1337). It then extracts the key and the initialization vector for a successful\nAES decryption of the resource.\n\nDecryption of the “QFwMhceaY.Resources” resource reveals an additional set of URLs,\nfilename extensions and .NET target version:\n\n\n-----\n\nAgain, the actual string table contains more information and we have included only the\nmost relevant.\n\nThe first string is the URL path for the bit.ly (one of the leading URL shorteners). This path\nhosts a redirector to the next stage malware (Orcus RAT embedded inside mp4 video file).\n\nThe second string is an executable name, which is later concatenated with the _.exe_\nextension and used to replace the Name.exe template within the VB script shown in Table\n1.\n\n_hxxps://paste[.]ee/r/bOZW3 contains another encrypted Assembly executable that is later_\nfetched from the internet (exhibits the same binary patterns as seen inside downloader\nbinary). This is described below.\n\nThe binary pattern is decrypted into a byte array (same way as previous strings), then it is\nXOR’d with multiple embedded characters and transformed into a new embedded\nassembly. Under certain conditions our downloader will execute this Assembly by invoking\nits Method.\n\n\n-----\n\nThe decrypted assembly is minimally obfuscated; its long constant and function names\ncan be easily de-obfuscated using a basic de4dot. Looking deeper inside the assembly, we\nidentified process hollowing functionality that is used to hide additional executable code\nwithin new process.\n\n\n-----\n\nas parameters to the hollowing process (hollowing cmd).\n\n### Orcus RAT\n\nAs stated previously, the downloader downloads a legitimate 18 MB Ramadam-themed\nCoca-Cola commerical (09751bf69d496aaa3c92df5ed446785b).\n\nAlthough the video looks harmless, it is appended with a .NET executable which represents\nthe Orcus RAT.\n\n\n-----\n\nThe attached Orcus executable is delivered with AES encrypted settings (the SIGNATURE\nstring is the key). To properly decrypt the settings we needed to decompress the embedded\nFody-Costura DLLs (deflate the streams) that relate to the AES encryption\n(Orcus.Shared.dll) and extract the initialization vector byte array.\n\nWith all the decryption keys and the encrypted setting in hand, we easily extracted the full\nxml settings for the RAT.\n\n\n-----\n\n-----\n\n[https://twitter.com/GuyFoqs/status/1085803756644528129 .](https://twitter.com/GuyFoqs/status/1085803756644528129)\n\n# more on Orcus RAT\n\nThe Orcus RAT masquerades as a legitimate remote administration tool, although it is clear\nfrom its features and functionality that it is not and was never intended to be. (Brian Krebs\n[published an interesting expose on the man behind the supposed administration tool.) Until](https://krebsonsecurity.com/2016/07/canadian-man-is-author-of-popular-orcus-rat/comment-page-1/)\ntwo weeks ago, it was publicly sold and licensed by a company calling itself Orcus\n[Technologies. The project is now closed, according to this “press release” issued, and a](https://orcusremote.com/)\nlicense-free version available for download, as well as software development tools and\ndocumentation. Interestingly, the author also claims there is a “kill switch” available for\ndownload by security researchers to remotely shut down and lock out any Orcus control\nserver that they find are being used for malicious purposes.\n\n# Conclusions\n\nGiven that Orcus RAT was recently made freely available, we expect to see more attacks\ndelivering new Orcus RAT variants as a payload.\n\nAs this latest attack demonstrates, organizations may improve their defenses but\nattackers find new ways to get around them. Morphisec customers are protected from this\ncampaign as well as future Orcus RAT variants with its Moving Target Defense solution\nthat is architected specifically to handle unknown evasive attacks.\n\n## Artifacts:\n\n\n-----\n\nhxxps://syswow32batch[.]su/WOW/\n\nhxxps://salesgroup[.]top/Micro18/\n\nhxxp://bit[.]ly/2FRI9rE\n\nhxxps://paste[.]ee/r/bOZW3\n\nhxxps://paste[.]ee/r/O53RV\n\nhxxps://pomf.pyonpyon[.]moe/wmtqck.mp4\n\nhxxps://pomf.pyonpyon[.]moe/ggesuy.jpg (different info stealer)\n\n### Downloader:\n\n2091F8A68BE181B0149C83DCBF2CFC05\n\n### MP4 Advertisement (embedded Orcus RAT)\n\n09751BF69D496AAA3C92DF5ED446785B (mp4)\n\n161307CD9FA201256B0D17D9F3085E78F32D642A (embedded Orcus)\n\n### C2:\n\nweirdly.crabdance[.]com\n\npoulty55.chickenkiller[.]com\n\n194.5.98[.]139:9030\n\n### Additional Artifacts\n\nStrings: “Dole Food Company” (this string appeared in many of the .NET assemblies from\nmultiple different attack chains, it also appeared in some of the persistency stages)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2019/2019.01.30.ORCUS_RAT/New%20Campaign%20delivers%20orcus%20rat.pdf"
+    ],
+    "report_names": [
+        "New Campaign delivers orcus rat"
+    ],
+    "threat_actors": [
+        {
+            "id": "aec996de-aa57-4812-87be-5a0db10b616a",
+            "created_at": "2022-10-25T16:07:24.080546Z",
+            "updated_at": "2025-03-27T02:02:10.102326Z",
+            "deleted_at": null,
+            "main_name": "Pusikurac",
+            "aliases": [],
+            "source_name": "ETDA:Pusikurac",
+            "tools": [
+                "Orcus",
+                "Orcus RAT",
+                "Schnorchel"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716504,
+    "ts_updated_at": 1743041332,
+    "ts_creation_date": 1548831202,
+    "ts_modification_date": 0,
+    "files": {
+        "pdf": "https://archive.orkl.eu/bcbf65db4d9ef65d3e835ba3ad2823bac5116cd7.pdf",
+        "text": "https://archive.orkl.eu/bcbf65db4d9ef65d3e835ba3ad2823bac5116cd7.txt",
+        "img": "https://archive.orkl.eu/bcbf65db4d9ef65d3e835ba3ad2823bac5116cd7.jpg"
+    }
+}

@@ -1,0 +1,147 @@
+{
+    "id": "0f3d8a79-66ab-4291-a0a1-35682420698c",
+    "created_at": "2023-01-12T15:04:29.727465Z",
+    "updated_at": "2025-03-27T02:05:45.525089Z",
+    "deleted_at": null,
+    "sha1_hash": "e43a61ebc88991d799587be5b0273b8da351be94",
+    "title": "2021-08-30 - New Mirai Variant Targets WebSVN Command Injection Vulnerability (CVE-2021-32305)",
+    "authors": "",
+    "file_creation_date": "2022-05-28T15:37:31Z",
+    "file_modification_date": "2022-05-28T15:37:31Z",
+    "file_size": 241043,
+    "plain_text": "# New Mirai Variant Targets WebSVN Command Injection Vulnerability (CVE-2021-32305)\n\n**unit42.paloaltonetworks.com/cve-2021-32305-websvn/**\n\nBrock Mammen, Haozhe Zhang August 30, 2021\n\nBy [Brock Mammen and](https://unit42.paloaltonetworks.com/author/brock-mammen/) [Haozhe Zhang](https://unit42.paloaltonetworks.com/author/haozhe-zhang/)\n\nAugust 30, 2021 at 6:00 AM\n\n[Category: Unit 42](https://unit42.paloaltonetworks.com/category/unit-42/)\n\nTags: [botnet,](https://unit42.paloaltonetworks.com/tag/botnet/) [CVE-2021-32305,](https://unit42.paloaltonetworks.com/tag/cve-2021-32305/) [DDoS,](https://unit42.paloaltonetworks.com/tag/ddos/) [vulnerabilities,](https://unit42.paloaltonetworks.com/tag/vulnerability/) [WebSVN](https://unit42.paloaltonetworks.com/tag/websvn/)\n\nThis post is also available in: 日本語 [(Japanese)](https://unit42.paloaltonetworks.jp/cve-2021-32305-websvn/)\n\n## Executive Summary\n\nWe have observed exploits in the wild for a recently disclosed command injection\nvulnerability affecting WebSVN, an open-source web application for browsing source code.\nThe critical command injection vulnerability was discovered and patched in May 2021. A\nproof of concept was released and within a week, on June 26, 2021, attackers exploited the\nvulnerability to deploy variants of the Mirai DDoS malware. We strongly recommend that\nWebSVN users [upgrade to the latest software version.](https://github.com/websvnphp/websvn/releases)\n\n[Palo Alto Networks Next-Generation Firewalls protect customers from the exploitation of](https://www.paloaltonetworks.com/network-security/next-generation-firewall)\n[CVE-2021-32305 and Cortex XDR detects Mirai variants and prevents infection](https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2021-32305)\n\n\n-----\n\n## Root Cause and Patch Analysis of CVE-2021-32305\n\nLike many source code browsing tools, WebSVN allows users to search through the revision\nhistory to find relevant code changes. These search requests are made by sending a query\nto the backend, which is written in PHP.\n\nFigure 1. The user’s input is read from the “search” parameter in search.php.\nIn versions of WebSVN prior to 2.6.1, the user’s search query is not escaped when it is used\nin a shell command. Inside include/svnlook.php the function getListSearch is responsible for\ncreating the shell command by concatenating the search query with command arguments.\n\nFigure 2. The SVN command is created by concatenating it with the search query.\nA function called runCommand inside include/command.php finally executes the command\nby passing it to PHP’s proc_open function. The documentation for this function contains the\nfollowing warning regarding the command parameter:\n\nFigure 3. PHP documentation.\nWithout properly escaping the user’s input, it is possible to achieve code execution by\nincluding special characters in the search query. To fix this vulnerability, the code was\nchanged to sanitize the user input with escapeshellarg before concatenating it to the other\ncommand arguments.\n\nFigure 4. Vulnerability patch.\nAnother possible solution is to allow proc_open to automatically escape and quote the\ncommand by passing an array of strings as the first argument. This approach might be\nconsidered more concise and easier to maintain. However, it would have required making\nbigger changes to the existing code, and it is not compatible with older versions of PHP,\nwhich is likely the reason this solution was not chosen.\n\nproc_open(['svn', 'list', '-R', '--search', $searchstring, '--xml'], ...);\n\n_Figure 5. Hypothetical code for safely running the shell command._\n\n## Exploitation in the Wild\n\n\n-----\n\nShortly after CVE-2021-32305 was made public, Unit 42 researchers observed attackers\nexploiting it in the wild. One example of an attack is shown here:\n\nFigure 6. HTTP request.\nThe attacker uses command injection to download a shell script that will infect the system\nwith malware. When abusing these types of web vulnerabilities, some important details about\nthe target environment may be unknown to the attacker. These details include the operating\nsystem and processor architecture that the web server is running. The shell script used in the\nnext step of the attack shows how the attacker can overcome this issue:\n\nFigure 7. Shell script\nMalicious Linux binaries are provided for 12 different architectures. Instead of detecting\nwhich one is correct for the target environment, a brute force approach is taken. The script\nsimply downloads and attempts to execute the binaries for every one of the possible\narchitectures, disregarding any incompatibility errors. Although WebSVN is a cross-platform\nPHP application capable of running on many operating systems, only Linux binaries are used\nin this attack.\n\n## Malware Analysis\n\nAnalysis of this malware reveals that it is used to perform distributed denial of service\n(DDoS) attacks and that it shares some of its code with the Mirai botnet family. To reduce the\nsize of the executable files, each one is compressed with a modified version of the popular\nopen-source packer, UPX. Because the packer is modified, it is less likely for reverse\nengineering tools to succeed in automatically unpacking the executable files, requiring more\nmanual effort for analysis. Additionally, the malware achieves portability by statically linking\nall of its dependencies and making system calls directly inside the code.\n\n\n-----\n\nAfter the malware is executed, it continuously tries to connect to its command and control\n(C2) server on port 666. Once it establishes a connection, it communicates using a custom\ntext-based TCP protocol. It begins by informing the C2 of its architecture, and then it awaits\ncommands from the operator.\n\nFigure 8.\n\nMain loop for processing C2 commands.\nThe main purpose of this malware family is to perform DDoS attacks, and the effectiveness\nof an attack depends on the network protocols and techniques that are used. In the analyzed\nsample, there are eight types of attacks, each designed to be effective against a different\ntype of target. The following table shows the commands the malware operator can send to\ninitiate each one.\n\n**Command** **Protocol** **Description**\n\nOVHHEX UDP Targets servers hosted by OVH, a French cloud computing\ncompany.\n\nUDPBYPASS UDP Attempts to bypass network mitigations by sending crafted\npackets at calculated time intervals.\n\nNFOHEX UDP Floods the target with randomly generated hex-encoded data.\n\nSTD UDP Randomly sends packets from a list of three predefined\npayloads.\n\nVSE UDP Targets game servers built with Valve Source Engine.\n\nTCP TCP General attack for TCP-based protocols.\n\nSYN TCP Sends SYN packets to imitate a TCP connection request.\n\nACK TCP Sends ACK packets to imitate acknowledgement messages.\n\n_Table 1. DDoS methods._\n\n## Conclusion\n\nWe observed exploits in the wild for a recently disclosed command injection vulnerability\naffecting WebSVN. In one particular attack, the vulnerability is used to deploy DDoS\nmalware. Attackers will continue to exploit the latest vulnerabilities to expand their army of\n\n\n-----\n\ninfected devices and increase the strength of their DDoS attacks. Customers are strongly\nadvised to [upgrade to the latest software version.](https://github.com/websvnphp/websvn/releases)\n\nPalo Alto Networks Next-Generation Firewall customers are protected by the subscriptions:\n\n[Threat Prevention can block the attack with best practices via Threat Prevention](https://www.paloaltonetworks.com/products/secure-the-network/subscriptions/threat-prevention)\n[Signature 91280.](https://threatvault.paloaltonetworks.com/?query=91280)\n[WildFire accurately detects and blocks these attacks.](https://www.paloaltonetworks.com/products/secure-the-network/wildfire)\n[Advanced URL Filtering blocks malicious malware domains.](https://www.paloaltonetworks.com/network-security/advanced-url-filtering)\n\nCortex XDR detects Mirai variants and prevents infection.\n\n### Indicators of Compromise\n\n75.119.143[.]229\n\ne6f20e73af6cc393dd139b32117a8681e15edfe61c157f3509d1e740184b3d5c\n\nc782f9cdec637503472bc62d25348cefccc3de58244441547f3e2ed9b22c6c93\n\n63c2cae1f3d04d81a4a1dcd773c62d7e9a71cf7e3ae0c5a9f931353e86f11651\n\n3cc3d7d32e8c85e0c594ca5cb2ecfbfba66ebbc1853bcb02c2a39fce9f238dbc\n\ndc7cf2212f09482ac034eb7e9f89ef0cec8bc9532d4fe2db8a880c2e1e4ee8a2\n\n8cc43db17480170fac3213518fe18d52a5648ce04060561d6359d6c589a4321c\n\nb09c85e75f65a9acc4693957caf4b4c56dd808c7d0d657c1bc9f74a1bd772abe\n\na55a2318e95dcfbe2d2082ee569642034ab05168fa0142ff1009798131b61f52\n\nb43fd19dfeeb89507f9de162e7a727fa6024ca4b1d19cb5c44e53755200f2b66\n\n7dc972346b9f82709bbcaabc30f126984468e60f2b085091471a9796ac4539b9\n\nf4d851908e900d9201597f898cbb4420772a935901f25a77b31fc80e7cbc88b3\n\n889cc2a3e06c5770ff23017aa067cd8a01b8b410e143e9da63542ead7ce484da\n\n### Additional Resources\n\n[Unit 42 research on Mirai](https://unit42.paloaltonetworks.com/tag/mirai/)\n\n**Get updates from**\n\n**Palo Alto**\n\n**Networks!**\n\nSign up to receive the latest news, cyber threat intelligence and research from us\n\n[By submitting this form, you agree to our Terms of Use and acknowledge our Privacy](https://www.paloaltonetworks.com/legal-notices/terms-of-use)\nStatement.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-08-30 - New Mirai Variant Targets WebSVN Command Injection Vulnerability (CVE-2021-32305).pdf"
+    ],
+    "report_names": [
+        "2021-08-30 - New Mirai Variant Targets WebSVN Command Injection Vulnerability (CVE-2021-32305).pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "81bd7107-6b2d-45c9-9eea-1843d4b9b308",
+            "created_at": "2022-10-25T15:50:23.320841Z",
+            "updated_at": "2025-03-27T02:00:55.441723Z",
+            "deleted_at": null,
+            "main_name": "Gamaredon Group",
+            "aliases": [
+                "Gamaredon Group",
+                "IRON TILDEN",
+                "Primitive Bear",
+                "ACTINIUM",
+                "Armageddon",
+                "Shuckworm",
+                "DEV-0157",
+                "Aqua Blizzard"
+            ],
+            "source_name": "MITRE:Gamaredon Group",
+            "tools": [
+                "QuietSieve",
+                "Pteranodon",
+                "PowerPunch"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d5156b55-5d7d-4fb2-836f-861d2e868147",
+            "created_at": "2023-01-06T13:46:38.557326Z",
+            "updated_at": "2025-03-27T02:00:02.861124Z",
+            "deleted_at": null,
+            "main_name": "Gamaredon Group",
+            "aliases": [
+                "Aqua Blizzard",
+                "Actinium",
+                "DEV-0157",
+                "Blue Otso",
+                "G0047",
+                "PRIMITIVE BEAR",
+                "Shuckworm",
+                "Trident Ursa",
+                "UAC-0010",
+                "Winterflounder",
+                "ACTINIUM",
+                "BlueAlpha",
+                "IRON TILDEN"
+            ],
+            "source_name": "MISPGALAXY:Gamaredon Group",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "61940e18-8f90-4ecc-bc06-416c54bc60f9",
+            "created_at": "2022-10-25T16:07:23.659529Z",
+            "updated_at": "2025-03-27T02:02:09.912404Z",
+            "deleted_at": null,
+            "main_name": "Gamaredon Group",
+            "aliases": [
+                "Actinium",
+                "Aqua Blizzard",
+                "Armageddon",
+                "Blue Otso",
+                "BlueAlpha",
+                "Callisto",
+                "DEV-0157",
+                "Iron Tilden",
+                "Operation STEADY#URSA",
+                "Primitive Bear",
+                "SectorC08",
+                "Shuckworm",
+                "Trident Ursa",
+                "UAC-0010",
+                "Winterflounder"
+            ],
+            "source_name": "ETDA:Gamaredon Group",
+            "tools": [
+                "Aversome infector",
+                "BoneSpy",
+                "DessertDown",
+                "DilongTrash",
+                "DinoTrain",
+                "EvilGnome",
+                "FRAUDROP",
+                "Gamaredon",
+                "GammaDrop",
+                "GammaLoad",
+                "GammaSteel",
+                "Gussdoor",
+                "ObfuBerry",
+                "ObfuMerry",
+                "PlainGnome",
+                "PowerPunch",
+                "Pteranodon",
+                "Pterodo",
+                "QuietSieve",
+                "Remote Manipulator System",
+                "Resetter",
+                "RuRAT",
+                "SUBTLE-PAWS",
+                "UltraVNC"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535869,
+    "ts_updated_at": 1743041145,
+    "ts_creation_date": 1653752251,
+    "ts_modification_date": 1653752251,
+    "files": {
+        "pdf": "https://archive.orkl.eu/e43a61ebc88991d799587be5b0273b8da351be94.pdf",
+        "text": "https://archive.orkl.eu/e43a61ebc88991d799587be5b0273b8da351be94.txt",
+        "img": "https://archive.orkl.eu/e43a61ebc88991d799587be5b0273b8da351be94.jpg"
+    }
+}

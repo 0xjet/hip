@@ -1,0 +1,280 @@
+{
+    "id": "115e83d2-4967-4063-adc6-45af18b73518",
+    "created_at": "2022-10-25T16:48:15.461547Z",
+    "updated_at": "2025-03-27T02:15:17.264459Z",
+    "deleted_at": null,
+    "sha1_hash": "cbcdd25cd8716b6c419b5ccffedf8badb525d211",
+    "title": "Macintosh HD:Users:Shared:dd:4work:Bitdefender-PR-Whitepaper-Remcos-creat5080-en_EN:Bitdefender-PR-Whitepaper-Remcos-creat5080-en_EN.indd",
+    "authors": "",
+    "file_creation_date": "2021-01-12T16:01:18Z",
+    "file_modification_date": "2021-01-12T16:01:22Z",
+    "file_size": 4687776,
+    "plain_text": "### Security\n# Remcos RAT Revisited:  A Colombian Coronavirus-Themed Campaign\n\n#### NEW CAMPAIGN USES ATTACK INFORMATION SNUCK INTO IMAGES DISTRIBUTED VIA SOCIAL NETWORKS\n\nwww.bitdefender.com\n\n\n-----\n\n## Contents\n\nSummary.........................................................................................................................................................3\nTechnical analysis..........................................................................................................................................4\nInitial access...................................................................................................................................................4\nExecution flow.................................................................................................................................................5\n\nEntry Point..............................................................................................................................................................................6Contents\n\nResolving Dependencies. Repeating Patterns in Code.................................................................................................6\n\nDecompressing Code from Resource...............................................................................................................................8\n\nProcess Injection...................................................................................................................................................................8\n\nDownloading PNG from Imgur...........................................................................................................................................9\n\nMoving with Execution to a New Buffer.........................................................................................................................10\n\nDecoding PNG File..............................................................................................................................................................10\n\nRemcos Agent.....................................................................................................................................................................12\n\nInjection into mstsc.exe and Remcos Agent Execution..............................................................................................13\n\nDefense evasion techniques........................................................................................................................14\nHosting payloads on Imgur..........................................................................................................................14\nMapping DLLs instead of conventionally loading them.............................................................................14\nCOM usage....................................................................................................................................................15\nImpact............................................................................................................................................................15\nCampaign distribution..................................................................................................................................15\nConclusion.....................................................................................................................................................16\nBibliography...................................................................................................................................................17\nMITRE techniques breakdown.....................................................................................................................17\nIndicators of Compromise............................................................................................................................18\nHashes...........................................................................................................................................................18\nC&C domain...................................................................................................................................................18\n\n**Author:**\n\n\nJános Gergő SZÉLES Senior Security Researcher@ Bitdefender\n\n\n-----\n\nRemcos RAT Revisited: A Colombian Coronavirus-Themed Campaign\n\n\n## Summary\n\nIn the late summer of 2020, the Bitdefender Active Threat Control team noticed a surge of Remcos malware, with most\nof the attacks taking place in Colombia. While the malware family has been known for quite a while to cyber-criminals\nand malware researchers alike, this new campaign captured our attention as it arrived on the victims’ computers via\nphishing e-mails related to financial services and COVID-19 information.\n\nRemcos is a remote control and surveillance software developed and distributed by an organization called Breaking\nSecurity [1][2]. Since 2017, when it first appeared on the market [3], Remcos has gained popularity among cyberattackers and even made it into the arsenal of APT actors like the Gorgon Group and APT33 [4]. As this Remote Access\nTrojan (RAT) spreads via phishing e-mails, the COVID-19 pandemic has created an ideal environment where malware\nauthors could reach and exploit even more victims than usual.\n\nOne technical peculiarity that caught our attention was the communication with Imgur, a viral image-hosting platform.\nOur analysis observed that malware authors abused the Imgur service to host malicious payloads encoded in images\n– a technique called steganography. Using image-hosting services to deploy malicious payloads opens new infection\nvectors, as such websites are generally popular and whitelisted by security solutions, so connections to them are not\nsuspicious. Moreover, by using custom steganography algorithms on the images, detecting encoded malicious payloads\nwith static detection is virtually impossible. We have already seen Remcos variants that used steganography to unpack\ncode [5], but so far, the images have been embedded in the deployed executable file, not downloaded from Imgur.\n\nIn the attack we observed, the malware used several evasion techniques to ensure its success. Among the most\ninteresting are the following:\n\n- Mapping DLLs into the address space and resolving functions in the mapped file instead of the conventional\nLoadLibrary + GetProcAddress function calls\n\n- Using COM for various functionalities\n\n- Hosting payloads on Imgur and employing a custom steganography algorithm to encode and decode data\n\n- Multiple layers of code injection to hide malicious actions behind seemingly legitimate processes\n\n- Anti-reverse-engineering tricks to force a human malware analyst to spend more time on the sample.\n\n\n-----\n\nRemcos RAT Revisited: A Colombian Coronavirus-Themed Campaign\n\n## Technical analysis\n\nThis research paper covers technical aspects of this attack, with a particular focus on the most important steps taken\nbetween the initial phishing e-mail and the final execution of the Remcos Agent.\n\n## Initial access\n\nThe malware spreads via phishing emails that reference COVID-19 or financial topcis, andembed a malicious link.\nThe carefully crafted message invites the victim to download the ZIP file by following the link and double click the\nexecutable contained. We captured a phishing mail that shows the delivery link. The e-mail poses as a message from\nthe Ministry of Health of Colombia. It states that the receiver has violated the health regulations against the prevention\nand spread of diseases and that the person is fined 936,000 pesos. Should the message convince the user, they will\nproceed with downloading and running the executable file.\n\n**Fig.1. An E-mail with a spear-phishing link**\n\nThe download link is hxxps://app[.]getresponse[.]com/click[.]html?x=a62b&lc=B7eg5s&mc=99&s=BE7A3gg&u=Qzvx**f&z=EJQbVyH& and the downloaded executable has the same name as the link’s text, so in our example’s case, it is**\n_sancion e90252gf violacion a las normas sanitarias.exe._\n\nThe e-mail headers show some inconsistencies. The mail seems to originate from prevencion-covid19.com.co, but the\nheaders reveal the original domain of the attacker, the same one that hosts the malware.\n\n\n-----\n\nRemcos RAT Revisited: A Colombian Coronavirus-Themed Campaign\n\nReply-To: <redacted>@prevencion-covid19.com.co\n\nSender:<redacted>-prevencion-covid19-com-co@getresponse-mail.com\n\nSubject: Penalizaci�n por Incumplimiento a las Normas De Bioseguridad Contra la\nPropagaci�n del (COVID-19)\n\nTo: <redacted>\n\nX-Complaints-To: abuse@getresponse-mail.com\n\nX-Original-Sender: <redacted>@prevencion-covid19.com.co\n\nX-Original-Authentication-Results: mx.google.com;\n\ndkim=pass header.i=@getresponse-mail.com header.s=k1024c header.b=CJHmqPcU;\n\nspf=pass (google.com: domain of bounce-119262801@bounce.getresponse-mail.com designates\n104.160.65.80 as permitted sender) smtp.mailfrom=bounce-119262801@bounce.getresponsemail.com\n\n## Execution flow\n\n**Fig.2. Execution flow**\n\nAt a glance, Procmon reveals that the malware performs most of its actions in a possibly injected process, extrac32.exe,\nstarted by Remcos Loader. The suspicious fact was that, with API monitoring tools, we did not observe any functions\nthat would indicate code injection into extrac32.exe. During reverse-engineering, we found the technique by which the\nmalware managed to hide this action.\n\n\n-----\n\nRemcos RAT Revisited: A Colombian Coronavirus-Themed Campaign\n\n**Fig.3. Download action from extrac32.exe**\n\nLooking at the downloaded PNG file, we can identify a block of pixels that seems out of order. This first block contains\nhidden code, but no standard steganography tool can extract anything from the image.\n\n**Fig.4. Downloaded PNG with steganography**\n\nIn the following pages, we will walk you through the behavior of the malware from execution until the Remcos Agent\ngets to run on the system.\n\n#### Entry Point\n\nWe found a piece of code that loads the string “extrac32.exe” and decrypts the download URL and stores it on the\nstack.\n\n**Fig.5. The string “extrac32.exe” used in code**\n\n**Fig.6. At the end of the function call, the Imgur link appears on the stack**\n\n#### Resolving Dependencies. Repeating Patterns in Code.\n\nAfter the URL is decrypted, the malware calls a function that has ~1,000 lines when decompiled, full of anti-static analysis tricks, but also features some repeating patterns. With static analysis alone, it would be impossible to deduce which\nfunctions are resolved by Remcos Loader There are also no conventional calls to APIs as the malware uses various\n\n\n-----\n\nRemcos RAT Revisited: A Colombian Coronavirus-Themed Campaign\n\nfunction wrappers with parameters in a different order than in the API’s header.\n\nRight at the beginning of the function, the malware searches for the Image Base of both ntdll.dll and kernel32.dll. The locations are obtained from the PEB of the current process from the loaded modules list. Then, to resolve its dependencies,\nthe code calls a function that walks over the exports of the previously found DLLs and searches for function addresses\nbased on the hash provided in the argument. We named this function GetProcAddress_functionality. The returned values\nare addresses of the resolved functions, and they are stored in local variables as function pointers. This pattern of resolving functions by hash repeats throughout the execution of the malware, even in injected code, and it allows the malware\nto hide its functionality from reverse-engineers and automatic tools that parse dependencies because the import table\nof the malicious executable is limited to a few default functions.\n\n**Fig. 7. Resolving dependencies with GetProcAddress_functionality**\n\nAnother pattern in this function is the way it displays some integer numbers in the debugger console by calling DbgPrint\nto mark the progress of the injection. The author of the loader might have used these messages for debugging purposes.\n\n**Fig. 8. Repeatedly calling displayDebugInt that calls DbgPrint**\n\nGoing deeper into the function, we observed why API monitoring failed to give us information about code injection. The\nmalware evades detection based on user-mode API hooking by mapping ntdll.dll and kernel32.dll in its address space,\nobtaining the addresses of functions in the mapping, and executing the code directly with the help of a wrapper function\nthat we named function_caller.\n\n**Fig. 9. Mapping ntdll.dll in memory and identifying function offset in the mapping**\n\n\n-----\n\nRemcos RAT Revisited: A Colombian Coronavirus-Themed Campaign\n\n**Fig. 10. Calling the function wrapper which executes code in the mapping**\n\n#### Decompressing Code from Resource\n\nAfter resolving the required functions and obtaining their addresses in the mapping, the malware decompresses a buffer\nof code from a resource.\n\n**Fig. 11. Decompressing the code which will be injected**\n\n#### Process Injection\n\nFor the process injection to occur, the malware creates the victim process as suspended first.\n\n**Fig. 12. Calling CreateProcessW to create a suspended process**\n\nIt then writes the decompressed code along with the Imgur link (received in first argument a1) and another memory\nbuffer in the victim process.\n\n**Fig. 13. Code Injection**\n\n**Achieving Execution in First Victim**\n\nNext, the malware makes sure it achieves execution in the victim process. To do this, it first creates a new section that\nwill contain a trampoline to the injected code.\n\n**Fig. 14. Creating a new section for the trampoline**\n\nThen, it sets the instruction pointer of the victim process to point to the trampoline in the new section with the help of\n_NtSetContextThread. Finally, it makes the new section executable (NtProtectVirtualMemory) and resumes the main thread_\nof the victim process.\n\n**Fig. 15. Making the new region executable and resuming the thread**\n\n**Execution in extrac32.exe**\n\nFrom this point onward, the execution moves into extrac32.exe starting with the trampoline previously written in its mem\n\n-----\n\nRemcos RAT Revisited: A Colombian Coronavirus-Themed Campaign\n\n**Fig. 16. Trampoline which jumps to the injected code**\n\nIf we follow this jump, we get to a function responsible for downloading the PNG file and decoding the data from it. First,\nit resolves some function pointers (LoadLibrary, swprintf, CoCreateInstance, etc.) in the same manner as we have seen in\nthe parent process.\n\n**Fig. 17. Resolving dependencies in the injected code with the same GetProcAddress_functionality**\n\n#### Downloading PNG from Imgur\n\nExecution then lands at a piece of code that downloads a file from the link injected before.\n\n**Fig. 18. Download function**\n\nThere are two download attempts for redundancy. The first one is evasive, and it tries to download the file via the BITS\n(Background Intelligent Transfer System) COM object. If this fails, a more traditional approach is used, with the help of\nfunctions from wininet.dll.\n\nIn the BITS download function we have identified that the COM object with CLSID _{4991d34b-80a1-4291-83b6-_\n_3328366b9097} is instantiated. The CLSID corresponds to BITS class 1.0, capable of downloading files from the internet._\nThen, we have identified the interface {5CE34C0D-0DC9-4C1F-897C-DAA1B78CEE7C} which stands for IBackgroundCopy_Manager, capable of instantiating download jobs and tracking their progress. After completing the structures in IDA, the_\nfunction reveals itself.\n\n\n-----\n\nRemcos RAT Revisited: A Colombian Coronavirus-Themed Campaign\n\n**Fig. 19. Download with BITS**\n\n#### Moving with Execution to a New Buffer\n\nAfter the download finishes, the execution moves to a newly allocated buffer, where a piece of the injected code was\ncopied. This is yet another anti-reverse trick that makes code that is hard to track in static analysis.\n\n**Fig. 20. Allocating new buffer and copying a part of the code**\n\nIn this new buffer, the malware obtains function pointers in every function the way it did in the parent process, with the\nhelp of the hashes of function names. First, it opens the PNG file:\n\n**Fig. 21. Resolving CreateFileA and opening the PNG file**\n\n##### Decoding PNG File\n\nThe decoding step starts with the allocation of a buffer big enough to fit the whole file in it and calls a function that is\nresponsible for decoding the data from the PNG file.\n\n\n-----\n\nRemcos RAT Revisited: A Colombian Coronavirus-Themed Campaign\n\n**Fig. 22. Allocating result buffer and decoding steganography**\n\nIn the decode function, the malware reads the contents of the PNG file, parses the headers of the PNG to obtain metadata, then reads the first IDAT chunk that contains the steganography data. The malware builds a compressed buffer by\nreading the PNG sequentially and taking the three least significant bits for each pixel, placing the resulting values in the\nresulting buffer in a “shuffled” place with the help of a small lookup table defined at the start of the function.\n\n**Fig. 23. Lookup table for placing bytes**\n\n**Fig. 24. Taking 3 LSB and storing in a buffer**\n\n\n-----\n\nRemcos RAT Revisited: A Colombian Coronavirus-Themed Campaign\n\n**Fig. 25. Resulting compressed buffer**\n\nIn the following steps, the code allocates a buffer big enough to contain the result, and it unpacks the packed data. From\nthe resulting buffer, we can recognize two process names: regsvr.exe and mstsc.exe followed by an MZPE.\n\n**Fig. 26. Unpacked buffer containing Remcos Agent**\n\n#### Remcos Agent\n\nThe MZPE is identifiable as Remcos Agent from its embedded strings. It is version 2.5.1 Pro (released on 5th July\n2020) and has the hash 576B290CCD3E5B9C172793F46E2E02F1.\n```\n* BreakingSecurity.Net\n* Remcos v 2.5.1 Pro\n\n```\nThe malware takes its configurations from an embedded resource called RCData, which is encrypted with RC4. After the\nmalware decrypts this buffer, we can see the C&C to which it connects, along with the name of the folder where it will\nsave data. The C&C domain is chasefre[.]chasefre[.]pics\n\n\n-----\n\nRemcos RAT Revisited: A Colombian Coronavirus-Themed Campaign\n\n**Fig. 27. Remcos Agent config, containing the C&C**\n\nRemcos has all its functionalities documented on the company’s website [2], the core commands being:\n\n**Command Name** **Description**\n\nClipboarddata Getclipboard SetclipClipboard operations\nboard Emptyclipboard\n\ndeletefile Delete file\n\nDownload a file from a specified URL and execute it on an infected\ndownloadfromurltofile\nsystem\n\nexeccom Execute a shell command\n\nfilemgr File manager\n\ngetproclist Obtain a list of the running processes\n\ninitremscript Execute remote script from C&C\n\nkeyinput Keylogger\n\nmsgbox Display a message box on an infected system\n\nopenaddress Open a specified website\n\nOSpower Shutdown, restart, sleep operations\n\nping Ping an infected system\n\nprockill Kill a specific process\n\nregopened  regcreatekey regeditval regAdd, edit, rename or delete registry values and keys\ndelkey  regdelval  regopen   initregedit\n\nscrcap Screen capture\n\nsendfiledata Upload data to C&C server\n\nuninstall Uninstall itself from an infected system\n\n#### Injection into mstsc.exe and Remcos Agent Execution\n\nFinally, the extrac32.exe process starts mstsc.exe and injects the Remcos Agent binary into it to achieve execution.\nThe malicious payload checks if persistence is already present on the system and, if not, it makes a copy of the original\nmalware into \\AppData\\Roaming\\Microsoft\\regsvr.exe, creates a shortcut file that launches it and schedules a task to\nexecute it periodically by writing a .job file in C:\\Windows\\Tasks\\. The file operations are not done by conventional calls to\n_WriteFile, but by using COM objects for filesystem interaction._\n\n\n-----\n\nRemcos RAT Revisited: A Colombian Coronavirus-Themed Campaign\n\n**Fig. 28. Persistence check**\n\n**Fig. 29. Writing .job file to schedule task**\n\nAfter achieving persistence, it periodically checks after some malware-specific settings, which appeared in the decrypted\nconfigurations as well, and it dumps data in a log file in \\AppData\\Roaming\\frepink\\logs.dat. This file is encoded to hide\ncontents from reverse-engineers.\n\n**Fig. 30. Checking the registry keys provided in the config**\n\n**Fig. 31. Writing collected data in file**\n\n## Defense evasion techniques\n\nRemcos is a well-known RAT, detectable by most AVs. Therefore, attackers need to use various defense evasion techniques to deliver payloads and achieve execution. The attack we observed contains some interesting techniques to\nmention.\n\n## Hosting payloads on Imgur\n\nEncoding code with steganography into images and hosting them on Imgur creates opportunities for attackers to bypass security checks. Image-hosting platforms are legitimate, and connections to these websites do not raise suspicion.\nMoreover, using a custom steganography algorithm makes it challenging to add static detection on images that may\nhost malicious payloads.\n\n## Mapping DLLs instead of conventionally loading them\n\nThe malware tries to keep its number of imported functions at a bare minimum to avoid giving malware analysts and\nautomatic tools hints about its behavior. Instead, it resolves dependencies during run-time. However, it does not call\n_LoadLibrary to load a DLL and GetProcAddress to search for a specific function, as this would allow API monitoring tools_\nand user-mode hooking to identify function calls. The chosen approach is to create a file mapping for the required DLL,\nmake the memory region executable, and search for a function based on the hash of the function’s name. This way, the\nmalware can call the needed API from a memory region that is outside the PEB’s loaded module list, and therefore undetectable by user-mode hooking.\n\n\n-----\n\nRemcos RAT Revisited: A Colombian Coronavirus-Themed Campaign\n\n## COM usage\n\nIt has recently become popular in malware to use COM objects to interact with the operating system. Since COM performs actions outside of the context of the calling process, it is challenging to detect them. Remcos uses the BITS COM\nobject to download the PNG from Imgur and the FileOperation interface to create a copy of the original executable into \\\n_AppData\\Roaming\\Microsoft\\regsvr.exe_\n\n## Impact\n\nJust like any Remote Access Trojan, Remcos generally runs on the system without the user’s knowledge and allows attackers to collect files from the computer, record the screen, microphone, and camera, and even execute other pieces of\nmalware. With so many evasion techniques, Remcos is hard to observe on the system once it runs. The most important\ndefensive actions a user can take are to avoid opening links in suspicious e-mails, watch out for anything that seems odd,\nand avoid executing .exe files downloaded from untrusted links.\n\n## Campaign distribution\n\nWe noticed this strain of Remcos originating from various cities in Colombia. Most of the detections originate from Bogotá, while the rest are scattered around the region.\n\n\n-----\n\nRemcos RAT Revisited: A Colombian Coronavirus-Themed Campaign\n\n**Fig. 32. Heatmap of detections in Colombia**\n\n**City** **Unique IP Count**\n\nBogotá 171\n\nMedellín 65\n\nSantiago de Cali 17\n\nChia 7\n\nBarranquilla 7\n\nBucaramanga 4\n\nIbague 4\n\nFloridablanca 3\n\nCúcuta 3\n\nOcaña 2\n\nSanta Marta 2\n\nTunja 2\n\nSogamoso 2\n\nBarrancabermeja 2\n\nCartagena 1\n\nSanta Rosa del Sur 1\n\nVillavicencio 1\n\nDuitama 1\n\nRionegro 1\n\nManizales 1\n\nFacatativá 1\n\nBuenaventura 1\n\nValledupar 1\n\nPalmira 1\n\nItaguei 1\n\nChinchina 1\n\nBuenavista 1\n\nYopal 1\n\nLa Calera 1\n\nFlorencia 1\n\nPitalito 1\n\nMontería 1\n\nLos Patios 1\n\nBello 1\n## Conclusion\n\nThe COVID-19 pandemic offered a new environment in which cybercriminals can exploit users’ curiosity with phishing\ne-mails. In such an ecosystem, malware like Remcos can infect lots of computers, and attackers constantly improve\ntheir techniques to reach even more victims.\n\nIn this campaign targeting Colombian users, the attackers delivered their payload encoded in images with steganography and hosted on Imgur. They also used techniques to evade static and dynamic detection by manually resolving the\nmalware’s dependencies and by using COM objects to interact with the operating system. The malware also ensured\nits persistence on the infected system with scheduled tasks and shortcut files placed in the Startup directory. Remcos, like any other RAT, can exfiltrate information from the victim’s computer and run other malware at the attacker’s\ndemand.\n\nThe most efficient way to defend against such threats is to raise awareness about phishing e-mails and to avoid running executable files originating from suspicious sources.\n\n|City|Unique IP Count|\n|---|---|\n|Bogotá|171|\n|Medellín|65|\n|Santiago de Cali|17|\n|Chia|7|\n|Barranquilla|7|\n|Bucaramanga|4|\n|Ibague|4|\n|Floridablanca|3|\n|Cúcuta|3|\n|Ocaña|2|\n|Santa Marta|2|\n|Tunja|2|\n|Sogamoso|2|\n|Barrancabermeja|2|\n|Cartagena|1|\n|Santa Rosa del Sur|1|\n|Villavicencio|1|\n|Duitama|1|\n|Rionegro|1|\n|Manizales|1|\n|Facatativá|1|\n|Buenaventura|1|\n|Valledupar|1|\n|Palmira|1|\n|Itaguei|1|\n|Chinchina|1|\n|Buenavista|1|\n|Yopal|1|\n|La Calera|1|\n|Florencia|1|\n|Pitalito|1|\n|Montería|1|\n|Los Patios|1|\n|Bello|1|\n\n\n-----\n\nRemcos RAT Revisited: A Colombian Coronavirus-Themed Campaign\n\n## Bibliography\n\n[1] https://attack.mitre.org/software/S0332/\n\n[2] https://breaking-security.net/remcos/, https://breaking-security.net/wp-content/uploads/dlm_uploads/2018/07/\nRemcos-Instructions-Manual-rev17.pdf\n\n[2] https://www.fortinet.com/blog/threat-research/remcos-a-new-rat-in-the-wild-2\n\n[3] https://unit42.paloaltonetworks.com/unit42-gorgon-group-slithering-nation-state-cybercrime/\n\n[4] https://malware.news/t/remcos-rat-matroska-like-file-execution/36276\n\n## MITRE techniques breakdown\n\n|Initial Access|Execution|Persistence|Defense Evasion|Collection|\n|---|---|---|---|---|\n|Phishing: Spearphishing Link|Scheduled Task/Job: Scheduled Task|Scheduled Task/Job: Scheduled Task|BITS Jobs|Audio Capture|\n||User Execution: Mali- cious File|Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder|Obfuscated Files or Information: Steganog- raphy|Clipboard Data|\n||||Process Injection: Thread Execution Hi- jacking|Input Capture: Keylog- ging|\n||||Process Injection: Porta- ble Executable Injection|Screen Capture|\n|||||Video Capture|\n\n\n-----\n\nRemcos RAT Revisited: A Colombian Coronavirus-Themed Campaign\n\n## Indicators of Compromise\n\n Hashes\n\n\n9751e6f12b24bdad7d2117f2c7020ade\nc8812dea8359f0571a7a521555f6137b\n00fab7f57f73de1674add42371ed4340\n9ad91ac861bd26a641fa1fe15b1d5f01\n586aa60c78951b25defba589401c2174\nb21cf79417a5261253785ffe8b0baa39\n8f04f9bbc5183961a2af1e015a4f326e\n62f99deef7bff208ef33e7175ba976a4\n2acbfbd0b6c407fb3c7a0cc5c7a39d77\n58400a2b2975c50e9f2d27aa22aeceed\n8701cbe86982a1c6d04b177732df16bc\n931ca95414349919998757f4ba2137b1\n29f75d75e2c9732222cefc17598491b8\n8768d2b0bbead95202f82306c351bb04\nbd480943a64a5f2ebf14bca30d7b74d9\nc23032a02c86bdf850be046a111933c9\n24075ad898cb5a3ca2a4d3a04c755075\n8d6e8a43513d71092ba4d077bb57299c\n24953d1a545b6139417382036b8fdd48\ne39f56b84501f3b0c2eeb214c7426993\nbad4d901ab3590fbcfe07a764f01b663\n574e5bb98b3fb186f9e009fd2b654d1b\nc5dd9a4b30b0510f0f637e2bb20ff13e\n94270d5fe5827cdb9f25a8c6d1280df5\n6d0190cc7714b3cdf7f43b7a59d3abdd\na51978f4e9ef5d04358e16f3ca160b3a\n879ff585f0976df2eb099614222fdbfb\ndfeb455b3878c3920585faf5d0da5a68\ncc722e903b29275c81bc8cc4c5ba7582\n7de84434250d80b048a7aa70618caade\n\n## C&C domain\n\n**chasefre[.]chasefre[.]pics**\n\n\n51e63285ada982262b89eff033caf239\n8cf44952e574fc426cad06b4029b5c8f\n1aba42a1af152852dfc8c1091253a5f5\n8cc83c95194f03af1f76378d79ad4809\n3db5cd752a237d821789a3c4915f3b81\n6acf97a698c003f9f9f9ea1d220a8650\nd295ab15e8689727c79bdefae41dfa53\n70f15f656363ff2966eb1c7fdd4001e7\n68f96be42d45e549efe42ae00220d167\n8d10c9c606cb53adf7291d91da414526\nf7e8af73e25b7f01a1b54aad37c7ac71\n431bf295cfa0bebec5bdfd25f7aa1003\n6b9e4cac8fb1f2a53060bc591457925c\nb4eaeacdc6b98e632d69c37463a1537a\n51378f5f8eeb405c3219beb6afdf4db9\n84f6c94adbb2ddc4fee92ae06576906e\n5f8c8a1f889908fca0b1c0a225349c7d\n084392f38c3cc2b9d44a08f230031720\n28d04f80e35e0360f2cbf3c0161595ce\nd65cf6d2df9abf45894a07a0a526675b\nad258cdcb627ec39da06d596eafa345b\n89ad81614f311ea176e0a28d4014f1a1\naf9913f05a836f8b9975225228885909\n6fa4894d46e9fbee4aa1e8a48304acd5\na5a038dfa4cfc0bdd944ccbd3dfa63ac\nc4310d5520178204e3b0976c871a0389\ne85b8ba78e6ed6a43b803b0de65003c1\nc7bb02bb4b6ce2e88ba2a3add862caf1\necd1ac22ad1376f5ec4e493291a31c1e\n\n\n-----\n\nRemcos RAT Revisited: A Colombian Coronavirus-Themed Campaign\n\n\n-----\n\nRemcos RAT Revisited: A Colombian Coronavirus-Themed Campaign\n\n\n-----\n\nRemcos RAT Revisited: A Colombian Coronavirus-Themed Campaign\n\n\n-----\n\n#### Proudly Serving Our Customers Dedicated To Our +20.000 Worldwide Partners\nBitdefender provides solutions and services for small business and A channel-exclusive vendor, Bitdefender is proud to share success with tens of\nmedium enterprises, service providers and technology integrators. We take thousands of resellers and distributors worldwide.\npride in the trust that enterprises such as Mentor, Honeywell, Yamaha,\n**Speedway, Esurance or Safe Systems place in us.** _CRN 5-Star Partner, 4th Year in a Row. Recognized on CRN’s Security 100 List. CRN Cloud_\n\n_Partner, 2nd year in a Row_\n\n_Leader in Forrester’s inaugural Wave™ for Cloud Workload Security_\n\n_More MSP-integrated solutions than any other security vendor_\n\n_NSS Labs “Recommended” Rating in the NSS Labs AEP Group Test_\n\n_3 Bitdefender Partner Programs - to enable all our partners – resellers, service providers_\n\n_SC Media Industry Innovator Award for Hypervisor Introspection, 2nd Year in_ _and hybrid partners – to focus on selling Bitdefender solutions that match their own_\n_a Row_ _specializations_\n\n_Gartner® Representative Vendor of Cloud-Workload Protection Platforms_\n\n#### Trusted Security Authority\nBitdefender is a proud technology alliance partner to major virtualization vendors, directly contributing to the development of secure ecosystems with\n**VMware, Nutanix, Citrix, Linux Foundation, Microsoft, AWS, and Pivotal.**\n\nThrough its leading forensics team, Bitdefender is also actively engaged in countering international cybercrime together with major law enforcement agencies\nsuch as FBI and Europol, in initiatives such as NoMoreRansom and TechAccord, as well as the takedown of black markets such as Hansa. Starting in 2019,\nBitdefender is also a proudly appointed CVE Numbering Authority in MITRE Partnership.\n\n**RECOGNIZED BY LEADING ANALYSTS AND INDEPENDENT TESTING ORGANIZATIONS** **TECHNOLOGY ALLIANCES**\n\n#### UNDER THE SIGN OF THE WOLF\n\n**Founded 2001, Romania** A trade of brilliance, data security is an industry where only the clearest view, sharpest mind and deepest insight can\n**Number of employees 1800+** win — a game with zero margin of error. Our job is to win every single time, one thousand times out of one thousand,\n\nand one million times out of one million.\n\n**Headquarters**\nEnterprise HQ – Santa Clara, CA, United States And we do. We outsmart the industry not only by having the clearest view, the sharpest mind and the deepest insight,\nTechnology HQ – Bucharest, Romania but by staying one step ahead of everybody else, be they black hats or fellow security experts. The brilliance of our\n\ncollective mind is like a luminous Dragon-Wolf on your side, powered by engineered intuition, created to guard against\n\n**WORLDWIDE OFFICES** all dangers hidden in the arcane intricacies of the digital realm.\n**USA & Canada: Ft. Lauderdale, FL | Santa Clara, CA | San Antonio, TX |**\nToronto, CA This brilliance is our superpower and we put it at the core of all our game-changing products and solutions.\n**Europe: Copenhagen, DENMARK | Paris, FRANCE | München, GERMANY**\n| Milan, ITALY | Bucharest, Iasi, Cluj, Timisoara, ROMANIA | Barcelona,\nSPAIN | Dubai, UAE | London, UK | Hague, NETHERLANDS\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "bf5be533-fa31-4590-ae37-5761c97ffa34",
+            "created_at": "2022-10-25T16:13:58.389257Z",
+            "updated_at": "2022-10-25T16:13:58.389257Z",
+            "deleted_at": null,
+            "name": "Malpedia",
+            "url": "https://malpedia.caad.fkie.fraunhofer.de",
+            "description": "Malpedia is a free service offered by Fraunhofer FKIE",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://www.bitdefender.com/files/News/CaseStudies/study/390/Bitdefender-PR-Whitepaper-Remcos-creat5080-en-EN-GenericUse.pdf"
+    ],
+    "report_names": [
+        "Bitdefender-PR-Whitepaper-Remcos-creat5080-en-EN-GenericUse.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "6c4e4b91-1f98-49e2-90e6-435cea8d3d53",
+            "created_at": "2022-10-25T16:07:23.693797Z",
+            "updated_at": "2025-03-27T02:02:09.924056Z",
+            "deleted_at": null,
+            "main_name": "Gorgon Group",
+            "aliases": [
+                "ATK 92",
+                "Pasty Draco",
+                "Subaat",
+                "TAG-CR5"
+            ],
+            "source_name": "ETDA:Gorgon Group",
+            "tools": [
+                "AgenTesla",
+                "Agent Tesla",
+                "AgentTesla",
+                "Atros2.CKPN",
+                "Bladabindi",
+                "CinaRAT",
+                "Crimson RAT",
+                "ForeIT",
+                "Jorik",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "Loki",
+                "Loki.Rat",
+                "LokiBot",
+                "LokiPWS",
+                "MSIL",
+                "MSIL/Crimson",
+                "Nancrat",
+                "NanoCore",
+                "NanoCore RAT",
+                "Negasteal",
+                "NetWeird",
+                "NetWire",
+                "NetWire RAT",
+                "NetWire RC",
+                "NetWired RC",
+                "Origin Logger",
+                "Quasar RAT",
+                "QuasarRAT",
+                "Recam",
+                "Remcos",
+                "RemcosRAT",
+                "Remvio",
+                "Revenge RAT",
+                "RevengeRAT",
+                "Revetrat",
+                "SEEDOOR",
+                "Scarimson",
+                "Socmer",
+                "Yggdrasil",
+                "ZPAQ",
+                "Zurten",
+                "njRAT"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "b23e717c-0b27-47e0-b3c8-4defe6dd857f",
+            "created_at": "2023-01-06T13:46:38.367369Z",
+            "updated_at": "2025-03-27T02:00:02.815758Z",
+            "deleted_at": null,
+            "main_name": "APT33",
+            "aliases": [
+                "ATK35",
+                "Peach Sandstorm",
+                "TA451",
+                "APT 33",
+                "Elfin",
+                "Refined Kitten",
+                "MAGNALLIUM",
+                "HOLMIUM",
+                "COBALT TRINITY",
+                "G0064"
+            ],
+            "source_name": "MISPGALAXY:APT33",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "66fc98f4-8978-401e-9b73-81c3d5f1e44c",
+            "created_at": "2024-05-01T02:03:08.050109Z",
+            "updated_at": "2025-03-27T02:05:17.327953Z",
+            "deleted_at": null,
+            "main_name": "COPPER FIELDSTONE",
+            "aliases": [
+                "Gorgon Group",
+                "Green Havildar ",
+                "Mythic Leopard ",
+                "Operation C-Major ",
+                "Operation Transparent Tribe ",
+                "Pasty Draco ",
+                "ProjectM ",
+                "Storm-0156 ",
+                "APT36 "
+            ],
+            "source_name": "Secureworks:COPPER FIELDSTONE",
+            "tools": [
+                " DarkComet",
+                " LuminosityLink",
+                " Peppy",
+                " njRAT",
+                "Crimson RAT"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "9fe49a5b-f3e6-4fbf-99a1-db15dad460c3",
+            "created_at": "2024-05-01T02:03:08.045004Z",
+            "updated_at": "2025-03-27T02:05:17.325038Z",
+            "deleted_at": null,
+            "main_name": "COBALT TRINITY",
+            "aliases": [
+                "Elfin ",
+                "HOLMIUM ",
+                "MAGNALIUM ",
+                "Peach Sandstorm ",
+                "Refined Kitten ",
+                "TA451 ",
+                "APT33 "
+            ],
+            "source_name": "Secureworks:COBALT TRINITY",
+            "tools": [
+                " Cadlotcorg",
+                " Dello RAT",
+                " Imminent Monitor",
+                " KDALogger",
+                " Koadic",
+                " NanoCore",
+                " NetWire",
+                " POWERTON",
+                " PoshC2",
+                " Poylog",
+                " PupyRAT",
+                " Schoolbag",
+                "AutoCore"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "18278778-fa63-4a9a-8988-4d266b8c5c1a",
+            "created_at": "2023-01-06T13:46:38.769816Z",
+            "updated_at": "2025-03-27T02:00:02.914024Z",
+            "deleted_at": null,
+            "main_name": "The Gorgon Group",
+            "aliases": [
+                "ATK92",
+                "G0078",
+                "Pasty Gemini",
+                "Gorgon Group",
+                "Subaat"
+            ],
+            "source_name": "MISPGALAXY:The Gorgon Group",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "97fdaf9f-cae1-4ccc-abe2-76e5cbc0febd",
+            "created_at": "2022-10-25T15:50:23.296989Z",
+            "updated_at": "2025-03-27T02:00:55.432751Z",
+            "deleted_at": null,
+            "main_name": "Gorgon Group",
+            "aliases": [
+                "Gorgon Group"
+            ],
+            "source_name": "MITRE:Gorgon Group",
+            "tools": [
+                "NanoCore",
+                "QuasarRAT",
+                "Remcos",
+                "njRAT"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "e5ff825b-0456-4013-b90a-971b93def74a",
+            "created_at": "2022-10-25T15:50:23.824058Z",
+            "updated_at": "2025-03-27T02:00:55.553346Z",
+            "deleted_at": null,
+            "main_name": "APT33",
+            "aliases": [
+                "APT33",
+                "HOLMIUM",
+                "Elfin",
+                "Peach Sandstorm"
+            ],
+            "source_name": "MITRE:APT33",
+            "tools": [
+                "PowerSploit",
+                "AutoIt backdoor",
+                "PoshC2",
+                "Mimikatz",
+                "NanoCore",
+                "DEADWOOD",
+                "StoneDrill",
+                "POWERTON",
+                "LaZagne",
+                "TURNEDUP",
+                "NETWIRE",
+                "Pupy",
+                "ftp",
+                "Shamoon"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716495,
+    "ts_updated_at": 1743041717,
+    "ts_creation_date": 1610467278,
+    "ts_modification_date": 1610467282,
+    "files": {
+        "pdf": "https://archive.orkl.eu/cbcdd25cd8716b6c419b5ccffedf8badb525d211.pdf",
+        "text": "https://archive.orkl.eu/cbcdd25cd8716b6c419b5ccffedf8badb525d211.txt",
+        "img": "https://archive.orkl.eu/cbcdd25cd8716b6c419b5ccffedf8badb525d211.jpg"
+    }
+}

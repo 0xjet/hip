@@ -1,0 +1,171 @@
+{
+    "id": "4da11a54-fd2b-44d0-902f-fd9b764119cf",
+    "created_at": "2023-01-12T15:02:13.495212Z",
+    "updated_at": "2025-03-27T02:13:58.349604Z",
+    "deleted_at": null,
+    "sha1_hash": "7cd62381de2490a85e1510d45241e3e1e1b2393d",
+    "title": "2021-07-30 - Detecting TA551 domains",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:09:01Z",
+    "file_modification_date": "2022-05-28T19:09:01Z",
+    "file_size": 2800495,
+    "plain_text": "# Recent Posts\n\n**threatresearch.ext.hp.com/detecting-ta551-domains/**\n\n[HP Threat Research Blog • Detecting TA551 domains](https://threatresearch.ext.hp.com/blog/)\n\n## Detecting TA551 domains\n\n Executive Summary\n\n\nJuly 30, 2021\n\n\nTA551 are an active threat group known for distributing high volumes of malicious\nspam (malspam) that deliver different families of malware.\nUsing a TA551 campaign delivering Ursnif as an example, we describe a typical\ninfection chain, and explore potential detection opportunities, such as monitoring\nprocess chains or file masquerading.\nWe propose a different detection method based on identifying patterns in the domains\nregistered TA551 domains, and share our evaluation of over 500 TA551 domains from\nthe last year.\nOur domain detection method identified 207 potential newly-registered TA551 domains\nover a four month period.\n\n## Who are TA551?\n\n\n-----\n\n[TA551, also known as Shathak, is a threat group responsible for distributing high volumes of](https://apt.thaicert.or.th/cgi-bin/showcard.cgi?g=TA551%2C%20Shathak&n=1)\nmalspam. Their emails contain password-protected ZIP attachments, with the password\ninside the body of the email. Each archive contains a Word document, which runs a\nmalicious Visual Basic for Applications (VBA) AutoOpen macro. The macro initiates a web\ndownload, which saves and runs a designated malware payload.\n\nSince the beginning of 2019, TA551 have been observed distributing malware families\nincluding Ursnif, Valak, IcedID, and Qakbot. Additional information about how these families\n[are distributed have been documented extensively by Palo Alto Networks. TA551 are very](https://unit42.paloaltonetworks.com/valak-evolution/)\nactive, running several campaigns with new download domains practically every week.\nFigure 1 shows the dates in second half of 2020 when new download domains were\nregistered, each of which roughly corresponds to one malspam campaign.\n\nFigure 1 – TA551 download domain registration timeline.\n\n## TA551 attack lifecycle\n\n[A recent TA551 campaign isolated by HP Wolf Security had the following infection chain. The](https://hp.com/wolf)\nuser opens the Word document received by email and enables macro execution, triggering\nthe download of an Ursnif dynamic link library (DLL) from a remote server, which is then run\non the infected host.\n\nThe macro creates an HTML Application (.HTA) file in the Public user directory, and then\nruns it Windows Explorer (explorer.exe). Windows Explorer runs the file using the configured\nhandler for .HTA files, which is by default mshta.exe. The HTA file contains obfuscated\nJavaScript, which initiates the download of a DLL and then causes it to be executed with\nregsvr32.exe.\n\n\n-----\n\nFigure 2 – Ursnif infection chain isolated by HP Wolf Security.\n\nLooking at the VBA code, you will notice that it is slightly obfuscated to defeat detection logic\nthat relies on process command-line keyword matching. Specifically, the download path of\n[the HTA file is reversed using the StrReverse function.](https://docs.microsoft.com/en-us/office/vba/language/reference/user-interface-help/strreverse-function)\n\nFigure 3 – VBA excerpt from a TA551 downloader document.\n\nAlthough the default file handler for HTA files is mshta.exe, if the association is changed to\nanother program in the Windows Registry (e.g. notepad.exe), the infection chain can break.\n\n\n-----\n\nFigure 4 – HTA program association in the Windows Registry.\n\nAssuming the HTA file is run with mshta.exe, this then executes the JavaScript code inside\nthe file. This is similarly obfuscated using string reversal like the file path in the VBA macro.\nThe only difference is that the JavaScript code is also Base64 encoded. Figure 5 shows the\nobfuscated JavaScript in the HTA file.\n\nFigure 5 – Obfuscated JavaScript in the HTA file.\n\n\n-----\n\nThe code downloads the Ursnif DLL to the Public user folder with a .JPG file extension,\nwhich is run using regsvr32.exe. At this point, the chain of infection of TA551 ends. From\nhere on, the delivered payload is executed, which can be a different malware family\ndepending on the campaign.\n\nFigure 6 – HTTP GET request showing the download of Ursnif from a domain registered by\nTA551.\n\n## Exploring detection opportunities\n\nThere are several opportunities to detect the TA551 infection chain. In an ideal world, the\n[email with the malicious attachment would be intercepted, meaning it never reaches the](https://attack.mitre.org/techniques/T1566/001/)\nrecipient’s inbox. However, because the attachments are encrypted ZIP files, email gateway\nscanners cannot scan the attachment without the password.\n\nIf the email reaches a user’s inbox and they open the document, another opportunity lies in\nlooking at the executed process chain and parent-child relationships. Namely, is there a\n[legitimate scenario that Microsoft Word would execute mshta.exe? Is there a non-malicious](https://attack.mitre.org/techniques/T1218/005/)\n[use case where mshta.exe executes regsvr32.exe? If this is not the case, you can write](https://attack.mitre.org/techniques/T1218/010/)\ndetection logic to flag this behaviour for investigation.\n\nIf the malware manages to download the payload using mshta.exe, there are still more ways\nto detect the malware. There’s the opportunity to detect the malicious traffic using a network\nintrusion detection system (NIDS). The Ursnif payload is downloaded across the network\nwith a .JPG file extension, indicating that the file is an image, but is in fact a DLL. By\ninspecting the expected magic bytes of the file, network defenders can detect this file type\nmasquerading.\n\nThe disadvantage of these detection opportunities is that they occur after the malware\ncampaign has started, far into the attack lifecycle. So, we decided to see if it is possible to\ndetect new TA551 domains before they are used in malspam campaigns. Since this\ndetection is not based on an ongoing campaign, this approach can be used by organisations\nto detect and pre-emptively block domains used by TA551.\n\n## TA551 domain registration patterns\n\n\n-----\n\n[Unlike with Dridex, whose distributors have been observed hosting the malware on](https://threatresearch.ext.hp.com/dridex-malicious-document-analysis-automating-the-extraction-of-payload-urls/)\ncompromised web servers, TA551 registers new domains that are used for hosting payloads.\nThe domains follow a pattern and can therefore be detected. To find patterns in how TA511\nregisters their domains, we analysed a dataset of approximately 500 known TA551 domains\nfrom July 2020 to December 2020. This data came from public IOCs published by Palo Alto\nNetworks. We focused on four attributes of the domains, looking for patterns:\n\nDomain name\nRegistrar\nDNS service provider\nTLS certificate\n\nEvaluating these attributes led to the findings described below.\n\n### Domain names\n\nThe domain names used by TA551 look similar and yet they are not so easy to unify. They\nconsist of random letters and numbers and usually do not contain words. One thing that\nTA551 domains have in common is that they use the .com top-level domain (TLD). Despite\nthe apparent randomness, a few patterns can be found in the domain names of certain\ncampaigns. The campaigns from 27 October to 19 November all used domain names\ncontaining four-digit numbers. After that, until 30 November, a minus sign (-) was used as\nwell as a four-digit number.\n\nFrom 30 November to 11 December, the domain names changed from four-digit numbers to\nthree-digit numbers. Finally, from 11 December TA551 switched to domains containing\nsingle-digit numbers that immediately preceded the TLD. This pattern remained until TA551\nactivity paused in December 2020.\n\n### Domain registrars\n\nCompared to the domain name, finding a pattern in domain registrars was much simpler.\nExcept for a few domains, all were registered through Key-Systems GmbH.\n\n\n-----\n\nFigure 7 – Domain registrars used to register known TA551 domains.\n\n### DNS service providers\n\nWe evaluated the DNS service providers used by TA551. Not all domains returned a valid\nvalue, however, we were able to collect data on 239 domains, which should nevertheless\nprovide a sufficient overview (Figure 8).\n\n\n-----\n\nFigure 8 – Distribution of DNS service providers used by TA551.\n\nAs can be seen from the chart above, TA551 uses four DNS service providers, with a clear\npreference for DNSPod (74%). However, since the pattern we are looking for is intended to\nbe forward-looking, the question we asked ourselves is how the DNS service providers\nchange over time, and whether that points to a preferred provider in future campaigns.\nInterestingly, this evaluation shows that DNSPod was used until mid-November and then\ncompletely disappeared from the scene. This DNS service provider was replaced by\nGeoScaling and Cloudflare.\n\nFigure 9 – Trend analysis of DNS service providers used by TA551.\n\n### TLS certificates\n\nAll the URLs used to download the malware payloads specified the HTTP protocol rather\nthan HTTPS. Therefore, you might assume that no TLS certificates were issued for the\ndomains registered by TA551. While this is strongly reflected in Figure 10, we found that 4%\nof domains were issued with TLS certificates. We also noticed a correlation between the\nDNS service providers and the issued certificates, namely that if Cloudflare was used as the\nDNS service provider, then a corresponding certificate was also issued for the domain.\nDespite having a certificate at their disposal, we found that the download always occurs over\n[HTTP. Another outlier was the domain used on 30 November. A Let’s Encrypt certificate was](https://www.virustotal.com/gui/domain/fhnz798comic.com/relations)\nissued, but it was not used in the campaign. It is unclear why this certificate was issued. It is\nclear, however, that campaigns without certificates resumed again afterwards.\n\n\n-----\n\nFigure 10 – TLS certificate issuers for TA551 domains.\n\n## Building a detection\n\nPutting all these findings together, we can build a heuristic to recognise future TA551\ndomains:\n\nThe registrar used is Key-Systems GmbH\nThe used DNS service provider is DNSPod, Cloudflare, Emailverification or\nGeoScaling, where DNSPod can most likely be disregarded based on the trend\nanalysis\nThere is no TLS certificate for the domain, unless the used DNS service provider is\nCloudflare\nThe domain name contains either a four-, three- or one-digit number, and if it is only\none-digit, it is placed directly in front of the TLD\n\nBased on these rules, we wrote a Python script to detect new TA551 domains. Applied to\nnewly registered domains since 12 December 2020, we were able to identify 207 TA551\n[domains. All these domains can be found in our GitHub repository.](https://github.com/hpthreatresearch/iocs/tree/main/TA551)\n\n## Conclusion\n\nTA551 is an active threat group that distributes different malware families via malspam.\nThese campaigns occur at a high cadence. A look at a recently isolated campaign also\nshowed that various methods are used to bypass traditional detection technologies. We\nevaluated over 500 TA551 domains from the last year to see if it is possible to detect this\n\n\n-----\n\nactivity earlier in the resource development phase of the attack lifecycle. We identified\npatterns in the domains based on four attributes, which enabled us to develop detection logic\nto identify potential newly-registered TA551 domains.\n\nRunning the detection across newly registered domains from the last four months identified\nin 207 potential TA551 domains. Despite the promising detection rate, behavioural shifts by\nTA551 with respect to their domain registration activity can happen at any time, breaking the\ndetection logic. Nonetheless, we hope that this example demonstrates how network\ndefenders can get ahead of adversaries by detecting behaviour as early as possible in the\nkill chain.\n\nTags\n\n[detection](https://threatresearch.ext.hp.com/blog/?post-tag=detection) [domain](https://threatresearch.ext.hp.com/blog/?post-tag=domain) [network](https://threatresearch.ext.hp.com/blog/?post-tag=network) [ta551](https://threatresearch.ext.hp.com/blog/?post-tag=ta551)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-07-30 - Detecting TA551 domains.pdf"
+    ],
+    "report_names": [
+        "2021-07-30 - Detecting TA551 domains.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "26a04131-2b8c-4e5d-8f38-5c58b86f5e7f",
+            "created_at": "2022-10-25T15:50:23.579601Z",
+            "updated_at": "2025-03-27T02:00:55.50292Z",
+            "deleted_at": null,
+            "main_name": "TA551",
+            "aliases": [
+                "TA551",
+                "GOLD CABIN",
+                "Shathak"
+            ],
+            "source_name": "MITRE:TA551",
+            "tools": [
+                "QakBot",
+                "IcedID",
+                "Valak",
+                "Ursnif"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "04e34cab-3ee4-4f06-a6f6-5cdd7eccfd68",
+            "created_at": "2022-10-25T16:07:24.578896Z",
+            "updated_at": "2025-03-27T02:02:10.286803Z",
+            "deleted_at": null,
+            "main_name": "TA551",
+            "aliases": [
+                "Gold Cabin",
+                "Monster Libra",
+                "Shathak",
+                "TA551"
+            ],
+            "source_name": "ETDA:TA551",
+            "tools": [
+                "BokBot",
+                "CRM",
+                "Gozi",
+                "Gozi CRM",
+                "IceID",
+                "IcedID",
+                "Papras",
+                "Snifula",
+                "Ursnif",
+                "Valak",
+                "Valek"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "90f216f2-4897-46fc-bb76-3acae9d112ca",
+            "created_at": "2023-01-06T13:46:39.248936Z",
+            "updated_at": "2025-03-27T02:00:03.031127Z",
+            "deleted_at": null,
+            "main_name": "GOLD CABIN",
+            "aliases": [
+                "Shakthak",
+                "TA551",
+                "ATK236",
+                "G0127",
+                "Monster Libra"
+            ],
+            "source_name": "MISPGALAXY:GOLD CABIN",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "1f6ae238-765f-4495-9d54-6a7883d7a319",
+            "created_at": "2022-10-25T16:07:24.573456Z",
+            "updated_at": "2025-03-27T02:02:10.284644Z",
+            "deleted_at": null,
+            "main_name": "TA511",
+            "aliases": [
+                "MAN1",
+                "Moskalvzapoe"
+            ],
+            "source_name": "ETDA:TA511",
+            "tools": [
+                "Agentemis",
+                "Chanitor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Ficker Stealer",
+                "Hancitor",
+                "NetSupport",
+                "NetSupport Manager",
+                "NetSupport Manager RAT",
+                "NetSupport RAT",
+                "NetSupportManager RAT",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "542cf9d0-9c68-428c-aff8-81b6f59dc985",
+            "created_at": "2023-02-15T02:01:49.554105Z",
+            "updated_at": "2025-03-27T02:00:03.110991Z",
+            "deleted_at": null,
+            "main_name": "Moskalvzapoe",
+            "aliases": [
+                "MAN1",
+                "TA511"
+            ],
+            "source_name": "MISPGALAXY:Moskalvzapoe",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "40b623c7-b621-48db-b55b-dd4f6746fbc6",
+            "created_at": "2024-06-19T02:03:08.017681Z",
+            "updated_at": "2025-03-27T02:05:17.342829Z",
+            "deleted_at": null,
+            "main_name": "GOLD CABIN",
+            "aliases": [
+                "TA551 ",
+                "Shathak"
+            ],
+            "source_name": "Secureworks:GOLD CABIN",
+            "tools": [
+                ""
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535733,
+    "ts_updated_at": 1743041638,
+    "ts_creation_date": 1653764941,
+    "ts_modification_date": 1653764941,
+    "files": {
+        "pdf": "https://archive.orkl.eu/7cd62381de2490a85e1510d45241e3e1e1b2393d.pdf",
+        "text": "https://archive.orkl.eu/7cd62381de2490a85e1510d45241e3e1e1b2393d.txt",
+        "img": "https://archive.orkl.eu/7cd62381de2490a85e1510d45241e3e1e1b2393d.jpg"
+    }
+}

@@ -1,0 +1,76 @@
+{
+    "id": "7d12426c-b4ef-4de4-bc8d-27fa20e1cefb",
+    "created_at": "2023-01-12T15:03:53.797281Z",
+    "updated_at": "2025-03-27T02:05:43.343378Z",
+    "deleted_at": null,
+    "sha1_hash": "91988a40dc89d7a8c5d1124c316e51097221fa3c",
+    "title": "2018-07-18 - Dissecting Smoke Loader",
+    "authors": "",
+    "file_creation_date": "2022-05-28T17:43:58Z",
+    "file_modification_date": "2022-05-28T17:43:58Z",
+    "file_size": 2412831,
+    "plain_text": "# Dissecting Smoke Loader | CERT Polska\n\n**cert.pl/en/news/single/dissecting-smoke-loader/**\n\nSmoke Loader (also known as Dofoil) is a relatively small,\nmodular bot that is mainly used to drop various malware\nfamilies.\n\nEven though it’s designed to drop other malware, it has some\npretty hefty malware-like capabilities on its own.\n\nDespite being quite old, it’s still going strong, recently being\ndropped from RigEK and MalSpam campaigns.\n\nIn this article we’ll see how Smoke Loader unpacks itself and interacts with the C2 server.\n\n\nSmoke Loader first surfaced in June 2011 when it was advertiesed for sale on grabberz.com\nand xaker.name 2 by a user called SmokeLdr.\n\n_Smoke Loader being sold on grabberz.com_\n\nWhat’s interesting is that Smoke Loader is sold only to Russian-language speakers .3\n\n\n1\n\n\nSince all functionalities are clearly described in the mentioned forum posts up to 2016 there\nis no point in listing them all here.\n\n\n-----\n\n[The sample we ll be analysing is d32834d4b087ead2e7a2817db67ba8ca.](https://www.virustotal.com/en/file/20dce650c10545ae85005b3fe159df250c4f1275edfe4439e2d5a2d0515029de/analysis/1524764893/)\n\n_Diagram presenting the unpacking timeline_\n\nIf you’re only interested in the final payload you can take a quick glance at the diagram\nabove and skip to the final layer.\n\n## Table of contents\n\n Layer I\n\nThe first thing Smoke Loader hits us with is a simple PECompact2 or UPX compression.\n\nAs with many executable compressions, both are pretty easy do decompress using publiclyaccessible software:\n\n_PECompact being used to decompress the first layer_\n\n_Decompressing UPX-packed sample_\n\nThat wasn’t hard, let’s move on.\n\n\n-----\n\n## Layer II\n\n_Entry function, which handles the debugging check and performs some useless api calls as a_\n_disguise_\n\n## Debugger checks\n\nThe PEB structure is checked against some debugging challenges:\n\n## Lots of garbage code\n\nAlmost every function is injected with pointless instructions in order to make the disassembly\nmore complicated than it really is.\n\n\n-----\n\n_A part of RC4 function, which contains a lot of useless code_\n\n## RC4-encrypted imports\n\nIn this stage, almost all imports and library names are encrypted with RC4 before being\npassed to LoadLibraryA and then to GetProcAddress.\n\nThe encrypted imports are first placed on stack:\n\n\n-----\n\nThen they are decrypted using RC4 with the hardcoded key:\n\nFinally, the library name is passed to LoadLibrary and the function name to GetProcAddress:\n\nA custom import table is populated this way and used further in execution.\n\n## Unpacking\n\nFinally, a new process is created and two calls to WriteProcessMemory are performed:\n\n_The writes are pretty characteristic and can be easily noticed in the Cuckoo report_\n\nOne of them writes the MZ header and the other rest of the binary. If we concatenate these\ntwo writes we’ll get the next layer.\n\n## Layer III\n\nWe’re welcomed with:\n\n_The exported start address_\n\n\n-----\n\nWell, that s not good.\n\nWhat we see is a result of several obfuscation methods and tricks, We’ll look at each one\nand try to understand how it works.\n\n## Jump chains\n\n[Almost all early-executed functions adapt a chained jumps obfuscation technique.](https://thisissecurity.stormshield.com/2018/03/20/de-obfuscating-jump-chains-with-binary-ninja/)\n\nInstead of placing the instructions in a normal, linear manner, instructions are mixed within\nthe functions with jump instructions connecting consecutive instructions.\n\n_The control flow is all over the place_\n\n\n-----\n\nIf we were to write a script to follow the program s flow and graph instructions we d probably\nget something like this:\n\n\n-----\n\n-----\n\n_Partially deobufscated start function_\n\nOne can almost immediately see that a vast majority of instructions are used only to divert\nthe natural program flow.\n\n### Defeating\n\n**Attempt I**\n\nWe tried creating an idaapi script that looks through all instruction blocks within a function\nand tries to concat blocks that are connected with each other via a 1:1 jump (jump from one\npossible address to one possible location).\n\nThe author had probably thought about that and implemented jmp instructions using\nconsecutive jnz and jz instructions. This doesn’t complicate our solution too much though.\n\n_A very naive Python script implementing the mentioned approach_\n\nIf we run it on the start function and strip the jumps we get:\n\nA lot better! But we can actually do even better by letting IDA do most of the work for us.\n\n**Attempt II**\n\nThe only thing we need to do in order to make IDA recognize these blocks as a valid function\nis to make sure that all of the jumps are marked as a definitive change of flow control.\n\nWhile jmp instructions are marked as such by default, the jz/jnz instructions need to by\npatched to jmp instructions:\n\n\n-----\n\n_Notice the newly-created dotted line that denotes an end of function code_\n\nThis trick allows IDA to recognize function bodies and even attempt to decompile them:\n\n_Decompiled start function after patching all jn/jnz instructions_\n\nWhile (as almost always) the decompilation isn’t 100% correct, it gives us a good basic idea\nwhat the function does.\n\nThis function, for example, loads the PEB structure and then accessess the OSMajorVersion\nand BeingDebugged fields.\n\n## Debugging checks\n\nIn this layer, we’ve noticed 2 debugging checks, conveniently located right at the beginning\nof execution. While they are the same as in the previous stage the approach differs slightly.\n\nWhat is interesting is that the debugging checks values are used in calculating the next\nfunctions addresses:\n\n_Reading the BeingDebugged field from PEB_\n\n_Reading the NtGlobalFlag field from PEB_\n\nThe code calculates the next jump address based on the values of BeingDebugged and\nNtGlobalFlag fields, if either one is not equal to 0 the execution jumps to a random invalid\nplace in memory, harsh.\n\nNormally patching the binary or changing the values mid-debugging works though.\n\n## Virtualization checks\n\nBinary tries to get the module handle of “sbiedll” (a library that is used in sandboxing\nprocesses in Sandboxie) using GetModuleHandleA, if it succeds and thus Sandboxie is\ninstalled on the system, the program exits.\n\nA registry key System\\CurrentControlSet\\Services\\Disk\\Enum is checked and if any of the\nfollowing values are found within the string, the program exits.\n\nqemu\nvirtio\nvmware\nvbox\nxen\n\n## Function body encryption\n\n\n-----\n\nA vast majority of functions are encrypted:\n\n_A function that is partially encrypted_\n\nAfter deobufscation the encryption function turns out to be pretty simple:\n\n_Decompiled code decryption method_\n\nIt accepts an address and number of bytes in eax and ecx registers respectively and xors all\nbytes in that range with a hardcoded byte.\n\nWhat’s also interesting is that the binary tries to keep as little code unencrypted at a time as\npossible:\n\n_Example of keeping the code encrypted_\n\nWe’re able to decrypt the chunks using an idaapi patching script:\n\n_Simple idaapi script that xors a given region with a byte_\n\n## Assembly tricks\n\nThis layer employs a few neat position-independent-code assembly tricks.\n\n### Assembly Trick I\n\ncall loc_4024A7 puts the next instructions (in this case string “kernel32”) address\nonto stack and jumps over the data to the code\npop esi puts the string’s address into esi register\ncmp byte ptr [esi], 0 the pointer can be now used as a normal rdata string\n\n\n-----\n\n### Assembly Trick II\n\nInstead of executing jmp eax, eax is firstly pushed onto stack and then retn is executed.\n\n### Assembly Trick III\n\ncall $+5 jumps to the next instruction (as call $+5 instruction lengths is 5) but because it’s a\ncall it also pushes the address onto stack.\n\nIn this case this is used to calculate the program’s base address (0x004023AA – 0x23AA)\n\n## Custom imports\n\n[This stage uses a custom import table using a djb2 hash lookup.](https://gist.github.com/lmas/664afa94f922c1e58d5c3d73aed98f3f)\n\nIt first iterates over 4 hardcoded library names, loads each one using LdrLoadDll and stores\nthe handle.\n\n\n-----\n\nNext, it iterates over 4 corresponding import hashes arrays and looks for matching values.\n\nWhen a match is found, it grabs the functions address from the library thunk and stores it in\nan api table that is stored on the stack.\n\n\n-----\n\n_Hashes of functions to be imported_\n\n\n-----\n\n_Constructed api function table_\n\n## Unpacking\n\nFinally, the program uses RtlDecompressBuffer with COMPRESSION_FORMAT_LZNT1 to\ndecompress the buffer and execute the final payload using PROPagate injection .4\n\n## Layer IV (final)\n\n String encryption\n\nAll strings are encrypted using RC4 with a hardcoded key:\n\n\n-----\n\n_Function used to get a decrypted string from a specific index in the encrypted blob_\n\n_Structure of encrypted strings blob_\n\nIn this sample, the buffer decrypts to:\n\n_Decrypted strings_\n\n## C2 URLs\n\nC2 URLs are stored encrypted in the data section:\n\n_Part of data section that contains the encrypted URLs_\n\nThe encrypted URL structure can be represented as:\n\n_Encrypted C2 URL structure_\n\nThe encryption method is a simple xor routine with the byte key being derived from the\ndword key:\n\n_Decompiled function used to decrypt C2 URLs_\n\nWhich can be rewritten to Python as:\n\n_Output example_\n\n\n-----\n\n## Packet structure\n\n_Decompiled function used to pack and send command packets_\n\nWhich can be represented as a C structure:\n\n_A struct representing the structure of command packet_\n\nPacket encryption is done using RC4 yet again. It’s worth nothing, however, that different\nkeys are used for encrypting the outbound packets and decrypting the inbound ones:\n\n_A part of decompiled function responsible for encrypting packets before sending them to the_\n_C2_\n\n\n-----\n\n_A part of decompiled function responsible for decrypting packets before parsing them_\n\n## Program routine\n\nThe binary starts by obtaining a User Agent for IE version acquired by querying\nregistry key Software\\Microsoft\\Internet Explorer and values svcVersion and\nVersion. The obtained User Agent is used in later HTTP requests.\nNext, it tries to connect continuously to http://www.msftncsi.com/ncsi.txt until it\ngets a response, this way it makes sure that the machine is connected to the\ninternet.\nFinallly, Smoke Loader begins its communication routine by sending a 10001\npacket to the C&C. It gets a response with a list of plugins to be installed and a\nnumber of tasks to be fetched.\nThe bot iterates over the task range and tries to get each task by sending a\n10002 packet with the task number as an argument.\nThe tasks payload is often not hosted on the C&C server but on a different host\nand a Location header with the real binary URL is returned instead.\nUpon execution of the task, a 10003 packet is sent back with arg_1 equal to task\nnumber and arg_2 equal to 1 if the task executed succesfully.\n\n\n-----\n\n_Graph representation of the communication between bot and C2_\n\n## General IOCs\n\nProgram dumps itself to %APPDATA%\\Microsoft\\Windows\\[a-z]{8}\\[a-z]{8}.exe\nProgram creates a shortcut to itself in %APPDATA%\\Microsoft\\Windows\\Start\nMenu\\Programs\\Startup\\[a-z]{8}.lnk\nPerforms a System\\CurrentControlSet\\Services\\Disk\\Enum\\0 registry query\nGET requests to http://www.msftncsi.com/ncsi.txt\nPOST requests with HTTP 404 responses that include data\n\nExample request and response:\n\n\n-----\n\nYara rule:\n\n## Collected IOCs\n\nMalware configs:\n\nHashes:\n\n## References\n\n1 [https://grabberz.com/showthread.php?t=29680](https://grabberz.com/showthread.php?t=29680)\n\n\n2 [https://web.archive.org/web/20160419010008/http://xaker.name/threads/22008/](https://web.archive.org/web/20160419010008/http://xaker.name/threads/22008/)\n\n3 [http://stopmalvertising.com/rootkits/analysis-of-smoke-loader.html](http://stopmalvertising.com/rootkits/analysis-of-smoke-loader.html)\n\n\n4 [http://www.hexacorn.com/blog/2017/10/26/propagate-a-new-code-injection-trick/](http://www.hexacorn.com/blog/2017/10/26/propagate-a-new-code-injection-trick/)\n\n\n-----\n\nhttps://blog.malwarebytes.com/threat-analysis/2016/08/smoke-loader-downloader-with-asmokescreen-still-alive/\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2018/2018-07-18 - Dissecting Smoke Loader.pdf"
+    ],
+    "report_names": [
+        "2018-07-18 - Dissecting Smoke Loader.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "59ce37c7-ce10-4cc3-ab27-c784a8a0898a",
+            "created_at": "2022-10-25T16:07:23.534403Z",
+            "updated_at": "2025-03-27T02:02:09.85106Z",
+            "deleted_at": null,
+            "main_name": "DarkUniverse",
+            "aliases": [],
+            "source_name": "ETDA:DarkUniverse",
+            "tools": [
+                "dfrgntfs5.sqt",
+                "glue30.dll",
+                "msvcrt58.sqt",
+                "updater.mod",
+                "zl4vq.sqt"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "9a58d7bb-dd32-41bc-804e-500ef7550cf8",
+            "created_at": "2023-01-06T13:46:39.131811Z",
+            "updated_at": "2025-03-27T02:00:03.004067Z",
+            "deleted_at": null,
+            "main_name": "ItaDuke",
+            "aliases": [
+                "DarkUniverse",
+                "SIG27"
+            ],
+            "source_name": "MISPGALAXY:ItaDuke",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535833,
+    "ts_updated_at": 1743041143,
+    "ts_creation_date": 1653759838,
+    "ts_modification_date": 1653759838,
+    "files": {
+        "pdf": "https://archive.orkl.eu/91988a40dc89d7a8c5d1124c316e51097221fa3c.pdf",
+        "text": "https://archive.orkl.eu/91988a40dc89d7a8c5d1124c316e51097221fa3c.txt",
+        "img": "https://archive.orkl.eu/91988a40dc89d7a8c5d1124c316e51097221fa3c.jpg"
+    }
+}

@@ -1,0 +1,162 @@
+{
+    "id": "c3f467d7-49ab-4ea7-97ea-71acb8ee450c",
+    "created_at": "2023-01-12T15:06:09.423496Z",
+    "updated_at": "2025-03-27T02:06:05.467138Z",
+    "deleted_at": null,
+    "sha1_hash": "d0f76434cea33fc5cfb66df3fa796d031cd8f507",
+    "title": "2018-03-28 - An in-depth malware analysis of QuantLoader",
+    "authors": "",
+    "file_creation_date": "2022-05-28T04:57:08Z",
+    "file_modification_date": "2022-05-28T04:57:08Z",
+    "file_size": 2176441,
+    "plain_text": "# An in-depth malware analysis of QuantLoader\n\n**[blog.malwarebytes.com/threat-analysis/2018/03/an-in-depth-malware-analysis-of-quantloader/](https://blog.malwarebytes.com/threat-analysis/2018/03/an-in-depth-malware-analysis-of-quantloader/)**\n\nMalwarebytes Labs March 28, 2018\n\n_This guest post is written by Vishal Thakur, CSIRT/Salesforce. For more on Vishal, read his bio at the end of the blog._\n\nQuantLoader is a Trojan downloader that has been available for sale on underground forums for quite some time\nnow. It has been used in campaigns serving a range of malware, including ransomware, Banking Trojans, and RATs.\nThe campaign that we are going to analyze is serving a BackDoor.\n\nIn this post, we’ll take both a high-level look at the campaign flow, as well as a deep dive into how the malware\nexecutes, with a focus on the networking functions. We’ll dig into the binary to analyze how the malware executes\nand how it connects back to the C2. We’ll also analyze some interesting calls the malware makes, like calling and\nexecuting the netsh command to change local firewall rules.\n\nThe latest version of QuantLoader is being served through a phishing campaign using some interesting techniques.\nThe campaign starts with a phishing email that comes with a link serving the victim the initial JS downloader. What’s\ninteresting is that they’ve opted for a file:// (SMB) protocol rather than the traditional http://—maybe in order to get\npast some proxies/firewalls.\n\n## Analysis\n\nFirst of all, let’s have a look at the campaign flow:\n\n**Phish > JS downloader > QuantLoader (> C2) > Payload (Backdoor) > C2**\n\nThe JS downloader, as always, has lots of code, all obfuscated:\n\n\n-----\n\nWe go ahead and print the output of the main function (AXXA in this case) and we get the stage 2 URLs:\n\nThat was a quick analysis of the JS downloader, to get us the URLs.\n\n## QuantLoader executable\n\nWe are going to start by following the execution flow as much as possible:\n\nLet’s take a look at the assembly code:\n\nNext, it will copy itself to the above location before execution:\n\n\n-----\n\nSetting the right permissions (ACL):\n\nHere, we can see that the permission for the user has been set to “Read.”\n\nStack view:\n\nLet’s have a look at the process execution and persistence mechanisms.\n\nAs you can see above, the process spawns a new process after it has successfully copied itself to a different location.\nIt is important not to confuse it with dwm.exe, a legit Windows process (Desktop Window Manager). Note that the\npersistence mechanism has also been initiated.\n\n\n-----\n\nLet’s take a deeper look into this process that is spawned, and how it is spawned.\n\nFirst, the directory is created:\n\nOnce that is completed, CreateFile is called to create a null file.\n\nAt this point it’s a null file—no data in it. That will be copied over later.\n\nNote that the size of the file at this point is 0 bytes.\n\nThen the file is copied over:\n\nNow you can see that the file has been copied over and the size is 46080 bytes:\n\n\n-----\n\nNow the process will be launched from this location.\n\nYou can modify it if you want:\n\nOnce the process has been successfully launched, we want to look at the next important step. It will call the WININET\ndll to start establishing a connection back to the admin.\n\nAfter execution, it will try to connect out to its admin server:\n\nAnd here is the connection:\n\n**TCP  localhost:49690  49.51.228.205:http  ESTABLISHED**\n\n\n-----\n\nThis is the host you can see is loaded into the stack below.\n\nWe will now take a deeper look into how that unfolds in the stack.\n\nThe first step is to load the WININET DLL. It is called through the LoadLibrary function:\n\nAnd now, let’s take a look at the functions that are of interest to us (highlighted and commented) in the disassembler.\nWe will dive into a couple of these later:\n\n\n-----\n\nHere’s the stack, where the above functions can be seen in action (variable values added):\n\nAt this point, let’s move on to the next DLL that is called: WINHTTP.dll.\n\nNow let’s have a look at the functions that are called from here on:\n\n\n-----\n\nAs you can see, all of the above functions are “WinHttp”.\n\nLet’s have a look at some of the more interesting functions:\n\n**_WinHttpCreateUrl_**\n\nThis will put together the complete URL for the malware by combining the host and the path. Let’s step into it.\n\nAnd here’s the complete URI with jsproxy.dll being called in for WinInet’s auto-proxy support:\n\nFinally, we should have a look at the memory dump to see how the URI loaded into the memory:\n\nHave a look at the stack screenshot below. You can see that the URL is loaded onto the stack and ready to be called.\n\n\n-----\n\nAnd let’s have a look at the memory in parallel. You can see that the URL has been successfully loaded, and is ready\nto be called upon, using the URLDownloadToFile call.\n\nInteresting ASCII strings that you can see in the above screenshot show you how the malware is adding a rule to the\nfirewall, specifying the process and then the direction (out) for the action “Allow.” This is to make sure that the\noutbound request from the malware is allowed and is successful in checking in with the admin.\n\nAnd here’s the view from the stack:\n\nThis is what it looks like in the CPU:\n\nThe command used is: netsh.\n\nHere’s a view of the process image:\n\nAnd here are the rules created and deployed successfully on the firewall:\n\n\n-----\n\nSome other interesting calls:\n\n**Anti-VM**\n```\n77028A50 >-FF25 F4030877  JMP DWORD PTR DS:[< &api-ms-win-core-file>;\nKERNELBA.GetDiskFreeSpaceExA\n0018F234 |7029160E )p ; RETURN from KERNEL32.GetTickCount to WININET.7029160E\n\n```\n**Environment ID**\n```\n77028DA0 >-FF25 A8070877  JMP DWORD PTR DS:[<&api-ms-win-core-proc>;\nKERNELBA.GetEnvironmentStringsA\n\n```\n**Networking**\n\n```\n0018E9B8 |7029818C ; ASCII \"getaddrinfo\"\n\n```\n\n_*/protocol-independent translation from an ANSI host name to an address_\n\n```\n0018E9C0 |70298198 ; ASCII \"getnameinfo\"\n\n```\n\n_*/protocol-independent name resolution from an address to an ANSI host name and from a port number to the ANSI_\n_service name_\n```\n0018FB84 [70272C72 ; /RETURN from DNSAPI.DnsGetProxyInformation to WININET.70272C72\n0018FB88  0051E4B0 °äQ  ; |Arg1 = UNICODE \"wassronledorhad.in\"\n\n```\n_*/returns the proxy information for a DNS server’s name resolution policy table_\n\nOnce the connection has been established with the admin server (C2), the payload is served. The payload is picked\nby the administrator for each campaign and can be any malware type. In this campaign, it happened to be a\nbackdoor.\n\nThe URL for the download of the payload was successfully extracted from memory. We will not be analyzing the\npayload for the purpose of this exercise, but I have included the details at the end of this post.\n\n## Conclusion\n\nQuantLoader code has some interesting bits and pieces, like the firewall rules manipulation. It is a fairly straightforward malware, and does what it has been developed to do. The campaign admins have the ability to change final\npayloads and run different campaigns using the same downloader.\n\nIt has been reported as ransomware, but that seems to be based on a memory-string that has a reference to Locky,\nwhich looks like a remnant from an older campaign.\n\nZ:\\var\\www\\4test\\files\\cryptors\\admin\\Loc2.exe\n\nAlso, it is interesting to see it being served over SMB rather than the traditional HTTP protocol.\n\n## Files from the campaign\n\n\n-----\n\nJS Downloader:\n\nMD5 – 6f2b5a20dba3cdc2b10c6a7c56a7bf35\nSHA256 – db078628cdc41e9519e98b7ea56232085e203491bd2d5d8e49ef6708f129e1b8\n\nhttps://www.virustotal.com/#/file/db078628cdc41e9519e98b7ea56232085e203491bd2d5d8e49ef6708f129e1b8/detection\n\nQuantLoader:\n\nMD5 – 4394536e9a53b94a2634c68043e76ef8\nSHA256 – 2b53466eebd2c65f81004c567df9025ce68017241e421abcf33799bd3e827900\n\nhttps://www.virustotal.com/#/file/2b53466eebd2c65f81004c567df9025ce68017241e421abcf33799bd3e827900/detection\n\nPayload Backdoor:\n\nMD5 – 6c6d772704abf4426c5d7e5a52c847d7\nSHA256 –   0d100ff26a764c65f283742b9ec9014f4fd64df4f1e586b57f3cdce6eadeedcd\n\nhttps://www.virustotal.com/#/file/0d100ff26a764c65f283742b9ec9014f4fd64df4f1e586b57f3cdce6eadeedcd/detection\n\n_Vishal Thakur has_ _been working in InfoSec for a number of years, specializing in Incident Response and Malware_\n_Analysis. Currently, he’s working for Salesforce in CSIRT (Computer Security Incident Response Team), and before_\n_that was part of the CSIRT for Commonwealth Bank of Australia._\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2018/2018-03-28 - An in-depth malware analysis of QuantLoader.pdf"
+    ],
+    "report_names": [
+        "2018-03-28 - An in-depth malware analysis of QuantLoader.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535969,
+    "ts_updated_at": 1743041165,
+    "ts_creation_date": 1653713828,
+    "ts_modification_date": 1653713828,
+    "files": {
+        "pdf": "https://archive.orkl.eu/d0f76434cea33fc5cfb66df3fa796d031cd8f507.pdf",
+        "text": "https://archive.orkl.eu/d0f76434cea33fc5cfb66df3fa796d031cd8f507.txt",
+        "img": "https://archive.orkl.eu/d0f76434cea33fc5cfb66df3fa796d031cd8f507.jpg"
+    }
+}

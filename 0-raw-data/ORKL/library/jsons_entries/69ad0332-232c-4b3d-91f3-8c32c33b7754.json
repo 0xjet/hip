@@ -1,0 +1,106 @@
+{
+    "id": "69ad0332-232c-4b3d-91f3-8c32c33b7754",
+    "created_at": "2023-01-12T15:10:00.739608Z",
+    "updated_at": "2025-03-27T02:09:17.845285Z",
+    "deleted_at": null,
+    "sha1_hash": "e5ae30d7656f7f5e2501a612aeda933c9e7aa952",
+    "title": "2020-11-06 - Next Up- “PyXie Lite”",
+    "authors": "",
+    "file_creation_date": "2022-05-28T23:47:40Z",
+    "file_modification_date": "2022-05-28T23:47:40Z",
+    "file_size": 991177,
+    "plain_text": "# When Threat Actors Fly Under the Radar: Vatet, PyXie and Defray777\n\n**unit42.paloaltonetworks.com/vatet-pyxie-defray777/2/**\n\nRyan Tracey, Drew Schmitt November 7, 2020\n\nBy [Ryan Tracey and](https://unit42.paloaltonetworks.com/author/ryan-tracey/) [Drew Schmitt](https://unit42.paloaltonetworks.com/author/drew-schmitt/)\n\nNovember 6, 2020 at 6:15 PM\n\n[Category: Malware,](https://unit42.paloaltonetworks.com/category/malware-2/) [Ransomware,](https://unit42.paloaltonetworks.com/category/ransomware/) [Unit 42](https://unit42.paloaltonetworks.com/category/unit-42/)\n\nTags: [Defray777,](https://unit42.paloaltonetworks.com/tag/defray777/) [PyXie,](https://unit42.paloaltonetworks.com/tag/pyxie/) [Vatet](https://unit42.paloaltonetworks.com/tag/vatet/)\n\nThis post is also available in: 日本語 [(Japanese)](https://unit42.paloaltonetworks.jp/vatet-pyxie-defray777/)\n\n## Next Up: “PyXie Lite”\n\nAn earlier version of PyXie was previously covered in-depth by BlackBerry Cylance in\n[December 2019. We will be primarily covering an updated variant and some notable](https://blogs.blackberry.com/en/2019/12/meet-pyxie-a-nefarious-new-python-rat)\nchanges we have observed.\n\nSome of these changes include:\n\nHardened interpreter.\nNew remapped opcode table.\nRepurposed as a data theft and reconnaissance tool.\n\n\n-----\n\nExfiltration through internal servers.\n\nWe call this variant PyXie Lite because of the significantly smaller code base, but don’t let\nthe name fool you. It still packs a punch.\n\n**Loader**\n\nThe recent variant we analyzed was loaded by Vatet rather than the Goopdate.dll and\nLMIGuardianDll.dll side loaders seen with earlier versions of PyXie.\n\nThe decrypted Vatet payload contains the first stage of PyXie prepended by a shellcode\nloader responsible for mapping the first stage into memory and executing it.\n\nThe shellcode loader utilizes MurmurHash3 hashing to locate APIs needed during this\nprocess at runtime.\n\n**DLL** **Function** **API Hash**\n\nKernel32.dll GetProcAddress 0x261C88ED\n\nKernel32.dll VirtualAlloc 0xC17E7EB2\n\nKernel32.dll LoadLibraryExA 0x4B9B30B9\n\n_Table 2. MurmurHash3 API hashes._\n\n**Stage 1**\n\nThe purpose of the first stage is to decrypt the second stage payload and execute it in\nmemory.\n\n**Mutex**\n\nA mutex is created to prevent multiple instances from running at the same time. The\nfollowing logic is used:\n\nRetrieve computer name with a call to GetComputerNameA. If that fails, fall back to\nDEFAULTCOMPNAME.\nCompute MD5 Hash of the computer name.\nXOR computed hash with 0x2.\nConvert the result to a string with StringFromGUID2.\nCreate mutex using the string with a call to CreateMutexW.\n\n**String encryption**\n\nSignificant strings are encrypted by a routine that increments each byte of the ciphertext by\nits index, masks the result with 0x7F (highest value in the ASCII character set) and XORs it\nagainst a key of equal length.\n\n\n-----\n\n_Table 3. String decryption example._\n\n**Decrypted Strings**\n\n\n-----\n\nuiAccess=true\"\n-q -s {%S} -p %u\n\nwerfault.exe\n\nvsjitdebugger.exe\n\ndvdplay.exe\n\nonedrivesetup.exe\n\nopenwith.exe\n\n%windir%\\syswow64\\\n\n%windir%\\system32\\\n\nkernel32.dll\n\nKiUserExceptionDispatcher\n\nRtlCreateUser\n\nIsWow64Process\n\n\\StringFileInfo\\%04x%04x\\ProductName\n\n_Table 4. Decrypted first stage strings._\n\n**Payload Decryption**\n\nThe next stage payload is stored in an encrypted 7z archive located in the .gfids section of\nthe binary. It is decrypted with the modified RC4 algorithm previously discussed in the\nBlackBerry Cylance write-up using the hard-coded key:\n2C01443389BDFC7330A3386981C43E154AE8B60EC6646D916F93D18137A53544\n\nFigure 12. Decrypted 7z archive.\n**Payload Execution**\n\nOpenProcessToken and GetTokenInformation are called to determine if the process is\nrunning under the LocalSystem account. This is used to determine how the next stage\npayload is executed.\n\nIf it is determined to be running as LocalSystem, the payload is injected into a newly\nspawned process chosen from the Windows directory. The command line for this process\nfollows this format and can be used as an indicator:\n\n\n-----\n\n-q -s {{GUID}} -p NUMBER\n\nFigure 13. Command line argument.\nIf not found to be running as LocalSystem, the payload will execute in the memory space of\nthe current process.\n\n**Stage 2**\n\nThe second stage payload is a custom-compiled Python interpreter very similar to ones seen\nused with earlier variants of PyXie.\n\n**Configuration**\n\nThe configuration is stored in a zlib compressed json blob and is located in the .gfids section\nof the interpreter. Unlike previous versions of PyXie, it is not encrypted this time around. The\nvariable sys.builtin_json_cfg is created with a call to PySys_SetObject and the compressed\nconfiguration blob is stored in it for later use by the final stage Python component.\n\n\n-----\n\nFigure 14. sys.builtin_json_cfg variable is created.\n**Decrypted Strings**\n\nThe second stage uses the same string encryption that was noted in the previous stage.\n\nkernel32.dll\nopenwith.exe\n\nonedrivesetup.exe\n\ndvdplay.exe\n\nvsjitdebugger.exe\n\nwerfault.exe\n\n-q -s {%S} -p %u\n\noleout32.dll\n\nVariantClear\n\nMozilla\\Firefox\n\nMozilla\\Firefox\\profiles.ini\n\nSOFTWARE\\Clients\\StartMenuInternet\\firefox.exe\\shell\\open\\command\n\nI_CryptUIProtect\n\ncryptui.dll\n\nRtlCreateUserThread\n\nimport core.modules.winapi_stubs as winapi_stubs\n\nimport core.zip_logs as zip_logs\n\nimport os\n\nzip_logs.send_zip_log(winapi_stubs.get_self_executable_path(), os.getpid(), 'CERTS',\nr'%s')\n\nKiUserExceptionDispatcher\n\n\n-----\n\nuiAccess= true\n\n\\StringFileInfo\\%04x%04x\\ProductName\n\n\\VarFileInfo\\Translation\n\n\\\\?\\globalroot\\systemroot\\system32\\drivers\\null.sys\n\nSystemDrive\n\nIsWow64Process\n\ncore.entry_point\n\nzipimporter\n\nmemzipimport\n\nlibs_zip_ctx\n\nstart_bind_port\n\n_Table 5. Decrypted second stage strings._\n\n**Final Stage: Libs.zip**\n\nThe final stage of PyXie bytecode is contained in an encrypted ZIP file embedded within the\ninterpreter binary. As with the earlier version of PyXie, the [memzipimport library is used to](https://github.com/zyobi/memzipimport)\nimport the bytecode from memory.\n\n**PyXie Lite**\n\nThe “core” modules in this variant consist of 41 files versus the 79 seen in the previous\nversion of PyXie analyzed by BlackBerry Cylance. The discrepancy is due to a shift in\nfunctionality that we will cover in the next section.\n\n\n-----\n\nFigure 15. Bytecode listing.\n\n**Interpreter hardening**\n\nCursory analysis of the bytecode revealed that the headers had been stripped as with\nprevious earlier versions of PyXie. Additionally, we found that the opcode table had once\nagain been modified and the opcodes recovered from previous versions of PyXie could no\nlonger be used to decompile this bytecode.\n\n\n-----\n\nFigure 16. Attempts to decompile bytecode with previously recovered PyXie opcodes\nresulted in an error.\n[Knowing this, we attempted to force the interpreter to import DeDrop's all.py with hopes of](https://github.com/kholia/dedrop/blob/master/src/dedrop/all.py)\ngenerating bytecode that could be used for opcode recovery. To our dismay, we found that\nsimply importing a script would no longer cause the interpreter to output bytecode.\n\nA closer look at the interpreter found that the sys.dont_write_bytecode variable had been set\nto true. This has the effect of preventing bytecode from being written to disk when modules\nare imported. Likely, this is something the developers intentionally enabled to hinder analysis\nefforts.\n\nFigure 17. sys.dont_write_bytecode is set to True.\n**Hijacking the interpreter with a search order vulnerability**\n\nDuring our analysis of the interpreter, we found that it attempted to load a number of modules\nfrom the current working directory and was vulnerable to search order hijacking.\n\nFigure 18. PyXie attempting to load libraries from the current working directory.\nWe were able use this to our advantage by dropping a simple Python shell into one of the\nmodules it attempted to import. This gave us unfettered access to the interpreter, which\nenabled us to overwrite the sys.dont_write_bytecode variable, generate opcodes for modules\non demand and even dump PyXie’s configuration.\n\n\n-----\n\nFigure 19. Search order vulnerability being used to gain control of the interpreter.\nOnce we were able to output bytecode for modules of our choosing, it was trivial to recover\nthe remapped opcodes and decompile PyXie. A copy of the opcodes for this variant can be\nfound in the appendix.\n\n**Functionality**\n\nAs we previously mentioned, PyXie Lite has been repurposed to focus on the automated\ncollection and exfiltration of data.\n\nUpon execution, it creates a staging directory whose name is based on the output of the\ntempfile.NamedTemporaryFile() command.\n\n%temp%\\tmp1rjvhglo\n\n_Table 6. Example staging directory name._\n\nNext, it collects data from the system by running a combination of routines that are dictated\nby the user account PyXie is found to be running under. Table 7 breaks down each of these\nroutines and the types of account they will run under.\n\n\n**Routine** **User**\n**type**\n\n\n**Description**\n\n\n_mimi_redirector All Runs Mimikatz in memory. Injects into a newly spawned\nprocess from this list: write.exe, notepad.exe, explorer.exe\n\n\n-----\n\n_main_routine All Collects basic details about the system\nInventories software\nCollects cookies\nCollects LogMeIn data\nCollects Citrix data\nCollects KeePass safes\n\n_save_sysinfo All Collects uninstall list from registry\n\n_get_passwords All Collects passwords with Lazagne\n\n_find_files System Searches for and collects files and directories based on\nkeywords, directories and extensions specified in the\nconfiguration\n\n_scan_network System Runs network scans\n\n_run_shell_cmds System Runs a series of commands to gather details about the\nsystem\n\n_get_desktop_files User Similar to find_files but only searches the current user’s\nDesktop\n\n_take_screenshot User Takes a screenshot\n\n_get_ps_history User Collects Powershell history\n\n_Table 7. PyXie routines._\n\nThe list of keywords and directories from configuration provides us some insight into the type\nof data the attackers are interested in:\n\npassw logins wallet private\n\nconfidential username wire access\n\ntreason vault operation bribery\n\ncontraband censored instruction credent\n\ncardholder secret explosive suspect\n\npersonal cyber restricted balance\n\npassport victim submarine checking\n\nsaving routing esxi vsphere\n\nspy admin newswire bitcoin\n\n\n-----\n\nethereum n-csr 10-sb 10-q\n\nconvict tactical engeneering military\n\ndisclosure attack infrastruct marketwired\n\nagreement illegal nda hidden\n\nprivacy fraud statement finance\n\nmarketwired clandestine compromate concealed\n\ninvestigation security\n\n_Table 8. Keywords from PyXie Lite configuration (including misspellings)._\n\nAs part of the data gathering routines, a number of commands are executed to collect details\nabout the system.\n\nnetstat -an\nnet user\n\nnet use\n\nnet view /all\n\nnet view /all /domain\n\nnet share\n\nnet config workstation\n\nnet group \"Domain Admins\"\n\nnet group \"Enterprise Admins\"\n\nroute print\n\nnet localgroup\n\nipconfig /all\n\ntasklist /V\n\nwmic process\n\narp -a\n\ngpresult /z\n\ncmdkey /list\n\n\n-----\n\nnet config workstation\n\nnslookup -type=any %userdnsdomain%\n\nvssadmin List Shadows\n\nwmic qfe list\n\nklist\n\nmanage-bde -status\n\nnltest /domain_trusts\n\nnltest /domain_trusts /all_trusts\n\nqwinsta\n\nipconfig /displaydns\n\nsysteminfo\n\ndclist\n\nnet group \"domain admins\" /domain\n\nnet localgroup \"administrators\"\n\nwmic path win32_VideoController get name\n\nwmic cpu get name\n\nreg.exe save hklm\\security %LOCALAPPDATA%\\temp\\[RANDOM]\n\nreg.exe save hklm\\system %LOCALAPPDATA%\\temp\\[RANDOM]\n\nreg.exe save hklm\\sam %LOCALAPPDATA%\\temp\\[RANDOM]\n\n_Table 9. Executed commands._\n\n\n-----\n\nFigure 20. Data collected from the routines in a staging directory prior to exfil.\n**Exfiltration**\n\nThe staging directory containing the collected data is added to a compressed ZIP archive\nand encrypted before being sent to the server specified in the gates section of the config.\nThe archive is encrypted with AES in CBC mode and\nTHIS_KEY_IS_FOR_INTERNAL_USE_ONLY is used as the key. A random 16-byte\ninitialization vector (IV) is used and is prepended to the encrypted archive. The exfil servers\nwe have seen in samples to date have typically been compromised internal servers on the\nvictim’s networks listening on ports 31337, 900 and 8443. Although we did not have visibility\ninto how the attackers moved data off the victim network, in at least one incident the exfil\nserver was running Cobalt Strike.\n\n[Continue reading: Last, but Not Least: Defray777](https://unit42.paloaltonetworks.com/vatet-pyxie-defray777/3)\n\n**Get updates from**\n\n**Palo Alto**\n\n**Networks!**\n\nSign up to receive the latest news, cyber threat intelligence and research from us\n\n[By submitting this form, you agree to our Terms of Use and acknowledge our Privacy](https://www.paloaltonetworks.com/legal-notices/terms-of-use)\nStatement.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-11-06 - Next Up- “PyXie Lite”.pdf"
+    ],
+    "report_names": [
+        "2020-11-06 - Next Up- “PyXie Lite”.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "732bfd4b-8c15-42a5-ac4b-14a9a4b902e9",
+            "created_at": "2022-10-25T16:07:23.38079Z",
+            "updated_at": "2025-03-27T02:02:09.771357Z",
+            "deleted_at": null,
+            "main_name": "Bahamut",
+            "aliases": [],
+            "source_name": "ETDA:Bahamut",
+            "tools": [
+                "Bahamut",
+                "DownPaper"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f99641e0-2688-47b0-97bc-7410659d49a0",
+            "created_at": "2023-01-06T13:46:38.802141Z",
+            "updated_at": "2025-03-27T02:00:02.922907Z",
+            "deleted_at": null,
+            "main_name": "Bahamut",
+            "aliases": [],
+            "source_name": "MISPGALAXY:Bahamut",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "ada9e5d3-1cb2-4b70-a3c8-96808c304ac8",
+            "created_at": "2022-10-25T15:50:23.6515Z",
+            "updated_at": "2025-03-27T02:00:55.513513Z",
+            "deleted_at": null,
+            "main_name": "Windshift",
+            "aliases": [
+                "Windshift",
+                "Bahamut"
+            ],
+            "source_name": "MITRE:Windshift",
+            "tools": [
+                "WindTail"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536200,
+    "ts_updated_at": 1743041357,
+    "ts_creation_date": 1653781660,
+    "ts_modification_date": 1653781660,
+    "files": {
+        "pdf": "https://archive.orkl.eu/e5ae30d7656f7f5e2501a612aeda933c9e7aa952.pdf",
+        "text": "https://archive.orkl.eu/e5ae30d7656f7f5e2501a612aeda933c9e7aa952.txt",
+        "img": "https://archive.orkl.eu/e5ae30d7656f7f5e2501a612aeda933c9e7aa952.jpg"
+    }
+}

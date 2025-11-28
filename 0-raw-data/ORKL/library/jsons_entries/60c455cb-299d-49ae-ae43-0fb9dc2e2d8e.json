@@ -1,0 +1,110 @@
+{
+    "id": "60c455cb-299d-49ae-ae43-0fb9dc2e2d8e",
+    "created_at": "2023-01-12T15:02:17.762831Z",
+    "updated_at": "2025-03-27T02:12:51.745249Z",
+    "deleted_at": null,
+    "sha1_hash": "161b3afef0276fb4177050c94998f4ddcc35d3e4",
+    "title": "2022-03-24 - Threat Thursday- SunSeed Malware Targets Ukraine Refugee Aid Efforts",
+    "authors": "",
+    "file_creation_date": "2022-05-28T23:23:52Z",
+    "file_modification_date": "2022-05-28T23:23:52Z",
+    "file_size": 4530984,
+    "plain_text": "# Threat Thursday: SunSeed Malware Targets Ukraine Refugee Aid Efforts\n\n**[blogs.blackberry.com/en/2022/03/threat-thursday-sunseed-malware](https://blogs.blackberry.com/en/2022/03/threat-thursday-sunseed-malware)**\n\nThe BlackBerry Research & Intelligence Team\n\n_Newly Discovered Malware Strikes European Government Personnel Aiding Ukrainian_\n_Refugees_\n\nWith everyone’s attention turned to Ukraine, it was inevitable that this source of disquiet\nwould be used by attackers as the subject of a phishing lure. A news report earlier this\nmonth showed that the European government personnel responsible for assisting refugees\nfleeing from Ukraine were likely targeted by a threat group called Ghostwriter - also known\nas TA445 or UNC1151 - who have previously been identified as working in the interests of\nBelarus.\n\nResearchers discovered that an email, originating from a UKR[.]net email address, was\nsent to a European government entity containing a malicious Excel® document. UKR.net is\na popular Ukrainian ISP and email provider, primarily used for personal email account\ncreation. The email had the following subject line: “IN ACCORDANCE WITH THE\nDECISION OF THE EMERGENCY MEETING OF THE SECURITY COUNCIL OF\nUKRAINE DATED 24.02.2022.”\n\n\n-----\n\nResearchers also theorize that the sender s email account might belong to a member of the\n[Ukrainian military, and was potentially compromised in a prior phishing campaign targeting](https://www.cyberscoop.com/ukrainian-cyber-officials-warn-of-new-wave-of-phishing-attacks/)\nUkrainian soldiers and civilians.\n\n### Technical Analysis: Into the “Lua-Verse”\n\n**Infection Vector**\n\nUpon opening the malicious Excel document, the victim is presented with a fake splash\nscreen prompting them to “Enable Content”, as seen in Figure 1.\n\n_Figure 1 - Fake splash screen encouraging user to enable malicious content_\n\nThis fake splash screen is made from images; however, the Excel sheet is protected so that\nthe victim cannot interact with the images to determine that it is a facade. If the victim\nenables the content, then the following macro is run:\n\n_Figure 2 - Malicious macro that installs SunSeed_\n\n### Installation\n\nThis macro creates a Windows® installer object and sets its UILevel to 2. As shown in the\nsnippet below from the MSDN documentation, this is the setting for a “Silent Installation.”\n\n\n-----\n\nmsiUILevelNone 2 Silent installation.\n\nFinally, the macro calls the InstallProduct method, passing it a URL. This prompts Windows\nto fetch an MSI installer from the specified URL, and to install it. Upon inspecting the\nfetched installer, we observed the following string:\n\n_Figure 3 - String indicating the installer was built with Windows XML toolset_\n\nThis string indicates that the installer was built with the Windows Installer XML (WiX)\ntoolset. WiX is an open-source toolset originally developed by Microsoft to help users build\ninstallers for Windows. WiX installations are based on a WXS file containing XML, which\ndescribes the installation that is then compiled by the toolset. Using the WiX toolset, it is\npossible to reverse this process and generate XML describing the installer. This is done\nwith the Dark tool, which is shipped with WiX:\n\n**“dark.exe {name of MSI file} -x {path to extract into}”**\n\nThis command also extracts the files packaged inside the installer, which we will describe in\nmore detail shortly.\n\nLooking at the generated WXS XML, we see that the goal is to register a fake “Software\nProtection Service,” as shown in Figure 4.\n\n_Figure 4 - WXS XML excerpt describing malicious installer_\n\nThis code bootstraps itself via Window’s startup folder, as shown in Figure 5.\n\n\n-----\n\n_Figure 5 - WXS XML snippet showing the bootstrap mechanism_\n\nThe installer contains the following files:\n\n**Filename** **Purpose**\n\n\nSoftware Protection\nService.lnk\n\n\nShortcut placed in Window’s startup folder to start on boot\n\n\nhttp.lua HTTP/1.1 client support (part of the LuaSocket library)\n\nltn12.lua Part of the LuaSocket library\n\nlua5.1.dll Lua runtime\n\nluacom.dll Lua add-on for interacting with Window’s COM objects\n\n\nmime.dll\n\nmime.lua\n\n\nMIME support (part of the LuaSocket library)\n\n\nprint.lua Malicious Lua script (SunSeed)\n\n\nsocket.dll\n\nsocket.lua\n\n\nLuaSocket library core\n\n\nsppsvc.exe Standalone Lua interpreter – direct from LuaBinaries 5.1.5\nWindows x86 release\n\ntp.lua Unified SMTP/FTP subsystem (part of the LuaSocket library)\n\nurl.lua URI parsing support (part of the LuaSocket library)\n\n\n-----\n\nThe majority of these files constitute a barebones installation of Lua, a lightweight opensource programming language. This is required for the core malicious script “print.lua” to\nrun. The print.lua file is where this malware starts to get especially interesting.\n\n### Print.lua\n\nAt the top of the print.lua script is some config parsing code:\n\n_Figure 6 - Function used to parse the config string_\n\nThis is then followed by the config declaration:\n\n_Figure 7 - Declaration of global config variable using the above function_\n\nThe following functions are also renamed at the top of the script, to make it more difficult for\nanalysts to parse:\n\n\n-----\n\n_Figure 8 - Renamed Lua functions for obfuscation purposes_\n\nSimplifying the config parsing script produces the following script:\n\n_Figure 9 - Simplified config parsing function_\n\n\n-----\n\nFor those familiar with compression algorithms, this is recognizable as an implementation of\nLZ decompression. This decompress function consumes tokens from the config by reading\na single character, which is then converted from base 36. This first value indicates how\nmany characters to consume for the actual token, which is then also base 36 decoded.\n\nHere is a quick example:\n\n_Figure 10: Consuming an LZ token from the config data_\n\nThis process is then repeated, and the config is decompressed:\n\n_Figure 11 - Decompressed malware config_\n\nSadly, this still appears to be gibberish, so we have more work to do to make its purpose\nclear.\n\nFollowing the Lua script, it goes on to declare many functions. However, at the very bottom\nof the script is a final invocation:\n\n\n-----\n\n_Figure 12 - Call made at the end of the Lua script_\n\n“E” is the main function of the code. “C,” which was declared further up the script, and\nshown in Figure 8, is a function that returns the Lua environment variable _ENV. So, from\nhere we will look at the call to “F.” F was originally the function that decompressed the\nembedded configuration; however, it is redeclared later, as shown in Figure 13.\n\n_Figure 13 - Redeclared version of F_\n\nAfter some further digging, it turns out that this function parses the config that was\ndecompressed earlier. The functions “o” and “d” here – which pull data from the config –\nconsume four- and one-byte values respectively, and they XOR each byte with 0x73.\nJumping the gun and XOR-decoding the entire config gives us the following.\n\n\n-----\n\n_Figure 14 - The decoded config_\n\nThis starts to reveal the goal of the Lua code.\n\n### Deeper into the Lua-verse\n\nJumping back to function F, there are three distinct “for” loops, where each loop decodes a\nsegment of the config. The first loop does not achieve anything, as the loop counter is zero.\nHowever, the second loop parses a table of variables. Before focusing on the second loop,\nit is first necessary to look at the declaration of the variable \"a,” which is populated with the\nparsed config data:\n\n_Figure 15 - Declaration of config variable 'a'_\n\n\n-----\n\nNote here that f is a table with 47 items, which are all initially declared as zero. Next, we\nsee the excerpt of function F containing the second “for” loop:\n\n_Figure 16 - Excerpt of function F that decodes the variable table_\n\nInside this second “for” loop, each iteration declares a local variable “e” that is used for\ndeciding which “if-else” code block to enter. The function d consumes a single byte from the\nconfig, which is parsed as an integer. This value corresponds to the data type of the\nvariable and how to parse it. The three data types are as follows:\n\n0x01 = ? (Unused)\n0x02 = String\n0x03 = Integer\n\nHowever, the script only makes use of data types 0x02 and 0x03. The most common\nvariable type is the string type (0x02) that results in a call to function “s.” This reads a fourbyte integer that is the length of the string, and then it reads the actual string using the\nlength value. Before the loop is entered, function o is called, which first reads a four-byte\ninteger that is used to figure out the number of iterations required for the loop. The following\ndiagram in Figure 16 illustrates this process.\n\n\n-----\n\n_Figure 17 - Visual representation of the config parsing process_\n\nThe first five bytes, as shown above, are consumed as the first loop counter (zero) and a\none-byte integer (also zero), which is stored in a[4]. Next, the second loop counter is\nconsumed (0x18 = 24), which indicates the variable section of the config contains 24\nvalues.\n\nNext the loop starts parsing these values. The first variable is a string type (0x02), so first a\nlength is decoded (0x06 = 6), and then the string itself is read (“serial”). Following the same\nprocedure for the next variable gives the string “string,” followed by “gsub,” and so on.\n\nIn fact, only one variable of type integer (0x03) is found in the entire config. After decoding,\nthis integer evaluates to three. The last value stored in the variable table is the string\n“collectgarbage.” In the diagram in Figure 16, the black cursor marks the end of the variable\n\n\n-----\n\ntable.\n\nThe third loop, and therefore final section of the config, is where SunSeed gets interesting.\nThe last loop counter, found after the variable table, is 0x2f = 47. This explains the\nreasoning behind the table of 47 zeroes declared initially, which is to hold the 47 decoded\nvalues from this final section of the config. This section of the config is comprised of 47\n“frames,” which are decoded from two four-byte values.\n\n### Stepping Into the Machinery\n\nIncredibly, it appeared that the authors of SunSeed had created a quasi-virtual machine\n(VM) in the last function E, referenced earlier and shown in Figure 12. After some digging\nhowever, it seems that the heavily obfuscated print.lua could in fact be the work of an opensource Lua obfuscator called “Prometheus.” (Not to be confused with the Traffic Direction\nSystem of the same name, which we previously described in a blog.)\n\nThe Prometheus obfuscator includes both a “VMify” step, which converts the Lua script into\nbytecode and creates a VM to process it, and a “ConstantArray” step that puts all variables\ninto a table at the start of the script. This is starting to sound eerily familiar. Either way, this\nvirtual machine consumes the previously mentioned 47 frames, using the variable table and\na makeshift set of “registers” to execute the core functionality of SunSeed.\n\nThe VM is instrumented as a big loop with a convoluted set of “if-else” statements that\nperform the same function as a switch statement with different cases, where each case can\nbe thought of as a single instruction. Digging into this VM helps explain how the frame data\nis used. The first 10 frames are as follows:\n\n**Index**\n\n**Frame** **1** **2** **3** **5**\n\n**1** 22 0 2 4118\n\n**2** 0 0 0 3\n\n**3** 0 1 4 8192\n\n**4** 0 2 5 10240\n\n**5** 0 1 2 2\n\n\n-----\n\n**6** 0 1 1 6\n\n**7** 0 2 7 14336\n\n**8** 0 1 2 2\n\n**9** 0 1 1 8\n\n**10** 0 1 1 9\n\nAt the start of the loop, the first frame is consumed, and the first item (22) is used to identify\nthe “if” statement block to drop into. This VM “instruction” is shown in Figure 18, below.\n\n\n-----\n\n_Figure 18 – The if-else code block for “action” 22_\n\nFor context:\n\nn = The variable table decoded from the second section of the config\n\ni = The Lua environment variable _ENV\n\no = The makeshift register storage\n\nl = The current frame\n\nAfter some local variable declarations, we find the following line:\n\no[l[2]] = i[n[l[3]]]\n\nHere, frame index 3 (l[3] = 2) is used as a lookup into the variable table (n[2] = ”string”),\nwhich is then used to index into the _ENV variable (i). This value is then stored in the\nregister table (o) using the frame index 2 (l[2] = 0). Simplifying this gives us the following:\n\no[0] = _ENV[”string”]\n\nThis code is loading the string function table from the Lua environment, which contains\nreferences to Lua’s core string manipulation functions. The next two lines are:\n\ne = e + 1\n\nl = c[e]\n\nThese steps are simply advancing to the next frame. Following this procedure, the first 10\nframes simplify down to:\n\n\n-----\n\no[0] = _ENV[ string ]\no[0] = o[0][“gsub”]\no[1] = _ENV[“require”]\no[2] = “luacom”\ns = o[1](“luacom”)\no[1] = s[1]\no[1] = o[1][“CreateObject”]\no[2] = “Scripting.FileSystemObject”\ns = o[1](“Scripting.FileSystemObject”)\no[1] = s[1]\no[1] = o[1][“Drives”]\no[2] = o[1]\no[1] = o[1][“Item”]\n\nWith some refactoring, this becomes:\n\ngsub_func = _ENV[“string”][“gsub”]\nrequire(‘luacom’)\ndrives_item = luacom.CreateObject(“Scripting.FileSystemObject”)[“Drives”][“Item”]\n\nUsing the variable table and information in the frames, the VM is dynamically building and\nexecuting Lua code. This is no easy feat, and a difficult feature to build into an obfuscator!\n\nThis dynamic building process avoids any direct calls to Lua functions that cannot be fully\nobfuscated or hidden and would therefore be easier for a researcher reading the script to\nidentify. For example, back in Figure 8, some Lua functions were renamed to obfuscate the\ncode. However, with a simple find/replace operation, the function calls can be restored back\ninto the code. This is how the config parsing code in Figure 9 was simplified.\n\nContinuing to step through the frames, the final Lua program (with some elbow grease)\nreduces to the following Lua code:\n\n\n-----\n\n_Figure 19 - Simplified Lua script, functionally equivalent to SunSeed_\n\nSunSeed sits in a loop, checking for additional Lua scripts to execute from the commandand-control (C2) (84[.]32.188[.]96). Sadly, no further scripts were seen from the C2 during\nour research.\n\nAn important point to note is that the Trojanized installer brings an extra module “tp.lua,”\nwhich is not required for the core script. This indicates that the module is required for future\nLua scripts; tp.lua is a Lua library that supports SMTP and FTP, which indicates that future\nscripts from the C2 are likely concerned with email and file operations.\n\n### Conclusion\n\nWhile SunSeed is a rather basic piece of malware from a functionality perspective, the way\nin which the malware is obfuscated is far from simple. Typically, concealing the intentions of\na script is much more difficult than for compiled binaries; scripts are meant to be read,\nwhereas machine code is not. But the obfuscation witnessed here is intense.\n\nLua’s popularity has grown in recent years, largely due its use in the successful game\n_Roblox. The appearance of Lua in such a high-profile scenario, coupled with the increase in_\nopen-source Lua tooling and knowledge to draw from, could be an indicator that Lua’s use\nin the world of malware is on the rise.\n\n\n-----\n\nWith millions of people fleeing Ukraine, attackers seek new ways to wreak havoc on\norganizations that are helping get them to safety. As this story continues to unfold,\nBlackBerry will share new information as it becomes available, to better arm defenders\nagainst malicious threats such as SunSeed.\n\n### IOCs\n\n84[.]32.188[.[96 - SunSeed C2 \n84[.]32.188[.]141 - Hosting Trojanised MSI\n\n31d765deae26fb5cb506635754c700c57f9bd0fc643a622dc0911c42bf93d18f – Trojanised\n**MSI**\n\n1561ece482c78a2d587b66c8eaf211e806ff438e506fcef8f14ae367db82d9b3 - Malicious\n**Excel Document**\n\n7bf33b494c70bd0a0a865b5fbcee0c58fa9274b8741b03695b45998bcd459328 – Core\n**print.lua script**\n\n## About The BlackBerry Research & Intelligence Team\n\nThe BlackBerry Research & Intelligence team examines emerging and persistent threats,\nproviding intelligence analysis for the benefit of defenders and the organizations they serve.\n\nBack\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-03-24 - Threat Thursday- SunSeed Malware Targets Ukraine Refugee Aid Efforts.pdf"
+    ],
+    "report_names": [
+        "2022-03-24 - Threat Thursday- SunSeed Malware Targets Ukraine Refugee Aid Efforts.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "8a33d3ac-14ba-441c-92c1-39975e9e1a73",
+            "created_at": "2023-01-06T13:46:39.195689Z",
+            "updated_at": "2025-03-27T02:00:03.01861Z",
+            "deleted_at": null,
+            "main_name": "Ghostwriter",
+            "aliases": [
+                "PUSHCHA",
+                "Storm-0257",
+                "DEV-0257",
+                "UAC-0057",
+                "UNC1151",
+                "TA445"
+            ],
+            "source_name": "MISPGALAXY:Ghostwriter",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "119c8bea-816e-4799-942b-ff375026671e",
+            "created_at": "2022-10-25T16:07:23.957309Z",
+            "updated_at": "2025-03-27T02:02:10.048343Z",
+            "deleted_at": null,
+            "main_name": "Operation Ghostwriter",
+            "aliases": [
+                "DEV-0257",
+                "Operation Asylum Ambuscade",
+                "PUSHCHA",
+                "Storm-0257",
+                "TA445",
+                "UAC-0051",
+                "UAC-0057",
+                "UNC1151"
+            ],
+            "source_name": "ETDA:Operation Ghostwriter",
+            "tools": [
+                "Agentemis",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "HALFSHELL",
+                "Impacket",
+                "RADIOSTAR",
+                "VIDEOKILLER",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "f53f4b13-b055-426f-876a-18cf9a0f4fa0",
+            "created_at": "2024-05-01T02:03:08.129377Z",
+            "updated_at": "2025-03-27T02:05:17.412789Z",
+            "deleted_at": null,
+            "main_name": "MOONSCAPE",
+            "aliases": [
+                "UAC-0051 ",
+                "UNC1151 ",
+                "TA445 "
+            ],
+            "source_name": "Secureworks:MOONSCAPE",
+            "tools": [
+                ""
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535737,
+    "ts_updated_at": 1743041571,
+    "ts_creation_date": 1653780232,
+    "ts_modification_date": 1653780232,
+    "files": {
+        "pdf": "https://archive.orkl.eu/161b3afef0276fb4177050c94998f4ddcc35d3e4.pdf",
+        "text": "https://archive.orkl.eu/161b3afef0276fb4177050c94998f4ddcc35d3e4.txt",
+        "img": "https://archive.orkl.eu/161b3afef0276fb4177050c94998f4ddcc35d3e4.jpg"
+    }
+}

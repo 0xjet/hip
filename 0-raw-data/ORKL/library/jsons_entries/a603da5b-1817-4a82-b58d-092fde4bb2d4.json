@@ -1,0 +1,42 @@
+{
+    "id": "a603da5b-1817-4a82-b58d-092fde4bb2d4",
+    "created_at": "2023-01-12T15:01:34.038488Z",
+    "updated_at": "2025-03-27T02:05:46.353816Z",
+    "deleted_at": null,
+    "sha1_hash": "229e0ea6a47adce93e6a7d1d29d550419213ce6e",
+    "title": "2015-10-01 - Linux.Rekoobe.1",
+    "authors": "",
+    "file_creation_date": "2022-05-29T01:25:02Z",
+    "file_modification_date": "2022-05-29T01:25:02Z",
+    "file_size": 107409,
+    "plain_text": "# Linux.Rekoobe.1\n\n**vms.drweb.com/virus/**\n\n**SHA1**\n\na11bda0acdb98972b3dec706d35f7fba59587f99 (SPARC)\n04f691e12af2818015a8ef68c6e80472ae404fec (SPARC)\n466d045c3db7c48b78c6bb95873b817161a96370 (SPARC)\ncd274e6b73042856e9eec98d258a96cfbe637f6f (Intel x86)\n8e93cfbaaf7538f8965080d192df712988ccfc54 (Intel x86-64)\n\nA Trojan for Linux intended to infect machines with the SPARC architecture and Intel x86,\nx86-64 computers. The Trojan’s configuration data is stored in a file encrypted with XOR\nalgorithm. The directory of the file may be the following:\n```\n/usr/lib/liboop-trl.so.0.0.0\n/usr/lib/libhistory.so.5.7\n/usr/lib/libsagented.so.1\n/usr/lib/libXcurl\n/usr/lib/llib-llgrpc\n\n```\nThe file has the following structure:\n\n\n-----\n\n```\nSECRET value\nMAGIC value\nPROXYHOST value\nPROXYPORT value\nUSERNAME value\nPASSWORD value\nENDPOINT value\nSERVER_PORT value\nCONNECT_BACK_DELAY value\n\n```\nInstead of the “value” variable, it contains the value of the corresponding parameter. Once\ndata from the configuration file is received successfully, the Trojan refers to the C&C server\nfor commands with an interval specified by the CONNECT_BACK_DELAY parameter. The\naddress of the server is specified by the ENDPOINT parameter. If a value of the\nPROXYHOST parameter is not “none”, connection to the server is established via a proxy\nserver, authorization data for which is also extracted from the configuration file.\n\nThe connection to the C&C server begins with sending of the MAGIC parameter from the\nconfiguration file and reception of a 40-byte response. Then 40 bytes are split into two\nblocks, which are used for AES context initialization: one block is for the received data, and\nthe other, for the sent one:\n```\nint __cdecl AES_Init(st_aes_ctx *aes_ctx, char *data, char *salt)\n{\n ...\n if ( RecvPacket(fd, buffer, 40, 0) != 1 )\n  goto err_occured;\n *(_DWORD *)dec_salt = *(_DWORD *)buffer;\n *(_DWORD *)&dec_salt[4] = *(_DWORD *)&buffer[4];\n *(_DWORD *)&dec_salt[8] = *(_DWORD *)&buffer[8];\n *(_DWORD *)&dec_salt[12] = *(_DWORD *)&buffer[12];\n *(_DWORD *)&dec_salt[16] = *(_DWORD *)&buffer[16];\n *(_DWORD *)enc_salt = *(_DWORD *)&buffer[20];\n *(_DWORD *)&enc_salt[4] = *(_DWORD *)&buffer[24];\n *(_DWORD *)&enc_salt[8] = *(_DWORD *)&buffer[28];\n *(_DWORD *)&enc_salt[12] = *(_DWORD *)&buffer[32];\n *(_DWORD *)&enc_salt[16] = *(_DWORD *)&buffer[36];\n AES_Init(&aes_ctx_encrypt, secret, enc_salt);\n AES_Init(&aes_ctx_decrypt, secret, dec_salt);\n ...\n}\n\n```\nwhere the AES_Init function generates an encryption key based on the SHA1 value from the\n“secret” parameter and the sent enc_salt or dec_salt block:\n\n\n-----\n\n```\nint __cdecl AES_Init(st_aes_ctx aes_ctx, char data, char salt)\n{\n ...\n sha1_init(&ctx);\n sha1_update(&ctx, data, strlen(data));\n sha1_update(&ctx, salt, 0x14u);\n sha1_final(&ctx, hash);\n AES_InitKey(aes_ctx, hash, 128);\n ...\n}\n\n```\nThe AES_Init function for every AES context also creates two special 40-byte blocks which\nare later used as a signature. For that, 40 bytes with 0x36 value are added to the verify_1\narray, and 40 bytes with 0x5C value are added to the verify_2 array. Then the first 20 bytes\nof every array are encrypted with XOR algorithm containing the corresponding 20 bytes of\nthe AES key.\n\nAll the later information transmitted either side during the established connection will be sent\nas specifically formed packages.\n\nThe first received package contains 16-byte identifier. The Trojan compares it with an\nidentifier already stored in its body. If the match is found, the malware sends verification to\nthe server.\n\nOnce the connection to the C&C server is established, the Trojan attempts to get a command\nfrom the server. Upon receiving a command number, the first two bytes are ignored, and the\nthird one stands for a command identifier.\n\nDuring the reception of a package from the server, the malware acquires 16 bytes, which are\nencrypted in AES-CBC-128 mode. The first WORD (MSB) of the received buffer is the size of\nthe next data block (the size parameter).\n\nAfter this, the Trojan calculates the package size by the “packetsize = size + 2 bytes +\nalignment” formula and receives the data of packetsize + 4 bytes size in the same buffer\nusing offset of 0x10 bytes from its beginning. The last 20 bytes are the signature.\n\nIn order to verify the signature, the modification of its first DWORD is as follows: the first\nthree bytes are replaced with zeros, and the forth one contains the package number (the\nTrojan records the amount of the received and sent packages in the corresponding AES\ncontexts). Then the buffer that received the data and where DWORD was modified is used\nfor generating of SHA1 hash (buffer is specified as “buffer”):\n\n\n-----\n\n```\n...\nsha1_init(&sha1_ctx);\nsha1_update(&sha1_ctx, aes_ctx_decrypt.verify_1, 0x40u);\nsha1_update(&sha1_ctx, buffer, size + 4);\nsha1_final(&sha1_ctx, &hash);\nsha1_init(&sha1_ctx);\nsha1_update(&sha1_ctx, aes_ctx_decrypt.verify_2, 0x40u);\nsha1_update(&sha1_ctx, &hash, 0x14u);\nsha1_final(&sha1_ctx, &hash);\n...\n\n```\nIt should be noted that only a payload and a DWORD value that contains the package\nnumber are hashed. 4 DWORDs of the signature are not included in the hashed data.\n\nThe first 20 bytes of the received hash are compared with a package signature. If the match\nis found, the package is decrypted. If not, it is considered invalid.\n\nSending of the package to the server is performed in the same way.\n\nThe Trojan can execute three commands:\n\nReverse Shell (cmd == 0x03)\nDownload a file (cmd == 0x02)\nUpload a file to the command and control server (cmd == 0x01)\n\n[News about the Trojan](http://news.drweb.com/show/?i=9732)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2015/2015-10-01 - Linux.Rekoobe.1.pdf"
+    ],
+    "report_names": [
+        "2015-10-01 - Linux.Rekoobe.1.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673535694,
+    "ts_updated_at": 1743041146,
+    "ts_creation_date": 1653787502,
+    "ts_modification_date": 1653787502,
+    "files": {
+        "pdf": "https://archive.orkl.eu/229e0ea6a47adce93e6a7d1d29d550419213ce6e.pdf",
+        "text": "https://archive.orkl.eu/229e0ea6a47adce93e6a7d1d29d550419213ce6e.txt",
+        "img": "https://archive.orkl.eu/229e0ea6a47adce93e6a7d1d29d550419213ce6e.jpg"
+    }
+}

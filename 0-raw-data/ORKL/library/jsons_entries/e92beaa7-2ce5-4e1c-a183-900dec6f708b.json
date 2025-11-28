@@ -1,0 +1,142 @@
+{
+    "id": "e92beaa7-2ce5-4e1c-a183-900dec6f708b",
+    "created_at": "2023-01-12T15:01:57.943386Z",
+    "updated_at": "2025-03-27T02:15:46.044616Z",
+    "deleted_at": null,
+    "sha1_hash": "55dfbe1be6fd32a8845d24b269deba0d7e4bb5af",
+    "title": "2019-11-12 - Weeding out WannaMine v4.0- Analyzing and Remediating This Mineware Nightmare",
+    "authors": "",
+    "file_creation_date": "2022-05-28T16:12:24Z",
+    "file_modification_date": "2022-05-28T16:12:24Z",
+    "file_size": 2742415,
+    "plain_text": "# WannaMine v4: Analysis & Remediation\n\n**[crowdstrike.com/blog/weeding-out-wannamine-v4-0-analyzing-and-remediating-this-mineware-nightmare/](https://www.crowdstrike.com/blog/weeding-out-wannamine-v4-0-analyzing-and-remediating-this-mineware-nightmare/)**\n\nCollin Montenegro and Mark Robinson November 12, 2019\n\nAlthough the world of mineware is not new to the security industry, it continues to grow as\nadversaries develop new capabilities to compromise systems and turn them into bots used\nfor mining cryptocurrency. In this blog, we hope to provide some deeper insight into the world\nof mineware. We will discuss in-depth one of the most notorious mineware malware variants\nout there, “WannaMine.”\n\nOur deep dive will analyze the latest WannaMine variant currently being used in the wild,\ndubbed “WannaMine v4.0,” and outline how you can successfully identify and remediate a\nWannaMine v4.0 infected host.\n\n## Cryptojacking and WannaMine\n\nIn essence, cryptojacking is the unauthorized use of a computing device to mine\ncryptocurrency. It occurs when adversaries compromise an organization’s systems and use\ntheir resources to mine cryptocurrency, freeing them from having to purchase hardware and\n[electricity (more detailed information can be found in previous blogs on cryptomining and](https://www.crowdstrike.com/blog/cryptomining-harmless-nuisance-disruptive-threat/)\n[cryptojacking). Many times, this malicious mining occurs without the victim ever realizing it](https://www.crowdstrike.com/blog/whats-in-your-wallet-resource-draining-cryptojacking-attacks-are-on-the-rise-2/)\ndue to a lack of security monitoring.\n\nAs adversaries and cybercriminals searched for better ways to compromise hosts en masse,\nthe creation of a malware dubbed “WannaMine” was born. WannaMine is a mineware\nmalware variant created for the sole purpose of installing and running Monero software on a\n\n\n-----\n\nvictim s system and using its processing power to mine Monero for the adversary.\n[WannaMine plays on the naming convention used for the notorious ransomware mentioned](https://www.crowdstrike.com/epp-101/what-is-ransomware/)\n[at the beginning of the article, WannaCry. This is likely because WannaMine leverages](https://www.crowdstrike.com/resources/cyber-attack-news/wannacry-ransomware/)\nWannaCry’s exploitation code, “EternalBlue,” to compromise hosts and propagate the\nMonero mining software.\n\n## WannaMine v4.0 Analysis and Remediation Overview\n\nLike its predecessors, WannaMine v4.0 leverages the EternalBlue exploit to spread and\ncompromise vulnerable hosts. Its design is similar to WannaMine v3.0 in that it stores the\nEternalBlue exploit binaries in a directory located in C:\\Windows; however, the directory in\nversion 4.0 has been renamed “NetworkDistribution.” Instead of leveraging a single hardcoded service name like WannaMine v3.0, version 4.0 will randomly generate a .dll and\nservice name based on a list of hard-coded strings. It does this in order to maintain\npersistence on the host.\n\nWe will start with a quick high-level overview of the remediation steps that are needed, and\nthen follow with a more detailed step-by-step walk-through.\n\nThe remediation of WannaMine v4.0 can be broken into the following three steps:\n\n1. Killing the malicious processes (newly spawned or injected)\n2. Locating and removing the persistence mechanism (e.g., service)\n3. Removing artifacts (e.g., NetworkDistribution).\n\nThe following offers details on each step:\n\n## WannaMine v4.0 Step-by-Step Remediation\n\n_Note: there are 2 scenarios. Pre-infection (CrowdStrike Falcon® is already installed and_\n_preventions are on) and post-infection detections where Falcon has been installed on the_\n_client’s endpoints after infection, therefore blocking it. In some of the examples shown below_\n_we have turned on DETECTIONS ONLY and PREVENTIONS off for illustrative purposes._\n\n### STEP 1. Killing the Malicious svchost.exe and dllhostex.exe Processes\n\nAs you can see in Figure 1 and 2., Falcon will immediately block the launch of WannaMine’s\nmain XMRig mining module (dllhostex.exe) and then quarantine the binary. Since the\nprocess has been killed and the binary removed, we must find the svchost.exe process that\nis being used to run the malicious service and kill it.\n\nUsing Falcon’s process explorer, you can see that the parent process of dllhostex.exe is\nsvchost.exe.\n\n\n-----\n\nFigure 1. Process execution tree indicating svchost.exe as the parent process of dllhostex.exe\n\nFigure 2. Further detail of specific process information within the UIBy looking over the process details\n\nwithin Falcon, we can quickly grab the process ID associated with the svchost.exe that is running the\n\nmalicious WannaMine DLL.\n\n\n-----\n\nFigure 3-4. Process execution tree provides process ID information\n\nFrom there, we can query that specific svchost.exe process, via the process ID obtained\nfrom the Falcon UI, in order to gather the service group name being used for the malicious\nservice, in this case the netsvcs service group.\n\nFigure 5. PowerShell query to output svchost service group name. Note: This must be run within the “EDIT\n\n& RUN SCRIPTS” tab\n\n_Note: Depending on whether the SVCHOST is grouped (Microsoft refactored the way_\n_[SVCHOST groups services in Windows 10 1703; read about that here) or if it is a single](https://docs.microsoft.com/en-us/windows/application-management/svchost-service-refactoring)_\n_process, the removal process will vary. Windows 10, by default, will spawn an individual_\n_SVCHOST process per module but Windows 7 will group. Killing the grouped PID is not an_\n_option here as we want to minimize downtime for the clients we work with. Review Appendix_\n_A.3 for further insight into this grouping._\n\n\n-----\n\nTo be more specific, we can actually query the SVCHOST process using tasklist to output\nthe service name associated with it, which happens to be the exact name of the malicious\nWannaMine DLL.\n\nFigure 6. Tasklist output to display associated service name. Note: This must be run within the “EDIT &\n\nRUN SCRIPTS” tab.\n\nAs an extra step, you can also query the registry key that SVCHOST based on the service\ngroup name of “netsvcs” found in the image above.\n\nFrom the output below, we can see the “MicrosoftNetBIOSManager” DLL module that was\nadded to the netsvcs service group. This has the same name we found previously, using the\ncommands above.\n\nFigure 7. Registry query output showing newly added malicious dll module name\n\nBased on that information we can pivot and check the registry key where Windows services\nare stored to see if we find an associated service named “MicrosoftNetBIOSManager.” As\nexpected, we see that there is such an entry. Looking at the values stored within the\nParameters key we find the exact path to the malicious .dll:\n\nFigure 8. Registry query command to output path location to .dll on disk\n\nFigure 9. Output of registry query command showing path location to the malicious .dllTo confirm that this\n\nis the malicious DLL we are looking for, we can calculate the hash for the binary\n\nFigure 10. Built-in RTR command to gather filehash information.\n\n\n-----\n\nFigure 11. Output of the filehash command for the malicious .dll\n\nOnce we have the hash of the DLL, we notice that this has not been seen in VirusTotal,\nwhich is abnormal for a legitimate Windows dll stored in the System32 or SysWow64\ndirectories.\n\nIn our lab environment, we infected a Windows 10 host at a specific date and time. Once\ninfected, we inspected the creation timestamp of the malicious DLL. The time stamp\nprovided was invalid, stating the DLL was created months prior to the initial infection. This\nindicated timestomping techniques had been used.\n\nFigure 12-13. Shows a creation date that pre-dated the in-lab installation\n\nA clearer indication is seen on a Windows 7 host where the timestomping goes back to 2009.\n(See A.2 Timestomping Example.)\n\nFigure 14. Another image showing timestomping being used on a Windows 7 host\n\nReviewing the compiler timestamp for the binary, you can see that it was created recently —\nin 2019 and not 2009.\n\n\n-----\n\nFigure 15. Reviewing compiler timestamp information that proves timestomping is in fact being used\n\nAnother method to highlight the malicious dll being loaded by SVCHOST comes from outlier\nanalysis (Figure 16.). We see the hard-coded path for MicrosoftNetBIOSManager (Figure\n17.) which is odd and adds context to the above indicating this isn’t native to the OS.\n\nFigure 16. Registry query used to show further outlier information indicating the difference between the\n\nknown legitimate and malicious .dll. Note: This must be run within the “EDIT & RUN SCRIPTS” tab.\n\nAn example of the many ServiceDLL fields and what they look like before filtering again on\nthe hard-coded path C:\\Windows\\System32\\ as opposed to %systemroot%.\n\n\n-----\n\nFigure 17. Output of the registry command indicating the differences\n\nNow that we have confirmed the SVCHOST process is indeed the one associated with the\nmalicious WannaMine service, let’s kill the process. Gracefully stopping the service will end\nthe process.\n\nFigure 18. PowerShell command to stop the malicious service. Note: This must be run within the “EDIT &\n\nRUN SCRIPTS” tab.\n\n### STEP 2. Removing the Persistence\n\nWhile discovering and killing the svchost.exe process being used to launch the WannaMine\nservice, we found and confirmed the service name being used for persistence.\n\nNow we remove the service so WannaMine v4.0 no longer has persistence in place.\n\nFigure 19. Powershell command to remove the service after it has been stopped. Note: This must be run\n\nwithin the “EDIT & RUN SCRIPTS” tab.\n\n\n-----\n\nFigure 20. Output provided after running the service removal command\n\nJust like that, we have removed the malicious service and relinquished WannaMine v4.0’s\npersistence!\n\n### STEP 3. Removing Remaining Artifacts\n\nNow that we have killed the SVCHOST process and removed the persistence, it’s time to\nclean up and remove the remaining artifacts.\n\nBased on our research, WannaMine v4.0 has a few specific artifacts that it places on the\nhost. The first one is the NetworkDistribution folder located in C:\\Windows. This folder\ncontains all of the Equation Group binaries (e.g., EternalBlue, Double Pulsar, etc.) and needs\nto be removed.\n\n\n-----\n\nFigure 21. Depicts the folder named “NetworkDistribution” and some of its contents\n\nFigure 22. Command used to remove the entire directory\n\nThe next artifact to remove is the malicious DLL that we discovered in step one. This is\nlocated in C:\\Windows\\System32.\n\nFigure 23. Built-in RTR command used to remove the malicious .dll\n\nNext, we have the dllhostex.exe that is the binary that WannaMine v4.0 uses to run the\nXMRig miner module. As seen Figure 1, Falcon quarantines this binary; however, if it was\nnot quarantined you can find it in C:\\Windows\\System32.\n\nFigure 24. Built-in RTR command used to remove the XMRig miner module binary\n\nLastly, a registry entry that contains the descriptive text for the service.\n\nFigure 25. PowerShell command to remove the remaining registry artifact. Note: This must be run within\n\nthe “EDIT & RUN SCRIPTS” tab.\n\n\n-----\n\n### Completion\n\nCongratulations! If you followed the above steps, you have successfully discovered and\nremediated the pesky WannaMine v4.0 malware.\n\n## PowerShell Enumeration Script\n\nIn an effort to automate the remediation processing, we can leverage the RTR RUNSCRIPT\nfeature of the Falcon agent to easily create and save re-runnable scripts to help identify and\ntriage systems ready for remediation. Using a “query first then kill” methodology, you can\nconfirm a host is infected prior to running any remediation kill scripts. This helps our analysts\nquickly remediate systems at scale.\n\n### Remediation RTR Runscript Code\n\n\n-----\n\n-----\n\n-----\n\nFigure 26. Image of the full PowerShell runscript\n\n### RTR Runscript Output Example\n\n\n-----\n\nFigure 27. Output provided by the PowerShell runscript listing the artifacts found on the host\n\nFigure 28. Output provided by the PowerShell runscript listing the removal commands that you can use to\n\ncompletely remediate WannaMine v4.0\n\n## Recommendations\n\n\n-----\n\nGain advance visibility across your endpoints with an endpoint detection and response\n[(EDR) solution such as the CrowdStrike® Falcon platform. Turn on](https://www.crowdstrike.com/endpoint-security-products/falcon-platform/) next-gen antivirus\n(NGAV) preventative measures to stop malware.\nKeep systems up to date: Patch for MS17-010 to stop EternalBlue exploitation.\n[Segregate the network where possible to limit lateral movement.](https://www.crowdstrike.com/epp-101/lateral-movement/)\nMonitor / filter / block at the network level for known coinminer sites.\nDetect network scanning. Contain unapproved hosts as fast as you can.\n\n## CrowdStrike Solutions and Services\n\nCrowdStrike provides a wide range of solutions and services to help you identify and protect\nyour environment from the latest threats. The following is information on some of these\nsolutions and services. CrowdStrike provides the technology and expertise you need to\ncombat today’s advanced threats, including WannaMine v4.0.\n\n### Falcon Sandbox\n\nCrowdStrike Falcon Sandbox™ performs deep analysis of evasive and unknown threats,\n[enriches the results with threat intelligence, and delivers actionable indicators of compromise](https://www.crowdstrike.com/epp-101/threat-intelligence/)\n(IOCs), enabling your security team to better understand sophisticated malware attacks and\nstrengthen their defenses.\n\n[Learn more about Falcon Sandbox.](https://www.crowdstrike.com/endpoint-security-products/falcon-sandbox-malware-analysis/)\n\nTry it free by [visiting this website.](https://www.hybrid-analysis.com/)\n\n### Falcon Complete\n\nCrowdStrike Falcon Complete™ saves time and resources, and reduces cost by bringing\ncustomers to the highest level of endpoint security by combining CrowdStrike’s best\nprotection technologies with the people and processes necessary to provide a total handsoff, turnkey approach to endpoint protection.\n\nThe CrowdStrike Falcon Complete Team reduces the time needed to remediate endpoints by\nproviding the skills and expertise required to take proper action. The Team does the\nremediation for you, eliminating the arduous task of reimaging the endpoints and reducing\nthe risk of a breach.\n\nThe Falcon Complete Team has been following the numerous iterations of the WannaMine\nmalware and are well-versed in the removal of the latest variant, WannaMine v4. This\nremoval is done by taking a surgical approach and removing the many artifacts that\nWannaMine scatters on the host, all without having to reimage the system.\n\nFor further details regarding CrowdStrike’s Falcon Complete, visit the Falcon Complete\nwebpage.\n\n\n-----\n\n### Falcon X\n\nCrowdStrike Falcon X™ automates the threat analysis process and delivers actionable\nintelligence and custom IOCs specifically tailored for the threats encountered on your\nendpoints. With this level of automation, you can stop picking and choosing which threats to\nanalyze and start analyzing all threats. In addition, with Falcon X Premium, you have the\nability to escalate malware to a CrowdStrike expert for further research or a second opinion.\n\n[Learn more about Falcon X threat intelligence by visiting the webpage.](https://www.crowdstrike.com/endpoint-security-products/falcon-x-threat-intelligence/)\n\n## APPENDICES\n\n### A.1 LATERAL MOVEMENT\n\nPlease Note: In Figure 29, Falcon is configured to DETECT ONLY. Prevention was disabled\nto outline the lateral movement. If Falcon was in prevention mode, it would have prevented\nthe post exploitation activity.\n\nOn patient zero, the injected process, SearchIndexer.exe begins scanning the local subnet\nfor EternalBlue vulnerable hosts.\n\nFigure 29. Process execution information within the Falcon UI indicating network lateral movement\n\nNewly infected victim (Figure 30) has been found and exploited by EternalBlue. Notice\nLSASS process dropping out a new persistence SVCHOST service and newly generated dll.\n\n\n-----\n\nFigure 30. Process execution information within the Falcon UI showing signs of a newly infected victim\n\nthat was exploited via Eternal Blue\n\n### A.2 TIMESTOMPING EXAMPLE\n\nAgain, timestomping on the dll has occurred — even more notably than previously on our\npatient zero — to further evade detection, setting it back into 2009.\n\nFigure 31. Runscript output indicating timestomping being used\n\nFigure 32. Native RTR output indicating timestomping being used\n\n\n-----\n\nFigure 33. Image showing compiler timestamp for the binary\n\n### A.3 WINDOWS 7 SVCHOST GROUPING EXAMPLE\n\nWith a Windows 7 host, the SVCHOST grouping is also important: You should not kill off the\nPID as this would disrupt the OS and could cause instability with the host.\n\nFigure 34. Image showing numerous services grouped with this specific svchost process\n\nBy stopping the service gracefully, we can see it no longer shows under PID 996.\n\n\n-----\n\nFigure 35. Image showing the malicious service has been removed from the process without killing other\n\nlegitimate system services\n\n**Additional Resources**\n\n_Find out how CrowdStrike can help your organization answer its most important_\n_[security questions: Visit the CrowdStrike Services webpage.](https://www.crowdstrike.com/services/)_\n_Learn how any size organization can achieve optimal security with Falcon Complete by_\n_visiting the product webpage._\n_[Learn more about Falcon X threat intelligence by visiting the webpage.](https://www.crowdstrike.com/endpoint-security-products/falcon-x-threat-intelligence/)_\n_Learn about CrowdStrike’s comprehensive next-gen endpoint protection platform by_\n_visiting_ _[the Falcon products webpage.](https://www.crowdstrike.com/endpoint-security-products/)_\n_Test CrowdStrike next-gen AV for yourself:_ _[Start your free trial of Falcon Prevent™.](https://go.crowdstrike.com/try-falcon-prevent.html)_\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-11-12 - Weeding out WannaMine v4.0- Analyzing and Remediating This Mineware Nightmare.pdf"
+    ],
+    "report_names": [
+        "2019-11-12 - Weeding out WannaMine v4.0- Analyzing and Remediating This Mineware Nightmare.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "b740943a-da51-4133-855b-df29822531ea",
+            "created_at": "2022-10-25T15:50:23.604126Z",
+            "updated_at": "2025-03-27T02:00:55.505366Z",
+            "deleted_at": null,
+            "main_name": "Equation",
+            "aliases": [
+                "Equation"
+            ],
+            "source_name": "MITRE:Equation",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "08623296-52be-4977-8622-50efda44e9cc",
+            "created_at": "2023-01-06T13:46:38.549387Z",
+            "updated_at": "2025-03-27T02:00:02.859535Z",
+            "deleted_at": null,
+            "main_name": "Equation Group",
+            "aliases": [
+                "Tilded Team",
+                "EQGRP",
+                "G0020"
+            ],
+            "source_name": "MISPGALAXY:Equation Group",
+            "tools": [
+                "EquationLaser",
+                "EquationDrug",
+                "DoubleFantasy",
+                "TripleFantasy",
+                "GrayFish"
+            ],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "2d9fbbd7-e4c3-40e5-b751-27af27c8610b",
+            "created_at": "2024-05-01T02:03:08.144214Z",
+            "updated_at": "2025-03-27T02:05:17.419705Z",
+            "deleted_at": null,
+            "main_name": "PLATINUM COLONY",
+            "aliases": [
+                "Equation Group "
+            ],
+            "source_name": "Secureworks:PLATINUM COLONY",
+            "tools": [
+                " EquationDrug",
+                " EquationLaser",
+                " Fanny",
+                " GrayFish",
+                " TripleFantasy",
+                "DoubleFantasy"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "e0fed6e6-a593-4041-80ef-694261825937",
+            "created_at": "2022-10-25T16:07:23.593572Z",
+            "updated_at": "2025-03-27T02:02:09.879892Z",
+            "deleted_at": null,
+            "main_name": "Equation Group",
+            "aliases": [
+                "APT-C-40",
+                "Platinum Colony",
+                "Tilded Team"
+            ],
+            "source_name": "ETDA:Equation Group",
+            "tools": [
+                "Bvp47",
+                "DEMENTIAWHEEL",
+                "DOUBLEFANTASY",
+                "DanderSpritz",
+                "DarkPulsar",
+                "DoubleFantasy",
+                "DoubleFeature",
+                "DoublePulsar",
+                "Duqu",
+                "EQUATIONDRUG",
+                "EQUATIONLASER",
+                "EQUESTRE",
+                "Flamer",
+                "GRAYFISH",
+                "GROK",
+                "OddJob",
+                "Plexor",
+                "Prax",
+                "Regin",
+                "Skywiper",
+                "TRIPLEFANTASY",
+                "Tilded",
+                "UNITEDRAKE",
+                "WarriorPride",
+                "sKyWIper"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535717,
+    "ts_updated_at": 1743041746,
+    "ts_creation_date": 1653754344,
+    "ts_modification_date": 1653754344,
+    "files": {
+        "pdf": "https://archive.orkl.eu/55dfbe1be6fd32a8845d24b269deba0d7e4bb5af.pdf",
+        "text": "https://archive.orkl.eu/55dfbe1be6fd32a8845d24b269deba0d7e4bb5af.txt",
+        "img": "https://archive.orkl.eu/55dfbe1be6fd32a8845d24b269deba0d7e4bb5af.jpg"
+    }
+}

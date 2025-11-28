@@ -1,0 +1,67 @@
+{
+    "id": "2e914295-ae95-4a1d-be42-d27540fa589c",
+    "created_at": "2023-01-12T15:00:18.43Z",
+    "updated_at": "2025-03-27T02:08:41.297024Z",
+    "deleted_at": null,
+    "sha1_hash": "b955a14289f340a7d5bd271a51d8f1ef7fab1386",
+    "title": "2021-02-22 - Gh0stRat Anti-Debugging- Nested SEH (try - catch) to Decrypt and Load its Payload",
+    "authors": "",
+    "file_creation_date": "2022-05-28T21:51:20Z",
+    "file_modification_date": "2022-05-28T21:51:20Z",
+    "file_size": 748698,
+    "plain_text": "# Gh0stRat Anti-Debugging : Nested SEH (try - catch) to Decrypt and Load its Payload\n\n**[tccontre.blogspot.com/2021/02/gh0strat-anti-debugging-nested-seh-try.html](https://tccontre.blogspot.com/2021/02/gh0strat-anti-debugging-nested-seh-try.html)**\n\nSEH tricks is not a new Anti-Debugging trick. So many malware already used this to make\nthe manual debugging of its code time consuming and confusing. Today I will share how\nGh0strat malware make use of nested SEH exception (try{} catch) as anti-debugging trick to\nhide its decryption routine.\n\nThis article is not to tackle the full C++ Exception Internals, but to share how IDAPRO really\nhelps me in analyzing this type of anti-debugging tricks statically. :)\n\nSo lets start!!!\n\n## SEH:\n\nStructure Exception handler (SEH) is one of the classic Anti-debugging tricks used by\nmalware. where it tries to abuse the mechanism provided by operating system in managing\n\n\n-----\n\nexceptional situation like reference to a non-existence address pointer or execution of code\nin a read-only page.\n\nThis is done usually by locating the pointer to SEH linked list in the stack known to be the\nSEH frame. The current SEH frame address is located in 0x00 offset relative to the FS (x32\nbit) or GS selection (x64 bit).\n\nfigure 1: FS[0] of x32 bit OS\n\n\n-----\n\nfigure 2: The EXCEPTION_REGISTRATION_RECORD in FS[0]\n\nWhen the exception is triggered, control is transfer to the current SEH handler where it will\nreturn one of the _EXCEPTION_DISPOSITION members.\n\nIn this Gh0strat variant it used nested SEH (try{} catch{}) that serve as anti-debugging tricks\nto make the debugging more confusing or let say more time consuming if analyst didn't\nnotice the SEH.\n\n## Gh0srat: Nested SEH to decrypt its payload:\n\nThe sample we will use here contains a big data section where the encrypted gh0strat\npayload located. we will notice that using DIE tool or PE-bear that visualized the size of each\nsection with quite high entropy same as text section.\n\n\n-----\n\nfigure 3: high entropy of data section\n\nwe all know there are so many faster way to bypassed this anti-debugging technique like\nmonitoring the TIB offset 0x0 dynamically for next SEH or dumping process. In our case I will\njust want to share how IDA PRO will help you a lot in this case in traversing \"FuncInfo\"\nstructure since IDAPRO resolved most of this SEH structure.\n\nwhen you try to load the sample in debugger and breakpoint on some API let say, you may\nencounter some exception error shown in figure below. This is also a good hint that it may\nuse SEH technique.\n\n\n-----\n\nfigure 4: exception during debugging\n\nby further checking its code using IDAPRO I notice that it uses nested SEH. yes a nested\ntry{} catch{} exception handler to decrypt its payload. at the entry point of the malware code\nyou will notice right away the first exception handler function registered to FS:0. Exception\nwill be trigger by calling \"call  __CxxThrowException\" API.\n\n\n-----\n\nfigure 5: first SEH in malware entrypoint\n\nehFuncInfo or the exception handler function registered in FS:0 contains some structure that\nmay help us to figure out statically which exception handler function may be call upon the\nexception is trigger.\n\nI really recommend to read this great presentation of hexblog regarding the Exception and\nRTTI:\n_https://www.hexblog.com/wp-content/uploads/2012/06/Recon-2012-Skochinsky-Compiler-_\n_Internals.pdf_\n\nThe ehFuncInfo is a object structure that may lead you to the \"AddressOfHandler\" which is a\naddress or a function address that will handle the exception encounter of the current thread.\n\nIDAPRO really did a good job to give you some hint how to traverse that structure and lead\nyou the said structure member of HandlerType. FuncInfo structure contains several member\nso I will just focus on the member that helps me to decrypt the payload.\n\nBelow is a simple structure starting from \"FuncInfo\" that may help you to look for the\nAddressOfHandler field member of HandlerType structure.\n\n\n-----\n\nfigure 6: Traversing AddressOfhandler\n\nThe figure 6 shows that FuncInfo structure contains TryBlockMap field. this field is another\nstructure object that contains HandlerArray field structure that holds the AddressOfHandler\nfield. so to make use of this structure in our sample lets try to traverse the first SEH in\nmalware entry point.\n\n\n-----\n\nfigure 7: Traversing the AddressOfHandler of SEH in malware entry point\n\nWe saw that the possible Address that will handle the exception is in 0x40243d. It works in\ndynamically test I did with x64dbg where I put break point on this address after the exception\nthen press skip exception shift+f9.\n\nfigure 8: AddressOfHandler was triggered\n\nif we follow the call function 0x402200 pushing string address \"Shellex\" as a parameter. you\nwill notice again that it use another SEH to execute piece of its code. Not like the first SEH,\nthis SEH contains 9 tryblock and HandlerOfAddress like the figure below.\n\n\n-----\n\nfigure 9: multiple try Block Map\n\n## Parsing ehFuncInfo structure Using Ida python:\n\nIn this case I decided to use IdaPython to parse all the FrameHandler ehFuncInfo structure\nto locate all AddressOfHandler field available for all tryBlockMap entries and add it as a\ncode reference comment in its IDB. This approach help me to figure out where the\ndecryption routine and learn multi line comment in idapython :).\n\nthe script is available here:\nhttps://github.com/tccontre/KnowledgeBase/tree/main/malware_re_tools/gh0strat_seh_helpe\nr\n\n\n-----\n\nfigure 10A: before running the script\n\nfigure 10B: IDB after running the script\n\n\n-----\n\nnow with this comment we can verify all possible AddressOfHandler in each tryBlockMap\nentry to locate the decryption routine. Like the figure above, the first AddressOfHandler isa\nfunction waiting for the decryption key, size of the encrypted payload and the address of the\nencrypted payload.\n\nfigure 11: decryption routine\n\nand once you decrypt the payload using this simple xor decryption routine. you can see right\naway some note worthy string of gh0strat like keylogging, creating services, regrun,\ndownload files, backdoor and etc.\n\n\n-----\n\nfigure 12: strings upon decryption\n\n## Conclusion:\n\nIn this article we just focus on some basic internals of SEH frameHandler and how to look for\nall possible HandlerOfAddress that may executed upon the trigger of registered SEH. we\nalso learned how IDAPRO did a really good job in giving you all the needed structure for try\nblock entries where you can use IDApython to make your static analysis more easier. :)\n\n## IOC:\n\nhttps://bazaar.abuse.ch/sample/70ac339c41eb7a3f868736f98afa311674da61ae12164042e4\n4d6e641338ff1f/\n\n## yara:\n\nimport \"pe\"\n\nrule gh0st_rat_loader {\nmeta:\n\n\n-----\n\nauthor = tcontre\ndescription = \"detecting gh0strat_loader\"\ndate = \"2021-02-22\"\nsha256 = \"70ac339c41eb7a3f868736f98afa311674da61ae12164042e44d6e641338ff1f\"\n\nstrings:\n$mz = { 4d 5a }\n\n$code = { 40 33 FF 89 45 E8 57 8A 04 10 8A 14 0E 32 D0 88 14 0E FF 15 ?? ?? ?? ??\n8B C6 B9 ?? 00 00 00 }\n$str1 = \"Shellex\"\n$str2 = \"VirtualProtect\"\n\ncondition:\n($mz at 0) and $code and all of ($str*)\n\n}\n\nrule gh0st_rat_payload {\nmeta:\nauthor = \"tcontre\"\ndescription = \"detecting gh0strat_payload in memory without MZ header in memory\"\ndate = \"2021-02-22\"\nsha256 = \"edffd5fc8eb86e2b20dd44e0482b97f74666edc2ec52966be19a6fe43358a5db\"\n\nstrings:\n$dos = \"DOS mode\"\n$av_str1 = \"f-secure.exe\"\n$av_str2 = \"Mcshield.exe\"\n$av_str3 = \"Sunbelt\"\n$av_str4 = \"baiduSafeTray.exe\"\n\n$clsid = \"{4D36E972-E325-11CE-BFC1-08002BE10318}\"\n$s1 = \"[WIN]\"\n$s2 = \"[Print Screen]\"\n$s3 = \"Shellex\"\n$s4 = \"HARDWARE\\\\DESCRIPTION\\\\System\\\\CentralProcessor\\\\0\"\n$s5 = \"%s\\\\%d.bak\"\n\ncondition:\n\n\n-----\n\n($dos at 0x6c) and 2 of ($av_str ) and 4 of ($s ) and $clsid\n\n}\n\nReferences:\nhttps://www.hexblog.com/wp-content/uploads/2012/06/Recon-2012-Skochinsky-CompilerInternals.pdf\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-02-22 - Gh0stRat Anti-Debugging- Nested SEH (try - catch) to Decrypt and Load its Payload.pdf"
+    ],
+    "report_names": [
+        "2021-02-22 - Gh0stRat Anti-Debugging- Nested SEH (try - catch) to Decrypt and Load its Payload.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535618,
+    "ts_updated_at": 1743041321,
+    "ts_creation_date": 1653774680,
+    "ts_modification_date": 1653774680,
+    "files": {
+        "pdf": "https://archive.orkl.eu/b955a14289f340a7d5bd271a51d8f1ef7fab1386.pdf",
+        "text": "https://archive.orkl.eu/b955a14289f340a7d5bd271a51d8f1ef7fab1386.txt",
+        "img": "https://archive.orkl.eu/b955a14289f340a7d5bd271a51d8f1ef7fab1386.jpg"
+    }
+}

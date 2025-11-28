@@ -1,0 +1,139 @@
+{
+    "id": "983b9b4e-ba78-462d-a7cc-b461d56c8c29",
+    "created_at": "2023-01-12T15:01:34.810883Z",
+    "updated_at": "2025-03-27T02:16:44.34324Z",
+    "deleted_at": null,
+    "sha1_hash": "f08fb5d5626173af644e4801f4fe1d1de8fbd4c9",
+    "title": "2017-03-27 - Detecting and mitigating elevation-of-privilege exploit for CVE-2017-0005",
+    "authors": "",
+    "file_creation_date": "2022-05-28T21:53:59Z",
+    "file_modification_date": "2022-05-28T21:53:59Z",
+    "file_size": 785474,
+    "plain_text": "# Detecting and mitigating elevation-of-privilege exploit for CVE-2017- 0005\n\n**[microsoft.com/security/blog/2017/03/27/detecting-and-mitigating-elevation-of-privilege-exploit-for-cve-2017-0005/](https://www.microsoft.com/security/blog/2017/03/27/detecting-and-mitigating-elevation-of-privilege-exploit-for-cve-2017-0005/)**\n\nMarch 27, 2017\n\n[On March 14, 2017, Microsoft released security bulletin MS17-013 to address CVE-2017-0005, a vulnerability in](https://technet.microsoft.com/en-us/library/security/ms17-013.aspx)\nthe Windows Win32k component that could potentially allow elevation of privileges. A report from a trusted\npartner identified a zero-day exploit for this vulnerability. The exploit targeted older versions of Windows and\nallowed attackers to elevate process privileges on these platforms.\n\nIn this article, we walk through the technical details of the exploit and assess the performance of tactical\nmitigations in Windows 10 Anniversary Update—released in August, 2016—as well as strategic mitigations like\nSupervisor Mode Execution Prevention (SMEP) and virtualization-based security (VBS). We also show how\n[upcoming Creators Update enhancements to Windows Defender Advanced Threat Protection (Windows](https://blogs.microsoft.com/microsoftsecure/2017/03/13/whats-new-in-the-windows-defender-atp-creators-update-preview/)\nDefender ATP) can detect attacker elevation-of-privilege (EoP) activity, including EoP activities associated with\nthe exploit.\n\nTo test how Windows Defender ATP can help your organization detect, investigate, and respond to advanced\nattacks, **[sign up for a free trial.](https://www.microsoft.com/en-us/windowsforbusiness/windows-atp?ocid=cx-blog-mmpc)**\n\n## Zero-day elevation-of-privilege exploit\n\nUpon review of its code, we found that this zero-day EoP exploit targets computers running Windows 7 and\nWindows 8. The exploit has been created so that it avoids executing on newer platforms.\n\nThe exploit package unfolds in four stages:\n\n_Figure 1. Execution stages of the exploit package and corresponding functionality_\n\n### Stages 1 and 2 – Decryptor and API resolver\n\nTo protect the main exploit code, attackers have encrypted the initial stage PE file using AES-256 algorithm. To\nload code for the next stage, a password must be passed as a parameter to the main entry function. Using the\n_[CryptHashData API, the password is used as a key to decrypt the loader for the next stage.](https://msdn.microsoft.com/en-us/library/windows/desktop/aa380202(v=vs.85).aspx)_\n\n\n-----\n\nStage 2 acts as an intermediate stage where API resolution is performed. API resolution routines in this stage\nresemble how shellcode or position-independent code works.\n\n[The following code shows part of the GetProcAddress API resolution routine. This code appears to obfuscate the](https://msdn.microsoft.com/en-us/library/windows/desktop/ms683212(v=vs.85).aspx)\nsucceeding payload and stifle analysis.\n\n_Figure 2. Locating kernel32!GetProcAddress location using EAT traverse_\n\n### Stage 3 – Avoiding newer platforms\n\nIn stage 3, the exploit package performs environmental checks, specifically to identify the operating system\nplatform and version number. The attacker ensures that the exploit code runs on vulnerable systems that have\nfewer built-in mitigations, particularly Windows 7 and Windows 8 devices.\n\n\n-----\n\n_Figure 3. Code that performs environmental checks_\n\nAnalysis of the exploit code reveals targeting of systems running specific versions of Windows:\n\nMajor release version 5\nMajor release version 6 and minor version 0, 1, or 2\n\n[These versions map to Windows operating systems between Windows 2000 and Windows 8, notably excluding](https://msdn.microsoft.com/en-us/library/windows/desktop/ms724832(v=vs.85).aspx)\nWindows 8.1 and Windows 10. Also, upon examination of its architecture-checking routine, we find that the\nexploit code targets 64-bit systems.\n\nThe next stage payload is loaded through DLL reflection.\n\n### Stage 4 – Exploit routine\n\nAfter the environmental checks, the attacker code begins actual exploit of the Windows kernel vulnerability CVE2017-0005, resulting in arbitrary memory corruption and privileged code execution.\n\n**_PALETTE.pfnGetNearestFromPalentry corruption_**\n\n\n-----\n\nCode execution in the kernel space is made possible by a corrupted pointer in the\n_PALETTE.pfnGetNearestFromPalentry function. Microsoft security researchers have been closely tracking this_\nexploitation technique, which is designed to execute code in the kernel courtesy of a malformed PALETTE object.\nObserved in an unrelated sample used during the Duqu incident, we have described this relatively old exploit\n[technique in a Virus Bulletin 2015 presentation.](https://www.virusbulletin.com/uploads/pdf/conference_slides/2015/OhFlorio-VB2015.pdf)\n\nThe following snippet shows the corrupted state of the PALETTE function pointer:\n\n_Figure 4. PALETTE.pfnGetNearestFromPalentry corruption_\n\n[The exploit code calls the native API NtGdiEngBitBlt to trigger an win32k!XLATEOBJ_iXlate function call that](https://msdn.microsoft.com/en-us/library/windows/hardware/ff570642(v=vs.85).aspx)\nuses the corrupted handler. This passes the control flow to a previously allocated shellcode. As a comparison,\n[the exploit code in the Duqu 2.0 case used a GetNearestPaletteIndex call from Gdi32.dll to pass execution to the](https://msdn.microsoft.com/en-us/library/windows/desktop/dd144903(v=vs.85).aspx)\ncorrupt callback handler. This difference clearly indicates that these two exploits are unrelated, despite\nsimilarities in their code—similarities that can be attributed to the fact that these exploitation techniques are welldocumented.\n\nThe exploit uses dynamically constructed syscall code snippets to call native Windows APIs.\n\n_Figure 5. Dynamically constructed calls to kernel functions_\n\nDuring the execution of the shellcode, the call stack looks like following:\n\n_Figure 6. Example of the call stack when passing control flow using the corrupted function handler_\n\n\n-----\n\nOnce the shellcode is executed, the exploit uses a common token swapping technique to obtain elevated,\nSYSTEM privileges for the current process. This technique is often observed in similar EoP exploits.\n\n_Figure 7. Token-swapping shellcode_\n\n## Mitigation and detection\n\nAs previously mentioned, this zero-day exploit does not target modern systems like Windows 10. If environmental\nchecks in the exploit code are bypassed and it is forced to execute on such systems, our tests indicate that the\nexploit would be unable to completely execute, mitigated by additional layers of defenses. Let’s look at both the\ntactical mitigations—medium-term mitigations designed to break exploitation techniques—as well as the strategic\nmitigations—durable, long-term mitigations designed to eliminate entire classes of vulnerabilities—that stop the\nexploit.\n\n### Tactical mitigation – prevention of pfnGetNearestFromPalentry abuse\n\nThe use of PALETTE.pfnGetNearestFromPalentry as a control transfer point has been tracked by Microsoft\nsecurity researchers for quite some time. In fact, this method is on the list tactical mitigations we have been\npursuing. In August 2016, with the Windows 10 Anniversary Update, Microsoft released tactical mitigation\n\n\n-----\n\ndesigned to prevent the abuse of pfnGetNearestFromPalentry. The mitigation checks the validity of PALETTE\nfunction pointers when they are called, ensuring that only a predefined set of functions are called and preventing\nany abuse of the structure.\n\n### Strategic mitigations\n\nOther than the described tactical mitigation, this exploit could also be stopped in Windows 10 by SMEP, ASLR\nimprovements in Windows kernel 64-bit, and virtualization-based security (VBS).\n\n**Supervisor Mode Execution Prevention (SMEP)**\n\nSMEP is a strategic mitigation feature supported by newer Intel CPUs and adopted since Windows 8.\n\nWith SMEP, bits in the page table entry (PTE) serve as User/Supervisor (U/S) flags that designate the page to be\neither in user mode or kernel mode. If a user-mode page is called from kernel-mode code, SMEP generates an\naccess violation and the system triggers a bug check that halts code execution and reports a security violation.\nThis mechanism broadly stops attempts at using user-mode allocated executable pages to run shellcode in\nkernel mode, a common method used by EoP exploits.\n\n_Figure 8. SMEP capturing exploit attempt_\n\nStrategic mitigation like SMEP can effectively raise the bar for a large pool of attackers by instantly rendering\nhundreds of EoP exploits ineffective, including old-school exploitation methods that call user-mode shellcode\ndirectly from the kernel, such as the zero-day exploit for CVE-2017-0005.\n\n[To check whether a computer supports SMEP, one can use the Coreinfo tool. The tool uses CPUID instructions](https://technet.microsoft.com/en-us/sysinternals/cc835722.aspx)\nto show the sets of CPUs and platforms that should support the feature. The following screen shows that the\ntested CPU supports SMEP. SMEP is supported on Windows 8 and later.\n\n\n-----\n\n_Figure 9. Coreinfo shows whether SMEP is enabled_\n\n**Windows kernel 64-bit ASLR improvements**\n\nAlthough attackers are forced to work harder to create more sophisticated exploits with SMEP, we do know from\nstudies shared in security conferences and documented incidents that there are ways to potentially bypass\nSMEP mitigation. These bypass mechanisms include the use of kernel ROP gadgets or direct PTE modifications\nthrough read-write (RW) primitives. To respond to these foreseeable developments in exploitation techniques,\n[Microsoft has provided Windows kernel 64-bit ASLR improvements with the Windows 10 Anniversary Update and](https://www.blackhat.com/docs/us-16/materials/us-16-Weston-Windows-10-Mitigation-Improvements.pdf)\nhas made SMEP stronger with randomized kernel addresses, mitigating a bypass vector resulting from direct\nPTE corruption.\n\n_Figure 10. Windows Kernel 64-bit ASLR improvements_\n\n**Virtualization-based security (VBS)**\n\n\n-----\n\nVirtualization based security (VBS) enhancements provide another layer of protection against attempts to\n[execute malicious code in the kernel. For example, Device Guard blocks code execution in a non-signed area in](https://technet.microsoft.com/en-us/itpro/windows/keep-secure/introduction-to-device-guard-virtualization-based-security-and-code-integrity-policies)\n[kernel memory, including kernel EoP code. Enhancements in Device Guard also protect key MSRs, control](https://blogs.technet.microsoft.com/ash/2016/03/02/windows-10-device-guard-and-credential-guard-demystified/)\nregisters, and descriptor table registers. Unauthorized modifications of the CR4 control register bitfields, including\nthe SMEP field, are blocked instantly.\n\n### Windows Defender ATP detections\n\nWith the upcoming Creators Update release, Windows Defender ATP will be able to detect attempts at a SMEP\nbypass through CR4 register modifications. Windows Defender ATP will monitor the status of the CR4.SMEP bit\nand will report inconsistencies. In addition to this, Windows Defender ATP will detect token-swapping attempts by\nmonitoring the state of the token field of a process structure.\n\nThe following screenshot shows Windows Defender ATP catching exploit code performing the token-swapping\ntechnique to elevate privileges.\n\n_Figure 11. Detection of token-swapping technique on Windows Defender ATP_\n\n## Conclusion: Resiliency with mitigation and behavioral detection\n\nThe zero-day exploit for CVE-2017-0005 shied away from newer systems because it would have simply been\nstopped and would have only managed to get unnecessary exposure. Attackers are not so much focusing on\nlegacy systems but avoiding security enhancements present in modern hardware and current platforms like\nWindows 10 Anniversary Update. While patches continue to provide single-point fixes for specific vulnerabilities,\nthis attacker behavior highlights how built-in exploit mitigations like SMEP, the ASLR improvements, and\nvirtualization-based security (VBS) are providing resiliency.\n\n[Windows Defender ATP with Creators Update—now available for public preview—extends defenses further by](https://blogs.microsoft.com/microsoftsecure/2017/03/13/whats-new-in-the-windows-defender-atp-creators-update-preview/)\ndetecting exploit behavior on endpoints. With the upcoming enhancements, Windows Defender ATP could raise\nalerts so that SecOps personnel are immediately made aware of EoP activity and can respond accordingly. Read\n[our previous post about uncovering cross-process injection to learn more about how Windows Defender ATP](https://blogs.technet.microsoft.com/mmpc/2017/03/08/uncovering-cross-process-injection-with-windows-defender-atp/)\ndetects sophisticated breach activity.\n\n\n-----\n\nIn addition to strengthening generic detection of EoP exploits, Microsoft security researchers are actively\ngathering threat intelligence and indicators attributable to ZIRCONIUM, the activity group using the CVE-20170005 exploit. Comprehensive threat intelligence about activity groups and their attack methods are available to\nWindows Defender ATP customers.\n\n[Windows Defender ATP is built into the core of Windows 10 Enterprise and can be evaluated free of charge.](https://www.microsoft.com/en-us/windowsforbusiness/windows-atp?ocid=cx-blog-mmpc)\n\n**Matt Oh**\n_Windows Defender ATP Research Team_\n\n**Talk to us**\n\n[Questions, concerns, or insights on this story? Join discussions at the Microsoft community and](https://answers.microsoft.com/en-us/protect) Windows\nDefender Security Intelligence\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2017/2017-03-27 - Detecting and mitigating elevation-of-privilege exploit for CVE-2017-0005.pdf"
+    ],
+    "report_names": [
+        "2017-03-27 - Detecting and mitigating elevation-of-privilege exploit for CVE-2017-0005.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "9e6186dd-9334-4aac-9957-98f022cd3871",
+            "created_at": "2022-10-25T15:50:23.357398Z",
+            "updated_at": "2025-03-27T02:00:55.452383Z",
+            "deleted_at": null,
+            "main_name": "ZIRCONIUM",
+            "aliases": [
+                "APT31",
+                "Violet Typhoon"
+            ],
+            "source_name": "MITRE:ZIRCONIUM",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "774f15f7-832e-4cd4-a1fa-ec6a838f2a40",
+            "created_at": "2022-10-25T16:47:55.641406Z",
+            "updated_at": "2025-03-27T02:05:17.29791Z",
+            "deleted_at": null,
+            "main_name": "BRONZE VINEWOOD",
+            "aliases": [
+                "Judgment Panda ",
+                "ZIRCONIUM ",
+                "APT31 "
+            ],
+            "source_name": "Secureworks:BRONZE VINEWOOD",
+            "tools": [
+                " HanaLoader",
+                " Metasploit",
+                " Mimikatz",
+                " Reverse ICMP shell",
+                " Trochilus",
+                "DropboxAES RAT"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "dc7ee503-9494-4fb6-a678-440c68fd31d8",
+            "created_at": "2022-10-25T16:07:23.349177Z",
+            "updated_at": "2025-03-27T02:02:09.748159Z",
+            "deleted_at": null,
+            "main_name": "APT 31",
+            "aliases": [
+                "APT 31",
+                "Bronze Vinewood",
+                "Judgment Panda",
+                "Red Keres",
+                "RedBravo",
+                "TA412",
+                "Violet Typhoon",
+                "Zirconium"
+            ],
+            "source_name": "ETDA:APT 31",
+            "tools": [
+                "9002 RAT",
+                "Agent.dhwf",
+                "AngryRebel",
+                "CHINACHOPPER",
+                "China Chopper",
+                "Destroy RAT",
+                "DestroyRAT",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "GrewApacha",
+                "HOMEUNIX",
+                "HiKit",
+                "HidraQ",
+                "Homux",
+                "Hydraq",
+                "Kaba",
+                "Korplug",
+                "McRAT",
+                "MdmBot",
+                "Moudour",
+                "Mydoor",
+                "PCRat",
+                "PlugX",
+                "RedDelta",
+                "Roarur",
+                "Sakula",
+                "Sakula RAT",
+                "Sakurel",
+                "SinoChopper",
+                "Sogu",
+                "TIGERPLUG",
+                "TVT",
+                "Thoper",
+                "Trochilus RAT",
+                "Xamtrav"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535694,
+    "ts_updated_at": 1743041804,
+    "ts_creation_date": 1653774839,
+    "ts_modification_date": 1653774839,
+    "files": {
+        "pdf": "https://archive.orkl.eu/f08fb5d5626173af644e4801f4fe1d1de8fbd4c9.pdf",
+        "text": "https://archive.orkl.eu/f08fb5d5626173af644e4801f4fe1d1de8fbd4c9.txt",
+        "img": "https://archive.orkl.eu/f08fb5d5626173af644e4801f4fe1d1de8fbd4c9.jpg"
+    }
+}

@@ -1,0 +1,42 @@
+{
+    "id": "99e03aa5-beab-46a8-a781-11e70ad539d1",
+    "created_at": "2023-01-12T15:08:57.499859Z",
+    "updated_at": "2025-03-27T02:06:05.875912Z",
+    "deleted_at": null,
+    "sha1_hash": "f4b6af744ff697c09ae1f23729c026797602d7ab",
+    "title": "2013-12-09 - The Curious Case of the Malicious IIS Module",
+    "authors": "",
+    "file_creation_date": "2022-05-28T02:12:19Z",
+    "file_modification_date": "2022-05-28T02:12:19Z",
+    "file_size": 550614,
+    "plain_text": "# The Curious Case of the Malicious IIS Module\n\n**[trustwave.com/Resources/SpiderLabs-Blog/The-Curious-Case-of-the-Malicious-IIS-Module/](https://www.trustwave.com/Resources/SpiderLabs-Blog/The-Curious-Case-of-the-Malicious-IIS-Module/)**\n\nRecently, we've seen a few instances of a malicious DLL that is installed as an IIS module\nmaking its rounds in forensic cases. This module is of particular concern as it is currently\nundetectable by almost all anti-virus products. The malware is used by attackers to target\nsensitive information in POST requests, and has mechanisms in place for data exfiltration.\nEncryption is circumvented as the malware extracts this data from IIS itself. This was seen\ntargeting credit card data on e-commerce sites, however, it could also be used to steal\nlogins, or any other sensitive information sent to a compromised IIS instance. Please note\n_that this is not related in any way to the recent 'Pony' malware that was reported. Pony_\n_targets the end-users, while this malware goes after the web servers themselves._\n\nOne of my YARA rulesets that I created for this family of malware triggered, leading me to\nthe following:\n\nhttps://www.virustotal.com/en/file/587e784f8c54b49f25c01e0e8f71c205bd422e2b673fb7fbf\n28d721aa768e055/analysis/\n\nAs it turns out, this happens to be the original installer for the IIS module I'm referring to,\nand it seemed like the perfect time to throw a write-up together. I decided to write this post\nfor a couple of reasons:\n\n\n-----\n\n1. At the time of writing this post, anti-virus do not currently detect any of the IIS modules\n\ndropped by this malware. Even the installer is only picked up by a handful of anti-virus\nproducts, and in all cases it's simply generic heuristic detection. I'm using this post as\na way of notifying anti-virus vendors so that specific detections for this malware may\nbe written.\n2. I think the malware is pretty neat.\n\nSo with that, let's talk about this thing. For the sake of my own sanity, I'm going to be\nreferring to this malware as 'ISN' going forward, as this three character string is referenced\nin all of the malware's exfiltration commands.\n\nLet's take a look at the installer first. The file can take a number of arguments, as you can\nsee below:\n\n-path : [Location where malware is installed]\n-i : [List of URI paths to be targeted, such as '/sensitive.aspx'\n-u : [Uninstall malware]\n-is632 : [Manually instruct malware that victim is IIS6 32-Bit]\n-is664 : [Manually instruct malware that victim is IIS6 64-Bit]\n\nIn truth, the installer is quite simple. It has four embedded DLLs (in the PE resource section)\nthat are dropped depending on the victim. There are IIS modules for the following:\n\nIIS6 32-Bit\nIIS6 64-Bit\nIIS7+ 32-Bit\nIIS7+ 64-Bit\n\nAdditionally, the ISN malware has a VBS file that is also embedded as a PE resource (See\nthe reference section below for full output and VirusTotal link). This VBS file is used to install\nor remove the DLLs as an IIS module.\n\nOnce run, ISN will perform the following:\n\n1. Drop the VBS file to the location specified by '-path', or the current working directory.\n\nThis file is removed before the ISN installer is finished.\n2. Create a configuration file ([filename].cfg) in the same directory. This file contains a list\n\nof\n3. URIs that are targeted by the malware.\n4. Detect the IIS version as well as the victim architecture.\n5. Drop the appropriate DLL to the installation directory.\n6. Call the VBS file in order to install the DLL as an IIS module.\n\nThe malicious IIS module is installed as whatever the name of the executable is. For my\ndemonstration, I've named the malware 'isn.exe', which results in the following:\n\n\n-----\n\nAs the installation process takes place, a log file named '[filename].log' is created and a\nnumber of debugging statements are written to it.\n\nOnce the module is successfully installed, it will monitor the URIs specified in the\nconfiguration file and dump any POST requests encountered to the '[filename].log' file. The\nmodule will also monitor the QUERY_STRING parameter, and can accept a number of\ncommands. I've setup a simple IIS instance to demonstrate how this process takes place.\n\nAs we can see below, I've created a simple web form that would mimic an actual ecommerce site. A user would enter their name and credit card number and submit the\ninformation, which is simply replayed back to them in '/buy.aspx'.\n\n\n-----\n\nI've also setup a self-signed certificate so that all of the communicate takes place over SSL.\n\n\n-----\n\nHowever, this transaction took place on an IIS instance with the ISN malware. The\nconfiguration has been set to track POST requests to '/buy.aspx'. As we see below, when\nthis POST request occurs, the ISN malware creates a log file with this information stored in\nthe clear.\n\nNow, I mentioned earlier that the ISN malware monitors QUERY_STRING parameters.\nSpecifically, it will look for the following commands:\n\nisn_getlog – return the contents of the isn.log file\nisn_logdel – delete the isn.log file\nisn_logpath – return the path of the isn.log file\n\nThese commands can be sent remotely simply by providing them as a GET parameter.\n\n'isn_getlog' example:\n\n'isn_logdel' example:\n\n\n-----\n\n'isn_logpath' example:\n\nOverall, this malware does not appear to be widely spread and has only been seen in a few\nforensic case instances. However, the extremely low detection rate in collaboration with the\nmalware's targeted functionality makes this a very real threat.\n\nTrustwave's WebDefend and ModSecurity can be used to both block the initial point of\ninfection for this malware and detect whether sensitive user data such as credit card\nnumbers appear in outbound data.\n\n**Reference**\n\nInstaller (9/48) https://www.virustotal.com/en/file/587e784f8c54b49f25c01e0e8f71c205bd422e2b673fb7fbf\n28d721aa768e055/analysis/\n\nVBS File (0/49) https://www.virustotal.com/en/file/688b80289a0c3771c7cee689c50a61b1c5215e8e5ac39a1\n120b3c7e4f4ada002/analysis/\n\nIIS6 64-Bit (0/49) https://www.virustotal.com/en/file/956ed56ecc574f68b637e22add7c8e3cb0deea3b1e0dd02\nabea165bfcb7e3786/analysis/\n\nIIS6 32-Bit (0/47) https://www.virustotal.com/en/file/9f501c052f2d4f4b0954f6060c7111f272ae29f9d88188d37c\n961c38e13e3905/analysis/\n\nIIS7+ 64-Bit (0/46) https://www.virustotal.com/en/file/c6847600910ab196652a38e94ecf592e645d43025d1d61b\n3710b2f715238307b/analysis/\n\n\n-----\n\nIIS7+ 32-Bit (0/47) https://www.virustotal.com/en/file/157174f0b9be66e3c9090c95efdd1dd23b19e42aa671758\nebac5540a173f760c/analysis/\n\nContent of VBS File - [https://gist.github.com/jgrunzweig/7840987](https://gist.github.com/jgrunzweig/7840987)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2013/2013-12-09 - The Curious Case of the Malicious IIS Module.pdf"
+    ],
+    "report_names": [
+        "2013-12-09 - The Curious Case of the Malicious IIS Module.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673536137,
+    "ts_updated_at": 1743041165,
+    "ts_creation_date": 1653703939,
+    "ts_modification_date": 1653703939,
+    "files": {
+        "pdf": "https://archive.orkl.eu/f4b6af744ff697c09ae1f23729c026797602d7ab.pdf",
+        "text": "https://archive.orkl.eu/f4b6af744ff697c09ae1f23729c026797602d7ab.txt",
+        "img": "https://archive.orkl.eu/f4b6af744ff697c09ae1f23729c026797602d7ab.jpg"
+    }
+}

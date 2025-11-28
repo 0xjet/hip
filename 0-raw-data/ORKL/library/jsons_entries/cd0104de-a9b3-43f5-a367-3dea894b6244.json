@@ -1,0 +1,108 @@
+{
+    "id": "cd0104de-a9b3-43f5-a367-3dea894b6244",
+    "created_at": "2023-01-12T15:00:25.069505Z",
+    "updated_at": "2025-03-27T02:16:26.346046Z",
+    "deleted_at": null,
+    "sha1_hash": "b3855c10b1552c5dadfa7d4a430544a2cd36d1e8",
+    "title": "2019-06-27 - Tracking driver inventory to unearth rootkits",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:42:19Z",
+    "file_modification_date": "2022-05-28T19:42:19Z",
+    "file_size": 804913,
+    "plain_text": "# See what it's like to have a partner in the fight.\n\n**[redcanary.com/blog/tracking-driver-inventory-to-expose-rootkits/](https://redcanary.com/blog/tracking-driver-inventory-to-expose-rootkits/)**\n\n_[Our colleague Keya Horiuchi recently described a threat detection where the Local Security](https://redcanary.com/authors/keya-horiuchi/)_\n_Authority Subsystem Service (LSASS) initiated a series of suspicious processes and_\n_attempted to install a trojan on a customer endpoint. In this post, we’re going to discuss_\n_what turned up when we pivoted off information from a very similar detection._\n\nThreat hunting is fundamentally about pivoting and discovering new techniques or artifacts\nthat you may have missed previously, which is precisely how we discovered some intriguing\ndriver activity a few months back. Kernel-mode drivers function at a low level in the\noperating system, which can be problematic because malicious or vulnerable drivers—\nespecially signed ones—can provide a stealthy, privileged position to conduct malicious\nactivity.\n\n\n-----\n\nOf course, driver and other signatures are meant to provide assurances for identity and\nintegrity—not intent or capability. In this case, the driver in question was signed; it was also\na de facto rootkit. However, there was suspicious activity prior to its installation, and the\nancillary activity might be useful in detecting this and similarly inconspicuous threats moving\nforward.\n\n## An intriguing driver\n\nAn important part of incident response is to examine all of the binaries that dropped on a\nsystem around the time of a malicious event. And that’s exactly how we stumbled on this\nparticular binary in the Carbon Black binary store:\n\nFile MD5 hash: `2FAD0F279F7851AD6357C2DA8CE213A2`\n\nThis file was particularly interesting given its filename, path, and explicitly distrusted status\n(its status has since changed to revoked). Why, for example, is a .sys file with “dump” in its\nname being dropped in the `c:\\windows\\system32\\drivers\\ path? There’s only one way`\nto find out, so we brought the driver ( dump_76af3f80.sys ) into a test environment for\ncloser analysis.\n\n### Some observations\n\nAs you can see in the following image, the file’s certificate had expired or was not yet valid.\n\n\n-----\n\nA closer look revealed that the certificate had been explicitly revoked:\n\n## On background\n\nThe adversary delivered the payload via a well-known exploit for a server message block\n(SMB) vulnerability, CVE-2017-0144, fixed in March 2017. It’s worth noting that the\nresearch team at NSFocus seemed to have found and reported on a substantially similar\nthreat in their NuggetPhantom report. While their write-up focused on modules within the\nmalware, how it attempts to evade detection, and its history, we’re going to examine how\nthis particular threat manifested in endpoint telemetry and why—in general—you should\nkeep an eye on the drivers in your environment. Below is an image from NSFocus’ report\nthat, while blurry, might be a helpful visual cue for conceptualizing the execution timeline:\n\n\n-----\n\n### The process timeline\n\nThe first thing we see in the Red Canary detection is lsass.exe spawning rundll32.exe and\nmsiexec.exe. As our colleague Keya pointed-out a few blogs ago, it is highly unusual for\nLSASS to spawn rundll32, and it’s also unusual for msiexec.exe to make an external HTTP\nrequest. Both of these process relationships offer great opportunities for detection.\n\n\n-----\n\nHere are some Carbon Black queries that might unearth this activity in the environment\nyou’re monitoring:\n\n```\nchildproc_name:msiexec.exe\n\n```\n```\ncmdline:\"https:\"))\n\n```\n\nAs you can see in the above timeline, msiexec eventually makes an outbound network\nconnection and loads `downloadupdatemakegood.jpg . In turn, that file decompresses`\n```\nwinupdate64.log :\n\n```\n\n-----\n\nThis is a bit of a sidebar, but we can also see the malicious software using netsh.exe to\nblock ports 137, 138, 139, and 445, which prevents other adversaries from leveraging the\nsame exploit to further compromise this host.\n\n\n-----\n\nAt the time we detected this threat, there wasn’t much in the way of publicly available blogs\nor research discussing this behavior, so we were largely unsure of what else may have\nbeen dropped. However, as we continued triaging, we discovered that the msiexec\nexecution coincided with another file being dropped and injected into trusted processes:\n```\nms7db53800app.dll .\n\n```\nHere’s the first part of the timeline:\n\n\n-----\n\nHere’s the second part:\n\n## Examining the driver\n\nA quick search for `ms76af3f80app.dll in Carbon Black revealed that its underlying`\nbinary is the same as another file, `ms76af3f80app.dll, and that the MD5 hash`\nassociated with both files is `4209AE0CB569EFAB29CA9D2D7F4A211B .`\n\n_It’s worth noting—if only tangentially—that Carbon Black collects executables and DLLs the_\n_first time they are observed loading or executing._\n\nUltimately, `ms76af3f80app.dll then delivers the driver that we looked at in the opening`\nof this blog ( dump_76af3f80.sys ). It’s a signed binary, and it matches the\n```\ndigsig_subject reported by NSFocus.\n\n```\nWe observed the adversaries updating their binaries by downloading a new *app.dll file\nalong with a pair of .xsl files. According to NSFocus, those are the DDoS and moneromining modules:\n\n\n-----\n\nThis driver adds persistence to live within safe mode by modifying the safeboot registry\n[values, a technique that Didier Stevens first described all the way back in 2007.](https://blog.didierstevens.com/2007/03/26/playing-with-safe-mode/)\n\n## Conclusion\n\nEven in cases where a driver’s signature has expired or been revoked, it will still pass\n[Driver Signature Enforcement and the operating system might even load it in some](https://msdn.microsoft.com/library/bb530195)\nsituations.\n\nAs defenders, we need to understand, enumerate, and evaluate what drivers are in our\nfleet. We need to understand how they arrived and what their intentions are. Unlike usermode applications, we believe that kernel-mode drivers, while certainly dynamic, will have\nless change over time than user-mode applications. In this way, it’s feasible to track driver\nchanges in order to keep an eye out for adversaries who would use kernel-mode drivers as\nsurreptitious rootkits.\n\nThese types of attacks are the very reason Microsoft has developed Kernel Mode Code\nIntegrity: to give defenders assurances that even though a driver is signed, it may not be\nsanctioned or approved for your environment, and therefore will not load.\n\n\n-----\n\nThe following Carbon Black queries relate specifically to the binary metadata of these\ndrivers.\n```\n    observed_filename:c:\\windows\\system32\\drivers\\ digsig_result:\"Bad\n   Signature\" digsig_result:\"Invalid Signature\" digsig_result:\"Invalid\n   Chain\" digsig_result:\"Untrusted Root\" digsig_result:\"Explicit\n   Distrust\"\n\n```\nAnd the inverse:\n```\n    -observed_filename:c:\\windows\\system32\\drivers\\ digsig_result:\"Bad\n   Signature\" digsig_result:\"Invalid Signature\" digsig_result:\"Invalid\n   Chain\" digsig_result:\"Untrusted Root\" digsig_result:\"Explicit\n   Distrust\"\n\n```\nThis may lead to a clean way to detect suspicious driver loads from `ntoskrnl.exe . Very`\nfew unsigned binaries, let alone distrusted ones, get loaded. I confirmed this theory by\nsweeping across our fleet of endpoints, finding that the volume was minimal enough to sort\nthrough manually. We can further limit this output by suppressing obviously legitimate\nunsigned binaries. Ultimately, this should lead to us to identify true evil being loaded by\n```\n ntoskrnl.exe .\n\n```\nHere’s a related query:\n```\n    (digsig_result_modload:“Unsigned” OR digsig_result_modload:“Explicit\\\n   Distrust”) process_name:ntoskrnl.exe\n\n```\nOn 32 bit systems, we may expect to see an unsigned modload. However, on a 64 bit\nsystem, the Windows kernel requires that drivers be signed.\n\nThe inverse, all signed, could be an interesting play to identify suspect signed drivers being\nloaded. It would take more time to tune but could reveal some interesting behaviors.\n\n## Indicators\n\n2FAD0F279F7851AD6357C2DA8CE213A2\nAE8EDBEA9F2106D59147A377B86B412E\n4209AE0CB569EFAB29CA9D2D7F4A211B\n\nRelated Articles\n\nThreat hunting\n\n\n-----\n\n### What is normal? Profiling System32 binaries to detect DLL Search Order Hijacking\n\nThreat hunting\n\n### Hunting for GetSystem in offensive security tools\n\nThreat hunting\n\n### Privilege escalation revisited: webinar highlights\n\nThreat hunting\n\n### Detection Déjà Vu: a tale of two incident response engagements\n\n**Subscribe to our blog**\n\nOur website uses cookies to provide you with a better browsing experience. More\n[information can be found in our Privacy Policy.](https://redcanary.com/privacy-policy)\n\nX\n\n**Privacy Overview**\n\nThis website uses cookies to improve your experience while you navigate through the\nwebsite. Out of these cookies, the cookies that are categorized as necessary are stored on\nyour browser as they are essential for the working of basic functionalities of the website. We\nalso use third-party cookies that help us analyze and understand how you use this website.\nThese cookies will be stored in your browser only with your consent. You also have the\noption to opt-out of these cookies. But opting out of some of these cookies may have an\neffect on your browsing experience.\n\nNecessary cookies are absolutely essential for the website to function properly. This category\nonly includes cookies that ensures basic functionalities and security features of the website.\nThese cookies do not store any personal information.\n\nAny cookies that may not be particularly necessary for the website to function and is used\nspecifically to collect user personal data via analytics, ads, other embedded contents are\ntermed as non-necessary cookies. It is mandatory to procure user consent prior to running\nthese cookies on your website.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-06-27 - Tracking driver inventory to unearth rootkits.pdf"
+    ],
+    "report_names": [
+        "2019-06-27 - Tracking driver inventory to unearth rootkits.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535625,
+    "ts_updated_at": 1743041786,
+    "ts_creation_date": 1653766939,
+    "ts_modification_date": 1653766939,
+    "files": {
+        "pdf": "https://archive.orkl.eu/b3855c10b1552c5dadfa7d4a430544a2cd36d1e8.pdf",
+        "text": "https://archive.orkl.eu/b3855c10b1552c5dadfa7d4a430544a2cd36d1e8.txt",
+        "img": "https://archive.orkl.eu/b3855c10b1552c5dadfa7d4a430544a2cd36d1e8.jpg"
+    }
+}

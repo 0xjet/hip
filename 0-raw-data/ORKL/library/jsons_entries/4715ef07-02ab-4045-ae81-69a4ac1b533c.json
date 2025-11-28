@@ -1,0 +1,191 @@
+{
+    "id": "4715ef07-02ab-4045-ae81-69a4ac1b533c",
+    "created_at": "2022-10-25T16:48:22.943392Z",
+    "updated_at": "2025-03-27T02:16:22.226984Z",
+    "deleted_at": null,
+    "sha1_hash": "4fe9b6b9623341caa9ef78300626c8d15758955d",
+    "title": "Malicious document targets Vietnamese officials",
+    "authors": "",
+    "file_creation_date": "2018-09-20T00:48:44Z",
+    "file_modification_date": "0001-01-01T00:00:00Z",
+    "file_size": 1974103,
+    "plain_text": "# Malicious document targets Vietnamese officials\n\n**[medium.com/@Sebdraven/malicious-document-targets-vietnamese-officials-acb3b9d8b80a](https://medium.com/@Sebdraven/malicious-document-targets-vietnamese-officials-acb3b9d8b80a)**\n\nSebdraven July 31, 2018\n\nAfter our investigation of APT SideWinder, we’ve done a yara rule for hunting RTF\ndocument exploiting the CVE-2017–11882.\n\nWe found a document written in Vietnamese dealing with a summary about differents\nprojects in the district Hải Châu of Đà Nẵng.\n\nRTF document\n\nIn this article, we’ll detail the infection chains and the infrastructures of the attackers and the\nTTPs of this campaign.\n\nThe infrastructures and TTPs during this campaign seem to the Chinese hacking group\n1937CN.\n\n## Infection chains\n\nJoe sandbox has a good representation of the behaviour of the infection.\n\n\n-----\n\nThis rtf document is really malicious and it exploits the equation vulnerability to write two\nfiles in the system:\n\n1. A dll named RasTls.dll\n2. A executable file named dascgosrky.exe\n\nThis document is interesting to analyze so let’go !\n\n## RTF analysis\n\nWith rtfobj, we found three ole objects in the document:\n\ntwo non well formed ole object and a third named package ole object.\n\nThe package ole object is used to write a file in the disk when the document is opened at\nthe destination described by the ole object.\n\n\n-----\n\nPackage OLE Object\n\nThis technique is used to execute code like sct file to download an executable on the\noperating system. McAfee labs has detailed all this stuff with sct file:\nhttps://securingtomorrow.mcafee.com/mcafee-labs/dropping-files-temp-folder-raisessecurity-concerns/\n\nMany attackers use it in the wild because it’ very easy to use and it’ supported by the office\nsoftware with RTF files.\n\nSo, in our case, a file named 8.t is dropped on %TMP% folder.\n\nIf we check it, it’s clearly encrypted.\n\n\n-----\n\n8.t encrypted\n\nThe others object ole seem to the exploit of CVE-2017–11882.\n\n\n-----\n\nEquation Ole Object\n\nAt the end of the object ole, we have differents API functions to make a runPE.\n\nAnother interesting thing is this string at the begin of the object: 7e079a2524fa63a55fbcfe\n\nString found in many exploits of CVE-2017–11882\n\nWe have the same string used by APT SideWinder in the equation object ole.\n\nIt’s the same toolset to create the malicious document.\n\n\n-----\n\nthis runPE.\n\n## Debugging of the shellcode\n\nAt the start of the analysis, we think the process EQNEDT32.exe is created by\nWinword.exe using the function CreateProcess. So we decided to set a breakpoint at the\ncall of his function.\n\nBut EQNEDT32.exe is invoked by Winword.exe using COM Object. It’s not CreateProcess\nthat used and Winword.exe is not the parent process of EQNEDT32.exe. So we have to\nattach the debugger when EQNEDT32.exe is launched.\n\nFor that, we used a technique named Image File Execution Options that was documented\nby Microsoft. https://blogs.msdn.microsoft.com/mithuns/2010/03/24/image-file-executionoptions-ifeo/\n\nWe create a key EQNEDT32.exe.\n\nRegistry\n\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File\nExecution Options\n\nAnd we set a value string for launching the debugger when EQNEDT32.exe is executed\nand attaching the debugger to the process .\n\nValue to set the debuuger when EQNEDT32.exe is executed\n\nWhen we open the rtf document, Winword is launched and EQNEDT32.exe also.\n\nWinword process\n\n\n-----\n\nEQNEDT32.exe process attached by the debugger\n\nAnd the debugger is attached at the entrypoint of EQNEDT32.exe.\n\nWe check if it’s 8.t is correctly created in the %TMP% folder.\n\n8.t dropped on disk\n\nNow we set a breakpoint at the createFile to\ncheck if the shellcode of the exploit reads the file\n8.t.\n\nCreateFile is called at call eqnedt32.41E5EE.\n\nThe param of the path of file is pushed on the stack push dword ptr ss:[ebp-4].\n\nThe shellcode uses CreateFile to the 8.t in the %TMP% folder\n\nSo now, we can return of the user code at the calling function.\n\nAfter a step into, we enter in the shellcode, the address space has changed:\n\nShellcode of the exploit\n\nAfter CreateFile, GetFileSize is called to have the size of the file\n\n\n-----\n\nGet the size of the file\n\nAfter is Virtualloc, and it create a memory page at 1FD0000 (eax value)\n\nVirtualAlloc memory page to load 8.t\n\nAfter virtualAlloc, the memory page is pointed by EAX\n\nThe page allocated\n\nReadFile is called:\n\nReadfile 8.t\n\nAnd 8.t is loaded at 1FD0000:\n\n\n-----\n\n8.t in memory\n\nAnd the shellcode decrypts the 8.t file in memory at 0066C82A.\n\nThe loop of decryption is a xoring with different manipulations on the decryption key.\n\nAt the start of the decryption the key is set to 7BF48E63.\n\nDecryption loop\n\nAnd the xor is made after key manipulation.\n\nSet the decryption key in EAX\n\nIf we check the destination of the result of the xoring (here edx + ebx), we find 01FD0000\nwhere 8.t is loaded.\n\nAfter two step of the loop, we can see the magic number MZ set at the begin of memory\nsection.\n\nMZ magic number\n\nAt the end of the decryption loop, we have a PE in memory at 01FD0000.\n\nthe file 8 t has been decrypted\n\n\n-----\n\n8.t fully decrypted\n\nThen, the shellcode uses the VirtualAlloc and create a memory page at 02070000.\n\nAnd the new PE at 01FD0000 is copied at this address.\n\nthe PE decrypted is copied in the new memory page\n\nAfter GetModuleFileNameA is called to have the path of EQNEDT32.exe\n\nAnd EQNEDT32.exe is forked in suspend status by a CreateProcess and the shellcode\noverwrite it by the PE at the address 02070000\n\nFork of EQNEDT32.exe\n\nOverwritting of EQNEDT32.exe\n\n\n-----\n\nStack used by NTWriteVirtualMemory\n\nAnd the shellcode does a ResumeThread to launch the new PE.\n\nSo, We’ve found all API Calls in the object ole at the beginning and we have a runPE to\nlaunch the new EQNEDT32.exe overwritten.\n\n## Analysing the fork of EQNEDT32.exe\n\nWe know that this process has to create on disk two files following the Joe SandBox\nAnalysis:\n\nA dll named RasTls.dll\nA executable file named dascgosrky.exe\n\nIf we dump EQNEDT32.exe and we put in IDA, we found quickly the function that drops the\nfiles on disk (sub_00401150) renamed dropFiles.\n\nDropFiles Fucntion\n\nAnd at the start of this functions, we have a loop with a xor.\n\n\n-----\n\nSecond loop of decryption\n\nAnd just after we have a call of the decompression function.\n\nDecompression function used zlib\n\nThe function dropFiles is called twice by the sub_4012D0.\n\nDrop the dll and the executable\n\n\n-----\n\nFunctions using DropFiles function\n\nSo we set a breakpoint on CreateFile because at each\nexecution, EQNEDT32.exe starts by CreateFile\nonstaticcache.dat.\n\nBreakpoint to createfile\n\nAnd we return at the user code to set a new breakpoint to check the static analysis.\n\nSo we set a breakpoint at 0040159A when DropFiles is called.\n\nBreakpoint to the first call of DropFiles\n\nAnd now we can analyse the second loop of decryption.\n\nThe first step is the initialization of the decryption function.\n\n\n-----\n\nSet for the second loop encryption\n\nAnd after we find the xor and store the result in esi+eax.\n\nDecryption loop\n\nIn the first step of the decryption loop, the result is written to 411BC0 in the address space\nof EQNEDT32.exe.\n\nBefore the decryption\n\nAfter tree loops, we obtains the header of zlib compressed object.\n\nAfter the decryption\n\nAnd at the memory page 021E0000, a PE is decompressed.\n\nPage memory allocated to store the dll\n\n\n-----\n\nAfter decompression\n\nAnd after the file is created with the following path:\nL”C:\\\\Users\\\\IEUser\\\\AppData\\\\Roaming\\\\Microsoft\\\\Windows\\\\Network\nShortcuts\\\\RasTls.dll”\n\nStored by ebx.\n\nDropFiles is called a twice to decrypt and decompress the executable file.\n\nThe offset where store the file is 00434EF8 and the pe decompressed is stored at\n025D0020\n\n\n-----\n\nDecryption of the executable dascgosrky.exe\n\nAnd the path of the new file is : ebx=005DA228\nL”C:\\\\Users\\\\IEUser\\\\AppData\\\\Roaming\\\\Microsoft\\\\Windows\\\\Network\nShortcuts\\\\dascgosrky.exe”\n\nSo we have two files in networks shortcuts of Windows.\n\nFiles drops on disk\n\n## dll hijacking\n\nDascgosrky.exe is a legit and trusted software develop by Symantec.\n\n\n-----\n\nTo load the library RasTls.dll, the executable calls LoadLibrary and GetProcaddress in\nsub_401940 to execute the malicious functions\n\n\n-----\n\nDascgosrky.exe loading the malicious\n\n\n-----\n\nThe original file\n\nIf we check the exports in IDA, we just have a dllentrypoint. The dll is executed like this.\n\nWe’ll analyse the RAT in the second Part.\n\n## Infrastructure of Attackers\n\nThe domain contacted is wouderfulu.impresstravel.ga and this domain resolved on\n192.99.181.14.\n\n\n-----\n\nDomain wouderfulu.impresstravel.ga\n\nThis IP has differents domains found with PassiveTotal and theses domains is recorded in\nthe IP 176.223.165.122.\n\nMany domain names is used for Vietnameses people.\n\nExpansion of domains\n\nThere are two domains really interesting:\n\nHalong.dulichculao.com is already used in the campaign targeting Vietnameses\norganizations.\n\nhttps://www.fortinet.com/blog/threat-research/rehashed-rat-used-in-apt-campaign-against\n\n-----\n\nIf we compare the TTPs, it’s really similar. They used RTFs to make the intrusion and dll\nhijacking to load the real payload.\n\nAnd the name of domains are really similar between the campaings.\n\nThe second one is:\n\nCat.toonganuh.com is a subdomain of tooganuh.com recorded by\n[florence1972@scryptmail.com](mailto:florence1972@scryptmail.com)\n\n## Conclusion\n\nThe Chinese hacking group 1937CN continues to target Vietnam officials with the same\nTTPs with a refreshing on the tools used. The toolset used by this group to create RTF\nmalicious document has the same properpy of the SideWinder.\n\nI want to thank my buddies on “Zone de Confort”. It’s with this dreamteam, I can finalize\ncorrectly this analyses.\n\nIn the second part, we analyze the RAT using in this campaign. Or if another reverse can\nmake that, I’ll paid a beer ;)\n\n## IOCs for the paper:\n\ndomains:\ndn.dulichbiendao.org\ngateway.vietbaotinmoi.com\n\nweb.thoitietvietnam.org\nhn.dulichbiendao.org\nhalong.dulichculao.com\ncat.toonganuh.com\nnew.sggpnews.com\ndulichculao.com\ncoco.sodexoa.com.\nthoitiet.malware-sinkhole.net\nwouderfulu.impresstravel.ga\ntoonganuh.com\ncoco.sodexoa.com\n\nIPs:\n192.99.181.14\n176.223.165.122\n\nRTFs:\n\n42162c495e835cdf28670661a53d47d12255d9c791c1c5653673b25fb587ffed\n\n8 t\n\n\n-----\n\nPE:\n\nf9ebf6aeb3f0fb0c29bd8f3d652476cd1fe8bd9a0c11cb15c43de33bbce0bf68 (exe)\n\n9f5da7524817736cd85d87dae93fdbe478385baac1c0aa3102b6ad50d7e5e368 (dll)\n\n## Update:\n\nThe payload is PlugX. Thanks to Gabor Szappanos\n[https://twitter.com/GaborSzappanos/status/1024622354582908928](https://twitter.com/GaborSzappanos/status/1024622354582908928)\n\nUpdate IOCs:\n\n597c0c6f397eefb06155abdf5aa9a7476c977c44ef8bd9575b01359e96273486 59.rtf\n11f38b6a69978dad95c9b1479db9a8729ca57329855998bd41befc364657d654 RasTls.dll\nf9ebf6aeb3f0fb0c29bd8f3d652476cd1fe8bd9a0c11cb15c43de33bbce0bf68 RasTls.exe\n\nb70069e1c8e829bfd7090ba3dfbf0e256fc7dfcefc6acafb3b53abcf2caa2253 b7.rtf\n77361b1ca09d6857d68cea052a0bb857e03d776d3e1943897315a80a19f20fc2\nspoolsver.exe\n9fba998ab2c1b7fec39da9817b27768ba7892c0613c4be7c525989161981d2e2 vsodscpl.dll\n\n9d239ddd4c925d14e00b5a95827e9191bfda7d59858f141f6f5dcc52329838f0 9d.rtf\n087d8bee1db61273a7cd533d52b63265d3a8a8b897526d7849c48bcdba4b22ec RasTls.dll\nf9ebf6aeb3f0fb0c29bd8f3d652476cd1fe8bd9a0c11cb15c43de33bbce0bf68 RasTls.exe\n\n332aa26d719a20f3a26b2b00a9ca5d2e090b33f5070b057f4950d4f088201ab9 rtf\n\n93aa353320a8e27923880401a4a0f3760374b4d17dcd709d351e612d589b969d\nvsodscpl.dll\n\n77361b1ca09d6857d68cea052a0bb857e03d776d3e1943897315a80a19f20fc2 ScnCfg.exe\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2018/2018.08.01.Vietnamese_officials_Targets/Malicious%20document%20targets%20Vietnamese%20officials.pdf"
+    ],
+    "report_names": [
+        "Malicious document targets Vietnamese officials"
+    ],
+    "threat_actors": [
+        {
+            "id": "b740943a-da51-4133-855b-df29822531ea",
+            "created_at": "2022-10-25T15:50:23.604126Z",
+            "updated_at": "2025-03-27T02:00:55.505366Z",
+            "deleted_at": null,
+            "main_name": "Equation",
+            "aliases": [
+                "Equation"
+            ],
+            "source_name": "MITRE:Equation",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "6b9fc913-06c6-4432-8c58-86a3ac614564",
+            "created_at": "2022-10-25T16:07:24.185236Z",
+            "updated_at": "2025-03-27T02:02:10.135195Z",
+            "deleted_at": null,
+            "main_name": "SideWinder",
+            "aliases": [
+                "APT-C-17",
+                "APT-Q-39",
+                "BabyElephant",
+                "GroupA21",
+                "HN2",
+                "Hardcore Nationalist",
+                "Rattlesnake",
+                "Razor Tiger",
+                "SideWinder",
+                "T-APT-04"
+            ],
+            "source_name": "ETDA:SideWinder",
+            "tools": [
+                "BroStealer",
+                "Capriccio RAT",
+                "callCam"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "f21d7691-a720-46bb-81d7-11edb9f73eba",
+            "created_at": "2023-11-08T02:00:07.126478Z",
+            "updated_at": "2025-03-27T02:00:03.18984Z",
+            "deleted_at": null,
+            "main_name": "1937CN",
+            "aliases": [],
+            "source_name": "MISPGALAXY:1937CN",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "173f1641-36e3-4bce-9834-c5372468b4f7",
+            "created_at": "2022-10-25T15:50:23.349637Z",
+            "updated_at": "2025-03-27T02:00:55.450857Z",
+            "deleted_at": null,
+            "main_name": "Sidewinder",
+            "aliases": [
+                "Sidewinder",
+                "T-APT-04"
+            ],
+            "source_name": "MITRE:Sidewinder",
+            "tools": [
+                "Koadic"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d0c0a5ea-3066-42a5-846c-b13527f64a3e",
+            "created_at": "2023-01-06T13:46:39.080551Z",
+            "updated_at": "2025-03-27T02:00:02.992026Z",
+            "deleted_at": null,
+            "main_name": "RAZOR TIGER",
+            "aliases": [
+                "SideWinder",
+                "APT-C-17",
+                "T-APT-04"
+            ],
+            "source_name": "MISPGALAXY:RAZOR TIGER",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "2c7ecb0e-337c-478f-95d4-7dbe9ba44c39",
+            "created_at": "2022-10-25T16:07:23.690871Z",
+            "updated_at": "2025-03-27T02:02:09.921431Z",
+            "deleted_at": null,
+            "main_name": "Goblin Panda",
+            "aliases": [
+                "1937CN",
+                "Conimes",
+                "Cycldek",
+                "Goblin Panda"
+            ],
+            "source_name": "ETDA:Goblin Panda",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "Agent.dhwf",
+                "BackDoor-FBZT!52D84425CDF2",
+                "BlueCore",
+                "BrowsingHistoryView",
+                "ChromePass",
+                "CoreLoader",
+                "Custom HDoor",
+                "Destroy RAT",
+                "DestroyRAT",
+                "DropPhone",
+                "FoundCore",
+                "HDoor",
+                "HTTPTunnel",
+                "JsonCookies",
+                "Kaba",
+                "Korplug",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "NBTscan",
+                "NewCore RAT",
+                "PlugX",
+                "ProcDump",
+                "PsExec",
+                "QCRat",
+                "RainyDay",
+                "RedCore",
+                "RedDelta",
+                "RoyalRoad",
+                "Sisfader",
+                "Sisfader RAT",
+                "Sogu",
+                "TIGERPLUG",
+                "TVT",
+                "Thoper",
+                "Trojan.Win32.Staser.ytq",
+                "USBCulprit",
+                "Win32/Zegost.BW",
+                "Xamtrav",
+                "ZeGhost",
+                "nbtscan"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716502,
+    "ts_updated_at": 1743041782,
+    "ts_creation_date": 1537404524,
+    "ts_modification_date": 0,
+    "files": {
+        "pdf": "https://archive.orkl.eu/4fe9b6b9623341caa9ef78300626c8d15758955d.pdf",
+        "text": "https://archive.orkl.eu/4fe9b6b9623341caa9ef78300626c8d15758955d.txt",
+        "img": "https://archive.orkl.eu/4fe9b6b9623341caa9ef78300626c8d15758955d.jpg"
+    }
+}

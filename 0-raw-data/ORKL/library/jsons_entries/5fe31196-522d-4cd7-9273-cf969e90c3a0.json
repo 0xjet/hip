@@ -1,0 +1,162 @@
+{
+    "id": "5fe31196-522d-4cd7-9273-cf969e90c3a0",
+    "created_at": "2023-03-03T02:06:43.043782Z",
+    "updated_at": "2025-03-27T02:05:57.772364Z",
+    "deleted_at": null,
+    "sha1_hash": "2b9857e636944cbbc1bfcb35f9d4184052468f14",
+    "title": "2023-02-23 - A tale of Phobos - how we almost cracked a ransomware using CUDA",
+    "authors": "",
+    "file_creation_date": "2023-03-01T09:37:47Z",
+    "file_modification_date": "2023-03-01T09:37:47Z",
+    "file_size": 2250526,
+    "plain_text": "# A tale of Phobos - how we almost cracked a ransomware using CUDA\n\n**cert.pl/en/posts/2023/02/breaking-phobos/**\n\n**Abstract: For the past two years we've been tinkering with a proof-of-concept decryptor for**\nthe Phobos family ransomware. It works, but is impractical to use for reasons we'll explain\nhere. Consequently, we've been unable to use it to help a real-world victim so far. We've\ndecided to publish our findings and tools, in hope that someone will find it useful, interesting\nor will continue our research. We will describe the vulnerability, and how we improved our\ndecryptor computational complexity and performance to reach an almost practical\nimplementation. The resulting proof of concept is available at CERT-Polska/phobos-cudadecryptor-poc.\n\n## When, what and why\n\nPhobos is the innermost and larger of the two natural satellites of Mars, with the other being\nDeimos. However, it's also a widespread ransomware family that was first observed in the\nearly 2019. Not a very interesting one – it shares many similarities with Dharma and was\nprobably written by the same authors. There is nothing obviously interesting about Phobos\n(the ransomware) – no significant innovations or interesting features.\n\nWe've started our research after a few significant Polish organizations were encrypted by\nPhobos in a short period of time. After that it has become clear, that the Phobos' key\nschedule function is unusual, and one could even say – broken. This prompted us to do\nfurther research, in hope of creating a decryptor. But let's not get ahead of ourselves.\n\n## Reverse Engineering\n\nLet's skip the boring details that are the same for every ransomware (anti-debug features,\ndeletion of shadow copies, main disk traversal function, etc). The most interesting function\nfor us right now is the key schedule:\n\n\n-----\n\nThe curious part is that, instead of using one good entropy source,\nmalware author decided\nto use multiple bad ones. They include:\n\nTwo calls to QueryPerformanceCounter()\nGetLocalTime() + SystemTimeToFileTime()\nGetTickCount()\nGetCurrentProcessId()\nGetCurrentThreadId()\n\nFinally, a variable but deterministic number of SHA-256 rounds is applied.\n\nOn average, to check a key we need 256 SHA-256 executions and a single AES decryption.\n\nThis immediately sounded multiple alarms in our heads. Assuming we know the\ntime of the\ninfection with 1 second precision (for example, using file timestamps,\nor logs), the number of\noperations needed to brute-force each component is:\n\n**Operation** **No. operations**\n\nQueryPerformanceCounter 1 `10**7`\n\nQueryPerformanceCounter 2 `10**7`\n\nGetTickCount `10**3`\n\nSystemTimeToFileTime `10**5`\n\nGetCurrentProcessId `2**30`\n\n\n-----\n\n**Operation** **No. operations**\n\nGetCurrentThreadId `2**30`\n\nIt's obvious, that every component can be brute-forced independently (10**7 is not that\nmuch for modern computers). But can we recover the whole key?\n\n## Assumptions, assumptions (how many keys do we actually need to check?)\n\n### Initial status (141 bits of entropy)\n\nBut by a simple multiplication, number of keys for a naïve brute-force\nattack is:\n```\n>>> 10**7 * 10**7 * 10**3 * 10**5 * 2**30 * 2**30 * 256\n\n2951479051793528258560000000000000000000000\n\n>>> log(10**7 * 10**7 * 10**3 * 10**5 * 2**30 * 2**30 * 256, 2)\n\n141.08241808752197 # that's a 141-bit number\n\n\n```\nThis is... obviously a huge, incomprehensibly large number. No slightest chance to bruteforce that.\n\nBut we're not ones to give up easily. Let's keep thinking about that.\n\n### May I have your PID, please? (81 bits of entropy)\n\nLet's start with some assumptions.\n\nWe already made one: thanks to system/file logs we know the time with 1 second precision.\nOne such source can be the Windows event logs:\n\n\n-----\n\nBy default there is no event that triggers for every new process, but with enough forensics\nanalysis\nit's often possible to recover PID and TID of the ransomware process.\n\nEven if it's not possible, it's almost always possible to restrict\nthem by a significant amount,\nbecause Windows PIDs are sequential. So we won't usually have\nto brute-force full 2**30\nkey space.\n\nFor the sake of this blog post, let's assume that we already know PID and TID (of main\nthread)\nof the ransomware process. Don't worry, this is the biggest hand-wave in this whole\narticle. Does it make our situation better at least?\n```\n>>> log(10**7 * 10**7 * 10**3 * 10**5 * 256, 2)\n\n81.08241808752197\n\n\n```\n81 bits of entropy is still way too much to think about brute-forcing, but we're getting\nsomewhere.\n\n### Δt = t1 - t0 (67 bits of entropy)\n\nAnother assumption that we can reasonably make, is that two sequential\n```\nQueryPerformanceCounter calls will return similar results. Specifically,\nsecond\nQueryPerformanceCounter will always be a bit larger than the\nfirst one. There's no need to\n\n```\ndo a complete brute-force of both counters – we can brute-force the first\none, and then guess\nthe time that passed between the executions.\n\nUsing code as an example, instead of:\n```\nfor qpc1 in range(10**7):\n\n  for qpc2 in range(10**7):\n\n    check(qpc1, qpc2)\n\n\n```\nWe can do:\n```\nfor qpc1 in range(10**7):\n\n  for qpc_delta in range(10**3):\n\n    check(qpc1, qpc1 + qpc_delta)\n\n10**3 was determined to be enough empirically. It should be enough in most\ncases, though\n\n```\nit's just 1ms, and so it will fail in an event of a very unlucky context\nswitch. Let's try though:\n```\n>>> log(10**7 * 10**3 * 10**3 * 10**5 * 256, 2)\n\n67.79470570797253\n\n\n### Who needs precise time, anyway? (61 bits of entropy)\n\n```\n\n-----\n\n```\n2**67 sha256 invocations is still a lot, but it s getting manageable.\nFor example, this is\n\n```\ncoincidentally almost exactly the current BTC hash rate.\nThis means, if the whole BTC\nnetwork was repurposed to decrypting Phobos victims instead of pointlessly burning\nelectricity, it would decrypt one victim per second .1\n\nTime for a final observation: SystemTimeToFileTime may have a precision\nequal to 10\nmicroseconds. But GetLocalTime does not:\n\nThis means that we only need to brute-force 10**3 options, instead\nof 10**5:\n```\n>>> log(10**7 * 10**3 * 10**3 * 10**3 * 256, 2)\n\n61.150849518197795\n\n\n### Math time (51 bits of entropy)\n\n```\nThere are no more obvious things to optimize. Maybe we can find a better algorithm\nsomewhere?\n\nObserve that key[0] is equal to GetTickCount() ^ QueryPerformanceCounter().Low.\nNaive brute-force algorithm will check all possible values for both components,\nbut in most\nsituations we can do much better. For example, 4 ^ 0 == 5 ^ 1 == 6 ^ 2 = ... == 4.\nWe\nonly care about the final result, so we can ignore timer values that end up as the same key.\n\nSimple way to do this looks like this:\n```\ndef ranges(fst, snd):\n\n  s0, s1 = fst\n\n  e0, e1 = snd\n\n  out = set()\n\n  for i in range(s0, s1 + 1):\n\n    for j in range(e0, e1 + 1):\n\n      out.add(i ^ j)\n\n  return out\n\n\n```\nUnfortunately, this was quite CPU intensive (remember, we want to squeeze as much\nperformance as possible). It turns out that there is a better recursive algorithm,\nthat avoids\nspending time on duplicates. Downside is, it's quite subtle and not\nvery elegant:\n\n\n-----\n\n```\nuint64_t fillr(uint64_t x) {\n\n  uint64_t r = x;\n\n  while (x) {\n\n    r = x - 1;\n\n    x &= r;\n\n  }\n\n  return r;\n\n}\n\nuint64_t sigma(uint64_t a, uint64_t b) {\n\n  return a | b | fillr(a & b);\n\n}\n\nvoid merge_xors(\n\n  uint64_t s0, uint64_t e0, uint64_t s1, uint64_t e1,\n\n  int64_t bit, uint64_t prefix, std::vector<uint32_t> *out\n\n) {\n\n  if (bit < 0) {\n\n    out->push_back(prefix);\n\n    return;\n\n  }\n\n  uint64_t mask = 1ULL << bit;\n\n  uint64_t o = mask - 1ULL;\n\n  bool t0 = (s0 & mask) != (e0 & mask);\n\n  bool t1 = (s1 & mask) != (e1 & mask);\n\n  bool b0 = (s0 & mask) ? 1 : 0;\n\n  bool b1 = (s1 & mask) ? 1 : 0;\n\n  s0 &= o;\n\n  e0 &= o;\n\n  s1 &= o;\n\n  e1 &= o;\n\n  if (t0) {\n\n    if (t1) {\n\n      uint64_t mx_ac = sigma(s0 ^ o, s1 ^ o);\n\n      uint64_t mx_bd = sigma(e0, e1);\n\n      uint64_t mx_da = sigma(e1, s0 ^ o);\n\n      uint64_t mx_bc = sigma(e0, s1 ^ o);\n\n      for (uint64_t i = 0; i < std::max(mx_ac, mx_bd) + 1; i++) {\n\n        out->push_back((prefix << (bit+1)) + i);\n\n      }\n\n      for (uint64_t i = (1UL << bit) + std::min(mx_da^o, mx_bc^o); i < (2UL <<\nbit); i++) {\n\n        out->push_back((prefix << (bit+1)) + i);\n\n      }\n\n    } else {\n\n```\n\n-----\n\n```\n      merge_xors(s0, mask 1, s1, e1, bit 1, (prefix << 1) b1, out);\n\n      merge_xors(0, e0, s1, e1, bit-1, (prefix << 1) ^ b1 ^ 1, out);\n\n    }\n\n  } else {\n\n    if (t1) {\n\n      merge_xors(s0, e0, s1, mask - 1, bit-1, (prefix << 1) ^ b0, out);\n\n      merge_xors(s0, e0, 0, e1, bit-1, (prefix << 1) ^ b0 ^ 1, out);\n\n    } else {\n\n      merge_xors(s0, e0, s1, e1, bit-1, (prefix << 1) ^ b0 ^ b1, out);\n\n    }\n\n  }\n\n}\n\n```\nIt's possible that there exists a simpler or faster algorithm for this problem, but\nauthors were\nnot aware of it when working on the decryptor. Entropy after that change:\n```\n>>> log(10**7 * 10**3 * 10**3 * 256, 2)\n\n51.18506523353571\n\n\n```\nThis was our final complexity improvement. What's missing is a good implementation\n\n## Gotta go fast (how fast can we go?)\n\n### Naïve implementation in Python (500 keys/second)\n\nOur initial PoC written in Python tested 500 keys per second. Quick calculation shows that\nthis brute-forcing 100000000000 keys will take 2314 CPU-days. Far from practical. But\nPython is\nbasically the slowest kid in on block as far as high performance computing goes.\nWe can do\nmuch better.\n\nUsually in situations like this we would implement a native decryptor (in C++ or Rust). But in\nthis case, even that would not be enough. We had to go faster.\n\n### Time works WONDERS\n\nWe've decided to go for maximal performance and implement our solver in CUDA.\n\n### CUDA first steps (19166 keys/minute)\n\nOur first naive version was able to crack 19166 keys/minute. We had no experience with\nCUDA\nat the time, and made many mistakes. Our GPU utilization stats looked like this:\n\n\n-----\n\n### Improving sha256 (50000 keys/minute)\n\nClearly sha256 was a huge bottleneck here (not surprisingly – there are 256 times more\nsha256 calls than AES calls). Most of our work here focused on simplifying the code, and\nadapting it to\nthe task at hand. For example, we inlined sha256_update:\n\nWe inlined sha256_init:\n\nWe replaced global arrays with local variables:\n\nWe hardcoded data size to 32 bytes:\n\nAnd made a few operations more GPU-friendly, for example used __byte_perm for bswap.\n\n\n-----\n\nIn the end, our main loop changed like this:\n\nBut that's not the end - after this optimization we realized that the code is now making\na lot of\nunnecessary copies and data transfers. There are no more copies needed at this point:\n\nCombining all this improvements let us improve the performance 2.5 times, to 50k\nkeys/minute.\n\n### Now make it parallel (105000 keys/minute)\n\nIt turns out graphic cards are highly parallel. Work is divided into streams, and streams are\ndoing the logical operations. Especially memcopy to and from graphic card can\nexecute at\nthe same time as our code with no loss of performance.\n\nJust by changing our code to use streams more effectively, we were able to double our\nperformance to 105k keys/minute:\n\n\n-----\n\n### And finally, AES (818000 keys/minute)\n\nWith all these changes, we still didn't even try optimizing the AES.\nAfter all the lessons\nlearned previously, it was actually quite simple. We just\nlooked for patterns that didn't work\nwell on GPU, and improved them. For example:\n\nWe changed a naive for loop to manually unrolled version that worked on\n32bit integers.\n\nIt may seem insignificant, but it actually dramatically increased our throughput:\n\n### ...and now do it in parallel (10MM keys/minute)\n\nAt this point we were not able to make any significant performance improvements anymore.\nBut we had one last trick in our sleeve - we can run the same code on more than one GPU!\nConveniently, we have a small GPU cluster at CERT.PL. We've dedicated two machines with\na total of 12 Nvidia GPUs to the task. By a simple multiplication, this immediately increased\nour throughput to almost 10 million keys per minute.\n\n\n-----\n\nSo brute-forcing 100000000000 keys will take just 10187 seconds (2.82 hours) on the\ncluster.\nSounds great, right?\n\n## Where Did It All Go Wrong?\n\nUnfortunately, as we've mentioned at the beginning, there are a lot of practical problems that\nwe skimmed over in this blog post, but that made publishing the decryptor tricky:\n\nKnowledge of TID and PID is required. This makes the decryptor hard to automate.\nWe assume a very precise time measurements. Unfortunately, clock drift and\nintentional noise introduced to performance counters by Windows makes this tricky.\nNot every Phobos version is vulnerable. Before deploying a costly decryptor one needs\na reverse engineer to confirm the family.\nEven after all the improvements, the code is still too slow to run on a consumer-grade\nmachine.\nVictims don't want to wait for researchers without a guarantee of success.\n\nThis is why we decided to publish this article and source code of the (almost working)\ndecryptor. We hope that it will provide some malware researches a new look on the subject\nand maybe even allow them to decrypt ransomware victims.\n\nWe've published the CUDA source code in a GitHub repository: https://github.com/CERTPolska/phobos-cuda-decryptor-poc. It includes a short instruction, a sample config and a\ndata set to verify the program.\n\nLet us know if you have any questions or if you were able to use the script in any way to help\na ransomware victim. You can contact us at [[email protected].](https://cert.pl/cdn-cgi/l/email-protection#3d54535b527d5e584f49134d51)\n\nRansomware sample analyzed:\n\n`2704e269fb5cf9a02070a0ea07d82dc9d87f2cb95e60cb71d6c6d38b01869f66 |` [MWDB |](https://mwdb.cert.pl/file/2704e269fb5cf9a02070a0ea07d82dc9d87f2cb95e60cb71d6c6d38b01869f66) [VT](https://www.virustotal.com/gui/file/2704e269fb5cf9a02070a0ea07d82dc9d87f2cb95e60cb71d6c6d38b01869f66)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2023/2023-02-23 - A tale of Phobos - how we almost cracked a ransomware using CUDA.pdf"
+    ],
+    "report_names": [
+        "2023-02-23 - A tale of Phobos - how we almost cracked a ransomware using CUDA.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1677809203,
+    "ts_updated_at": 1743041157,
+    "ts_creation_date": 1677663467,
+    "ts_modification_date": 1677663467,
+    "files": {
+        "pdf": "https://archive.orkl.eu/2b9857e636944cbbc1bfcb35f9d4184052468f14.pdf",
+        "text": "https://archive.orkl.eu/2b9857e636944cbbc1bfcb35f9d4184052468f14.txt",
+        "img": "https://archive.orkl.eu/2b9857e636944cbbc1bfcb35f9d4184052468f14.jpg"
+    }
+}

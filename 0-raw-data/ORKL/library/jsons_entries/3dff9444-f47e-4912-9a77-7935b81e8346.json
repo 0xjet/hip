@@ -1,0 +1,67 @@
+{
+    "id": "3dff9444-f47e-4912-9a77-7935b81e8346",
+    "created_at": "2023-01-12T15:06:49.431632Z",
+    "updated_at": "2025-03-27T02:08:40.652719Z",
+    "deleted_at": null,
+    "sha1_hash": "4ebf0657e1e9d4ce0ec209b301835788cfe25213",
+    "title": "2021-12-28 - The attack on ONUS – A real-life case of the Log4Shell vulnerability",
+    "authors": "",
+    "file_creation_date": "2022-05-28T16:56:40Z",
+    "file_modification_date": "2022-05-28T16:56:40Z",
+    "file_size": 634468,
+    "plain_text": "# The attack on ONUS – A real-life case of the Log4Shell vulnerability\n\n**[cystack.net/research/the-attack-on-onus-a-real-life-case-of-the-log4shell-vulnerability](https://cystack.net/research/the-attack-on-onus-a-real-life-case-of-the-log4shell-vulnerability)**\n\n[Home  •](https://cystack.net/) [Research  •  The attack on ONUS – A real-life case of the Log4Shell vulnerability](https://cystack.net/research)\n\nTable of Contents\n\nAnalysis\n\nCyStack Editor\n28 Th12 2021\n\n[Đọc bản tiếng Việt tại đây](https://cystack.net/research/cuoc-tan-cong-vao-onus-goc-nhin-ky-thuat-tu-lo-hong-log4shell)\n\n[Log4Shell has recently been a nightmare (probably the worst one for now) to businesses.](https://en.wikipedia.org/wiki/Log4Shell)\nONUS, a client of ours, was an unfortunate victim. As their security partner, CyStack\ninformed ONUS of the risks right after Log4Shell came to light; when the attack actually\nhappened, we supported them in finding the root cause and coming up with quick yet\ncomprehensive responses. In this post, we will provide the timeline and analysis of this\nincident.\n\n\n-----\n\n## TLDR; (Too long; didn t read)\n\n[ONUS, one of the biggest cryptocurrency platforms in Vietnam, was hacked several days](https://goonus.io/)\nago. The cybersecurity incident at ONUS started with a Log4Shell vulnerability in their\n[payment software provided by Cyclos but later escalated due to misconfigurations and](https://www.cyclos.org/)\nmistakes in granting permissions at AWS S3. Attackers took advantage of the vulnerability in\nthe Cyclos software to attack even before the vendor could inform and provide patch\ninstructions for its clients. ONUS patched the vulnerability as soon as Cyclos warned, but it\nwas too late. As a result, 2 million ONUS users’ information including EKYC data, personal\ninformation, and password hash was leaked.\n\n## Timeline\n\n**09/12/2021, the Log4Shell vulnerability was published. Being aware of the seriousness of**\nthis vulnerability, we immediately informed our partners and clients of the risks associated. At\nthat time, ONUS was carefully monitoring their system security but they did not know that\nCyclos was among the software affected by the Log4Shell vulnerability.\n\n**11-13/12/2021, the attackers exploited the Log4Shell vulnerability on a Cyclos server of**\nONUS and left backdoors behind. We will analyze how we knew that in the next sections.\n\n**14/12/2021, Cyclos notified ONUS of the vulnerability and issued instructions to patch the**\nvulnerability. ONUS immediately patched the vulnerability according to those instructions.\n\n**23/12/2021, while monitoring the system, CyStack detected some abnormal activities and**\ninformed ONUS. When ONUS confirmed that the user data in the AWS S3 had been deleted,\nwe immediately planned and executed incident responses. Because the target was AWS S3,\nwe tracked all access keys related to compromised buckets and found that several services\nwere affected including those of Cyclos. The keys were deactivated shortly after.\n\n**24/12/2021, the attackers sent a ransom request of $5M USD to ONUS via Telegram. ONUS**\n[rejected the request and disclosed this attack to their users. CyStack confirmed that the](https://www.facebook.com/groups/goonus.io/permalink/502395264509595)\nLog4Shell vulnerability of Cyclos was the root cause and we started checking all Cyclos\nnodes to find and remove backdoors.\n\n**25/12/2021, the attackers posted about the leak to** [a hacking forum](https://raidforums.com/Thread-SELLING-Vietnamese-ONUS-formerly-VNDC-full-database-eKYC-images-videos-and-mores)\n\n**28/12/2021, a researcher nicknamed Wjbuboyz informed ONUS of another issue in**\nconfiguring S3 that might lead to reading arbitrary files. This issue did not belong to the\noriginal attack but it was part of a series of potential incidents that could happen to ONUS so,\non behalf of ONUS, we would like to mention this contribution here and sincerely thank\n**Wjbuboyz for the information. This issue was also fixed shortly after.**\n\n## How did the attack happen?\n\n\n-----\n\nAs we have mentioned, the hacked targets were S3 buckets; therefore, we narrowed down\nthe scope of the investigation by identifying services that interacted with those buckets and\nfound a cluster of Cyclos services that might be the root cause of the attack.\n\nChecking the access log in that cluster, we saw that Log4Shell payloads were used to\nestablish connections to the server 45.147.230.219 (0x2d93e6db) at port 82. The vendor\nhas not confirmed the vulnerable modules of Cyclos but we believe that the vulnerability was\nexploited in the following way:\n\nThe history command also showed that the attackers’ commands were successfully\nexecuted. They managed to forward the content of the stdout/stderr to the destination\nserver 45.147.230.219 which is the same with what the access log showed.\n\nThe reason why they read cyclos.properties is that this file contains AWS credentials. The\nmost serious mistake of ONUS is that ONUS granted the AmazonS3FullAccess permission\nto the access key which allowed attackers to compromise and easily delete all of the S3\nbuckets.\n\nAlso on these servers, ONUS had a script to periodically back up the database to S3 which\ncontained the database hostname and username/password as well as backup SQL files. As\na consequence, the attackers could access the ONUS database to get user information.\n\n\n-----\n\nTo facilitate access, the attackers downloaded and ran a backdoor on the server. This\nbackdoor was named kworker for the purpose of disguising as the Linux operating system’s\nkworker service. Analyzing this backdoor also helped us to know more about the attackers,\nwhich we will show in detail in the next section.\n\n## Analyzing the backdoor\n\nThe kworker backdoor obtained was written in Golang 1.17.2 and built for Linux x64. It was\nused as a tunnel connecting the C&C server and the compromised server via SSH protocol\n(a wise way to avoid detection!).\n\nUpon starting, it created a SSH connection with the credentials as follows:\n\nhost: 45.147.230.219\nport: 81\npassword: kim\nuser: peter\n\n\n-----\n\n-----\n\nSOCKS connection used as a backup when SSH is down has the credentials as follows:\n\nuser: peter\npassword: kim\ntag: peter kim\n\nWhen running, the backdoor continuously sent stdout/stderr data to the C&C server as well\nas continuously received commands from it.\n\nGetting data from stdout/stderr\n\n\n-----\n\nExecuting\n\n\nthe received commands\n\n\n-----\n\nReading files\nThe backdoor might have been created by the attackers themselves for this particular attack\nbased on the go-socks5 library.\n\n## Identifying the attackers\n\nThe attackers’ method of concealing their identities was relatively sophisticated. The IP\naddresses we have collected appear to be from VPN service providers. However, you can\nrecognize an interesting point right away in the following screenshots.\n\n\n-----\n\nYes, the attackers seem to be Vietnamese!\n\n## Patching the vulnerabilities\n\nCyStack recommended ONUS to remediate vulnerabilities and improve their security by:\n\nPatching the Log4Shell vulnerability in Cyclos according to the instructions of the\nvendor\nDeactivating all leaked credentials of AWS\nGranting permissions properly to AWS keys that can access AWS S3 buckets and\nother services\nBlocking public access to all sensitive S3 buckets and requiring tokens to access the\ncertain objects\n\nONUS has made lots of efforts in securing their system, for example by collaborating with\n[security partners and joining Bug Bounty programs, but they still could not be exempt from](https://whitehub.net/programs/onus/)\nthe Log4Shell vulnerability. We are concerned that similar incidents will happen or are\nhappening elsewhere; we hope that this post can provide you with some insights as well as\nsome measures against this vulnerability.\n\n_Trung Nguyen, Son Nguyen, Chau Ha, Chau Nguyen, Khoi Vu, Duong Tran from CyStack_\n_Security Team_\n\nShare\n\n\n-----\n\nSubscribe for weekly updates\n\nCopyright © 2022 CyStack Security.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-12-28 - The attack on ONUS – A real-life case of the Log4Shell vulnerability.pdf"
+    ],
+    "report_names": [
+        "2021-12-28 - The attack on ONUS – A real-life case of the Log4Shell vulnerability.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536009,
+    "ts_updated_at": 1743041320,
+    "ts_creation_date": 1653757000,
+    "ts_modification_date": 1653757000,
+    "files": {
+        "pdf": "https://archive.orkl.eu/4ebf0657e1e9d4ce0ec209b301835788cfe25213.pdf",
+        "text": "https://archive.orkl.eu/4ebf0657e1e9d4ce0ec209b301835788cfe25213.txt",
+        "img": "https://archive.orkl.eu/4ebf0657e1e9d4ce0ec209b301835788cfe25213.jpg"
+    }
+}

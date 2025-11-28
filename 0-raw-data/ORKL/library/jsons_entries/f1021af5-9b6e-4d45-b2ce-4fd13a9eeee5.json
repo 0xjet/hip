@@ -1,0 +1,62 @@
+{
+    "id": "f1021af5-9b6e-4d45-b2ce-4fd13a9eeee5",
+    "created_at": "2023-01-12T15:01:36.752593Z",
+    "updated_at": "2025-03-27T02:06:07.698253Z",
+    "deleted_at": null,
+    "sha1_hash": "0c27c33631adec8ad91f3dd9ddbe2d5e261d2a2a",
+    "title": "2019-08-24 - Windows worms. Forbix worm analysis",
+    "authors": "",
+    "file_creation_date": "2022-05-28T17:34:43Z",
+    "file_modification_date": "2022-05-28T17:34:43Z",
+    "file_size": 547618,
+    "plain_text": "# [ Windows worms. Forbix worm analysis. ]\n\n**persianov.net/windows-worms-forbix-worm-analysis**\n\n=== Aug 24, 2019 ===\n\n\nAugust 24, 2019\n\n\nAnyone heard about Forbix worm? Good. Lots of us know how difficult is to remove a worm\nfrom an infected system or network. Of course it depends on multiple factors, like: the way it\nspreads, persistence mechanisms, disguise techniques used once machine is infected,\nreinfection methods, etc. These days, when someone says “Windows worm” we usually\nexpect a highly sophisticated piece of malware, exploiting a 0-day/1-day vulnerability and\n“preferably” this vulnerability being in a service listening on a specific port exposed to the\nwhole world. May be this is the case of the worm like ransomware WannaCry, but definitely\nnot applicable to Forbix malware.\n\nNot so long ago (year 2019), I got hold of a PC which kept beaconing to a C2 server even\nafter being re-imaged several times. And nope, the image was clean. Based on the domain\nname this malware kept trying to connect, it was very easy to determine that it is Forbix\nindeed. This worm is about 3 years old, written in Visual Basic and not obfuscated at all, yet\nit kept reappearing after that PC was re-imaged several times.\n\n## General information\n\n\n-----\n\nForbix is a Windows worm written purely in Visual Basic. First references about it date March\n2016. Based on the sample found recently, looks like it wasn’t updated since then, however\nthis strain is still alive even since now.\n\n**File name** **Checksum** **Size**\n\nManuel.doc d838aaf8d656b7d8d0f48d13646e677eaad35f20 11.1K\n\nSysinfY2X.db d838aaf8d656b7d8d0f48d13646e677eaad35f20 11.1K\n\nSysinfY2X.db (decoded) e41c395013e1a72477eb4b02429d38d0eef2e82e 10.2K\n\nThere are several states this malware can be. As described later in this article, there is are\n```\nActive and Passive states. Forbix is stored on the disk in it’s passive state which is the\n\n```\nencoded version of the actual script (VBE script). This is performed with Microsoft’s default\nVBScript.Encode functionality. Because of this particularity, multiple AV solutions do not flag\nit as malicious, as it is not a executable file.\n\nI was surprised to see that, at the time of this writing, about a half of VirusTotal engines do\nnot find the decoded version malicious (28/53): MalwareBytes, Comodo, F-Secure, F-Prot,\nAvira. It gets even more interesting when I change the C2 domain and the names of files this\nmalware creates: 21/53. This time Kaspersky, Microsoft Defender, Sophos, McAfee and\n**ClamAV also made into the list.**\n\n## Forbix .LNK files\n\nYou are probably wondering already how this .vbe script gets executed on victims machine?\nWell it’s all about .LNK files. They are created on an infected machine, replacing original\nfolders.\n```\n\"C:\\Windows\\system32\\cmd.exe\" /c start wscript /e:VBScript.Encode Manuel.doc & start\nexplorer <REPLACED_FOLDER_NAME>\n\n```\nOnce double clicked this .LNK file executed the VBE Script from Manuel.doc and then opens\nthe hidden original folder. This way most of the users never suspect that something is wrong.\n\n## Forbix SysinfY2X.db file\n\n\n-----\n\nIn its stored (passive) state this file is similar to Manuel.doc and is an encoded version of the\nmalware. Because the author used default VBS encoder provided by Microsoft it is easy to\n[obtain the original version. Thanks to Didier Stevens for this awesome script.](https://blog.didierstevens.com/2016/03/29/decoding-vbe/)\n```\npython decode-vbe.py SysinfY2X.db > decoded_sysinfy2x.vbs\n\n```\nOnce successfully decoded, let’s analyse the script, which by the way isn’t even obfuscated.\nFrom the beginning of the file we already see a bunch of global variables, which are never\nchanged during the script execution. These can easily make into our IOCs list.\n\nLooks like the C2 Server was behind realy[.]mooo[.].com. Here an interesting fact: By\nchanging these variables’ values, Windows Defender, Kaspersky and Sophos AVs stop\npicking up this malware. Looks like we are still in the Era of Strings Searching and Matching.\n\nFollowing is the main (infinite) loop of the worm. It runs every 2 seconds and connects to C2\nserver every 60 seconds. This sample has 5 major functionalities:\n\nInfect available drives;\nAdd persistence;\nProtect itself against removal;\nSelf update and execute stage 2 payload;\nC2 communications;\n\nAll these are implemented in the following functions: `infect_drives,` `infect_registre,`\n```\nprotect_del, kill_old, serv_vmd, and all of them are called inside the infinite loop.\n\n```\n\n-----\n\n### infect_drives() function\n\nThis function checks for all available drives and infects only removable, CD-ROM and\n**network drives ( DriveType: 1, 3, 4 ), avoiding the System Drive.**\n\n\n-----\n\nFirst step in drives infection is the self replication. Malware checks if the selected drive is not\nthe System Drive and copies itself to the root directory of the drive. If Manuel.doc already\nexists, this file is overwritten. Also, once created, the attributes of this file are set to\n**ReadOnly, Hidden and System ( Attribute: 1, 2, 4 ).**\n\nNext phase is about .LNK files creation and hiding original files. This also applies to folders;\nmalware changes folders attributes making them hidden and creates .LNK files using the\nsame name and icon. As mentioned earlier, by means of .LNK files this malware infects new\nmachines via USB drives, CDs and Network drives.\n\n### infect_registre() function\n\nIt is responsible for making the malware persistent. It creates one new Registry Key named\nwith the current active name of the program inside\n```\n\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\ .\n\n### protect del() function\n\n```\n\n-----\n\nThis function is responsible to maintain an up-to-date copy of the script in Windows\ntemporary directory, by overwriting the existing one (if any).\n\n### kill_old() function\n\nIn order to keep just one (newest) version of the worm running, function `kill_old is called`\nperiodically to remove the remaining artifacts of the previous Forbix.A version.\n\n## C2 communications\n\nDuring the self update process, `get_new_v and` `bot_up functions are called. These are`\nresponsible for preparing files of the new version of the worm and executing it respectively.\nBesides that, `bot_up function is also used to execute stage 2 modules, which are being`\ndownloaded from the C2 server.\n\nC2 communications with the server is implemented around 3 commands:\n```\n   ping - used to notify the attackers that bot is running;\n   list - used in stage 2 infection. It contains these parameters:\n      from - Stage 2 payload URL;\n      size - Size of the payload;\n      to - Destination folder to copy the executable;\n      lancer - Optional. Specifies the way to execute the payload (wscript.exe, etc.);\n   <size>+<name> - Used to get new version of malware;\n\n## Conclusion\n\n```\n\n-----\n\nSince early 2016 Forbix was found in the wild, infecting Windows PCs. Even if it doesn t use\nany sophisticated techniques to spread, persist and load payloads, multiple AV engines still\nfail to detect and remove it. Looks like there are still multiple requests to realy[.]mooo[.]com\ndomain nowadays. If you have an old USB drive and not sure to access the files on it or not,\nmake sure to scan it. Before opening any folder or file, check if “Manuel.doc” file exists in the\nroot directory of the drive.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-08-24 - Windows worms. Forbix worm analysis.pdf"
+    ],
+    "report_names": [
+        "2019-08-24 - Windows worms. Forbix worm analysis.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535696,
+    "ts_updated_at": 1743041167,
+    "ts_creation_date": 1653759283,
+    "ts_modification_date": 1653759283,
+    "files": {
+        "pdf": "https://archive.orkl.eu/0c27c33631adec8ad91f3dd9ddbe2d5e261d2a2a.pdf",
+        "text": "https://archive.orkl.eu/0c27c33631adec8ad91f3dd9ddbe2d5e261d2a2a.txt",
+        "img": "https://archive.orkl.eu/0c27c33631adec8ad91f3dd9ddbe2d5e261d2a2a.jpg"
+    }
+}

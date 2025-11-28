@@ -1,0 +1,184 @@
+{
+    "id": "9743a601-38aa-49c6-9ab5-0c9a67ce707c",
+    "created_at": "2023-01-12T15:10:31.80299Z",
+    "updated_at": "2025-03-27T02:15:13.883598Z",
+    "deleted_at": null,
+    "sha1_hash": "71d69606b564824301422db1e8276fe926d378e7",
+    "title": "2019-12-23 - POS Malware Used at Fuel Pumps",
+    "authors": "",
+    "file_creation_date": "2022-05-28T17:01:07Z",
+    "file_modification_date": "2022-05-28T17:01:07Z",
+    "file_size": 665889,
+    "plain_text": "# POS Malware Used at Fuel Pumps\n\n**norfolkinfosec.com/pos-malware-used-at-fuel-pumps/**\n\nnorfolk December 23, 2019\n\n[In December 2019, VISA Security released a bulletin detailing multiple incidents in which](https://usa.visa.com/dam/VCOM/global/support-legal/documents/cybercrime-groups-targeting-fuel-dispenser-merchants.pdf)\nthreat actors targeted point of sale systems used at fuel dispensing companies with malware\ndesigned to parse out credit card numbers from these systems. This blog post examines a\nfile, 19d38325f715f623bd4b6e819a150cde, associated with the first of three listed incidents\nin that bulletin.\n\nThere are several notable characteristics regarding this malware, including a unique way for\nthe threat actors to terminate the tool.\n\nMD5: 19d38325f715f623bd4b6e819a150cde\n\nSHA1: 81c4a8cf8c0da1c590377b37ed5cff8771560a3d\n\nSHA256: 7a207137e7b234e680116aa071f049c8472e4fb5990a38dab264d0a4cde126df\n\nThe file appears to be a variant of the Grateful/Framework POS family. While this variant (via\n[a similar file, 0EB7AC6D2D99D702ECC8B86FF90B0AAC) are described elsewhere, this](https://www.vkremez.com/2017/12/lets-learn-reversing-grateful-point-of.html)\nblog is currently unable to replicate or identify the data exfiltration method detailed in external\nposts. This method appears statically in strings in similar – but larger – samples, suggesting\nthat it may have actually been removed for certain variants. If that is the case, it would also\nimply that the threat actors exifiltrated the data through other malware or tools, which would\n[be consistent with some vendor observations. Further discussion around this point and the](https://malware.news/t/x-force-iris-identifies-fin6-activity-on-pos-networks/22509)\ndiscrepancies in reported functionality around these hashes can be found in a later section.\n\nThe file contains two exports:\n\n– workerInstance (main functionality)\n\n– debugPoint (enters a sleep loop)\n\nThe workerInstance export is used to launch the main functionality of the malware. In\naddition, the malware also expects to receive a file path as an argument. When this export is\ncalled, the malware creates a mutex named\n“Global.Ms.ThreadPooling.MyAppSingleInstance” and then collects local data about the\ninfected workstation. This data is written to the filepath specified at runtime.\n\n\n-----\n\n-----\n\nThe malware runs four threads:\n\n– Thread 1: Enters memory scraping loop\n\n– Thread 2: Enters memory scraping loop\n\n– Thread 3: Checks length of process to be scraped. Process must be > 4 characters.\n\n– Thread 4: Terminates the malware if a “stopper” file is found in the working directory\n\nOf these, Thread 4 is among the most novel and allows the threat actors to terminate the\nmalware. The malware takes the filename “memscrp.stp” and appends it to a string\ncontaining the working directory of the DLL. The malware will then use the CreateFile API to\ntry to access a file with the name at this location. It then performs a comparison:\n\n\n-----\n\n1) If the CreateFile call generated an error (i.e. the file was not present at the time of the\ncheck), EAX is zeroed out and the routine sleeps for sixty seconds before trying again.\n\n2) If this call does not generate an error (i.e. the file exists), the malware uses the MoveFile\nAPI call to add a .stopped extension to this file and then terminates.\n\nThis workflow is shown below.\n\nThe advantages to this are unclear; however, one possibility is that this approach allows the\nthreat actors to terminate the malware without the need for command and control\nimplementation.\n\n\n-----\n\nMemory Scraping Threads\n\n[As noted in another blog post, this malware forgoes more targeted scraping (in which](https://www.vkremez.com/2017/12/lets-learn-reversing-grateful-point-of.html)\nspecific BINs are selected) in favor of a broader collection. The threat actors’ scraping logic\nis not yet fully understood; however, several characteristics of credit card track data do\nappear, including the common “=” and “^” separators:\n\nThe scraping threads use the ReadProcessMemory API call to run data from all of the\nprocesses on the infected system. Unlike previously documented samples, no apparent\nwhitelisting was present in the malware during static analysis, and during dynamic runs of\nthe malware the scraper searched for data without discretion. The comparison logic in the\nimage above takes place within the “Possible_Parsing” function boxed in blue at the bottom\nright of the image below:\n\n\n-----\n\nAt this stage, this blog has not identified where this data is stored or how it is transmitted.\nWhile some variants of this file have C2 functionality via DNS requests (a previously known\nand documented feature), such features appear absent from the file analyzed here and\nreported by VISA. This blog also performed a dynamic comparison between a known DNS\nvariant and the file analyzed here using test data. The DNS variant immediately began\ncommunicating with external servers (including a public IP checker and the C2 server) and\neventually attempted to transmit scraped test data over the DNS protocol. The file analyzed\nin this blog post did not perform these tasks.\n\n\n-----\n\nA static comparison of both variants, with a focus on the DNS variant s C2 server, shows that\nboth files have nearly identical code leading to where this server is referenced in the DNS\nversion and where one would expect it to be referenced in the non-DNS version:\n\n**This code**\n\n\n-----\n\n**workflow is nearly identical in both variants**\nHowever, examining this location (boxed in orange above) shows that several functions are\nnot present in the non-DNS version. Most importantly, none of the functions in this location\ncontain code matching the routine with the C2 reference in the DNS version:\n\n**The DNS variant (top left) contains additional functionality not present in the non-DNS**\n**variant**\n\nIf these features have been removed, this blog postulates that either a file saving mechanism\nexists but has not yet been identified, or an additional file is used to run the DLL and collect\ndata.\n\n\n-----\n\nAdditional Variants\n\nAs noted above, there are other variants of this scraper. A VirusTotal pivot on the\nworkerInstance export identifies eight total samples, with varying compile times. Of these\nsamples, some feature DNS exfiltration capabilities and others do not:\n\n_Non-DNS_\n32ccf851b0b81252aa2bfdf2e8b416cb Compilation Timestamp: 2018-12-10 20:06:42 (27KB)\n0eb7ac6d2d99d702ecc8b86ff90b0aac Compilation Timestamp: 2019-04-11 13:26:51 (27kB)\n576039d7cb54b749af5ed3d3558ee296 Compilation Timestamp: 2018-11-07 11:56:06\n(25KB)\n19d38325f715f623bd4b6e819a150cde Compilation Timestamp: 2018-12-10 20:07:02 (23KB)\n(blog version)\n\n_DNS_\n0576380f93f49279491177d96d84ad7e Compilation Timestamp: 2018-11-27 20:06:19 (89Kb)\n353b0df3a9efce2d32f6097cab8fffc3 Compilation Timestamp: 2018-11-27 20:06:44 (46KB)\n128f75f8c80d65d416c740a6d4c1591e Compilation Timestamp: 2018-11-27 20:06:19(44KB)\n4ed6cc403d5ea6abae458ba6f43ad4f3 Compilation Timestamp: 2018-11-27 20:06:44 (42KB)\n\nInterestingly, the DNS variants were all compiled within a minute of each other. While two\nfiles share the same timestamp (and perhaps are the same file, dumped from memory or\ndisk differently), there are still three unique timestamps from this set. In addition, these files\nare noticeably larger than the apparent non-DNS version. With one exception, these files\nalso have compilation timestamps predating the non-DNS versions, although this data set\nmight not be complete given the limitations in VirusTotal’s search range (although none of the\nDNS versions with this data query had compilation timestamps beyond 2018).\n\nOne possible explanation is that the threat actor shifted away from DNS exfiltration in favor\nof a quiet collection or the use of an external tool. Another possibility is that the tool is shared\nacross multiple threat actors with different operational behaviors. The short window of\ncompilation timestamps for the DNS samples could represent different builds for multiple\nsimultaneous targets, threat actor testing, or a more benign explanation.\n\nThe DNS versions all use “ns.akamai1811.com” as their C2.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-12-23 - POS Malware Used at Fuel Pumps.pdf"
+    ],
+    "report_names": [
+        "2019-12-23 - POS Malware Used at Fuel Pumps.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "ee3363a4-e807-4f95-97d8-b603c31b9de1",
+            "created_at": "2023-01-06T13:46:38.485884Z",
+            "updated_at": "2025-03-27T02:00:02.845851Z",
+            "deleted_at": null,
+            "main_name": "FIN6",
+            "aliases": [
+                "Camouflage Tempest",
+                "MageCart Group 6",
+                "G0037",
+                "TA4557",
+                "SKELETON SPIDER",
+                "ITG08",
+                "White Giant",
+                "GOLD FRANKLIN",
+                "ATK88"
+            ],
+            "source_name": "MISPGALAXY:FIN6",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "12517c87-040a-4627-a3df-86ca95e5c13f",
+            "created_at": "2022-10-25T16:07:23.61665Z",
+            "updated_at": "2025-03-27T02:02:09.889471Z",
+            "deleted_at": null,
+            "main_name": "FIN6",
+            "aliases": [
+                "ATK 88",
+                "Camouflage Tempest",
+                "FIN6",
+                "Gold Franklin",
+                "ITG08",
+                "Skeleton Spider",
+                "TAAL",
+                "TAG-CR2",
+                "White Giant"
+            ],
+            "source_name": "ETDA:FIN6",
+            "tools": [
+                "AbaddonPOS",
+                "Agentemis",
+                "AmmyyRAT",
+                "Anchor_DNS",
+                "BlackPOS",
+                "CmdSQL",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "FlawedAmmyy",
+                "FrameworkPOS",
+                "Grateful POS",
+                "JSPSPY",
+                "Kaptoxa",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "LockerGoga",
+                "MMon",
+                "Magecart",
+                "Meterpreter",
+                "Mimikatz",
+                "More_eggs",
+                "NeverQuest",
+                "POSWDS",
+                "Reedum",
+                "Ryuk",
+                "SCRAPMINT",
+                "SONE",
+                "SpicyOmelette",
+                "StealerOne",
+                "Taurus Loader Stealer Module",
+                "Terra Loader",
+                "TerraStealer",
+                "Vawtrak",
+                "WCE",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "cobeacon",
+                "grabnew"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "b3acfb48-b04d-4d3d-88a8-836d7376fa2e",
+            "created_at": "2024-06-19T02:03:08.052814Z",
+            "updated_at": "2025-03-27T02:05:17.368029Z",
+            "deleted_at": null,
+            "main_name": "GOLD FRANKLIN",
+            "aliases": [
+                "ITG08 ",
+                "MageCart Group 6 ",
+                "Skeleton Spider ",
+                "White Giant ",
+                "FIN6 "
+            ],
+            "source_name": "Secureworks:GOLD FRANKLIN",
+            "tools": [
+                " Metasploit",
+                " Meterpreter",
+                " Mimikatz",
+                " PowerSploit",
+                " PowerUpSQL",
+                " RemCom",
+                "FrameWorkPOS"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "ea7bfe06-7c23-481d-b8ba-eafa6cda3bc9",
+            "created_at": "2022-10-25T15:50:23.317961Z",
+            "updated_at": "2025-03-27T02:00:55.440858Z",
+            "deleted_at": null,
+            "main_name": "FIN6",
+            "aliases": [
+                "FIN6",
+                "Magecart Group 6",
+                "ITG08",
+                "Skeleton Spider",
+                "TAAL",
+                "Camouflage Tempest"
+            ],
+            "source_name": "MITRE:FIN6",
+            "tools": [
+                "FlawedAmmyy",
+                "GrimAgent",
+                "FrameworkPOS",
+                "More_eggs",
+                "Cobalt Strike",
+                "Windows Credential Editor",
+                "AdFind",
+                "PsExec",
+                "LockerGoga",
+                "Ryuk",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536231,
+    "ts_updated_at": 1743041713,
+    "ts_creation_date": 1653757267,
+    "ts_modification_date": 1653757267,
+    "files": {
+        "pdf": "https://archive.orkl.eu/71d69606b564824301422db1e8276fe926d378e7.pdf",
+        "text": "https://archive.orkl.eu/71d69606b564824301422db1e8276fe926d378e7.txt",
+        "img": "https://archive.orkl.eu/71d69606b564824301422db1e8276fe926d378e7.jpg"
+    }
+}

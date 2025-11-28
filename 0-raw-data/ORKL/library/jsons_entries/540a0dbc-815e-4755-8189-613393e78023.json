@@ -1,0 +1,145 @@
+{
+    "id": "540a0dbc-815e-4755-8189-613393e78023",
+    "created_at": "2023-05-06T02:08:03.961805Z",
+    "updated_at": "2025-03-27T02:15:35.517906Z",
+    "deleted_at": null,
+    "sha1_hash": "466841a5744d64c86b33ed44a3e4c4196b7cff63",
+    "title": "2023-04-13 - Aurora Stealer deep dive Analysis",
+    "authors": "",
+    "file_creation_date": "2023-05-05T01:54:55Z",
+    "file_modification_date": "2023-05-05T01:54:55Z",
+    "file_size": 2875688,
+    "plain_text": "# Aurora Stealer - d01a\n\n**d01a.github.io/aurora-stealer/**\n\nMohamed Adel April 12, 2023\n\n## Contents\n\n Aurora Stealer\n\n[Mohamed Adel included in Malware Analysis](https://d01a.github.io/)\n2023-04-12 2414 words\n 12 minutes\n views\n\n## Introduction\n\nAurora Stealer is an information stealer Written in GO. It is a commercial stealer that costs\naround 250$ per month. The malware can steal Browser password and saved cookies,\ncrypto information (Desktop and Web), Telegram, Steam and Specific files from the victim\nmachine and can take a screenshot from it.\n\n\n-----\n\n## Basic information\n\nThe icon of the executable gives us a hit about how this is spreading. It has Photoshop icon,\nmost probably it was spreading using Malvertising.\n\n\n-----\n\n### Binary Identification\n\n[First we want to know some basic information about the file so I will use DiE to do so.](https://github.com/horsicq/Detect-It-Easy)\n\n\n-----\n\nIt was identified as GO binary. .symtab is a legacy section in GO binaries. In GO binaries\nprior to Version 1.3 .symtab section hold the symbol table but it is no longer filed with\nanything useful.\nWithout Symbols, the reversing will be so hard as a simple Hello world\nprogram in GO has about 2000 function this is a result of that GO compiler statically linking\nall the needed libraries. Later, I will try to tackle this problem using existed Tools.\n\nAn important aspect of the basic Triaging of a Malware is to check the readable Strings of the\nfile. But GO is different in everything. The strings has a part of that too.\n\nIn GO, the strings are stored in Unicode format without null terminating character so many\ntools will handle that wrong. Also, the existence of this large number of library functions will\nmake it worse. The resulting number of lines using strings utility in Die is 7371 line. We can\nreduce this number by matching for the library functions like the following Regex\n```\n  .*\n  (runtime|\\/usr|\\/root).*\n  \\n?\n\n\n```\nthis matches the lines that contains runtime, usr and root. this filters around 2500 line but still\naround 5000 line. these lines contains the function imported in program, you can check them\nbut it will be so exhausting to get information from it. Let’s Continue our analysis using the\ndisassembler.\n\n\n-----\n\n### Code Analysis\n\nI will upload the sample to IDA to explore it. In the old versions of IDA, Library functions will\nnot be recognized and renamed. Also the types will be mostly wrong.\n\nTo handle this there is some tools you can use to fix the types and names. I’ve used\n[GoReSym.](https://github.com/mandiant/GoReSym)\n\nThis is a standalone executable you can run with following parameters\n```\n  GoReSym_win.exe -t -d -p <PATH_TO_FILE> >\n  fix.json\n\n\n```\nfor more info about the available parameters, Check the repo of the tool.\n\ncontent of the output is in JSON format so I saved it to use it in this [IDA Script to rename the](https://github.com/mandiant/GoReSym/blob/master/IDAPython/goresym_rename.py)\nfunctions and correct the types in IDA database.\n\nNOTE: -t parameter fix the types information but if you the decompiler will fail to decompile\nit.\n\n[If you want to know how this tool is working, Check this article. Basically it search for](https://www.mandiant.com/resources/blog/golang-internals-symbol-recovery)\n```\npclntab structure by searching for a magic header and follow the pointer to symbols table.\n  // pcHeader holds data used by the pclntab lookups.\n\n  type pcHeader struct {\n\n       magic     uint32\n\n  /*\n  go12magic = 0xfffffffb\n\n  go116magic = 0xfffffffa\n\n  go118magic = 0xfffffff0\n\n  go120magic = 0xfffffff1\n\n  */\n       pad1, pad2   uint8  // 0,0\n\n       minLC     uint8  // min instruction size\n\n       ptrSize    uint8  // size of a ptr in bytes\n\n       nfunc     int   // number of functions in the module\n\n       nfiles     uint  // number of entries in the file tab\n\n       textStart   uintptr // base for function entry PC offsets in this\n  module, equal to moduledata.text\n\n       funcnameOffset uintptr // offset to the funcnametab variable from\n  pcHeader\n\n       cuOffset    uintptr // offset to the cutab variable from pcHeader\n\n       filetabOffset uintptr // offset to the filetab variable from pcHeader\n\n       pctabOffset uintptr // offset to the pctab variable from pcHeader\n\n```\n\n-----\n\n```\n       pclnOffset   uintptr // offset to the pclntab variable from pcHeader\n\n  }\n\n```\n[This is also used by the go parser itself in order to locate the function, For more info here](https://github.com/golang/go/blob/master/src/debug/gosym/pclntab.go#L211)\n\n[Another set of scripts available we can use it doing the same thing is Alphagolang](https://github.com/SentineLabs/AlphaGolang)\n\nI will use Alphagolang here but both will provide similar result.\n\nFirst I used [recreate_pclntab.py script to recreate pclntab structure.](https://github.com/SentineLabs/AlphaGolang/blob/main/1.recreate_pclntab.py)\n\n[Second, I used function_discovery_and_renaming.py script to rename the functions.](https://github.com/SentineLabs/AlphaGolang/blob/main/2.function_discovery_and_renaming.py)\n\nThird, I used [categorize_go_folders.py to categorize the functions and pack them in folders,](https://github.com/SentineLabs/AlphaGolang/blob/main/3.categorize_go_folders.py)\nThis will be very helpful to focus on user-code.\n\nFourth, I used [string_cast.py to fix string references.](https://github.com/SentineLabs/AlphaGolang/blob/main/4.string_cast.py)\n\nFifth, I used [extract_types.py to correct the types information by applying C like types to the](https://github.com/SentineLabs/AlphaGolang/blob/main/5.extract_types.py)\nused structures.\n\n\n-----\n\nThe result\n\nNow, We have a better environment so we can start exploring the code efficiently.\n\n### Calling Conventions in GO\n\nIn function calls, GO has a different calling convention.\n\nAll the argument are passed using the stack from the left to right. The following assembly\ncode is in Go assembler format\n```\n  func testConv(x,y int) int {return\n  x+y}\n\n  testConv:\n\n       MOVQ 0x8(SP), AX ; get arg\n  x\n\n       MOVQ 0x10(SP), CX ; get arg\n  y\n\n       ADDQ CX, AX    ; %ax <  x + y\n\n       MOVQ AX, 0x20(SP) ; return\n  x+y-z\n\n       RET\n\n\n```\nthe compiler have to make sure that there is enough space on the stack to accommodate all\nthe arguments and return values.\n\n### Strings in GO\n\nGo stores strings in a Unicode -UTF-8- format without null terminating characters in a section\ncontain all the strings but.\n\n\n-----\n\nStrings in go stored in structure of value and length pair called StringHeader. So, in all the\nfunction where a string argument is passed, you will see an extra argument contain the\nlength of the string.\n```\n  type StringHeader\n  struct {\n\n       Data uintptr\n\n       Len int\n\n  }\n\n\n```\nFirst we start with main_init function (sub_595590). In GO, init() is a predefined function\nthat takes no argument, Return no values. And Runs before any code in the package.\n\nThe block number 1 shows that it loads some DLLs and functions.\n\n\n-----\n\n**DLL** **Function**\n\nuser32.dll GetDesktopWindow\n\nuser32.dll EnumDisplayMonitors\n\nuser32.dll GetMonitorInfoW\n\nuser32.dll EnumDisplaySettingsW\n\nkernel32.dll LocalFree\n\nCrypt32.dll CryptUnprotectData\n\nIn Block number 2, It Reads the the environment Variable USERPROFILE and concatenate\n```\n\\\\APPDATA\\\\LOCAL\\ and \\\\APPDATA\\\\ROAMING\\ and save the new string to the memory.\n\n```\nIn block 3, It did the same thing to get the Paths C:\\\\Users\\\\{user}\\\\APPDATA\\\\ROAMING,\n```\n<Local>\\\\ but it replaces the string C:\\\\Users with C:\\\\windows.old\\Users with Replace\n\n```\nfunction from strings package\n```\n  func Replace(original string, old string, new string, n int)\n  string\n\n  //where n is the number of times replacing occures. -1 for\n  replace all\n\n\n```\nthis location is created when the user update from one version to another and it contains all\nthe old information from the previous installation.\n\nmoving to main_main (sub_595470). It creates a new procedure by making a call to newproc\nfunction from runtime package.\n\n### Connect To server\n\nfollowing the code to main_ConnectToServer (sub_58ABE0). This function has some\ninteresting functionality we will explore next.\n\n\n-----\n\nIn block 1, the malware sleeps for 1000000000 nanoseconds -I tried a simple program with\nthe same call to sleep and it was equivalent to time.Nanosecond \nThen it establishes a TCP connection to 82.115.223.249:8081 IP address using function\n```\nDial from net package. Then it Reads the Received packet. the Dial function in GO returns\n\n```\n2 values, Conn interface and Error, which IDA cannot recognize so, I will follow my intuition. If\nthe connection returned error, it will try to reconnect again.\n\nIn Block 2, The connection was established but it first checks the response from the remote\nIP. If it was blocked due to the geo location, as the IP is Russian, it will try to reconnect.\n\nIf the response was WORK string, the connection is established successfully and the malware\ncan continue with its functionality as shown in block 3 and 4\n\n### Collect victim information\n\nMoving to main_GetInfoUser() (sub_58B880). The first Lines in this subroutine takes us to\nanother function, main_MachineID (sub_5897A0)\n\n\n-----\n\nThe malware Runs the command cmd.exe /c wmic csproduct get uuid to get UUID of the\ndevice. Returning to main_GetInfoUser .\n\nIt retrieves the screen width and height using win32 API GetSystemMetrics, GO allow using\nthird-party packages directly from GitHub and the the cause of the function naming. The\nscreen resolution is represented in the format <width>x<height> .\n\n\n-----\n\nThe next call is to main_GetOS (sub_58A530).\n\nThis function retrieves the OS version using wmic command wmic os get Caption . and\nfilter the output based on the form it is printed to format is in a space separated string.\n\nReturning back to main_GetInfoUser a call to main_getGPU (sub_58A200) is made.\n\n\n-----\n\nThe GPU information retrieved by executing the command cmd /C wmic path\n```\nwin32_VideoController get name\n\n```\nUsing the same method in main_getCPU (sub_589F10). It gets CPU information with\ncommand cmd /c wmic cpu get name\n\nin main_sysTotalMemory (sub_58B550)It gets the memory status by executing\n```\nGlobalMemoryStatusEx function.\nmain_CMD_SHELL is called to execute cmd /c systeminfo that gets all the specs of the\n\n```\ndevice.\n\n\n-----\n\nThat was the last thing the function main_GetInfoUser do.\n\nBack in main_main, the function main_grab (sub_593E80) is called. This function responsible\nfor doing the main goal of the malware, Stealing.\n\n\n-----\n\n```\npanic function is used to check for unexpected errors. common use of panic is to abort\n\n```\nif a function returns an error value that we don’t want to handle\n\n\n-----\n\n### File grabber\n\nGoing to the first function main_file_grabber (sub_594110)\n\nthis function search for a specific file taken from the C2 server and it is base64 encoded and\nin JSON format.\n\nThen, It search for the file in some predefined directories and location.\n\nthe function io_ioutil_ReadDir reads the content of the directory and stores the output in a\n```\nfs.fileinfo structure, sorted by the filename\n\n```\n\n-----\n\n```\n  type FileInfo interface {\n\n       Name() string    // base name of the file\n\n       Size() int64    // length in bytes for regular files; system  dependent for others\n\n       Mode() FileMode   // file mode bits\n\n       ModTime() time.Time // modification time\n\n       IsDir() bool    // abbreviation for Mode().IsDir()\n\n       Sys() any      // underlying data source (can return nil)\n\n  }\n\n```\nThen it walks through the returned structure and reads the file of interest\n\nthen it encode the file content in Base64 and adds the tags used in the JSON formatted\npacket content to be sent to the remote system\n\n\n-----\n\n### Browser data\n\nWe will visit SendToServer latter. Now, lets go back to the caller function and explore the next\nfunction, main_Grab_func3 (sub_58F0B0).\n\nThis function goes through the %APPDATA%Roaming directory and calls another function.\nthe function path_filepath_Walk walks the directory from the Root passed in the second\nparameter calling a function fn.WinDirFunc at each file and directory in it including the Root.\n```\n  func Walk(root string, fn WalkFunc)\n  error\n\n  type WalkFunc func(path string, info fs.FileInfo, err error)\n  error\n\n```\n\n-----\n\nSo, Next one to visit is WalkFunc used main_Grab_func3_2 (sub_58DED0).\n\nThis function steals the Browser information stored\n\nFor Chromium based browsers it gets the Local State file and calls main_getMasterKey that\nas the name suggest, Gets the master key and decode it .then, decrypts it by calling\n```\nCryptUnprotectData which is called from main_xDecrypt\n\n```\nIt handles the case of using Opera and Firefox browsers\n\nBack to the caller function, The malware steals the password and cookies from the browser\ndata and adds the tags of the JSON file to be sent to the C2 server.\n\n\n-----\n\n### Crypto\n\nThen, It goes through the %USERPROFILE% searching for any Crypto wallets information\n\nIt Looks for PC applications and Web based wallets and add its associated type and name to\nthe JSON data to be sent\n\n### Screenshot Capture\n\nfunction main_Grab_func_7 (sub_591D50) is used to take a screenshot from the victim\nsystem\n\nThe PNG file is then base64 encoded and add the value to the tag screenshot to be sent.\n\n### Telegram Data\n\nThe next targeted information is Telegram, It did the same procedure discussed before with\ntelegram data folder at main_Grab_func_6 (sub_591980)\n\n\n-----\n\n```\nWalkFunc → main_Grab_func_6_2 (sub_591120)\n\n### Steam data\n\n```\nfunction main_Grab_func9 (sub_593B30) steals steam data in the same way\n\n### send To server\n```\nmain_SendToServer_NEW (sub_594DD0) is used to send the collected data to the server.\n\n```\n\n-----\n\nThe collected information stored in JSON format. the Data then compressed using gzip\ncompression algorithm and encoded with Base64 encoding to be sent to the server using the\npreviously established TCP connection.\n\n## Network Analysis\n\n[we can look at the network communication using PCAP file provided by Any Run sandbox.](https://app.any.run/tasks/e67ff1df-1b55-451e-bdad-23849a10b650/)\n\nBy opening the file in Wireshark and filter using the IP 82.115.223.249\n\nFollowing the TCP stream\n\n\n-----\n\nThe first packet received is WORK indicates that the connection is successful and the\nmalware then begin to collect the required data and compress it and send it to the server. At\nthe last packet received from the the C2 server is Thanks.\n\nwe can use Cyberchef to decode and decompress the data.\n\n\n-----\n\n-----\n\nthe Error list include the files that the malware cannot read or access. On of the packets has\na very large size, as the screenshot field has a very large Base64 encoded data\n\n\n-----\n\nthe screenshot:\n\n[Sample JSON file can be found here https://pastebin.com/YpTwAC94](https://pastebin.com/YpTwAC94)\n\n## Conclusion\n\nAurora stealer is a new commercial infostealer. Most of it’s capabilities are typical things that\ncan be found in most of the stealers.\nit can grab Browser saved password/cookies and\nCryptocurrency wallets information from Desktop applications and Web based wallets.\nAlso,\nit can grab a files from the victim machine and take a screenshot. The communication with\nC2 server is done over TCP protocol.\nMost of these things can be found in most of the\nstealer But being written in GO makes it special, even it has a plaintext strings, The reversing\nprocess is quite annoying as most of the tools cannot handle GO binaries in a right way.\n\n\n-----\n\n## IOCs:\n\n29339458f4a33ee922f25d36b83f19797a15a279634e9c44ebd3816866a541cb\n82.115.223[.]249:8081\n\n## Yara Rule\n```\n  rule aurora_stealer{\n\n    meta:\n\n    malware = \"Aurora stealer\"\n\n    hash =\n  \"29339458f4a33ee922f25d36b83f19797a15a279634e9c44ebd3816866a541cb\"\n\n    reference = \"https://d01a.github.io/\"\n\n    Author = \"d01a\"\n\n    description = \"detect Aurora stealer\"\n\n    strings:\n\n    $is_go = \"Go build\" ascii\n\n    $a1 = \"C:\\\\Windows.old\\\\Users\\\\\" ascii\n\n    $a2 = \"\\\\AppData\\\\Roaming\\\\\" ascii\n\n    $a3 = \"wmic csproduct get uuid\" ascii\n\n    $a4 = \"wmic cpu get name\" ascii\n\n    $a5 = \"systeminfo\" ascii\n\n    $a6 = \"coNNNECTIONGWQFGQW\" ascii\n\n    $fun1 = \"main.Grab\" ascii\n\n    $fun2 = \"main.getMasterKey\" ascii\n\n    $fun3 = \"main.SendToServer_NEW\" ascii\n\n    $fun4 = \"main.ConnectToServer\" ascii\n\n    $fun5 = \"main.xDecrypt\" ascii\n    $fun6 = \"main.GetDisplayBounds\" ascii\n\n\n    condition:\n\n    uint16(0) == 0x5a4d and ( $is_go and (4 of ($a*)) and (4 of ($fun*))\n  )\n\n  }\n\n```\n\n-----\n\n## References\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2023/2023-04-13 - Aurora Stealer deep dive Analysis.pdf"
+    ],
+    "report_names": [
+        "2023-04-13 - Aurora Stealer deep dive Analysis.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "9f101d9c-05ea-48b9-b6f1-168cd6d06d12",
+            "created_at": "2023-01-06T13:46:39.396409Z",
+            "updated_at": "2025-03-27T02:00:03.074969Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "CHROMIUM",
+                "ControlX",
+                "Red Dev 10",
+                "RedHotel",
+                "Red Scylla",
+                "TAG-22",
+                "BRONZE UNIVERSITY",
+                "AQUATIC PANDA",
+                "Charcoal Typhoon",
+                "BountyGlad"
+            ],
+            "source_name": "MISPGALAXY:Earth Lusca",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "6abcc917-035c-4e9b-a53f-eaee636749c3",
+            "created_at": "2022-10-25T16:07:23.565337Z",
+            "updated_at": "2025-03-27T02:02:09.868522Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Bronze University",
+                "Charcoal Typhoon",
+                "Chromium",
+                "Red Dev 10",
+                "Red Scylla"
+            ],
+            "source_name": "ETDA:Earth Lusca",
+            "tools": [
+                "Agentemis",
+                "AntSword",
+                "BIOPASS",
+                "BIOPASS RAT",
+                "BadPotato",
+                "Behinder",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Doraemon",
+                "FRP",
+                "Fast Reverse Proxy",
+                "FunnySwitch",
+                "HUC Port Banner Scanner",
+                "KTLVdoor",
+                "Mimikatz",
+                "NBTscan",
+                "POISONPLUG.SHADOW",
+                "PipeMon",
+                "RbDoor",
+                "RibDoor",
+                "RouterGod",
+                "SAMRID",
+                "ShadowPad Winnti",
+                "SprySOCKS",
+                "WinRAR",
+                "Winnti",
+                "XShellGhost",
+                "cobeacon",
+                "fscan",
+                "lcx",
+                "nbtscan"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d53593c3-2819-4af3-bf16-0c39edc64920",
+            "created_at": "2022-10-27T08:27:13.212301Z",
+            "updated_at": "2025-03-27T02:00:55.529662Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Earth Lusca",
+                "TAG-22",
+                "Charcoal Typhoon",
+                "CHROMIUM",
+                "ControlX"
+            ],
+            "source_name": "MITRE:Earth Lusca",
+            "tools": [
+                "Mimikatz",
+                "PowerSploit",
+                "Tasklist",
+                "certutil",
+                "Cobalt Strike",
+                "Winnti for Linux",
+                "Nltest",
+                "NBTscan",
+                "ShadowPad"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1683338883,
+    "ts_updated_at": 1743041735,
+    "ts_creation_date": 1683251695,
+    "ts_modification_date": 1683251695,
+    "files": {
+        "pdf": "https://archive.orkl.eu/466841a5744d64c86b33ed44a3e4c4196b7cff63.pdf",
+        "text": "https://archive.orkl.eu/466841a5744d64c86b33ed44a3e4c4196b7cff63.txt",
+        "img": "https://archive.orkl.eu/466841a5744d64c86b33ed44a3e4c4196b7cff63.jpg"
+    }
+}

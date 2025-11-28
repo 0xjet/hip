@@ -1,0 +1,89 @@
+{
+    "id": "564a96da-afa3-46c5-9272-3f497cba3554",
+    "created_at": "2023-01-12T15:08:27.946994Z",
+    "updated_at": "2025-03-27T02:11:41.796715Z",
+    "deleted_at": null,
+    "sha1_hash": "3a1b4959d3a1d1eab7134a4825781d127de063a5",
+    "title": "2020-10-21 - LockBit uses automated attack tools to identify tasty targets",
+    "authors": "",
+    "file_creation_date": "2022-05-28T01:22:20Z",
+    "file_modification_date": "2022-05-28T01:22:20Z",
+    "file_size": 1666403,
+    "plain_text": "# LockBit uses automated attack tools to identify tasty targets\n\n**[news.sophos.com/en-us/2020/10/21/lockbit-attackers-uses-automated-attack-tools-to-identify-tasty-targets](https://news.sophos.com/en-us/2020/10/21/lockbit-attackers-uses-automated-attack-tools-to-identify-tasty-targets)**\n\nSean Gallagher October 21, 2020\n\n[Earlier this year, we analyzed the inner workings of LockBit, a ransomware family that](https://news.sophos.com/en-us/2020/04/24/lockbit-ransomware-borrows-tricks-to-keep-up-with-revil-and-maze/)\nemerged a year ago and quickly became another player in the targeted extortion business\nalongside Maze and REvil. LockBit has been quickly maturing, as we observed in April, using\nsome novel ways to escalate privileges by bypassing Windows User Account Control (UAC).\n\nA series of recent attacks detected by Sophos provided us with the opportunity to dive\ndeeper into LockBit’s tools, techniques and practices. The actors behind the ransomware\nuse a number of methods to evade detection: calling scripts from a remote Google\ndocument, using PowerShell in a way that may foil some efforts at monitoring and logging to\nestablish a persistent backdoor—by using renamed copies of PowerShell.exe. The attack\nscripts also attempt to bypass Windows 10’s built-in anti-malware interface, directly applying\npatches to it in memory. Internally, we’ve referred to this style of LockBit attack as\n“PSRename.”\n\nBased on some artifacts, we believe that some components of the attack were based on\nPowerShell Empire, the PowerShell-based penetration testing post-exploitation tool. Using a\nseries of heavily obfuscated scripts controlled by a remote backend, the PowerShell scripts\ncollect valuable intelligence about targeted networks before unleashing the LockBit\nransomware, checking for signs of malware protection, firewalls and forensic sandboxes as\n\n\n-----\n\nwell as very specific types of business software—particularly, point-of-sale systems and tax\naccounting software. The series of attack scripts only deploys ransomware if the fingerprint\nof the target matches attractive targets.\n\nAside from the initial point of compromise and registry key entries, these attacks left little in\nthe way of a file footprint for forensic analysis. The ransomware was pulled down by scripts\nand loaded directly into memory, and then executed. And the attackers did a thorough\ncleanup of logs and supporting files when the attack was executed.\n\nThese highly automated attacks were fast—once the ransomware attack was launched in\nearnest, LockBit ransomware was executed across the targeted network within 5 minutes,\nleveraging Windows administrative tools.\n\n## Layers of obfuscation\n\nThe organizations hit in the eight attacks we analyzed were smaller organizations with only\npartial malware protection deployed. None of them had public Internet facing systems on\ntheir networks, though one had an older firewall with ports open for remote administration by\nHTTP and HTTPS.\n\nIt’s not clear what the initial compromise was across these organizations, as we had no\nvisibility into the event. But it appears all of the activity in the attack we analyzed here were\ninitiated from a single compromised server within the network used as the “mothership” for\nthe LockBit attack.\n\nWhile analyzing one of the attacks, we found traces of a number of PowerShell scripts that\nwere launched against systems that had malware protection in place. The scripts gave a\nclear picture of the degree of automation of the attack, and also demonstrated the lengths\nthe LockBit operators had gone to make forensic analysis of their attacks as difficult as\npossible.\n\nIn the first stage of the attack, a PowerShell script connects to a Google Docs spreadsheet,\nretrieving a PowerShell script encoded in Base64 from the body of the spreadsheet.\n\n\n-----\n\nThe code is hidden in cell B1 of this Google Sheets document.\nThe script fetches the contents of cell B1 in the sheet and executes it. The retrieved script\nmakes a copy of PowerShell in the system’s TMP folder, and executes Base64-encoded\ncontents with that copy:\n\nThe code concealed in the Google Sheets document’s cell, with Base64-encoded content.\n\nThe contents of the encoded section.\n\n\n-----\n\nDecoding the script reveals it uses a System.Net.ServicePointManager object to create a\nsession connecting to hxxps://142[.]91.170.6, downloading yet another stream of encoded\nscript. This much larger chunk of code contains a function that creates a persistent backdoor.\nUsing a template, the function selects a new name and path to create copies of\nPowerShell.exe and the Microsoft Scripting Host mshta.exe, as well as fictional agent\ndescriptions to make them look like other legitimate processes. It also creates a Task\nScheduler manifest file that uses the renamed executables, scheduling a VBscript command\nto be executed by the scripting host that invokes the backdoor with the renamed PowerShell\nexecutable:\n\n\n-----\n\nWe also found the LockBit attackers use another form of persistent backdoor, using an LNK\nfile dropped into Windows’ startup commands folder. The LNK file launches Microsoft\nScripting Host, to run a VBScript, which in turn executes a PowerShell script to read data\nstored in the link file itself encoded in Base64.\nThe extra LNK bytes decode to yet another encoded chunk of PowerShell, decoded below:\n\nPowerShell code stored in the end of the LNK file used by Lockbit to create a persistent\nbackdoor.\nThe script connects to the remote server and pulls down the backdoor script as a stream,\nthen executes the downloaded script with the command line interpreter.\n\n## Empire building\n\nThe backdoor stub downloads more obfuscated code, establishing a proxy connection to the\ncommand and control server, and creating a web request to pull down more PowerShell\ncode. One of the modules downloaded is a collection functions used to perform\nreconnaissance on the targeted system and to disable some of its anti-malware capabilities.\n\nOne of the functions in the module aims to disable Microsoft Windows’ Antimalware Scan\nInterface (AMSI) provider by changing its code in memory. The backdoor uses a script to\nload a Base64-encoded DLL into memory, and then executes a PowerShell code that\ninvokes C# code calling the DLL’s methods to patch the copy of the AMSI library already in\nkernel memory. This code is repeated in another module discovered during our analysis:\n\n\n-----\n\nA\n\nportion of the script used by LockBit actors to attempt to “patch” AMSI.\nAnother module downloaded by the backdoor checks for anti-malware software and artifacts\nthat indicate it is running on a virtual machine, but also checks for software that may indicate\nthe system is of greater value—using a regular expression to look for tax accounting and\npoint-of-sale software, specific web browsers, and other software:\n\n\n-----\n\nVM detection function in the scripts downloaded by the LockBit backdoor.\n\nCode that searches the WIndows registry for software that is interesting to the LockBit\nattackers.\n\n\n-----\n\nThe regular expression parses the local Windows registry, looking for matches to the\nfollowing keywords:\n\nKeyword Target\n\nOpera Opera browser\n\nFirefox Mozilla Firefox browser\n\nChrome Google Chrome browser\n\nTax Search for any tax-related software process\n\nOLT OLT Pro desktop tax software\n\nLACERTE Intuit Lacerte tax software for accountants\n\nPROSERIES Intuit ProSeries tax software\n\nPoint of Sale Search for point-of-sale (retail) software\n\nPOS Search for point-of-sale (retail) software\n\nVirus Search for anti-malware processes\n\nDefender Microsoft Windows Defender\n\nSecury\n\nAnti Search for anti-malware processes\n\nComodo Search for Comodo antivirus or firewall\n\nKasper Kaspersky anti-malware software\n\nProtect Search for anti-malware processes\n\nFirewall Search for firewall processes\n\nIf and only if the fingerprint generated by these checks indicate the system is what the\nattackers are looking for, the C2 server sends back commands that execute additional code.\n\n\n-----\n\n## Wrecking crew\n\nDepending on what responses come back from the C2, the backdoor can execute a number\nof tasks, designated by a numeric value. They include simply forcing a logoff, grabbing hash\ntables to apparently exfiltrate for password cracking, attempting to configure a VNC\nconnection, and attempting to create an IPSEC VPN tunnel. These tasks are executed using\nvariables and modules pushed down by the C2, obfuscating most of their functionality.\n\n\n-----\n\nInstrumented backdoor script used by LockBit.\nIn the attacks we analyzed, the PowerShell backdoor was used to launch the Windows\nManagement Interface Provider Host (WmiPrvSE.exe). Firewall rules were configured to\nallow WMI commands to be passed to the system from a server—the initially compromised\nsystem—by creating a crafted Windows service.\n\nAnd then, the attackers launched the ransomware via a WMI command, filelessly—without\ndropping a single file artifact on the disk of the targeted systems. In one case, the WMI\ncommands used port 8530 to reach back to the initially compromised server—the port used\nfor Windows Server Update Service. The server was running Internet Information Server but\nhad never been fully configured to run WSUS. The .ASP file on the server contained a key\nwhich was loaded into memory and used to unlock additional operations by the dropper code\nand trigger the ransomware.\n\nAll of the targets were hit within five minutes over WMI. The server-side file used to distribute\nthe ransomware, along with most of the event logs on the targeted systems and the server\nitself, were wiped in the course of the ransomware deployment. Sophos Intercept X stopped\nthe attack on systems it was installed upon, but other systems did not fare as well.\n\n## A moving target\n\n\n-----\n\nIt’s not a surprise to see yet another ransomware operator using repurposed code from the\noffensive security tools world—we recently saw Ryuk using Cobalt Strike post-exploitation\ntools to great effect. PowerShell Empire is easily modified and extended, and the LockBit\ncrew appears to have been able to build a whole set of obfuscated tools just by modifying\nexisting Empire modules.\n\nIt’s also not a real surprise that ransomware actors would want to target AMSI, the interface\nused by many anti-malware tools (including Sophos’) to monitor potentially malicious\nprocesses running on Windows 10. By combining the use of native tools, logging evasion,\nand the blinding of AMSI, the LockBit gang has made it increasingly difficult to detect and\ndefeat their attacks once they’ve established a foothold.\n\nThe only way to defend against these types of ransomware attackers is to have defense in\ndepth and to have consistent implementation of malware protection across all assets. Not\nhaving a handle on what services are exposed on a network makes modeling for threats like\nthese difficult. And if services are misconfigured, they can easily be leveraged by attackers\nfor ill purpose.\n\nSophos detects these abuses of PowerShell and the LockBit ransomware. A list of IOCs for\nthese attacks is posted on the Sophos GitHub here.\n\n**SophosLabs would like to acknowledge the contributions of Vikas Singh, Felix Weyne,**\n**Richard Cohen and Anand Ajjan to this report.**\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-10-21 - LockBit uses automated attack tools to identify tasty targets.pdf"
+    ],
+    "report_names": [
+        "2020-10-21 - LockBit uses automated attack tools to identify tasty targets.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "0fc739cf-0b82-48bf-9f7d-398a200b59b5",
+            "created_at": "2022-10-25T16:07:23.797925Z",
+            "updated_at": "2025-03-27T02:02:09.983353Z",
+            "deleted_at": null,
+            "main_name": "LockBit Gang",
+            "aliases": [
+                "Bitwise Spider",
+                "Operation Cronos"
+            ],
+            "source_name": "ETDA:LockBit Gang",
+            "tools": [
+                "3AM",
+                "ABCD Ransomware",
+                "CrackMapExec",
+                "EmPyre",
+                "EmpireProject",
+                "LockBit",
+                "LockBit Black",
+                "Mimikatz",
+                "PowerShell Empire",
+                "PsExec",
+                "Syrphid"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536107,
+    "ts_updated_at": 1743041501,
+    "ts_creation_date": 1653700940,
+    "ts_modification_date": 1653700940,
+    "files": {
+        "pdf": "https://archive.orkl.eu/3a1b4959d3a1d1eab7134a4825781d127de063a5.pdf",
+        "text": "https://archive.orkl.eu/3a1b4959d3a1d1eab7134a4825781d127de063a5.txt",
+        "img": "https://archive.orkl.eu/3a1b4959d3a1d1eab7134a4825781d127de063a5.jpg"
+    }
+}

@@ -1,0 +1,64 @@
+{
+    "id": "089d0b20-bd9d-4bc6-be45-f15a5fa33d68",
+    "created_at": "2023-01-12T15:00:06.054097Z",
+    "updated_at": "2025-03-27T02:05:54.713217Z",
+    "deleted_at": null,
+    "sha1_hash": "c0103fc64537f02b5bfddd03ff5a5935f83e845f",
+    "title": "2021-02-17 - GuLoader Snowballs via MalSpam Campaigns",
+    "authors": "",
+    "file_creation_date": "2022-05-28T03:29:24Z",
+    "file_modification_date": "2022-05-28T03:29:24Z",
+    "file_size": 1217582,
+    "plain_text": "# GuLoader Snowballs via MalSpam Campaigns\n\n**labs.k7computing.com/**\n\nBy K7 Labs February 17, 2021\n\n**GuLoader is one of the well-known downloader malware of 2020, as its prevalence was**\nvery high during the first half of the year. Its common payloads were FormBook, Agent\n**Tesla, LokiBot, Remcos RAT, just to name a few, which were delivered by abusing**\nstorage services like OneDrive, Google Drive etc. Our 1 encounter with the GuLoaderst\nbinary was in March 2020 when it was delivering FormBook in a spam campaign. Later,\nCheck Point revealed their findings about the similarities between GuLoader and\n**[CloudEye, a protector for binaries.](https://research.checkpoint.com/2020/guloader-cloudeye/)**\n\nRecently, we got our hands on the latest GuLoader binary which was submitted to\nbazzar[.]abuse[.]ch by JAMESWT (@JAMESWT_MHT). It came as an email attachment\nas depicted in Figure 1. The email seemed interesting because the sender’s name was\nAmit Saini claiming to be from Coca-Cola, Bangalore, India.\n\n\n-----\n\nFigure 1: Email with Attachment (courtesy of @JAMESWT_MHT)\nThe infection vector hasn’t changed yet but we at K7 Labs still keep track of GuLoader\nbecause of the efforts taken by them to keep improving their code for detecting the\nVirtual/Debug environment. Although some of the tricks are old, they still get the job done.\nIn this blog, we’ll see the improvements that have been made to the code over time.\n\n## Anti-Analysis & Anti-VM/Debug Techniques\n\n\n-----\n\n**GuLoader in March 2020**\n\n1. Debugger Anti-Attach technique – using ntdll.ZwSetInformationThread() with\n\nparameter 0x11\n2. Patching ntdll.DbgBreakPoint() and ntdll.DbgUiRemoteBreakin()\n3. Patching User mode hooks – patching the 1 5 bytes of unconditional jump (0xe9st\n\n????????) set by some AV & sandboxes\n\n**GuLoader after July 2020**\n\nIn addition to previous techniques mentioned above, there were some more tricks found in\nthe binary which was received after the end of June and they are\n\n1. ZwQueryVirtualMemory() – to detect execution with in virtual machine\n2. Check breakpoints\n3. Enumerating the active windows using EnumWindows() API\n4. Checking for qemu-ga.exe and qga.exe under Program Files.\n\nWhile all these were documented tricks there are 2 tricks in particular which were quite\ninteresting to us.\n\nRDTSC and CPUID instruction combination as depicted in Figure 2.\n\n\nIt uses RDTSC instruction to get the elapsed time in EAX:EDX and performs OR operation\nbetween EAX & EDX and saves it in ESI. Then it calls CPUID instruction with EAX=1 and\nchecks if the 31 bit (0x1f) is set (by default it is 0 & if run under virtual machine it will best\nset) and then exits execution by displaying a popup message stating “The program\n**cannot be run under virtual Environment or debugging software!”.**\n\nAgain it calls RDTSC instruction and performs the OR operation between EDX and EAX\nand subtract the new result with the previous result stored in ESI. In normal execution, the\ndifference between 2 RDTSC instructions will never be 0, but the code checks if the\ndifference is less than or equal to 0 which results in an endless loop.\n\nFigure 2: RDTSC and CPUID Instructions\n\n\n-----\n\nApart from the infinite loop mentioned above, it also uses one more loop which\nexecutes for 0x186a0 times (that is 100000 times). The value 0x186a0 is stored in\nECX and performs addition between EDI (EDI=0 initially) and the result received\nafter the difference between two RTDSC instructions (mentioned above). This loop is\nexecuted till ECX becomes 0 and if the value in EDI after the loop ends is greater\nthan 0x68e7780 it again returns to the start of the check where it again sets ECX to\n0x186a0.\n\nFigure 3: RDTSC loop\n\nRetrieves the name of the active window and creates a hash with it and matches it\nwith the predefined hash stored in the code as depicted in Figure 4.\n\nFigure 4: Hash Comparison of the Active Window\n\n**GuLoader 2021**\n\n\n-----\n\nThe GuLoader sample which was analyzed recently had almost every check mentioned\nabove except for the active window hash comparison. Instead they have a different hash\ncomparison technique.\n\nUsing MsiEnumProductsA() and MsiGetProductInfo() function\n\nFirst it calls MsiEnumProductsA() function with iPoductIndex as 0 and increments it by 1\nfor subsequent calls. It returns a product code which is a 38 character GUID with a null\nterminating character making it 39 character long. This GUID is given as input to\nMsiGetProductInfo() function to retrieve the product name installed and this loop is\nexecuted for 0xff times as depicted in Figure 5.\n\nFigure 5: MsiEnumProductsA() and MsiGetProductInfo() loop\nThe result received after a call to MsiGetProductInfo() is the name of the product in strings\nwhich needs to be converted to a hash for comparison. This eliminates performance\noverhead since comparing each character sequentially takes time. The hashing function\nused here is djb2 as depicted in Figure 6 which is quite simple and lightweight.\n\n\n-----\n\nFigure 6: Hashing Logic\nThe hashes used in the code (like 0x7c8aa9fd, 0x9b8ffb51) are unknown to us at this\npoint in time but anyone can guess that it must be mostly related to check if AV, sandboxes\nor debuggers are installed.\n\nUse of NtQueryInformationProcess() with processInformationClass parameter as\n0x07 (process debug port) as depicted in Figure 7. This API usage is well\ndocumented and is an old trick to detect if the process is being debugged.\n\nFigure 7: NtQueryInformationProcess() function\n\nCode implementation changes – to make the process of reversing/debugging a little\nharder they have implemented spaghetti code which is a code having a lot of jumps\nand calls.\n\nOnce all these Anti-VM and Anti-Debugging checks are over it proceeds to download the\nencrypted binary from the domain stated and copies it to a buffer space and decrypts it as\ndepicted in Figure 8.\n\n\n-----\n\nFigure 8: Downloading after Decrypting the Binary\nThe domain is still live and seems to be bogus because the domain name mentioned in\nthe contact section of the page is repair-electronics[.]com whereas the domain name\nactive is repair-electrons[.]com and the “created by Mohamad Chedid” line under\ncopyright symbol has a HTML href tag, which is blank and doesn’t redirect anywhere.\nWhen viewing the source of the page there is a commented line saying “Free HTML5\n**template developed by FREEHTML5.CO” as depicted in Figure 9.**\n\n\n-----\n\nFigure 9: Bogus Domain Name\nThreat actors are always evolving by modifying their tools with improved techniques and\ntricks to evade detection and make the analysis harder. Here at K7 Labs we actively\nmonitor such malware and have proactive detection for all the files. So stay safe from\nthese kinds of attacks in this pandemic situation by using a reputed AV product such as K7\nproducts.\n\n## Indicators Of Compromise (IOCs)\n\n**MD5: 1C8B24FCF8143C9035EE722EC8714EB0**\n\n**File Name: EXTERNAL RFP – PAN India Epoxy PU – 2021.exe**\n\n**K7 Detection Name: Trojan ( 005774081 )**\n\n**URL**\n\nhxxps[:]//www[.]repair-electrons[.]com\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-02-17 - GuLoader Snowballs via MalSpam Campaigns.pdf"
+    ],
+    "report_names": [
+        "2021-02-17 - GuLoader Snowballs via MalSpam Campaigns.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535606,
+    "ts_updated_at": 1743041154,
+    "ts_creation_date": 1653708564,
+    "ts_modification_date": 1653708564,
+    "files": {
+        "pdf": "https://archive.orkl.eu/c0103fc64537f02b5bfddd03ff5a5935f83e845f.pdf",
+        "text": "https://archive.orkl.eu/c0103fc64537f02b5bfddd03ff5a5935f83e845f.txt",
+        "img": "https://archive.orkl.eu/c0103fc64537f02b5bfddd03ff5a5935f83e845f.jpg"
+    }
+}

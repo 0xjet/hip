@@ -1,0 +1,42 @@
+{
+    "id": "d5f26cbb-e37b-4d82-ae4a-60577b9ba439",
+    "created_at": "2023-01-12T15:09:31.900263Z",
+    "updated_at": "2025-03-27T02:05:31.217332Z",
+    "deleted_at": null,
+    "sha1_hash": "d5c4b5707ba559f073b1867dedd7e20420005583",
+    "title": "2022-04-11 - Conti ransomware source code investigation - part 2",
+    "authors": "",
+    "file_creation_date": "2022-10-02T12:23:33Z",
+    "file_modification_date": "2022-10-02T12:23:33Z",
+    "file_size": 3455495,
+    "plain_text": "# Conti ransomware source code investigation - part 2.\n\n**[cocomelonc.github.io/investigation/2022/04/11/malw-inv-conti-2.html](https://cocomelonc.github.io/investigation/2022/04/11/malw-inv-conti-2.html)**\n\nApril 11, 2022\n\n2 minute read\n\n﷽\n\nHello, cybersecurity enthusiasts and white hackers!\n\nThis post is the second part of Conti ransomware source code self-investigation.\n\n[first part](https://cocomelonc.github.io/investigation/2022/03/27/malw-inv-conti-1.html)\n\nIn the last part, I wrote about encryption/hashing methods and bypassing AV-engines. Today\nI will consider network connections and filesystem and some identified IoCs.\n\n## network connections\n\nFirst of all, let’s go back a little to the logic of the encryptor:\n\n\n-----\n\nAs you can see when the encryption mode is `ALL_ENCRYPT or` `NETWORK_ENCRYPT, the`\nmalware retrieves info about network.\n\nLet’s go to definition of `StartScan :`\n\nLet’s go to deep into logic of network_connections.\n\n\n-----\n\n```\nGetCurrentIpAddress is just get info about current IP address:\n\n```\nFunction `GetSubnets uses` `GetIpNetTable API which is called to restore the ARP table`\nof the infected system. For earch entry the specified IPv4 addresses are checked against the\nfollowing masks:\n\nIf the current ARP matches of this masks ( 172.*, 192.168.*, 10.*, 169.* ) the subnet\nis extracted and added to the subnet’s queue:\n\n\n-----\n\n-----\n\nFunction `ScanHosts tries a connection to IPv4 on the SMB port (445) using the TCP`\nprotocol:\n\nIf connection is successfull, saves the valid IP’s via `AddHost :`\n\n\n-----\n\nin a queue:\n\nAnd what about `HostHandler :`\n\n\n-----\n\nand `PortScanHandler :`\n\n\n-----\n\n```\nHostHandler waits for some valid IP in the IP’s queue and for each IP enum the shares\n\n```\nusing the `NetShareEnum API:`\n\n\n-----\n\nAnd `PortScanHandler` **(1) repeat the scan via** `ScanHosts` **(2) each** `30 sec. (3):`\n\nSo, what happens when calls `network_scanner::StartScan ?`\n\n1. Add `172.*, 192.168.*, 10.*, 169.* subnet addresses to queue.`\n2. Create two threads.\n3. First thread via `HostHandler enum the shares.`\n4. Second thread via `PortScanHandler tries to connect` `SMB 445 port, for earh`\n\nsuccessfully connection, saves valid IPs and scan every `30 sec:`\n\n\n-----\n\nConcluding the execution, the `WaitForSingleObject API is invoked on each thread to`\nwait for the completion of operations before closing the main process and `CloseHandle for`\ncleanup:\n\n\n-----\n\n## process killer\n\nThe logic of the `prockiller.cpp is simple. It enum through all processes and if it’s not`\nequal to `explorer.exe then adds it’s PID to the queue:`\n\n## filesystem\n\nIn the `filesystem module there is a function` `filesystem::EnumirateDrives which, as`\nthe name implies, scan drives:\n\n\n-----\n\nAs you can see it uses `GetLogicalDriveStringsW API.`\n\nThe logic of this function is used in the final enumeration during encryption. The malware\nuses a whitelist for both directories and files to avoid the encryption of unnecessary data.\nThe following directories names and file names are avoided during the enumeration process:\n\n\n-----\n\n-----\n\n## yara rules\n\nLet’s go to upload `locker.exe to VirusTotal:`\n\n\n-----\n\nhttps://www.virustotal.com/gui/file/e1b147aa2efa6849743f570a3aca8390faf4b90aed490a568\n2816dd9ef10e473/detection\n\n**57 of 69 AV engines detect this sample as malware**\n\nYara rule for Conti:\n```\nrule Conti\n\n{\n\n  meta:\n\n    author = \"kevoreilly\"\n\n    description = \"Conti Ransomware\"\n\n    cape_type = \"Conti Payload\"\n\n  strings:\n\n    $crypto1 = {8A 07 8D 7F 01 0F B6 C0 B9 ?? 00 00 00 2B C8 6B C1 ?? 99 F7 FE 8D\n[2] 99 F7 FE 88 ?? FF 83 EB 01 75 DD}\n\n    $website1 = \"https://contirecovery.info\" ascii wide\n\n    $website2 = \"https://contirecovery.best\" ascii wide\n\n  condition:\n\n    uint16(0) == 0x5A4D and any of them\n\n}\n\n\n```\nI hope this post spreads awareness to the blue teamers of this interesting malware\ntechniques, and adds a weapon to the red teamers arsenal.\n\n[first part](https://cocomelonc.github.io/investigation/2022/03/27/malw-inv-conti-1.html)\n[WSAStartup](https://docs.microsoft.com/en-us/windows/win32/api/winsock/nf-winsock-wsastartup)\n[WSAAdressToStringA](https://docs.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-wsaaddresstostringa)\n[CreateToolhelp32Snapshot](https://docs.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot)\n[CloseHandle](https://docs.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle)\n\n\n-----\n\n[StrStrIW](https://docs.microsoft.com/en-us/windows/win32/api/shlwapi/nf-shlwapi-strstriw)\n[CreateThread](https://docs.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createthread)\n[WaitForSingleObject](https://docs.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject)\n[NetShareEnum](https://docs.microsoft.com/en-us/windows/win32/api/lmshare/nf-lmshare-netshareenum)\n[GetLogicalDriveStringsW](https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getlogicaldrivestringsw)\n\nThis is a practical case for educational purposes only.\n\nThanks for your time happy hacking and good bye!\n\n_PS. All drawings and screenshots are mine_\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-04-11 - Conti ransomware source code investigation - part 2.pdf"
+    ],
+    "report_names": [
+        "2022-04-11 - Conti ransomware source code investigation - part 2.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673536171,
+    "ts_updated_at": 1743041131,
+    "ts_creation_date": 1664713413,
+    "ts_modification_date": 1664713413,
+    "files": {
+        "pdf": "https://archive.orkl.eu/d5c4b5707ba559f073b1867dedd7e20420005583.pdf",
+        "text": "https://archive.orkl.eu/d5c4b5707ba559f073b1867dedd7e20420005583.txt",
+        "img": "https://archive.orkl.eu/d5c4b5707ba559f073b1867dedd7e20420005583.jpg"
+    }
+}

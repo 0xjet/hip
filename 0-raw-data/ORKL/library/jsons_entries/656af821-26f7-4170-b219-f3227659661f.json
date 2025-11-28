@@ -1,0 +1,42 @@
+{
+    "id": "656af821-26f7-4170-b219-f3227659661f",
+    "created_at": "2023-01-12T15:00:36.087851Z",
+    "updated_at": "2025-03-27T02:05:55.069771Z",
+    "deleted_at": null,
+    "sha1_hash": "0041d58a8ff799785e3fdaf547b26494a0477040",
+    "title": "2020-10-24 - Gacrux – a basic C malware with a custom PE loader",
+    "authors": "",
+    "file_creation_date": "2022-05-28T04:06:23Z",
+    "file_modification_date": "2022-05-28T04:06:23Z",
+    "file_size": 507836,
+    "plain_text": "# Gacrux – a basic C malware with a custom PE loader\n\n**[krabsonsecurity.com/2020/10/24/gacrux-a-basic-c-malware-with-a-custom-pe-loader](https://krabsonsecurity.com/2020/10/24/gacrux-a-basic-c-malware-with-a-custom-pe-loader)**\n\n[Posted on October 24, 2020](https://krabsonsecurity.com/2020/10/24/)\nI was given two samples of the malware known as Gacrux recently. Due to the nature of the\nsource of the files, I won’t be able to share the hash or the files publicly, but it should be\nrelatively easy to recognize this malware with the information provided here. The loader\nwas developed in C and compiled with Visual Studio 2017. The malware is sold on certain\nforums starting from around August 2020, and appears to be heavily inspired by Smoke\nLoader.\n\n## Anti-analysis tricks\n\nGacrux features a few anti-debugging and anti-VM tricks. The first trick involves the\nfollowing jumps, which leads IDA to inaccurately disassembling the instructions after.\n\nThis can easily be fixed by patching the bytes following the pair of jumps with nops. After\npattern scanning and fixing this, the file can mostly be decompiled with IDA easily.\n\n\n-----\n\nThe next trick involves fake returns that disrupt IDA’s function analysis. Like before, it is\neasily dealt with by NOPping out the offenders.\n\nThe final obfuscation involves two functions being encrypted on disk. The decryption done\nright before the function is called, and the function is re-encrypted shortly afterward.\n\n\n-----\n\nThe decryption/encryption works by finding two patterns within the function that signifies the\nbeginning and end of the encrypted region. The code in between is then XORed with a key\nthat is passed to the function.\n\nThe bot checks the available disk space and RAM size as its anti-VM check. This is easily\nmitigated by breakpointing on and modifying the return value, or simply nopping out the\nchecks.\n\n\n-----\n\n**String encryption**\n\nStrings are stored in a function which decrypts them based on the ID that was passed in.\n\n[The list of strings for the outer module can be found here.](https://gitlab.com/krabsonsecurity/gacrux/-/blob/master/str1.txt)\n\n## Overall execution flow\n\n\n-----\n\n-----\n\n**Anti-debug and anti-VM tricks**\n\nThere are some anti-debug tricks littered throughout the code. They are for the most part\nmixed into important functions and will crash the process if a debugger or VM is detected.\nThe first trick is located in the malloc function, it checks the BeingDebugged member of the\nPEB, if it is set the function will return the size of the requested buffer instead of allocating\nit. In addition to this, it checks for blacklisted modules and exits if any are present.\n\n\n-----\n\nThe second trick increments the PID of explorer if the system has too little RAM or disk\nspace – often a sign of virtualization. This would of course result in NtOpenProcess failing\nand prevent execution from proceeding any further.\n\nThe injected initialization shellcode/custom PE loader (which will be explored in further\ndetails later) also performs a check of the BeingDebugged and NtGlobalFlag members of\nthe PEB.\n\n**Syscall**\n\nThe syscall module is almost entirely copied from an open-source crypter.\n\n\n-----\n\nThe hashing algorithm has been changed to djb2, with the output being xored with a\nconstant value.\n\n**Persistence**\n\nPersistence is achieved via a Window Procedure that is repeatedly called inside the context\nof explorer.exe. This procedure checks the installed file and creates the startup .lnk file in\nthe startup directory if it is not present.\n\n\n-----\n\n**Code Injection**\n\nFor code injection, Gacrux uses NtCreateSection/NtMapViewOfSection as the write\nprimitive on 32-bit environments, and NtAllocateVirtualMemory/NtWriteVirtualMemory on\n64-bit environments, both done via direct syscalls. For the execution primitive, it abuses\n[SetPropA as detailed by Adam in his article “PROPagate – a new code injection trick“. This](https://www.hexacorn.com/blog/2017/10/26/propagate-a-new-code-injection-trick/)\nis copied from open-source implementations, as evidenced by the way the function pointer\nis set up.\n\n\n-----\n\nThe injection is used to invoke a tiny custom PE loader, which’s description follows.\n\n**Custom PE Loader and format**\n\nThis is the most interesting feature of Gacrux. The code injected into explorer is not a\nregular PE file but rather one with a customized PE header and a customized loader.\n\nThe loader first has some antidebug checks.\n\nThen, it resolves 3 APIs and uses them to process the import table and fix up relocation.\n\n\n-----\n\nFinally, it flushes the instruction cache and calls the entrypoint.\n\n[The PE Loader utilizes a custom PE format, the Kaitai descriptor for it can be found here.](https://gitlab.com/krabsonsecurity/gacrux/-/blob/master/gacrux_32.ksy)\nWith the information listed, we can easily restore the original PE file.\n\n\n-----\n\n**Modules**\n\nI do not have access to any module files and as such cannot describe them. The module\n[loader is entirely copy-pasted from the MemoryModule project on Github.](https://github.com/fancycode/MemoryModule)\n\n**Networking**\n\nNetworking uses WinInet. This is done from the context of explorer after injection of course.\n\n\n-----\n\n## Final remarks\n\nAs we can see, there is not much that is special when it comes to Gacrux. It copies a lot of\npublic code with slight modifications and is filled with bugs (which I have not described in\nthe article as I have no intention of helping the author fix them). The custom PE format was\nquite interesting to look at, and I had some fun reverse engineering that.\n\n\n-----\n\n### Comments ( 5 )\n\n1. mePosted on 12:22 pm October 26, 2020\n\nany hashes?\n\n_KrabsOnSecurityPosted on 10:42 am November 27, 2020_\nNone\n\n2. GodPosted on 12:13 am June 11, 2021\n\nKrabs give me a fucking discord to join\n\n_KrabsOnSecurityPosted on 5:45 am June 17, 2021_\nwho are you again? reply with contact method ty\n\n3. unboxedmindPosted on 9:05 pm August 12, 2021\n\nThe custom header is a cool twist - thanks for the write up.\n\nView Comments (5) ...\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-10-24 - Gacrux – a basic C malware with a custom PE loader.pdf"
+    ],
+    "report_names": [
+        "2020-10-24 - Gacrux – a basic C malware with a custom PE loader.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673535636,
+    "ts_updated_at": 1743041155,
+    "ts_creation_date": 1653710783,
+    "ts_modification_date": 1653710783,
+    "files": {
+        "pdf": "https://archive.orkl.eu/0041d58a8ff799785e3fdaf547b26494a0477040.pdf",
+        "text": "https://archive.orkl.eu/0041d58a8ff799785e3fdaf547b26494a0477040.txt",
+        "img": "https://archive.orkl.eu/0041d58a8ff799785e3fdaf547b26494a0477040.jpg"
+    }
+}

@@ -1,0 +1,98 @@
+{
+    "id": "2ad14afe-09cb-4fce-b221-93e935a000f6",
+    "created_at": "2023-01-12T15:08:03.598704Z",
+    "updated_at": "2025-03-27T02:16:39.720069Z",
+    "deleted_at": null,
+    "sha1_hash": "460166a2b77c2b0887d5a4317b513c147f0456bc",
+    "title": "2020-11-04 - In Wild Critical Buffer Overflow Vulnerability in Solaris Can Allow Remote Takeover — CVE-2020-14871",
+    "authors": "",
+    "file_creation_date": "2022-05-28T23:38:09Z",
+    "file_modification_date": "2022-05-28T23:38:09Z",
+    "file_size": 80863,
+    "plain_text": "# In Wild Critical Buffer Overflow Vulnerability in Solaris Can Allow Remote Takeover — CVE-2020-14871\n\n**[fireeye.com/blog/threat-research/2020/11/critical-buffer-overflow-vulnerability-in-solaris-can-allow-remote-takeover.html](https://www.fireeye.com/blog/threat-research/2020/11/critical-buffer-overflow-vulnerability-in-solaris-can-allow-remote-takeover.html)**\n\n## Breadcrumb\n\nThreat Research\n\nJacob Thompson\n\nNov 04, 2020\n\n5 mins read\n\nThreat Research\n\n\n-----\n\nFireEye Mandiant has been investigating compromised Oracle Solaris machines in customer\nenvironments. During our investigations, we discovered an exploit tool on a customer’s\nsystem and analyzed it to see how it was attacking their Solaris environment. The FLARE\nteam’s Offensive Task Force analyzed the exploit to determine how it worked, reproduced\nthe vulnerability on different versions of Solaris, and then reported it to Oracle. In this blog\npost we present a description of the vulnerability, offer a quick way to test whether a system\nmay be vulnerable, and suggest mitigations and workarounds. Mandiant experts from the\nFLARE team will provide more information on this vulnerability and how it was used by\nUNC1945 during a Nov. 12 webinar. [Register today and start preparing questions, because](https://www.brighttalk.com/webcast/7451/451508)\nwe will be fielding them from the audience at the end of the session.\n\n**Vulnerability Discovery**\n\nThe security vulnerability occurs in the Pluggable Authentication Modules (PAM) library. PAM\nenables a Solaris application to authenticate users while allowing the system administrator to\nconfigure authentication parameters (e.g., password complexity and expiration) in one\nlocation that is consistently enforced by all applications.\n\nThe actual vulnerability is a classic stack-based buffer overflow located in the PAM\nparse_user_name function. An abbreviated version of this function is shown in Figure 1.\n\n\n-----\n\nstatic int\n\nparse_user_name(char *user_input, char **ret_username)\n\n{\nregister char *ptr;\n\nregister int index = 0;\n\nchar username[PAM_MAX_RESP_SIZE];\n\n/* ... */\n\nptr = user_input;\n\n/* ... */\n\n/*\n\n - username will be the first string we get from user_input\n\n - - we skip leading whitespaces and ignore trailing whitespaces\n\n*/\n\nwhile (*ptr != '\\0') {\n\nif ((*ptr == ' ') || (*ptr == '\\t'))\n\nbreak;\n\nelse {\n\nusername[index] = *ptr;\n\nindex++;\n\nptr++;\n\n}\n\n}\n\n/* ret_username will be freed in pam_get_user(). */\n\nif ((*ret_username = malloc(index + 1)) == NULL)\n\nreturn (PAM_BUF_ERR);\n\n(void) strcpy(*ret_username, username);\n\nreturn (PAM_SUCCESS);\n\n}\n\nFigure 1: The parse_user_name function has a stack-based buffer overflow vulnerability\n\nThe vulnerability arises whenever a username longer than PAM_MAX_RESP_SIZE (512\nbytes) is passed to parse_user_name. The vulnerability has likely existed for decades, and\none possible reason is that it is only exploitable if an application does not already limit\nusernames to a smaller length before passing them to PAM. One situation where networkfacing software does not always limit the username length arises in the SSH server, and this\nis the exploit vector used by the tool that we discovered.\n\nSSH Keyboard-Interactive authentication is a “passthrough” authentication mechanism\nwhere the SSH protocol relays prompts and responses between the server’s PAM libraries\nand the client. It was designed to support custom forms of authentication such as two-factor\nwithout modifying the SSH protocol. By manipulating SSH client settings to force KeyboardInteractive authentication to prompt for the username rather than sending it through normal\nmeans, an attacker can also pass unlimited input to the PAM parse_user_name function.\n\n**Proof of Concept Exploit**\n\n\n-----\n\nIn order to quickly test different versions of Solaris to see if they may be vulnerable, we\ndeveloped a proof of concept exploit to trigger the overflow and crash the SSH server. The\nstandard OpenSSH client offers all the options needed to trigger the vulnerability (Figure 2).\n\n\nA server can be quickly tested to see if it is vulnerable over SSH\n\n\nFigure 2: A server can be quickly tested to see if it is vulnerable over SSH\nThe indication that the server is vulnerable is that the SSH client prints “Authentication\nfailed;” a non-vulnerable PAM library causes the SSH server to repeatedly prompt for a\nusername if it receives one that is too long. The overflow in the PAM library also causes the\nSSH server to crash, as shown in Figure 3. The operating system writes a crash dump to\n/core if the SSH server crashes with no debugger attached. In fact, if a /core file exists on a\nSolaris machine and the file command reports that it is from sshd, those are indicators\nconsistent with this vulnerability having been exploited.\n\n\n-----\n\nThe SSH server crashes in the parse_user_name function\n\n\nFigure 3: The SSH server crashes in the parse_user_name function\n\n**Vulnerable Operating Systems**\n\nSolaris 9 (some releases)\nSolaris 10 (all releases)\nSolaris 11.0\n\nWhile the parse_user_name function remains vulnerable in unpatched Solaris\n11.1 and later, unrelated changes to the PAM library truncate the username\nbefore the vulnerable function receives it, rendering the issue non-exploitable via\nSSH. If the parse_user_name function were reachable in another context, then\nthe vulnerability could become exploitable.\nIllumos (OpenIndiana 2020.04)\n\n**Mitigations and Workaround**\n\n\n-----\n\nA patch from Oracle for Solaris 10 and 11 is described in the October 2020 Critical Patch\nUpdate.\n\nBecause Solaris 9 is no longer supported, Oracle has not released a patch. For Solaris 9, as\nwell as Solaris 10 or 11 systems where patching is inconvenient, we recommend editing the\n/etc/ssh/sshd_config file to add the lines ChallengeResponseAuthentication no and\nKbdInteractiveAuthentication no and restart the SSH server. While this removes the\nopportunity to exploit the vulnerability using SSH Keyboard-Interactive authentication, there\nmay be other ways to attack the parse_user_name function and we recommend using this\nworkaround only as a stopgap until Solaris 9 systems can be upgraded, or the October patch\ncan be accessed and installed for supported Solaris versions.\n\n**Acknowledgements**\n\nJeffrey Martin of Rapid7 contributed to the testing of this vulnerability.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-11-04 - In Wild Critical Buffer Overflow Vulnerability in Solaris Can Allow Remote Takeover — CVE-2020-14871.pdf"
+    ],
+    "report_names": [
+        "2020-11-04 - In Wild Critical Buffer Overflow Vulnerability in Solaris Can Allow Remote Takeover — CVE-2020-14871.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "ece64b74-f887-4d58-9004-2d1406d37337",
+            "created_at": "2022-10-25T16:07:23.794442Z",
+            "updated_at": "2025-03-27T02:02:09.981874Z",
+            "deleted_at": null,
+            "main_name": "LightBasin",
+            "aliases": [
+                "DecisiveArchitect",
+                "Luminal Panda",
+                "TH-239",
+                "UNC1945"
+            ],
+            "source_name": "ETDA:LightBasin",
+            "tools": [
+                "CordScan",
+                "EVILSUN",
+                "FRP",
+                "Fast Reverse Proxy",
+                "Impacket",
+                "LEMONSTICK",
+                "LOGBLEACH",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "OKSOLO",
+                "OPENSHACKLE",
+                "ProxyChains",
+                "Pupy",
+                "PupyRAT",
+                "SIGTRANslator",
+                "SLAPSTICK",
+                "SMBExec",
+                "STEELCORGI",
+                "Tiny SHell",
+                "pupy",
+                "tsh"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "31c0d0e1-f793-4374-90aa-138ea1daea50",
+            "created_at": "2023-11-30T02:00:07.29462Z",
+            "updated_at": "2025-03-27T02:00:03.256081Z",
+            "deleted_at": null,
+            "main_name": "LightBasin",
+            "aliases": [
+                "UNC1945",
+                "CL-CRI-0025"
+            ],
+            "source_name": "MISPGALAXY:LightBasin",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536083,
+    "ts_updated_at": 1743041799,
+    "ts_creation_date": 1653781089,
+    "ts_modification_date": 1653781089,
+    "files": {
+        "pdf": "https://archive.orkl.eu/460166a2b77c2b0887d5a4317b513c147f0456bc.pdf",
+        "text": "https://archive.orkl.eu/460166a2b77c2b0887d5a4317b513c147f0456bc.txt",
+        "img": "https://archive.orkl.eu/460166a2b77c2b0887d5a4317b513c147f0456bc.jpg"
+    }
+}

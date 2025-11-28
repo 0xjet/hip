@@ -1,0 +1,55 @@
+{
+    "id": "ab9e2a23-616e-41f3-a692-da61ff9f1ff2",
+    "created_at": "2023-01-12T15:00:40.108437Z",
+    "updated_at": "2025-03-27T02:10:49.406654Z",
+    "deleted_at": null,
+    "sha1_hash": "61f7baab00ac502e806fecfaae20702c98fa61c3",
+    "title": "2020-06-25 - Web skimmer hides within EXIF metadata, exfiltrates credit cards via image files",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:21:27Z",
+    "file_modification_date": "2022-05-28T19:21:27Z",
+    "file_size": 2170388,
+    "plain_text": "# Web skimmer hides within EXIF metadata, exfiltrates credit cards via image files\n\n**blog.malwarebytes.com/threat-analysis/2020/06/web-skimmer-hides-within-exif-metadata-exfiltrates-credit-cards-via-**\nimage-files/\n\nJérôme Segura June 25, 2020\n\nThey say a picture is worth a thousand words. Threat actors must have remembered that as\nthey devised yet another way to hide their credit card skimmer in order to evade detection.\n\nWhen we first investigated this campaign, we thought it may be another one of those favicon\n[tricks, which we had described in a previous blog. However, it turned out to be different and](https://blog.malwarebytes.com/threat-analysis/2020/05/credit-card-skimmer-masquerades-as-favicon/)\neven more devious.\n\nWe found skimming code hidden within the metadata of an image file (a form of\nsteganography) and surreptitiously loaded by compromised online stores. This scheme\nwould not be complete without yet another interesting variation to exfiltrate stolen credit card\ndata. Once again, criminals used the disguise of an image file to collect their loot.\n\nDuring this research, we came across the source code for this skimmer which confirmed\nwhat we were seeing via client-side JavaScript. We also identified connections to other\nscripts based on various data points.\n\n## Skimmer hidden within EXIF metadata\n\n\n-----\n\nThe malicious code we detected was loaded from an online store running the\nWooCommerce plugin for WordPress. WooCommerce is increasingly being targeted by\ncriminals, and for good reason, as it has a large market share.\n\nFigure 1: Malwarebytes showing a web block on a merchant site\nMalwarebytes was already blocking a malicious domain called cddn[.]site that was triggered\nupon visiting this merchant’s website. Upon closer inspection we found that extraneous code\nhad been appended to a legitimate script hosted by the merchant.\n\nThe offending code loads a favicon file from cddn[.]site/favicon.ico which turns out to be the\nsame favicon used by the compromised store (a logo of their brand). This is an artifact of\nskimming code that’s been [observed publicly and that we refer to as Google loop.](https://twitter.com/AffableKraut/status/1261157021027622912?s=20)\n\n\n-----\n\nFigure 2: Legitimate JavaScript library injected with additional code\nHowever, nothing else so far from this code indicates any kind of web skimming activity. All\nwe have is JavaScript that loads a remote favicon file and appears to parse some data as\nwell.\n\nThis is where things get interesting. We can see a field called ‘Copyright’ from which data is\ngetting loaded. Attackers are using the Copyright metadata field of this image to load their\nweb skimmer. Using an EXIF viewer, we can now see JavaScript code has been injected:\n\n\n-----\n\nFigure 3:\n\nMetadata viewer revealing JavaScript code inside the Copyright tag\n[The abuse of image headers to hide malicious code is not new, but this is the first time we](https://blog.sucuri.net/2013/07/malware-hidden-inside-jpg-exif-headers.html)\nwitnessed it with a credit card skimmer.\n\nThe presence of an eval is a sign that code is meant to be executed. We can also see that\n[the malware authors have obfuscated it. An archive of this script can be found here.](https://github.com/MBThreatIntel/skimmers/blob/master/exif_JS.js)\n\n\n-----\n\nFigure 4: A portion of the malicious JavaScript hidden inside the EXIF data\n\n## Skimmer exfiltrates data as an image\n\nThe initial malicious JavaScript (Figure 2) loads the skimming portion of the code from the\nfavicon.ico (Figure 3) using an <img> tag, and specifically via the onerror event.\n\nAs with other skimmers, this one also grabs the content of the input fields where online\nshoppers are entering their name, billing address and credit card details. It encodes those\nusing Base64 and then reverses that string.\n\n\n-----\n\nFigure 5: Same code loaded via an img tag revealing how stolen data is exfiltrated\nIt comes with a twist though, as it sends the collected data as an image file, via a POST\nrequest, as seen below:\n\n\n-----\n\nFigure 6: Example of a transaction that was grabbed by the skimmer\nThe threat actors probably decided to stick with the image theme to also conceal the\nexfiltrated data via the favicon.ico file.\n\n## Skimmer toolkit found in the open\n\nWe were able to get a copy of the skimmer toolkit’s source code which was zipped and\nexposed in the open directory of a compromised site. The gate.php file (also included in the\nzip) contains the skimmer’s entire logic, while other files are used as supporting libraries.\n\n\n-----\n\nFigure 7: The skimmer toolkit, left on a hacked site and containing the PHP source files\nThis shows us how the favicon.ico file is crafted with the injected JavaScript inside of the\nCopyright field. There are some other interesting artifacts as well, such as the Cache HTTP\nheader and Created date for the image.\n\n\n-----\n\nFigure 8: PHP\n\nsource showing how the EXIF data is injected\nThe JavaScript code for the skimmer is obfuscated using the WiseLoop PHP JS Obfuscator\nlibrary, in line with what we saw on the client-side.\n\n\n-----\n\nFigure 9: WiseLoop PHP and JS obfuscator\n\n## Connections to other skimmers, Magecart group 9\n\nBased on open source intelligence, we can find more details on how this skimmer may have\nevolved. An earlier version of this skimmer was found hosted at jqueryanalise[.]xyz (archive\n[here). It lacks some obfuscation found in the more recent case we found, but the same core](https://github.com/MBThreatIntel/skimmers/blob/master/exif_skimmer2.js)\nfeatures, such as loading JavaScript via the Copyright field (metadata of an image file), exist.\n\n\n-----\n\nFigure 10: Connecting skimmer domains and registrant emails\nWe also can connect this threat actor to another skimming script based on the registrant’s\nemail (rotrnberg.s4715@gmail[.]com) for cddn[.]site. Two domains (cxizi[.]net and yzxi[.]net)\nshare the same skimmer code which looks much more elaborate and does not appear to\n[have much in common with the other two JavaScript pieces (archive here).](https://github.com/MBThreatIntel/skimmers/blob/master/skimmer%233.js)\n\n\n-----\n\nFigure 11: An artifact from the new skimmer\nWhile debugging it, we can spot the string ‘ars’ within a URL path. That same string was\nseen being used in the first skimmer (see Figure), although it might very well just be a\ncoincidence.\n\nThe data exfiltration is quite different too. While the content-type is an image again, this time\nwe see a GET request where the stolen data is Base64 encoded only, and passed as a URL\nparameter instead.\n\nFigure 12: Data exfiltration for this more advanced skimmer\nFinally, this skimmer may have ties with Magecart Group 9. Security researcher\n[@AffableKraut](https://twitter.com/AffableKraut) [pointed out that a domain (magentorates[.]com) using this EXIF metadata](https://twitter.com/AffableKraut/status/1265349582021709825?s=20)\nskimming technique has the same Bulgarian host, same registrar, and was registered within\na week of magerates[.]com.\n\n\n-----\n\nFigure 13: A possible connection to Magecart group 9\nMagerates[.]com is registered under newserf@mail.ru, which also has other skimmer\n[domains, and in particular several used via another clever evasion technique in the form of](https://blog.malwarebytes.com/threat-analysis/2019/12/new-evasion-techniques-found-in-web-skimmers/)\n[WebSockets. This type of skimmer was tied to Magecart Group 9, originally disclosed by](https://twitter.com/AffableKraut/status/1265349585100320769?s=20)\n[Yonathan Klijnsma .](https://twitter.com/ydklijnsma)\n\nTracking digital skimmers is not an easy task these days, as there are many threat actors\nand countless variations of skimming scripts based off toolkits or that are completely custom.\n\nWe continue to track and report skimmers in an effort to protect online shoppers from this\ncampaign and dozens of others.\n\n## Indicators of Compromise\n\n**EXIF skimmers**\n\n\n-----\n\n```\ncddn[.]site\nmagentorates[.]com\npixasbay[.]com\nlebs[.]site\nbestcdnforbusiness[.]com\napilivechat[.]com\nundecoveria[.]com\nwosus[.]site\n\n```\n**Older EXIF skimmer**\n```\njqueryanalise[.]xyz\njquery-analitycs[.]com\n\n```\n**Skimmer #3**\n```\nxciy[.]net\nyxxi[.]net\ncxizi[.]net\nyzxi[.]net\n\n```\n**Other skimmers**\n```\nsonol[.]site\nwebtrans[.]site\nkoinweb[.]site\nxoet[.]site\nads-fbstatistic[.]com\nbizrateservices[.]com\ntowbarchat[.]com\nteamsystems[.]info\nj-queries[.]com\n\n```\n**Registrant emails**\n```\nanya.barber56@gmail[.]com\nsmithlatrice100@yahoo[.]com\nrotrnberg.s4715@gmail[.]com\nnewserf@mail[.]ru\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-06-25 - Web skimmer hides within EXIF metadata, exfiltrates credit cards via image files.pdf"
+    ],
+    "report_names": [
+        "2020-06-25 - Web skimmer hides within EXIF metadata, exfiltrates credit cards via image files.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "5a0483f5-09b3-4673-bb5a-56d41eaf91ed",
+            "created_at": "2023-01-06T13:46:38.814104Z",
+            "updated_at": "2025-03-27T02:00:02.925972Z",
+            "deleted_at": null,
+            "main_name": "MageCart",
+            "aliases": [],
+            "source_name": "MISPGALAXY:MageCart",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535640,
+    "ts_updated_at": 1743041449,
+    "ts_creation_date": 1653765687,
+    "ts_modification_date": 1653765687,
+    "files": {
+        "pdf": "https://archive.orkl.eu/61f7baab00ac502e806fecfaae20702c98fa61c3.pdf",
+        "text": "https://archive.orkl.eu/61f7baab00ac502e806fecfaae20702c98fa61c3.txt",
+        "img": "https://archive.orkl.eu/61f7baab00ac502e806fecfaae20702c98fa61c3.jpg"
+    }
+}

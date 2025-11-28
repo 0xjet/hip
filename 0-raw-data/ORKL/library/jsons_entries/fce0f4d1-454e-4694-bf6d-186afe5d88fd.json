@@ -1,0 +1,146 @@
+{
+    "id": "fce0f4d1-454e-4694-bf6d-186afe5d88fd",
+    "created_at": "2022-10-25T16:48:16.072733Z",
+    "updated_at": "2025-03-27T02:15:02.65465Z",
+    "deleted_at": null,
+    "sha1_hash": "f9ec0ec31ccab12f99b03f09a0882b3d30a3365a",
+    "title": "",
+    "authors": "",
+    "file_creation_date": "2020-03-04T07:56:47Z",
+    "file_modification_date": "2020-03-04T07:56:47Z",
+    "file_size": 192955,
+    "plain_text": "# Registers as “Default Print Monitor”, but is a malicious downloader. Meet DePriMon\n\n**[welivesecurity.com/2019/11/21/deprimon-default-print-monitor-malicious-downloader](https://www.welivesecurity.com/2019/11/21/deprimon-default-print-monitor-malicious-downloader/)**\n\nNovember 21, 2019\n\nDePriMon is a malicious downloader, with several stages and using many non-traditional\ntechniques. To achieve persistence, the malware registers a new local port monitor – a trick falling\n[under the “Port Monitors” technique in the MITRE ATT&CK knowledgebase. For that, the malware](https://attack.mitre.org/techniques/T1013/)\nuses the “Windows Default Print Monitor” name; that’s why we have named it DePriMon. Due to\nits complexity and modular architecture, we consider it to be a framework.\n\nAccording to our telemetry, DePriMon has been active since at least March 2017. DePriMon was\ndetected in a private company, based in Central Europe, and at dozens of computers in the\nMiddle East.\n\nSome of the domain names used as C&C servers contain Arabic words, which gives an indication\nof a region‑specific campaign. However, DePriMon deserves attention beyond its targets’\ngeographical distribution: it is carefully written malware, with lots of encryption that is used\nproperly.\n\nTo help defenders stay safe from this threat, we’ve thoroughly analyzed this newly discovered\nmalware, focusing on the downloader itself. Because we’re missing initial stage(s), which we will\nrefer to here as “the first stage”, we don’t know the initial distribution and compromise vector.\nWhat kind of final payload is used in the attacks is another question that remains to be answered.\n\nHowever, it should be noted that, in a few cases, DePriMon was detected with ColoredLambert\nmalware on the same computers within a short time frame. ColoredLambert is used by the\nLamberts (aka Longhorn) cyberespionage group and linked to the Vault 7 leak of CIA capabilities.\n[Our colleagues from Symantec and Kaspersky published their analyses in April 2017.](https://www.symantec.com/connect/blogs/longhorn-tools-used-cyberespionage-group-linked-vault-7)\n\n## Technical analysis\n\n### Stage two\n\nBoth DePriMon’s second and third stages are delivered to the victim’s disk in the first stage. The\nsecond stage installs itself and loads the third stage using an encrypted, hardcoded path. One of\nthe possible explanations is that it was configured after the first stage of the attack occurred.\n\nThe described installation technique is unique. In principle, it is described in the MITRE ATT&CK\ntaxonomy as “Port Monitors”, under both Persistence and Privilege Escalation tactics. We believe\nDePriMon is the first example of malware using this technique ever publicly described.\n\nThe second stage registers the third-stage DLL as a port monitor by creating the following registry\nkey and value:\n\nHKLM\\SYSTEM\\CurrentControlSet\\Control\\Print\\Monitors\\Windows Default Print Monitor\nDriver = %PathToThirdStageDLL%\n\n\n-----\n\nAdministrator rights are required for creating this registry key.\n\nAt system startup, the registered DLL will be loaded by spoolsv.exe with SYSTEM privileges,\nwhich, combined with the uniqueness of this method, makes this technique very effective for\nattackers.\n\nThe second stage checks regularly whether there is a file in the %system32% folder with the\nsame name as the third stage DLL file but without the “.dll” extension. This file serves as an\nuninstallation trigger – should DePriMon find it, it removes both this file and its own components\nin a secure way by overwriting the binaries and then deleting them.\n\n### Stage three\n\nThe third stage, responsible for downloading the main payload(s) from DePriMon’s operators,\nalso implements some interesting techniques.\n\nFor C&C communication, it uses the Microsoft implementation of SSL/TLS, Secure Channel,\ninstead of common APIs like WinHTTP or WinInet. Its configuration is very complex, as is the way\nthe malware handles it. Finally, the authors have put significant effort into encryption, making the\nDePriMon malware more difficult to analyze.\n\n### C&C communication\n\nDePriMon communicates securely over TLS, however, not on a high level as is a typical scenario\nin malware. The connection is initialized with a Windows socket and can continue with\ninitialization of an authenticated Security Support Provider Interface (SSPI) session with the\nNegotiate / NTLM SSP. After that, DePriMon uses Schannel.\n\nSSPI is used/not used according to a particular flag in the configuration file and can utilize the\nlocal proxy settings of the machine. The implementation is similar to this example provided by\nMicrosoft.\n\nThe malware’s implementation of TLS via Schannel is similar to this example by Coast Research\n& Development. It includes creating credentials, performing the client handshake and verifying the\nserver certificate.\n\n\n-----\n\n_Figure 1. Part of the SSPI implementation as output by the Hex-Rays decompiler_\n\nAfter the communication is established, the third stage encrypts and decrypts messages manually\neach time.\n\n### Configuration\n\nThe configuration data for DePriMon’s third stage has 27 members, which is an unusually large\nnumber for a downloader. It is encrypted with AES-256 and embedded in the binary.\n\nDuring the first run, DePriMon’s third stage (the downloader itself) decrypts the configuration data\nwith Key 2 (see the IoCs section), encrypts it with Key 3 and stores the encrypted configuration\nfile in a temporary folder. The filename for the configuration file is created via the following\nprocess: Starting with the second byte, the value of Key 2 is transformed into a number in base\n36 but encoded using custom alphabet “abc…xyz012…789”. The extension of the configuration\nfile is “.tmp”.\n\nAn example of a configuration file path: %temp%\\rb1us0wm99sslpa1vx.tmp.\n\nDuring the second run, the downloader reads the configuration data from the file, not from itself –\nthis way, the attacker can easily update the configuration.\n\nThanks to its secure design, the configuration is not left in memory in unencrypted form. Every\ntime the downloader needs to use some element of the configuration file, it decrypts the\nconfiguration file, retrieves the member and encrypts the file again.\n\nThis design protects the malware’s primary function – C&C communication – against memory\nforensics.\n\n\n-----\n\n_Figure 2. Part of the code as seen by the Hex-Rays decompiler, which illustrates how the DePriMon malware_\n\n_decrypts the configuration file, saves a few members to local variables and encrypts it again_\n\nOf interest in the configuration file are:\n\nTwo entries for usernames and two members for passwords – for the proxy server if it is set\non the machine. It means attackers are preparing to further their attack via a proxy with\ncredentials. However, we haven’t seen functionality for stealing these details, so it appears\nthat it is done in another phase of the attack.\nThree entries for three C&C servers – each of them used on a different occasion.\nThree entries for three ports – each of them used on a different occasion.\nFlags indicating whether the downloader initializes a connection through Security Support\nProvider Interface (SSPI) with a possible proxy or only with a socket (described later).\n\nIt should be noted that besides C&C servers extracted from malware samples, we identified\nadditional domains and servers likely related to this malware.\n\n### Encryption\n\nThe malware uses the AES encryption algorithm with three different 256-bit keys for different\npurposes (these keys are listed in the IoCs section).\n\nKey 1: For decryption of various sensitive strings in the malware.\nKey 2: For encryption and decryption of the configuration data in memory (as described\nearlier). This key is also used to generate the third key.\nKey 3: For encryption and decryption of the configuration file on disk.\n\n\n-----\n\nThis key is not hardcoded but derived using a 32-byte array which is then encrypted. The array is\ngenerated as follows: the first 4 bytes are the volume serial number of the system drive, and the\nremaining 28 bytes contain the values 5 – 32. This array is encrypted with Key 2, resulting in Key\n3.\n\n## Conclusion\n\nDePriMon is an unusually advanced downloader whose developers have put extra effort into\nsetting up the architecture and crafting the critical components.\n\nDePriMon is downloaded to memory and executed directly from there as a DLL using the\nreflective DLL loading technique. It is never stored on disk. It has a surprisingly extensive\nconfiguration file with several interesting elements, its encryption is properly implemented and\nprotects the C&C communication effectively.\n\nAs a result, DePriMon is a powerful, flexible and persistent tool designed to download a payload\nand execute it, and to collect some basic information about the system and its user along the way.\n\n## Indicators of Compromise (IoCs)\n\n### ESET detection names\n\nWin32/DePriMon\nWin64/DePriMon\n\n### SHA-1 hashes\n\n02B38F6E8B54885FA967851A5580F61C14A0AAB6\n03E047DD4CECB16F513C44599BF9B8BA82D0B7CB\n0996C280AB704E95C9043C5A250CCE077DF9C8B2\n15EBE328A501B1D603E66762FBB4583D73E109F7\n1911F6E8B05E38A3C994048C759C5EA2B95CE5F7\n2B30BE3F39DEF1F404264D8858B89769E6C032D9\n2D80B235CDF41E09D055DD1B01FD690E13BE0AC7\n6DB79671A3F31F7A9BB870151792A56276619DC1\n6FAB7AA0479D41700981983A39F962F28CCFBE29\n7D0B08654B47329AD6AE44B8FF158105EA736BC3\n7E8A7273C5A0D49DFE6DA04FEF963E30D5258814\n8B4F3A06BA41F859E4CC394985BB788D5F76C85C\n94C0BE25077D9A76F14A63CBF7A774A96E8006B8\n968B52550062848A717027C512AFEDED19254F58\n9C4BADE47865E8111DD3EEE6C5C4BC83F2489F5B\nAA59CB6715CFFF545579861E5E77308F6CAEAC36\nC2388C2B2ED6063EACBA8A4021CE32EB0929FAD2\nCA34050771678C65040065822729F44B35C87B0C\nD38045B42C7E87C199993AB929AD92ADE4F82398\n\n\n-----\n\nE272FDA0E9BA1A1B8EF444FF5F2E8EE419746384\nE2D39E290201010F49652EE6116FD9B35C9AD882\nF413EEE3CFD85A60D7AFC4D4ECC4445BB1F0B8BC\n\n### Domains\n\n#### Domain IP address\n\n img.dealscienters[.]net 138.59.32.72\n\n teknikgorus[.]com 88.119.179.17\n\n wnupdnew[.]com 190.0.226.147\n\n babmaftuh[.]com 185.56.89.196\n\n alwatantrade[.]com 188.241.60.109\n\n shayalyawm[.]com 5.226.168.124\n\n elehenishing[.]com 185.225.17.77\n\n almawaddrial[.]com 46.151.212.202\n\n mdeastserv[.]com 46.151.212.201\n\n### Keys – example\n\nKey 1: C097CF17DC3303BC8155534350464E50176ACA63842B0973831D8C6C8F136817\nKey 2: 8D35913F80A23E820C23B3125ABF57901BC9A7B83283FB2B240193ABDEDE52B9\nKey 3: Derived as described earlier.\n\n### Filenames\n\ndpnvmrs.dll\nhp3mlnv.dll\nhp4mlnv.dll\nhp5nhd.dll\nhp6nhd.dll\nhpjdnb64.dll\nhpmdnel3b.dll\nifssvc.dll\nifssvcmgr.dll\nmsprtmon64.dll\nmsptromn.dll\nplamgr.dll\nppcrlchk.dll\nppcrlupd.dll\nprntapt.dll\n\n\n-----\n\nprntqdl64.dll\npscript6f.dll\npscript6s.dll\nshprn64.dll\nstprn32.dll\nwinmnprt.dll\n\n## MITRE ATT&CK techniques\n\n#### Tactic ID Name Description\n\n\n#### Persis‐ tence\n\n Defense Evasion\n\n Discov‐ ery\n\n Com‐ mand And Control\n\n\n#### T1013 Port Monitors DePriMon installs one of its components as a port monitor for achieving persistence.\n\n T1036 Masquerading DePriMon places its components into the Sys‐ tem32 folder with names mimicking common system DLLs.\n\n T1107 File Deletion DePriMon can delete itself securely by overwrit‐ ing its files with random data and then deleting them.\n\n T1112 Modify Registry DePriMon adds registry entry in HKLM\\SYS‐ TEM\\CurrentControlSet\\Control\\Print\\Monitors to achieve persistence.\n\n\n#### T1134 Access Token Manipulation\n\n T1140 Deobfuscate/De code Files or Information\n\n T1007 System Service Discovery\n\n T1057 Process Discovery\n\n T1082 System Infor‐ mation Discovery\n\n T1124 System Time Discovery\n\n T1043 Commonly Used Port\n\n\n#### DePriMon obtains a user token for obtaining in‐ formation about the proxy settings on the machine.\n\n DePriMon encrypts some of its strings and its configuration file using AES-256.\n\n DePriMon can list registered services on the system.\n\n DePriMon can list running processes on the system.\n\n DePriMon collects various information about the system.\n\n DePriMon regularly checks system time and performs various actions based on it, such as uninstallation.\n\n DePriMon uses ports 443 and 8080 for C&C communication.\n\n\n-----\n\n#### Tactic ID Name Description\n\n\n#### T1071 Standard Appli‐ cation Layer Protocol\n\n T1090 Connection Proxy\n\n[ESET Research 21 Nov 2019 - 11:30AM](https://www.welivesecurity.com/author/esetresearch/)\n\n\n#### DePriMon uses HTTP for C&C communication.\n\n DePriMon uses local proxy settings to make its communication less suspicious.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2019/2019.11.21.DePriMon/Registers%20as%20%E2%80%9CDefault%20Print%20Monitor%E2%80%9D%2C%20but%20is%20a%20malicious%20downloader.%20Meet%20DePriMon.pdf"
+    ],
+    "report_names": [
+        "Registers as “Default Print Monitor”, but is a malicious downloader. Meet DePriMon"
+    ],
+    "threat_actors": [
+        {
+            "id": "c91e335e-42be-48d9-96b5-ba56749a723b",
+            "created_at": "2022-10-25T16:07:23.458346Z",
+            "updated_at": "2025-03-27T02:02:09.813395Z",
+            "deleted_at": null,
+            "main_name": "CIA",
+            "aliases": [
+                "Central Intelligence Agency"
+            ],
+            "source_name": "ETDA:CIA",
+            "tools": [],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "23dfc9f5-1862-4510-a6ae-53d8e51f17b1",
+            "created_at": "2024-05-01T02:03:08.146025Z",
+            "updated_at": "2025-03-27T02:05:17.420497Z",
+            "deleted_at": null,
+            "main_name": "PLATINUM TERMINAL",
+            "aliases": [
+                "Longhorn ",
+                "The Lamberts ",
+                "Vault7 ",
+                "APT-C-39 "
+            ],
+            "source_name": "Secureworks:PLATINUM TERMINAL",
+            "tools": [
+                " Assassin",
+                " Marble Framework",
+                "AfterMidnight"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "e993faab-f941-4561-bd87-7c33d609a4fc",
+            "created_at": "2022-10-25T16:07:23.460301Z",
+            "updated_at": "2025-03-27T02:02:09.814816Z",
+            "deleted_at": null,
+            "main_name": "Longhorn",
+            "aliases": [
+                "APT-C-39",
+                "Platinum Terminal",
+                "The Lamberts"
+            ],
+            "source_name": "ETDA:Longhorn",
+            "tools": [
+                "Black Lambert",
+                "Blue Lambert",
+                "Corentry",
+                "Cyan Lambert",
+                "Fluxwire",
+                "Gray Lambert",
+                "Green Lambert",
+                "Magenta Lambert",
+                "Pink Lambert",
+                "Plexor",
+                "Purple Lambert",
+                "Silver Lambert",
+                "Violet Lambert",
+                "White Lambert"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "70db80bd-31b7-4581-accb-914cd8252913",
+            "created_at": "2023-01-06T13:46:38.57727Z",
+            "updated_at": "2025-03-27T02:00:02.865012Z",
+            "deleted_at": null,
+            "main_name": "Longhorn",
+            "aliases": [
+                "the Lamberts",
+                "APT-C-39",
+                "PLATINUM TERMINAL"
+            ],
+            "source_name": "MISPGALAXY:Longhorn",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716496,
+    "ts_updated_at": 1743041702,
+    "ts_creation_date": 1583308607,
+    "ts_modification_date": 1583308607,
+    "files": {
+        "pdf": "https://archive.orkl.eu/f9ec0ec31ccab12f99b03f09a0882b3d30a3365a.pdf",
+        "text": "https://archive.orkl.eu/f9ec0ec31ccab12f99b03f09a0882b3d30a3365a.txt",
+        "img": "https://archive.orkl.eu/f9ec0ec31ccab12f99b03f09a0882b3d30a3365a.jpg"
+    }
+}

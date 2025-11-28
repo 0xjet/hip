@@ -1,0 +1,62 @@
+{
+    "id": "57b421db-6d54-4db3-8ac2-4e0ab6e1e68c",
+    "created_at": "2023-01-12T15:04:37.59361Z",
+    "updated_at": "2025-03-27T02:09:18.01508Z",
+    "deleted_at": null,
+    "sha1_hash": "8576474463149b361cd0b4ef623cd1e236e7ac0b",
+    "title": "2020-12-11 - Investigating the Gootkit Loader",
+    "authors": "",
+    "file_creation_date": "2022-05-28T05:09:11Z",
+    "file_modification_date": "2022-05-28T05:09:11Z",
+    "file_size": 1494707,
+    "plain_text": "# Investigating the Gootkit Loader\n\n**[trendmicro.com/en_us/research/20/l/investigating-the-gootkit-loader.html](https://www.trendmicro.com/en_us/research/20/l/investigating-the-gootkit-loader.html)**\n\nDecember 11, 2020\n\nGootkit has been tied to Cobalt Strike as well as other ransomware attacks in the past. Some\nof these recent victims later suffered SunCrypt ransomware attacks, although it is unclear if\nthis was because of the Gootkit threat actor or if access was sold to other threat actors.\n\nBy: Marc Lanzendorfer December 11, 2020 Read time: ( words)\n\nSince October 2020, we saw an increase in the number of Gootkit cases targeting users in\nGermany. We investigated this development and found that the Gootkit loader was now\ncapable of sophisticated behavior that enabled it to surreptitiously load itself onto an affected\nsystem and make analysis and detection more difficult.\n\nThis capability was used to deploy a DLL file. Gootkit has, in the past, been tied to Cobalt\nStrike as well as other ransomware attacks. Some of these recent victims later suffered\nSunCrypt ransomware attacks, although it is unclear if this was because of the Gootkit threat\nactor or if access was sold to other threat actors. We've also discovered in recent weeks that\nthe Gootkit loader is being used in combination with REvil/Sodinokibi ransomware.\n\nInfection vector: Malicious search engine results\n\nIn the cases we saw, the Gootkit loader initially arrives via a ZIP archive downloaded from a\nwebsite. These malicious websites can be found in malicious search engine results, like this:\n\n\n-----\n\nFigure 1. Malicious search engine results\nIn this particular instance, fifa manager kostenlos can be translated as fifa manager free.\nNote that the search term used can vary significantly; we just used this search term as an\nexample. We have encountered other cases where the search terms were Aldi Talk postident\n_coupon and Control Center 4 download._\n\nClicking the link leads to a page on a legitimate site; however, the site has been\ncompromised and used to host a malicious page. The aforementioned page looks legitimate:\n\nFigure 2. Malicious page\nIt is meant to look like a legitimate forum, with a post containing a link to a file relevant to the\nsearch engine query. This particular link is more sophisticated than it looks, however.\nAttempting to redownload the same file from the same URL from the same host/machine\n\n\n-----\n\nfails; however, doing so from a different one succeeds, but the downloaded file has a\ndifferent hash than the original file. This suggests that the server generates this file as it is\nneeded, uniquely for each download attempt.\n\nAnalysis of the downloaded file\n\nThe downloaded file is a ZIP file that contains a heavily encoded JS file (which shares the\n[same filename as the ZIP file, save for the extension). We were able to use JSNice to](http://jsnice.org/)\nproduce human-readable code:\n\nFigure 3. Deobfuscated code\nOf interest here is the function “MT71,” which contains a variable with very long content.\n[Trying to run the script with online runtimes such as at Ideone fails with the following error:](https://ideone.com/)\n\n\n-----\n\nFigure 4. Error message\nWhat becomes apparent through the error is what the WScript.Shell object is trying to do:\n\nFigure 5. Partially deobfucated and beautified code\nA new object is created (“WScript.Shell”), which tries to read the registry key\n“HKCU\\SOFTWARE\\nTpm\\”. In case this registry key does not exist, it performs the following\nactions:\n\nA key with an empty value will be written at HKCU\\SOFTWARE\\nTpm\nThe value of “bE50” will be set to 32\n\nIf the key already exists, the execution of the script will fail since “bE50” is not set. It\nbecomes clear that this key is being used as a marker to check if the initial loader was\nalready executed on an infected host.\n\n[To sandbox this script, we used malware-jail from HynekPetrak. A line had to be added to](https://github.com/HynekPetrak/malware-jail)\ndefine the variable of bE50 as 32; otherwise, the script will fail (due to the requirement of\naccessing the registry key).\n\n\n-----\n\nFigure 6. Modified script\nThe following command was then used to run the JS file in the jail:\n\nnode jailme.js -c ./config_wscript_only.json --t404 tr_input/fifa.js tr_output/test -o\ntr_output/fifa_out.json --trace\n\nThis command would return a 404 error whenever the Javascript file sends a request upon\nexecution. It created the following output files:\n\nFigure 7. Contents of testurls.json, showing URLs that the malicious code tried to access\n\n\n-----\n\nFigure 8. Partial contents of fifa_out.json; contains some interesting artifacts\nLooking at the output JSON file shows that the variable “qI27” is an array of three domains:\n\nwww.adpm.com[.]br\nwindowp[.]org\nwww.ai-tech[.]paris\n\nConverting the whole line of “qI61” into a readable format reveals the following code block:\n\n\n-----\n\nFigure 9. Contents of the line qI61, showing the connection attempts to one of the three\ndestination domains sequentially\nThe snippet defines the following flow, running the following code against at least one of the\nURLs stored in QI27:\n\n1. “Og13” will be set to a random number after the point with a maximum length of 100\n2. The local user’s DNS domain is queried\n\n1. if the machine is joined to a domain, “Og13” will have 278146 added at the end\n3. A web request to the URL selected in step 1 will be initiated, using sub-parameters\n\n1. search.php?gqhncrqossifzp={the number in the variable of Og13}\n4. It checks for the return code of the web request a. if not 200 (okay), the script goes to\n\nsleep and then tries the next URL.\n5. If the web request is 200 (answer received), it stores the response in variable “zI11”\n6. It checks whether the response text from the server contains the “Og13” value\n\n1. If it does not, it goes to sleep and then tries the next URL.\n7. If the value is in the response, it removes the “Og13” value from “zI11”\n8. It replaces a double-digit number in brackets, e.g. (12), with a response from a function\n\nusing the variable “KT44”, which is unknown at this stage.\n9. It then calls another function “Nm34” (also currently unknown), passing the new “va67”\n\nvariable on.\n\nWith the above information, we now know that this loader makes a difference between\ndomain and non-domain hosts (by adding “278146” at the end of the search parameter).\n\nWe can change environmental variables via the wscript.js file. As the malicious script is\nlooking for the environmental variable “UserDNSDomain,” this was added to the\nconfiguration; we also changed the default username:\n\n\n-----\n\nFigure 10. Modified script\nRerunning the script — after changing the wscript.js parameter to provide a domain —\nreveals the request of the following URL:\n\nFigure 11. Requested URL\nBased on this observation, we can now run jailme.js without the --t404 option, but with the -down=y option. This allowed us to send the queries and download any requested files. By\ndefault, the jailme.js will stop executing the script after 60 seconds. The result of the queried\nURL now includes all three identified domains, shown below and including the responses:\n\nFigure 12. URLs and responses\nWhile we received HTTP 200 responses, none of these included the random strings needed\nfor the script to proceed. This was true using both samples we received. We are unsure why\nthis is the case; all we can say for sure is that the servers are currently not providing the files\nto be downloaded by Gootkit if they are analyzed in this manner.\n\nRegistry Analysis\n\nWe can use the presence of registry keys known to Gootkit to test if it has been deployed on\nan affected system.\n\nOn test machines, we were able to verify that the created registry entries were present:\n\n\n-----\n\nFigures 13 - 16. Created registry keys\nThe registry values in the last key can be merged into a PowerShell script:\n\nFigure 17. PowerShell script\nMost of this script is encoded; decoding it results in the following:\n\nFigure 18. Decoded code\nThis code is, by default, loaded into memory. If this code is instead saved to a file, this turns\nout to be a .NET DLL file. (This particular file is detected as Trojan.Win32.DELF.WLDT).\n\n\n-----\n\nOpening this particular file in a .NET decompiler shows that it also contains more encoded\ncode. Using a similar technique to dump the contents into a file reveals that this is also an\nexecutable file. This one is detected as Trojan.Win32.MALREP.THJBGBO, which we believe\nis the payload that this loader delivered to the affected system.\n\nConclusions and Trend Micro solutions\n\nThis particular threat highlights the sophistication of today’s malware-delivering loaders. In a\nsystem without any security solutions enabled, there would be barely any sign of the\ninfection, making analysis and removal more difficult.\n\nWith the appropriate Trend Micro solutions, the user would have been protected from this\nthreat. [Deep Discovery Analyzer would have proactively detected the script as a backdoor](https://www.trendmicro.com/en_us/business/products/network/advanced-threat-protection/analyzer.html)\n[and classified it as malicious; Apex One would also have been capable of blocking the threat](https://www.trendmicro.com/en_us/business/products/user-protection/sps/endpoint.html)\nonce it was executed.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-12-11 - Investigating the Gootkit Loader.pdf"
+    ],
+    "report_names": [
+        "2020-12-11 - Investigating the Gootkit Loader.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535877,
+    "ts_updated_at": 1743041358,
+    "ts_creation_date": 1653714551,
+    "ts_modification_date": 1653714551,
+    "files": {
+        "pdf": "https://archive.orkl.eu/8576474463149b361cd0b4ef623cd1e236e7ac0b.pdf",
+        "text": "https://archive.orkl.eu/8576474463149b361cd0b4ef623cd1e236e7ac0b.txt",
+        "img": "https://archive.orkl.eu/8576474463149b361cd0b4ef623cd1e236e7ac0b.jpg"
+    }
+}

@@ -1,0 +1,201 @@
+{
+    "id": "0cbe06e7-797f-4180-b5ff-57c1be11bbdc",
+    "created_at": "2023-01-12T15:06:24.039617Z",
+    "updated_at": "2025-03-27T02:09:20.730083Z",
+    "deleted_at": null,
+    "sha1_hash": "8ca4e99729d0e013e7bd9fb872f34ccc4aa1e3ab",
+    "title": "2021-02-10 - Windows kernel zero-day exploit (CVE-2021-1732) is used by BITTER APT in targeted attack",
+    "authors": "",
+    "file_creation_date": "2022-05-28T04:53:02Z",
+    "file_modification_date": "2022-05-28T04:53:02Z",
+    "file_size": 1015227,
+    "plain_text": "# Windows kernel zero-day exploit (CVE-2021-1732) is used by BITTER APT in targeted attack\n\n**ti.dbappsecurity.com.cn/blog/index.php/2021/02/10/windows-kernel-zero-day-exploit-is-used-by-bitter-apt-in-targeted-**\nattack/\n\n猎影实验室 February 10, 2021\n\n## Background\n\nIn December 2020, DBAPPSecurity Threat Intelligence Center found a new component of\nBITTER APT. Further analysis into this component led us to uncover a zero-day vulnerability\nin win32kfull.sys. The origin in-the-wild sample was designed to target newest Windows10\n1909 64-bits operating system at that time. The vulnerability also affects and could be\nexploited on the latest Windows10 20H2 64-bits operating system. We reported this\nvulnerability to MSRC, and it is fixed as CVE-2021-1732 in the February 2021 Security\nUpdate.\n\nSo far, we have detected a very limited number of attacks using this vulnerability. The victims\nare located in China.\n\n## Timeline\n\n   - 2020/12/10: DBAPPSecurity Threat Intelligence Center caught a new component of\nBITTER APT.\n\n   - 2020/12/15: DBAPPSecurity Threat Intelligence Center uncovered an unknown\nwindows kernel vulnerability in the component and started the root cause analysis.\n\n   - 2020/12/29: DBAPPSecurity Threat Intelligence Center reported the vulnerability to\nMSRC.\n\n   - 2020/12/29: MSRC confirmed the report has been received and opened a case for it.\n\n   - 2020/12/31: MSRC confirmed the vulnerability is a zero-day and asked for more\ninformation.\n\n   - 2020/12/31: DBAPPSecurity provided more detail to MSRC.\n\n   - 2021/01/06: MSRC thanked for the addition information and started working for a fix\nfor the vulnerability.\n\n   - 2021/02/09: MSRC fixes the vulnerability as CVE-2021-1732.\n\n## Highlights\n\nAccording to our analysis, the in-the-wild zero-day has the following highlights:\n\n\n-----\n\n1. 1. It targets the latest version of Windows10 operating system\n\n1. 1.1. The in-the-wild sample targets the latest version of Windows10 1909 64-bits\n\noperating system (The sample was compiled in May 2020).\n2. 1.2. The origin exploit aims to target several Windows 10 versions, from\n\nWindows10 1709 to Windows10 1909.\n3. 1.3. The origin exploit could be exploited on Windows10 20H2 with minor\n\nmodifications.\n2. 2. The vulnerability is high quality and the exploit is sophisticated\n\n1. 2.1. The origin exploit bypasses KASLR with the help of the vulnerability feature.\n2. 2.2. This is not a UAF vulnerability. The whole exploit process is not involved\n\nheap spray or memory reuse. The Type Isolation mitigation can’t mitigate this\nexploit. It is unable to detect it by Driver Verifier, the in-the-wild sample can exploit\nsuccessfully when Driver Verifier is turned on. It’s hard to hunt the in-the-wild\nsample through sandbox.\n3. 2.3. The arbitrary read primitive is achieved by vulnerability feature in conjunction\n\nwith GetMenuBarInfo, which is impressive.\n4. 2.4. After achieving arbitrary read/write primitives, the exploit uses Data Only\n\nAttack to perform privilege escalation, which can’t be mitigated by current kernel\nmitigations.\n5. 2.5. The success rate of the exploit is almost 100%.\n6. 2.6. When finishing exploit, the exploit will restore all key struct members, there\n\nwill be no BSOD after exploit.\n3. 3. The attacker used it with caution\n\n1. 3.1. Before exploit, the in-the-wild sample detects specific antivirus software.\n2. 3.2. The in-the-wild sample performs operating system build version check, if\n\ncurrent build version is under than 16535(Windows10 1709), the exploit will never\nbe called.\n3. 3.3. The in-the-wild sample was compiled in May 2020, and caught by us in\n\nDecember 2020, it survived at least 7 months. This indirectly reflects the difficulty\nof capturing such stealthy sample.\n\n## Technical Analysis\n\n### 0x00 Trigger Effect\n\nIf we run the in-the-wild sample in the lasted windows10 1909 64-bits environment, we could\nobserve current process initially runs under Medium Integrity Level.\n\n\n-----\n\nAfter the exploit code executing, we could observe current process runs under System\nIntegrity Level. This indicates that the Token of the current process has been replaced with\nthe Token of System process, which is a common method of exploiting kernel privilege\nescalation vulnerabilities.\n\n\n-----\n\nIf we run the in-the-wild sample in the lasted windows10 20H2 64-bits environment, we could\nobserve BSOD immediately.\n\n\n-----\n\n### 0x01 Overview Of The Vulnerability\n\nThis vulnerability is caused by xxxClientAllocWindowClassExtraBytes callback in\nwin32kfull!xxxCreateWindowEx. The callback causes the setting of a kernel struct member\nand its corresponding flag to be out of sync.\n\nWhen xxxCreateWindowEx creating a window that has WndExtra area, it will call\nxxxClientAllocWindowClassExtraBytes to trigger a callback, the callback will return to user\nmode to allocate WndExtra area. In the custom callback function, the attacker could call\nNtUserConsoleControl and pass in the handle of current window, this will change a kernel\nstruct member (which points to the WndExtra area) to offset, and setting a corresponding flag\nto indicate that the member now is an offset. After that, the attacker could call\nNtCallbackReturn in the callback and return an arbitrary value. When the callback ends and\nreturn to kernel mode, the return value will overwrite the previous offset member, but the\ncorresponding flag is not cleared. After that, the unchecked offset value is directly used by\nkernel code for heap memory addressing, causing out-of-bounds access.\n\n### 0x02 Root Cause\n\nWe completely reversed the exploit code of the in-the-wild sample, and constructed a poc\nbase it. The following figure is the main execution logic of our poc, we will explain the\nvulnerability trigger logic in conjunction with this figure.\n\n\n-----\n\nIn win32kfull!xxxCreateWindowEx, it will call user32!_xxxClientAllocWindowClassExtraBytes\ncallback function to allocate the memory of WndExtra by default. The return value of the\ncallback is a use mode pointer which will then been saved to a kernel struct member (the\nWndExtra member).\n\nIf we call win32kfull!xxxConsoleControl in a custom _xxxClientAllocWindowClassExtraBytes\ncallback and pass in the handle of current window, the WndExtra member will be change to\nan offset, and a corresponding flag will be set (|=0x800).\n\nThe poc triggers an BSOD when calling DestoryWindow, win32kfull!xxxFreeWindow will\ncheck the flag above, if it has been set, indicating the WndExtra member is an offset,\nxxxFreeWindow will call RtlFreeHeap to free the WndExtra area; if not, indicating the\nWndExtra member is an use mode pointer, xxxFreeWindow will call\nxxxClientFreeWindowClassExtraBytes to free the WndExtra area.\n\n\n-----\n\nWe could call NtCallbackReturn in the end of custom\n_xxxClientAllocWindowClassExtraBytes callback and return an arbitrary value. When the\ncallback finishes and return to kernel mode, the return value will overwrite the offset member,\nbut the corresponding flag is not cleared.\n\nIn the poc, we return an user mode heap address, the address overwrites the origin offset to\nan user mode heap address(fake_offset). This finally causes win32kfull!xxxFreeWindow to\ntrigger an out-of-bound access when using RtlFreeHeap to release a kernel heap.\n\nWhat RtlFreeHeap expects to free is RtlHeapBase+offset\nWhat RtlFreeHeap actually free is RtlHeapBase+fake_offset\n\n\n-----\n\nIf we call the RtlFreeHeap here, it will trigger a BSOD.\n\n### 0x03 Exploit\n\n\n-----\n\nThe in-the-wild sample is a 64-bits program, it first calls CreateToolhelp32Snapshot and\nsome other functions to enumerate process to detect “avp.exe” (avp.exe is a process of\nKaspersky Antivirus Software).\n\nHowever, when detecting the “avp.exe” process, it will only save some value to custom struct\nand will not exit process, the full exploit function will still be called. We install the Kaspersky\nantivirus product and run the sample; it will obtain system privileges as usual.\n\nIt then calls IsWow64Process to check whether the current environment is 32-bits or 64-bits,\nand fix some offsets based on the result. Here the code developer seems make a mistake,\naccording to the source code below, g_x64 should be understood as g_x86, but subsequent\ncalls indicate that this variable represents the 64-bits environment.\n\n\n-----\n\nHowever, the code developer forces g_x64 to TRUE at initialization, the call to\nIsWow64Process actually can be ignored here. But this seems to imply that the developer\nhad also developed another 32-bits version exploit.\n\nAfter fixing some offsets, it obtains the address of RtlGetNtVersionNumbers,\nNtUserConsoleControl and NtCallbackReturn. Then it calls RtlGetNtVersionNumbers to get\nthe build number of current operating system, the exploit function will only be called when the\nbuild number is larger than 16535(Windows10 1709), and if the build number larger than\n18204(Windows10 1903), it will fix some kernel struct offset. This seems to imply that\nsupport for these versions was added later.\n\nIf the current environment passes the check, the exploit will be called by the in the wild\nsample. The exploit first searches bytes to get the address of HmValidateHandle, and hooks\nUSER32!_xxxClientAllocWindowClassExtraBytes to a custom callback function.\n\n\n-----\n\nThe exploit then registers two type of windows class. The name of one class is “magicClass”,\nwhich is used to create the vulnerability window. The name of another class is “nolmalClass”,\nwhich is used to create normal windows which will assist the arbitrary address write primitive\nlater.\n\nThe exploit creates 10 windows using normalClass, and call HmValidateHandle to leak the\nuser mode tagWND address of each window and an offset of each window through the\ntagWND address. Then the exploit destroys the last 8 windows, only keep the window 0 and\nwindow 1.\n\nIf current program is 64-bits, the exploit will call NtUserConsoleControl and pass the handle\nof windows 1, this will change the WndExtra member of window 0 to an offset. The exploit\nthen leaks the kernel tagWND offset of windows 0 for later use.\n\nThen the exploit uses magicClass to create another window (windows 2), windows 2 has a\ncertain cbWndExtra value which was generated before. In the process of creating window 2,\nit will trigger the xxxClientAllocWindowClassExtraBytes callback and enter the custom\n\n\n-----\n\ncallback function.\n\nIn the custom callback function, the exploit first checks if the cbWndExtra of current window\nmatch a certain value, then checks if current process is 64-bits. If both checks pass, the\nexploit calls NtUserConsoleControl and passes the handle of windows 2, this changes the\nWndExtra of window 2 to an offset and set the corresponding flag. Then the exploit call\nNtCallbackReturn and pass the kernel tagWND offset of windows 0. When return to kernel\nmode, kernel WndExtra offset of windows 2 will been changed to the kernel tagWND offset of\nwindows 0. This causes the subsequent read/write on the WndExtra area of window 2 to the\nread/write on the kernel tagWND structure of window 0.\n\nAfter window 2 is created, the exploit obtains the primitive to write the kernel tagWND of\nwindow 0 by setting the WndExtra area of window 2. The exploit makes a call to\nSetWindowLongW on window 2 to test if this primitive works fine.\n\nIf all works fine, the exploit calls SetWindowLongW to set cbWndExtra of windows 0 to\n0xfffffff, this gives window 0 the OOB read/write primitives. The exploit then using the OOB\nwrite primitive to modify the style of window 1(dwStyle|=WS_CHILD), after that, the exploit\nreplaces the origin spmenu of window 1 with a fake spmenu.\n\n\n-----\n\nThe arbitrary read primitive is achieved by fake spmenu works with GetMenuBarInfo. The\nexploit reads a 64-bits value using tagMenuBarInfo.rcBar.left and tagMenuBarInfo.rcBar.top.\nThis method has not been used publicly before, but is similar with the ideas in《LPE\nvulnerabilities exploitation on Windows 10 Anniversary Update》(ZeroNight, 2016)\n\nThe arbitrary write primitive is achieved via window 0 and window 1, work with\nSetWindowLongPtrA, see below.\n\nAfter achieving the arbitrary read/write primitives, the exploit leaks a kernel address from the\norigin spmemu, then searches through it to find the EPROCESS of current process.\n\nFinally, the exploit traversals ActiveProcessLinks to get the Token of SYSTEM EPROCESS\nand the Token area address of current EPROCESS, and swaps the current process Token\nvalue with SYSTEM Token.\n\n\n-----\n\nAfter achieving privilege escalation, the exploit restores the modified area of window 0,\nwindow 1 and window 2 using arbitrary write primitive, such as the origin spmenu of window\n1 and the flag of window 2, to ensure that it will not cause a BSOD. The entire exploit\nprocess is very stable.\n\n### 0x04 Conclusion\n\nThis zero-day is a new vulnerability which caused by win32k callback, it could be used to\nescape the sandbox of Microsoft IE browser or Adobe Reader on the lasted Windows 10\nversion. The quality of this vulnerability high and the exploit is sophisticated. The use of this\nin-the-wild zero-day reflects the organization’s strong vulnerability reserve capability. The\nthreat organization may have recruited members with certain strength, or buying it from\nvulnerability brokers.\n\n## Summary\n\nZero-day plays a pivotal role in cyberspace. It is usually used as a strategic reserve for threat\norganizations and has a special mission and strategic significance.With the iteration of\nsoftware/hardware and the improvement of the defense system, the cost of mining and\nexploiting software/hardware zero-day is getting higher and higher.\n\nOver the years, vendors over the world have investment a lot on detecting APT attacks. This\nmakes the APT organization more cautious in the use of zero-day. In order to maximize its\nvalue, it will only be used for very few specific targets. A little carelessness will shorten the\nlife cycle of a zero-day. Meanwhile, some zero-days have been lurking for a long time before\nbeing exposed, the most remarkable example is the MS17-010 used by EternalBlue,\n\nOver the last year (2020), dozens of 0Day/1Day attacks in the wild were disclosed globally,\nincluding three attacks which tracked by DBAPPSecurity Threat Intelligence Center. Based\non the data we have, we predict there will be more zero-day disclose on browser and\nprivilege escalation in 2021.\n\nThe detection capability on zero-day is one of key aspect that requires continuous\nimprovement in the APT confrontation process. In addition to endpoint attacks, the attacks\non boundary systems, critical equipment, and centralized control systems are also worth\nnoting. There are also several security incidents in these areas over the past years.\n\nBeing undiscovered does not mean that it does not exist, it may be more in a stealthy state.\nThe discovery, detection and defense of advanced threats attacks require constant iteration\nand strengthening during the game. It’s necessary to think more about how to strengthen the\ndefense capabilities in all points, lines and surfaces. Cyber security has a long way to go,\nand we need to encourage each other.\n\n## How To Defend Against Such Attacks\n\n\n-----\n\nThe [DBAPPSecurity APT Attack Early Warning Platform could find known/unknown threat.](http://dbappsecurity.com/html/show-62-4-1.html)\nThe platform can monitor, capture and analyze the threats of malicious files or programs in\nreal time, and can conduct powerful monitoring of malicious samples such as Trojan horses\nassociated with each stage of email delivery, vulnerability exploitation,\ninstallation/implantation and C2.\n\nAt the same time, the platform conducts in-depth analysis of network traffic based on twoway traffic analysis, intelligent machine learning, efficient sandbox dynamic analysis, rich\nsignature libraries, comprehensive detection strategies, and massive threat intelligence data.\nThe detection capability completely covers the entire APT attack chain, effectively\ndiscovering APT attacks, unknown threats and network security incidents that users care\nabout.\n\n## Yara Rule\n```\nrule apt_bitter_win32k_0day {\n  meta:\n    author = \"dbappsecurity_lieying_lab\"\n    data = \"01-01-2021\"\n  strings:\n    $s1 = \"NtUserConsoleControl\" ascii wide\n    $s2 = \"NtCallbackReturn\" ascii wide\n    $s3 = \"CreateWindowEx\" ascii wide\n    $s4 = \"SetWindowLong\" ascii wide\n    $a1 = {48 C1 E8 02 48 C1 E9 02 C7 04 8A}\n    $a2 = {66 0F 1F 44 00 00 80 3C 01 E8 74 22 FF C2 48 FF C1}\n    $a3 = {48 63 05 CC 69 05 00 8B 0D C2 69 05 00 48 C1 E0 20 48 03 C1}\n  condition:\n    uint16(0) == 0x5a4d and all of ($s*) and 1 of ($a*)\n}\n\n```\n杭州安恒信息技术股份有限公司 - 威胁情报中心 Copyright @\n\nDbappsecurity All Rights Reserved\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-02-10 - Windows kernel zero-day exploit (CVE-2021-1732) is used by BITTER APT in targeted attack.pdf"
+    ],
+    "report_names": [
+        "2021-02-10 - Windows kernel zero-day exploit (CVE-2021-1732) is used by BITTER APT in targeted attack.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "bf6cb670-bb69-473f-a220-97ac713fd081",
+            "created_at": "2022-10-25T16:07:23.395205Z",
+            "updated_at": "2025-03-27T02:02:09.777308Z",
+            "deleted_at": null,
+            "main_name": "Bitter",
+            "aliases": [
+                "T-APT-17",
+                "TA397"
+            ],
+            "source_name": "ETDA:Bitter",
+            "tools": [
+                "Artra Downloader",
+                "ArtraDownloader",
+                "Bitter RAT",
+                "BitterRAT",
+                "Dracarys"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "655f7d0b-7ea6-4950-b272-969ab7c27a4b",
+            "created_at": "2022-10-27T08:27:13.133291Z",
+            "updated_at": "2025-03-27T02:00:55.490812Z",
+            "deleted_at": null,
+            "main_name": "BITTER",
+            "aliases": [
+                "T-APT-17"
+            ],
+            "source_name": "MITRE:BITTER",
+            "tools": [
+                "ZxxZ"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "63061658-5810-4f01-9620-7eada7e9ae2e",
+            "created_at": "2022-10-25T15:50:23.752974Z",
+            "updated_at": "2025-03-27T02:00:55.538582Z",
+            "deleted_at": null,
+            "main_name": "Wizard Spider",
+            "aliases": [
+                "Wizard Spider",
+                "UNC1878",
+                "TEMP.MixMaster",
+                "Grim Spider",
+                "FIN12",
+                "GOLD BLACKBURN",
+                "ITG23",
+                "Periwinkle Tempest",
+                "DEV-0193"
+            ],
+            "source_name": "MITRE:Wizard Spider",
+            "tools": [
+                "TrickBot",
+                "AdFind",
+                "BITSAdmin",
+                "Bazar",
+                "LaZagne",
+                "Nltest",
+                "GrimAgent",
+                "Dyre",
+                "Ryuk",
+                "Conti",
+                "Emotet",
+                "Rubeus",
+                "Mimikatz",
+                "Diavol",
+                "PsExec",
+                "Cobalt Strike"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "f6f91e1c-9202-4497-bf22-9cd5ef477600",
+            "created_at": "2023-01-06T13:46:38.86765Z",
+            "updated_at": "2025-03-27T02:00:02.938998Z",
+            "deleted_at": null,
+            "main_name": "WIZARD SPIDER",
+            "aliases": [
+                "FIN12",
+                "UNC2053",
+                "Pistachio Tempest",
+                "TEMP.MixMaster",
+                "GOLD BLACKBURN",
+                "Periwinkle Tempest",
+                "DEV-0193",
+                "Storm-0193",
+                "Trickbot LLC",
+                "DEV-0237"
+            ],
+            "source_name": "MISPGALAXY:WIZARD SPIDER",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "e6a21528-2999-4e2e-aaf4-8b6af14e17f3",
+            "created_at": "2022-10-25T16:07:24.422115Z",
+            "updated_at": "2025-03-27T02:02:10.216817Z",
+            "deleted_at": null,
+            "main_name": "Wizard Spider",
+            "aliases": [
+                "DEV-0193",
+                "Gold Blackburn",
+                "Gold Ulrick",
+                "Grim Spider",
+                "ITG23",
+                "Operation BazaFlix",
+                "Periwinkle Tempest",
+                "TEMP.MixMaster",
+                "Wizard Spider"
+            ],
+            "source_name": "ETDA:Wizard Spider",
+            "tools": [
+                "AdFind",
+                "Agentemis",
+                "Anchor_DNS",
+                "BEERBOT",
+                "BazarBackdoor",
+                "BazarCall",
+                "BazarLoader",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Conti",
+                "Diavol",
+                "Dyranges",
+                "Dyre",
+                "Dyreza",
+                "Dyzap",
+                "Gophe",
+                "Invoke-SMBAutoBrute",
+                "KEGTAP",
+                "LaZagne",
+                "LightBot",
+                "PowerSploit",
+                "PowerTrick",
+                "PsExec",
+                "Ryuk",
+                "SessionGopher",
+                "TSPY_TRICKLOAD",
+                "Team9Backdoor",
+                "The Trick",
+                "TheTrick",
+                "Totbrick",
+                "TrickBot",
+                "TrickLoader",
+                "TrickMo",
+                "Upatre",
+                "bazaloader",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535984,
+    "ts_updated_at": 1743041360,
+    "ts_creation_date": 1653713582,
+    "ts_modification_date": 1653713582,
+    "files": {
+        "pdf": "https://archive.orkl.eu/8ca4e99729d0e013e7bd9fb872f34ccc4aa1e3ab.pdf",
+        "text": "https://archive.orkl.eu/8ca4e99729d0e013e7bd9fb872f34ccc4aa1e3ab.txt",
+        "img": "https://archive.orkl.eu/8ca4e99729d0e013e7bd9fb872f34ccc4aa1e3ab.jpg"
+    }
+}

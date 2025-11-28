@@ -1,0 +1,42 @@
+{
+    "id": "ce32056c-187c-4e5d-85e9-a2030faa500a",
+    "created_at": "2023-01-12T15:02:54.266164Z",
+    "updated_at": "2025-03-27T02:05:19.42286Z",
+    "deleted_at": null,
+    "sha1_hash": "74ef1974c676c2da91e4b4fba0275587f056a257",
+    "title": "2019-04-07 - Emotet malware analysis. Part 2",
+    "authors": "",
+    "file_creation_date": "2022-05-28T17:34:41Z",
+    "file_modification_date": "2022-05-28T17:34:41Z",
+    "file_size": 955177,
+    "plain_text": "# [ Emotet malware analysis. Part 2. ]\n\n**persianov.net/emotet-malware-analysis-part-2**\n\n=== Apr 7, 2019 ===\n\n\nApril 7, 2019\n\n\nThis is the Part 2 of my Emotet analysis. It covers phase 3 of the attack, specifically the PE file\nwhich is being dropped by infected websites, used in Phishing/Spam campaigns. Emotet is an\nadvanced modular Trojan, predominantly used as Malware Distribution Platform, main goal\nbeing systems infection with other types of malware.\n\n[More information about phases 1 and 2: HERE](https://persianov.net/emotet-malware-analysis-part-1)\n\n## General information.\n\nPhase 3 of this version of Emotet attack is characterized by the new version of executable.\nMalware authors spent some time to make it harder to analyze, by implementing multiple AntiDebugging techniques, loading Windows DLLs dynamically, encrypting imported functions\nnames, several unpacking stages, and so on.\n\n**File name** **Checksum** **Hosted at**\n\nDFDWiz.exe cebb919d8d04f224b78181a4d3f0b10a315ae2f2 hxxp://biederman.net/leslie/lL/\n\n\n-----\n\nBased on IAT information, there are several Windows DLLs this binary is loading:\n```\nkernel32.dll, user32.dll, gdi32.dll, advapi32.dll, shell32.dll and\nshlwapi.dll .\n\n```\nAt the first glance, the binary doesn’t import any “red flag” functions, usually used by packers.\n\nLet’s load this sample in IDA and check for any details that can help in upcoming dynamic\nanalysis. From the multitude of imported functions, listed in IAT, there are only few used\n(visible at least). One of them is `VirtualAlloc, which points to a possible custom packer.`\n\n\n-----\n\nSome other clues showing that this binary is packed are `call s to pointers to data segment:`\n\n## Dynamic analysis. Unpacking.\n\nFor the dynamic analysis of this sample, I’m going to use `x32dbg . Based on the report from`\nHybrid Analysis, looks like this sample creates 2 new processes, once executed: copy of itself\nand a second process with a different name. This is the packed PE file, which is embedded\n\n\n-----\n\ninto the first sample.\n\nMost probably, parent process will call one of the `CreateProcess* Windows API functions.`\nSince 2018, Microsoft moved some functionality from kernel32.dll and advapi32.dll to new\nlow-level binary, called `kernelbase.dll . If we take a look at` `CreateProcessA and`\n```\nCreateProcessAsUserA in kernel32.dll, the only thing we can see are several mov and\npush instructions, followed by a jump, to kernelbase.dll equivalent function.\n\n```\nFollowing the thread to kernelbase.dll, we see that `CreateProcessA function contains a`\nbunch of another push instructions followed by a `call to` `CreateProcessInternalA .`\nSame happens for `CreateProcessAsUserA .`\n\n\n-----\n\nTo keep this short, the overall call chain looks like this:\n\n[kernel32.dll] CreateProcessA -> [kernelbase.dll] CreateProcessA ->\n\n[kernelbase.dll] CreateProcessInternalA -> [kernelbase.dll] CreateProcessInternalW\n\nIt means that for any `CreateProcess* function call, we’ll get` `CreateProcessInternalW`\ncalled right before process creation. If we set a breakpoint at the beginning of this function, we\npossibly could find the unpacked binary, which is going to be injected into the new process.\nOnce we hit the breakpoint, there are 4 memory regions with ERW (Execute-Read-Write) flags\nset. 3/4 are PE files, based on the header.\n\nOnce all of them are dumped and properly aligned, we can proceed with the second phase of\nanalysis.\n\n## Dynamic analysis. Dumped binaries.\n\nAll 3 exported binaries look the same, even if they have different checksums. IAT table is\nempty, which means that malware loads dependencies in runtime. There are no API function\nnames in binary’s strings, which implies that all API function names are encrypted as well as\nlibrary names.\n\nThe execution starts with 3 function calls.\n\n\n-----\n\nFirst 2 functions contain encrypted names of the APIs this sample is going to load dynamically.\nThese functions call another one, once all encrypted values are loaded to stack. The\n```\nsub_401550 looks to be responsible for decryption.\n\n```\nSo far, I was able to detect 4 DLLs loaded dynamically by this sample: `kernel32.dll,`\n```\nuser32.dll, ntdll.dll, shell32.dll .\n\n```\nIn order to run just one copy of it, this sample checks if a specific MUTEX exists and creates it,\nif missing. MUTEX name is: `PEMF24 .`\n\n\n-----\n\nOnce MUTEX is checked/created, malware looks for Windows directory to copy itself there, as\nwell as into %APPDATA% folder. This time, the new binary is named differently and this name\nis generated in runtime by concatenating 2 strings (in my case it was `ipropslide.exe ). All`\npossible strings are stored in memory at some point.\n\nOnce the new process is created, it starts looking for host information like Computer Name\nand Volume info and C2 communication begins.\n\nAfter some patching during debugging and several failures =)) I was able to get some details\nabout the C2 communication part. Sample tries to connect to 3 IP addresses (round robin?)\n\n\n**IP Address**\n\n\n**Destination**\n**Port** **Protocol** **User Agent**\n\n\n-----\n\n**IP Address**\n\n\n**Destination**\n**Port** **Protocol** **User Agent**\n\n\n45.36.20[.]17 8443 HTTP Mozilla/4.0 (compatible; MSIE 6.0; Windows NT\n5.1; SV1; .NET CLR 2.0.50727; .NET CLR\n3.0.04506.648; .NET CLR 3.5.21022)\n\n103.39.131[.]88 80 HTTP Mozilla/4.0 (compatible; MSIE 6.0; Windows NT\n5.1; SV1; .NET CLR 2.0.50727; .NET CLR\n3.0.04506.648; .NET CLR 3.5.21022)\n\n86.239.117[.]57 8090 HTTP Mozilla/4.0 (compatible; MSIE 6.0; Windows NT\n5.1; SV1; .NET CLR 2.0.50727; .NET CLR\n3.0.04506.648; .NET CLR 3.5.21022)\n\n## Conclusion.\n\nMalware authors did a good effort in packing this malware and introducing different layers of\ndefence. It wasn’t too difficult to bypass those layers, however taking into consideration how\noften a new Emotet version is released and the changes to the binary, the analysis becomes\ntime consuming in the long term. Sending HTTP traffic to non-standard destination ports, like\n```\n8090, is not the best way to keep a low profile in a compromised network. Most businesses\n\n```\nhave to treat this type of traffic as suspicious nowadays and maintain a clean asset inventory.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-04-07 - Emotet malware analysis. Part 2.pdf"
+    ],
+    "report_names": [
+        "2019-04-07 - Emotet malware analysis. Part 2.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673535774,
+    "ts_updated_at": 1743041119,
+    "ts_creation_date": 1653759281,
+    "ts_modification_date": 1653759281,
+    "files": {
+        "pdf": "https://archive.orkl.eu/74ef1974c676c2da91e4b4fba0275587f056a257.pdf",
+        "text": "https://archive.orkl.eu/74ef1974c676c2da91e4b4fba0275587f056a257.txt",
+        "img": "https://archive.orkl.eu/74ef1974c676c2da91e4b4fba0275587f056a257.jpg"
+    }
+}

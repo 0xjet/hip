@@ -1,0 +1,58 @@
+{
+    "id": "b1ef62f7-fefe-41d6-9b4b-a99c0aaea504",
+    "created_at": "2023-03-03T02:06:09.93653Z",
+    "updated_at": "2025-03-27T02:08:47.812986Z",
+    "deleted_at": null,
+    "sha1_hash": "4aa381ea36dfa7191ace3cf68fb54000eff578cf",
+    "title": "2023-02-10 - Malware analysis- part 8. Yara rule example for MurmurHash2. MurmurHash2 in Conti ransomware",
+    "authors": "",
+    "file_creation_date": "2023-03-01T09:14:19Z",
+    "file_modification_date": "2023-03-01T09:14:19Z",
+    "file_size": 1415793,
+    "plain_text": "# Malware analysis: part 8. Yara rule example for MurmurHash2. MurmurHash2 in Conti ransomware\n\n**[cocomelonc.github.io/malware/2023/02/10/malware-analysis-8.html](https://cocomelonc.github.io/malware/2023/02/10/malware-analysis-8.html)**\n\nFebruary 10, 2023\n\n5 minute read\n\n﷽\n\nHello, cybersecurity enthusiasts and white hackers!\n\nThis post is the result of my own research on Yara rule for Murmurhash2 hashing. How to use\nit for malware analysis in practice.\n\n## MurmurHash\n\n_MurmurHash2A is a non-cryptographic hash function optimized for performance and speed._\nIt divides the input data into 4-byte blocks, applies bitwise operations and XORs to each\nblock, and then uses a finalizer to produce the final hash result.\n\nHere’s a high-level overview of the algorithm:\n\n1. divide the input data into 4-byte blocks.\n2. initialize a seed value, which is used to influence the final hash value.\n\n\n-----\n\n3. for each block, perform bitwise operations such as XORs, multiplications, and bit\n\nrotations to produce a new intermediate value, the calculation of the intermediate value\nincludes the constant value 0x5bd1e995.\n4. XOR the intermediate value with the seed.\n5. Repeat steps 3 and 4 for each block.\n6. Use a finalizer to mix the intermediate value and produce the final hash value.\n\nSo as you can see, MurmurHash2A with a constant value of 0x5bd1e995 is a variation of the\nMurmurHash2A algorithm. The constant value is incorporated into the calculation.\n\n[The MurmurHash2 algorithm was created by Austin Appleby.](https://github.com/aappleby/smhasher/blob/master/src/MurmurHash3.cpp)\n\n## practical example\n\n[This algorithm is also often used for hashing function names.](https://cocomelonc.github.io/tutorial/2022/03/22/simple-av-evasion-5.html)\n[For example, if you look at the source code of the Conti ransomware leak, you can see](https://cocomelonc.github.io/investigation/2022/03/27/malw-inv-conti-1.html)\n```\nMurmurhash2A function.\n\n```\nIt might look something like this (hack.cpp):\n\n\n-----\n\n```\n/\n * hack.cpp - hashing Win32API functions via MurmurHash2A. C++ implementation\n\n * @cocomelonc\n\n * https://cocomelonc.github.io/malware/2023/02/10/malware-analysis-8.html\n\n*/\n#include <stdint.h>\n\n#include <stdlib.h>\n\n#include <stdio.h>\n\n#include <string.h>\n\n#include <windows.h>\n\ntypedef UINT(CALLBACK* fnMessageBoxA)(\n\n HWND  hWnd,\n\n LPCSTR lpText,\n\n LPCSTR lpCaption,\n\n UINT  uType\n\n);\n\n// MurmurHash is a non-cryptographic hash function and was written by Austin Appleby.\n\nunsigned int MurmurHash2A(const void *key, size_t len, unsigned int seed) {\n\n const unsigned int m = 0x5bd1e995;\n const int r = 24;\n\n unsigned int h = seed ^ len;\n\n const unsigned char *data = (const unsigned char *)key;\n\n while (len >= 4) {\n\n  unsigned int k = *(unsigned int *)data;\n\n  k *= m;\n\n  k ^= k >> r;\n\n  k *= m;\n\n  h *= m;\n\n  h ^= k;\n\n  data += 4;\n\n  len -= 4;\n\n }\n\n switch (len) {\n\n  case 3:\n\n   h ^= data[2] << 16;\n\n  case 2:\n\n   h ^= data[1] << 8;\n\n  case 1:\n\n   h ^= data[0];\n\n   h *= m;\n\n };\n\n h ^= h >> 13;\n\n h *= m;\n\n```\n\n-----\n\n```\n h  h >> 15;\n\n return h;\n\n}\n\nstatic LPVOID getAPIAddr(HMODULE h, unsigned int myHash) {\n\n PIMAGE_DOS_HEADER img_dos_header = (PIMAGE_DOS_HEADER)h;\n\n PIMAGE_NT_HEADERS img_nt_header = (PIMAGE_NT_HEADERS)((LPBYTE)h + img_dos_header>e_lfanew);\n\n PIMAGE_EXPORT_DIRECTORY img_edt = (PIMAGE_EXPORT_DIRECTORY)(\n\n  (LPBYTE)h + img_nt_header>OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);\n\n PDWORD fAddr = (PDWORD)((LPBYTE)h + img_edt->AddressOfFunctions);\n\n PDWORD fNames = (PDWORD)((LPBYTE)h + img_edt->AddressOfNames);\n\n PWORD fOrd = (PWORD)((LPBYTE)h + img_edt->AddressOfNameOrdinals);\n\n for (DWORD i = 0; i < img_edt->AddressOfFunctions; i++) {\n\n  LPSTR pFuncName = (LPSTR)((LPBYTE)h + fNames[i]);\n\n  if (MurmurHash2A(pFuncName, strlen(pFuncName), 0) == myHash) {\n\n   printf(\"successfully found! %s - %x\\n\", pFuncName, myHash);\n\n   return (LPVOID)((LPBYTE)h + fAddr[fOrd[i]]);\n\n  }\n\n }\n\n return nullptr;\n\n}\n\nint main() {\n\n // const char *key = \"MessageBoxA\";\n\n // size_t len = strlen(key);\n\n // unsigned int seed = 0;\n\n // unsigned int hash = MurmurHash2A(key, len, seed);\n\n // printf(\"hash value: %u\\n\", hash);\n\n HMODULE mod = LoadLibrary(\"user32.dll\");\n\n LPVOID addr = getAPIAddr(mod, 4115069285);\n\n printf(\"0x%p\\n\", addr);\n\n fnMessageBoxA myMessageBoxA = (fnMessageBoxA)addr;\n\n myMessageBoxA(NULL, \"Meow-meow!\",\"=^..^=\", MB_OK);\n\n return 0;\n\n}\n\n```\nAs you can see, as usually I used MessageBoxA WinAPI function for experiment.\n\n## demo\n\nLet’s go see using MurmurHash for hashing function names in action.\n\nCompile our “malware”:\n```\nx86_64-w64-mingw32-g++ -O2 hack.cpp -o hack.exe -I/usr/share/mingw-w64/include/ -s ffunction-sections -fdata-sections -Wno-write-strings -fno-exceptions -fmerge-allconstants -static-libstdc++ -static-libgcc -fpermissive\n\n```\n\n-----\n\nRun it at the victim’s machine:\n```\n.\\hack.exe\n\n\n```\nAs you can see, everything is worked perfectly! =^..^=\n\nLet’s go to upload our “malware” to VirusTotal:\n\n\n-----\n\n**So, 4 of 70 AV engines detect our file as malicious.**\n\nhttps://www.virustotal.com/gui/file/3975c386fedf96000f97e20675f76a23407b41f7e9909eaf22\nfbf90cf03fa211/details\n\n## yara rule\n\nIn the simplest implementation, the Yara rule will look like this:\n```\nrule murmurhash2_rule {\n\n meta:\n\n  author = \"cocomelonc\"\n\n  description = \"example rule using MurmurHash2A with constant 0x5bd1e995\"\n\n strings:\n\n  $hash = { 95 e9 d1 5b }\n\n condition:\n\n  $hash\n\n}\n\n\n```\nAs you can see, we just add algorithm’s constant for identity:\n```\nhexdump -C ./hack.exe | grep \"95 e9 d1 5b\"\n\n\n```\nRun it:\n```\nyarar -w ./murmur.yar -r ./\n\n\n```\nThis constant is commonly used in MurmurHash implementations, but the specific constants,\ninstructions, and their ordering may vary between different implementations. To write a good\nYARA rule, you need to know a lot about the architecture and instruction set, as well as the\nalgorithm and how it can change.\n\nSo, what are the advantages of the MurmurHash2 algorithm? MurmurHash2 is fast and efficient\nand is suitable for hashing large amounts of data in real-time applications. MurmurHash2 has\ngood collision resistance, which means that it generates unique hash values for different\ninput data, making it suitable for use in hash tables and other data structures where hash\n\n\n-----\n\ncollisions need to be avoided. MurmurHash2 is a cross-platform algorithm that can be easily\nimplemented in different programming languages and environments. For example, python\nimplementation:\n```\ndef murmurhash2(key: bytes, seed: int) -> int:\n\n  m = 0x5bd1e995\n\n  r = 24\n\n  h = seed ^ len(key)\n\n  data = bytearray(key) + b'\\x00' * (4 - (len(key) & 3))\n\n  data = memoryview(data).cast(\"I\")\n\n  for i in range(len(data) // 4):\n\n    k = data[i]\n\n    k *= m\n\n    k ^= k >> r\n\n    k *= m\n\n    h *= m\n\n    h ^= k\n\n  h ^= h >> 13\n\n  h *= m\n\n  h ^= h >> 15\n\n  return h\n\nh = murmurhash2(b\"meow-meow\", 0)\n\nprint (\"%x\" % h)\n\nprint (\"%d\" % h)\n\n\n```\nNote that MurmurHash2 is not designed to be a cryptographic hash function and should not\nbe used for secure applications that require cryptographic-strength hash functions, such as\npassword storage or digital signatures.\n\n[This hash is used by Conti ransomware and Win32/Potao](https://attack.mitre.org/software/S0575/) [malware family at the wild.](https://samples.vx-underground.org/APTs/2015/2015.07.30/Paper/Operation%20Potao%20Express.pdf)\n\nI hope this post spreads awareness to the blue teamers of this interesting hashing technique,\nand adds a weapon to the red teamers arsenal.\n\nThis is a practical case for educational purposes only.\n\n[AV engines evasion techniques - part 5](https://cocomelonc.github.io/tutorial/2022/03/22/simple-av-evasion-5.html)\n[Murmurhash](https://en.wikipedia.org/wiki/MurmurHash)\n[Conti](https://attack.mitre.org/software/S0575/)\n[Operation Potao Express](https://samples.vx-underground.org/APTs/2015/2015.07.30/Paper/Operation%20Potao%20Express.pdf)\n[source code in github](https://github.com/cocomelonc/2023-02-10-malware-analysis-8)\n\nThanks for your time happy hacking and good bye!\n\n_PS. All drawings and screenshots are mine_\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2023/2023-02-10 - Malware analysis- part 8. Yara rule example for MurmurHash2. MurmurHash2 in Conti ransomware.pdf"
+    ],
+    "report_names": [
+        "2023-02-10 - Malware analysis- part 8. Yara rule example for MurmurHash2. MurmurHash2 in Conti ransomware.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "4a892faf-3d4d-4615-b7b6-cdbc2ce42d8d",
+            "created_at": "2022-10-25T16:07:23.99045Z",
+            "updated_at": "2025-03-27T02:02:10.06504Z",
+            "deleted_at": null,
+            "main_name": "Operation Potao Express",
+            "aliases": [],
+            "source_name": "ETDA:Operation Potao Express",
+            "tools": [
+                "FakeTC",
+                "Patao"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1677809169,
+    "ts_updated_at": 1743041327,
+    "ts_creation_date": 1677662059,
+    "ts_modification_date": 1677662059,
+    "files": {
+        "pdf": "https://archive.orkl.eu/4aa381ea36dfa7191ace3cf68fb54000eff578cf.pdf",
+        "text": "https://archive.orkl.eu/4aa381ea36dfa7191ace3cf68fb54000eff578cf.txt",
+        "img": "https://archive.orkl.eu/4aa381ea36dfa7191ace3cf68fb54000eff578cf.jpg"
+    }
+}

@@ -1,0 +1,174 @@
+{
+    "id": "c4ee3b60-fe26-4f59-a2cd-1e5f12c622de",
+    "created_at": "2023-01-12T15:04:40.020033Z",
+    "updated_at": "2025-03-27T02:15:41.624303Z",
+    "deleted_at": null,
+    "sha1_hash": "2d3eb1107a1e4789907c5f92ff198a8145b928fa",
+    "title": "2020-08-12 - Internet Explorer and Windows zero-day exploits used in Operation PowerFall",
+    "authors": "",
+    "file_creation_date": "2022-05-28T05:09:39Z",
+    "file_modification_date": "2022-05-28T05:09:39Z",
+    "file_size": 285124,
+    "plain_text": "# Internet Explorer and Windows zero-day exploits used in Operation PowerFall\n\n**[securelist.com/ie-and-windows-zero-day-operation-powerfall/97976/](https://securelist.com/ie-and-windows-zero-day-operation-powerfall/97976/)**\n\nAuthors\n\nBoris Larin\n\n## Executive summary\n\nIn May 2020, Kaspersky technologies prevented an attack on a South Korean company by a\nmalicious script for Internet Explorer. Closer analysis revealed that the attack used a\npreviously unknown full chain that consisted of two zero-day exploits: a remote code\nexecution exploit for Internet Explorer and an elevation of privilege exploit for Windows.\nUnlike a previous full chain that we discovered, used in Operation WizardOpium, the new full\nchain targeted the latest builds of Windows 10, and our tests demonstrated reliable\n[exploitation of Internet Explorer 11 and Windows 10 build 18363 x64.](https://docs.microsoft.com/en-us/windows/release-information/)\n\nOn June 8, 2020, we reported our discoveries to Microsoft, and the company confirmed the\nvulnerabilities. At the time of our report, the security team at Microsoft had already prepared\n[a patch for vulnerability CVE-2020-0986 that was used in the zero-day elevation of privilege](https://portal.msrc.microsoft.com/en-US/security-guidance/advisory/CVE-2020-0986)\n\n\n-----\n\nexploit, but before our discovery, the exploitability of this vulnerability was considered less\nlikely. The patch for CVE-2020-0986 was released on June 9, 2020.\n\n[Microsoft assigned CVE-2020-1380 to a use-after-free vulnerability in JScript and the patch](https://portal.msrc.microsoft.com/en-US/security-guidance/advisory/CVE-2020-1380)\nwas released on August 11, 2020.\n\nWe are calling this and related attacks ‘Operation PowerFall’. Currently, we are unable to\nestablish a definitive link with any known threat actors, but due to similarities with previously\n[discovered exploits, we believe that DarkHotel may be behind this attack. Kaspersky](https://securelist.com/the-darkhotel-apt/66779/)\nproducts detect Operation PowerFall attacks with verdict PDM:Exploit.Win32.Generic.\n\n## Internet Explorer 11 remote code execution exploit\n\nThe most recent zero-day exploits for Internet Explorer discovered in the wild relied on the\nvulnerabilities CVE-2020-0674, CVE-2019-1429, CVE-2019-0676 and CVE-2018-8653 in the\nlegacy JavaScript engine jscript.dll. In contrast, CVE-2020-1380 is a vulnerability in\njscript9.dll, which has been used by default starting with Internet Explorer 9, and because of\nthis, the [mitigation steps recommended by Microsoft (restricting the usage of jscript.dll)](https://portal.msrc.microsoft.com/en-us/security-guidance/advisory/ADV200001)\ncannot protect against this particular vulnerability.\n\nCVE-2020-1380 is a Use-After-Free vulnerability that is caused by JIT optimization and the\nlack of necessary checks in just-in-time compiled code. A proof-of-concept (PoC) that\ntriggers vulnerability is demonstrated below:\n\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n10\n\n\nfunction func(O, A, F, O2) {\n\narguments.push = Array.prototype.push;\n\nO = 1;\n\narguments.length = 0;\n\narguments.push(O2);\n\nif (F == 1) {\n\nO = 2;\n\n}\n\n// execute abp.valueOf() and write by dangling pointer\n\n\n-----\n\n11\n\n12\n\n13\n\n14\n\n15\n\n16\n\n17\n\n18\n\n19\n\n20\n\n21\n\n22\n\n23\n\n24\n\n25\n\n26\n\n27\n\n28\n\n29\n\n30\n\n31\n\n32\n\n33\n\n34\n\n35\n\n36\n\n37\n\n38\n\n\nA[5] = O;\n\n};\n\n// prepare objects\n\nvar an = new ArrayBuffer(0x8c);\n\nvar fa = new Float32Array(an);\n\n// compile func\n\nfunc(1, fa, 1, {});\n\nfor (var i = 0; i < 0x10000; i++) {\n\nfunc(1, fa, 1, 1);\n\n}\n\nvar abp = {};\n\nabp.valueOf = function() {\n\n// free\n\nworker = new Worker('worker.js');\n\nworker.postMessage(an, [an]);\n\nworker.terminate();\n\nworker = null;\n\n// sleep\n\nvar start = Date.now();\n\nwhile (Date.now() - start < 200) {}\n\n// TODO: reclaim freed memory\n\n\n-----\n\n39\n\n40\n\n41\n\n42\n\n43\n\n44\n\n45\n\n46\n\n\nreturn 0\n\n};\n\ntry {\n\nfunc(1, fa, 0, abp);\n\n} catch (e) {\n\nreload()\n\n}\n\n\nTo understand this vulnerability, let us take a look at how func() is executed. It is important to\nunderstand what value is set to A[5]. According to the code, it should be an O argument. At\nfunction start, the O argument is re-assigned to 1, but then the function arguments length is\nset to 0. This operation does not clear function arguments (as it would normally do with\nregular array) but allows to put argument O2 into the arguments list at index zero using\nArray.prototype.push, meaning O = O2 now. Besides that, if the argument F is equal to 1,\nthen O will be re-assigned once again, but to the integer number 2. It means that depending\non the value of the F argument, the O argument is equal to either the value of the O2\nargument or the integer number 2. The argument A is a typed array of 32-bit floating point\nnumbers, and before assigning a value to index 5 of the array, this value should be\nconverted to a float. Converting an integer to a float is a relatively simple task, but it become\nless straightforward when an object is converted to a float number. The exploit uses the\nobject abp with an overridden valueOf() method. This method is executed when the object is\nconverted to a float, but inside the method there is code that frees ArrayBuffer, which is\nviewed by Float32Array and where the returned value will be set. To prevent the value from\nbeing stored in the memory of the freed object, the JavaScript engine needs to check the\nstatus of the object before storing the value in it. To convert and store the float value safely,\nJScript9.dll uses the function Js::TypedArray<float,0>::BaseTypedDirectSetItem(). You can\nsee decompiled code of this function below:\n\n\n-----\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n10\n\n11\n\n12\n\n13\n\n14\n\n15\n\n16\n\n17\n\n18\n\n19\n\n20\n\n21\n\n22\n\n\nint Js::TypedArray<float,0>::BaseTypedDirectSetItem(Js::TypedArray<float,0> *this,\nunsigned int index, void *object, int reserved)\n\n{\n\nJs::JavascriptConversion::ToNumber(object, this->type->library->context);\n\nif ( LOBYTE(this->view[0]->unusable) )\n\nJs::JavascriptError::ThrowTypeError(this->type->library->context, 0x800A15E4,\n0);\n\nif ( index < this->count )\n\n{\n\n*(float *)&this->buffer[4 * index] = Js::JavascriptConversion::ToNumber(\n\nobject,\n\nthis->type->library->context);\n\n}\n\nreturn 1;\n\n}\n\ndouble Js::JavascriptConversion::ToNumber(void *object, struct Js::ScriptContext\n*context)\n\n{\n\nif ( (unsigned char)object & 1 )\n\nreturn (double)((int)object >> 1);\n\nif ( *(void **)object == VirtualTableInfo<Js::JavascriptNumber>::Address[0] )\n\nreturn *((double *)object + 1);\n\nreturn Js::JavascriptConversion::ToNumber_Full(object, context);\n\n}\n\n\nThis function checks the view[0]->unusable and count fields of the typed float array and\nwhen ArrayBuffer is freed during execution of the valueOf() method, both of these checks will\nfail because view[0]->unusable will be set to 1 and count will be set to 0 during the first call to\n_Js::JavascriptConversion::ToNumber(). The problem lies in the fact that the function_\n_Js::TypedArray<float,0>::BaseTypedDirectSetItem() is used only in interpretation mode._\n\n\n-----\n\nWhen the function func() is compiled just in time, the JavaScript engine will use the\nvulnerable code below.\n\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n10\n\n11\n\n12\n\n13\n\n14\n\n15\n\n16\n\n17\n\n18\n\n19\n\n20\n\n21\n\n22\n\n\nif ( !((unsigned char)floatArray & 1) && *(void *)floatArray ==\n&Js::TypedArray<float,0>::vftable )\n\n{\n\nif ( floatArray->count > index )\n\n{\n\nbuffer = floatArray->buffer + 4*index;\n\nif ( object & 1 )\n\n{\n\n*(float *)buffer = (double)(object >> 1);\n\n}\n\nelse\n\n{\n\nif ( *(void *)object != &Js::JavascriptNumber::vftable )\n\n{\n\nJs::JavascriptConversion::ToFloat_Helper(object, (float *)buffer, context);\n\n}\n\nelse\n\n{\n\n*(float *)buffer = *(double *)(object->value);\n\n}\n\n}\n\n}\n\n}\n\n\nAnd here is the code of the Js::JavascriptConversion::ToFloat_Helper() function.\n\n\n-----\n\n1\n\n2\n\n3\n\n4\n\n\nvoid Js::JavascriptConversion::ToFloat_Helper(void *object, float *buffer, struct\nJs::ScriptContext *context)\n\n{\n\n*buffer = Js::JavascriptConversion::ToNumber_Full(object, context);\n\n}\n\n\nAs you can see, unlike in interpretation mode, in just-in-time compiled code, the life cycle of\nArrayBuffer is not checked, and its memory can be freed and then reclaimed during a call to\nthe valueOf() function. Additionally, the attacker can control at what index the returned value\nis written. However, in the case when “arguments.length = 0;”and “arguments.push(O2);” are\nreplaced in PoC with “arguments[0] = O2;” then Js::JavascriptConversion::ToFloat_Helper()\nwill not trigger the bug because implicit calls will be disabled and it will not perform a call to\nthe valueOf() function.\n\nTo ensure that the function func() is compiled just in time, the exploit executes this function\n0x10000 times, performing a harmless conversion of the integer, and only after that func() is\nexecuted once more, triggering the bug. To free ArrayBuffer, the exploit uses a common\ntechnique abusing the Web Workers API. The function postMessage() can be used to\nserialize objects to messages and send them to the worker. As a side effect, transferred\nobjects are freed and become unusable in the current script context. When ArrayBuffer is\nfreed, the exploit triggers garbage collection via code that simulates the use of the Sleep()\nfunction: it is a while loop that checks for the time lapse between Date.now() and the\npreviously stored value. After that, the exploit reclaims the memory with integer arrays.\n\n\n1\n\n2\n\n3\n\n4\n\n\nfor (var i = 0; i < T.length; i += 1) {\n\nT[i] = new Array((0x1000 - 0x20) / 4);\n\nT[i][0] = 0x666; // item needs to be set to allocate LargeHeapBucket\n\n}\n\n\nWhen a large number of arrays is created, Internet Explorer allocates new LargeHeapBlock\nobjects, which are used by IE’s custom heap implementation. The LargeHeapBlock objects\nwill store the addresses of buffers allocated for the arrays. If the expected memory layout is\nachieved successfully, the vulnerability will overwrite the value at the offset 0x14 of\nLargeHeapBlock with 0, which happens to be the allocated block count.\n\n\n-----\n\n**_LargeHeapBlock structure for jscript9.dll x86_**\n\nAfter that, the exploit allocates a huge number of arrays and sets them to another array that\nwas prepared at the initial stage of the exploitation. Then this array is set to null, and the\nexploit makes a call to the CollectGarbage() function. This results in defragmentation of the\nheap, and the modified LargeHeapBlock will be freed along with its associated array buffers.\nAt this stage, the exploit creates a large amount of integer arrays in hopes of reclaiming the\npreviously freed array buffers. The newly created arrays have a magic value set at index\nzero, and this value is checked through a dangling pointer to the previously freed array to\ndetect if the exploitation was successful.\n\n\n-----\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n10\n\n11\n\n\nfor (var i = 0; i < K.length; i += 1) {\n\nK[i] = new Array((0x1000 - 0x20) / 4);\n\nK[i][0] = 0x888; // store magic\n\n}\n\nfor (var i = 0; i < T.length; i += 1) {\n\nif (T[i][0] == 0x888) { // find array accessible through dangling pointer\n\nR = T[i];\n\nbreak;\n\n}\n\n}\n\n\nAs a result, the exploit creates two different JavascriptNativeIntArray objects with buffers\npointing to the same location. This makes it possible to retrieve the addresses of the objects\nand even create new malformed objects. The exploit takes advantage of these primitives to\ncreate a malformed DataView object and get read/write access to the whole address space\nof the process.\n\nAfter the building of the arbitrary read/write primitives, it is time to bypass Control Flow Guard\n(CFG) and get code execution. The exploit uses the Array’s vftable pointer to get the module\nbase address of jscript9.dll. From there, it parses the PE header of jscript9.dll to get the\naddress of the Import Directory Table and resolves the base addresses of the other modules.\nThe goal here is to find the address of the function VirtualProtect(), which will be used to\nmake the shellcode executable. After that, the exploit searches for two signatures in\njscript9.dll. Those signatures correspond to the address of the Unicode string “split” and the\naddress of the function:\n_JsUtil::DoublyLinkedListElement<ThreadContext>::LinkToBeginning<ThreadContext>(). The_\naddress of the Unicode string “split” is used to get a code reference to the string and with its\nhelp, to resolve the address of the function Js::JavascriptString::EntrySplit(), which\nimplements the string method split(). The address of the function\n_LinkToBeginning<ThreadContext>() is used to obtain the address of the first ThreadContext_\nobject in the global linked list. The exploit locates the last entry in the linked list and uses it to\nget the location of the stack for the thread responsible for the execution of the script. After\nthat comes the final stage. The exploit executes the split() method and an object with an\noverridden valueOf() method is provided as a limit argument. When the overridden valueOf()\nmethod is executed during the execution of the function Js::JavascriptString::EntrySplit(), the\n\n\n-----\n\nexploit will search the thread s stack to find the return address, place the shellcode in a\nprepared buffer, obtain its address, and finally build a return-oriented programming (ROP)\nchain to execute the shellcode by overwriting the return address of the function.\n\n## Next stage\n\nThe shellcode is a reflective DLL loader for the portable executable (PE) module that is\nappended to the shellcode. The module is very small in size, and the whole functionality is\nlocated inside a single function. It creates a file within a temporary folder with the name\nok.exe and writes to it the contents of another executable that is present in the remote code\nexecution exploit. After that, ok.exe is executed.\n\nThe ok.exe executable contains is an elevation of privilege exploit for the arbitrary pointer\ndereference vulnerability CVE-2020-0986 in the GDI Print / Print Spooler API. Initially, this\nvulnerability was reported to Microsoft by an anonymous user working with Trend Micro’s\nZero Day Initiative back in December 2019. Due to the patch not being released for six\n[months since the original report, ZDI posted a public advisory for this vulnerability as a zero-](https://www.zerodayinitiative.com/advisories/ZDI-20-663/)\nday on May 19, 2020. The next day, the vulnerability was exploited in the previously\nmentioned attack.\n\nThe vulnerability makes it possible to read and write the arbitrary memory of the\nsplwow64.exe process using interprocess communication, and use it to achieve code\n[execution in the splwow64.exe process, bypassing the CFG and EncodePointer protection.](https://docs.microsoft.com/en-us/previous-versions/bb432254(v=vs.85))\nThe exploit comes with two executables embedded in its resources. The first executable is\nwritten to disk as CreateDC.exe and is used to create a device context (DC), which is\nrequired for exploitation. The second executable has the name PoPc.dll and if the\nexploitation is successful, it is executed by splwow64.exe with a medium integrity level. We\nwill provide further details on CVE-2020-0986 and its exploitation in a follow-up post.\n\n**_Execution of a malicious PowerShell command from splwow64.exe_**\n\n\n-----\n\nThe main functionality of PoPc.dll is also located inside a single function. It executes an\nencoded PowerShell command that proceeds to download a file from www[.]staticcdn1[.]com/update.zip, saves it to the temporary folder as upgrader.exe and executes it. We\nwere unable to analyze upgrader.exe because Kaspersky technologies prevented the attack\nbefore the executable was downloaded.\n\n## IoCs\n\n[www[.]static-cdn1[.]com/update.zip](https://opentip.kaspersky.com/www.static-cdn1.com%2Fupdate.zip/)\n\n[B06F1F2D3C016D13307BC7CE47C90594](https://opentip.kaspersky.com/B06F1F2D3C016D13307BC7CE47C90594/)\n\n[D02632CFFC18194107CC5BF76AECA7E87E9082FED64A535722AD4502A4D51199](https://opentip.kaspersky.com/D02632CFFC18194107CC5BF76AECA7E87E9082FED64A535722AD4502A4D51199/)\n\n[5877EAECA1FE8A3A15D6C8C5D7FA240B](https://opentip.kaspersky.com/5877EAECA1FE8A3A15D6C8C5D7FA240B/)\n\n[7577E42177ED7FC811DE4BC854EC226EB037F797C3B114E163940A86FD8B078B](https://opentip.kaspersky.com/7577E42177ED7FC811DE4BC854EC226EB037F797C3B114E163940A86FD8B078B/)\n\n[B72731B699922608FF3844CCC8FC36B4](https://opentip.kaspersky.com/B72731B699922608FF3844CCC8FC36B4/)\n\n[7765F836D2D049127A25376165B1AC43CD109D8B9D8C5396B8DA91ADC61ECCB1](https://opentip.kaspersky.com/7765F836D2D049127A25376165B1AC43CD109D8B9D8C5396B8DA91ADC61ECCB1/)\n\n[E01254D7AF1D044E555032E1F78FF38F](https://opentip.kaspersky.com/E01254D7AF1D044E555032E1F78FF38F/)\n\n[81D07CAE45CAF27CBB9A1717B08B3AB358B647397F08A6F9C7652D00DBF2AE24](https://opentip.kaspersky.com/81D07CAE45CAF27CBB9A1717B08B3AB358B647397F08A6F9C7652D00DBF2AE24/)\n\n[Malware Technologies](https://securelist.com/tag/malware-technologies/)\n[Microsoft Internet Explorer](https://securelist.com/tag/microsoft-internet-explorer/)\n[Microsoft Windows](https://securelist.com/tag/microsoft-windows/)\n[Targeted attacks](https://securelist.com/tag/targeted-attacks/)\n[Vulnerabilities and exploits](https://securelist.com/tag/vulnerabilities-and-exploits/)\n[Zero-day vulnerabilities](https://securelist.com/tag/zero-day-vulnerabilities/)\n\nAuthors\n\nBoris Larin\n\nInternet Explorer and Windows zero-day exploits used in Operation PowerFall\n\nYour email address will not be published. Required fields are marked *\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-08-12 - Internet Explorer and Windows zero-day exploits used in Operation PowerFall.pdf"
+    ],
+    "report_names": [
+        "2020-08-12 - Internet Explorer and Windows zero-day exploits used in Operation PowerFall.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "1dadf04e-d725-426f-9f6c-08c5be7da159",
+            "created_at": "2022-10-25T15:50:23.624538Z",
+            "updated_at": "2025-03-27T02:00:55.508759Z",
+            "deleted_at": null,
+            "main_name": "Darkhotel",
+            "aliases": [
+                "Darkhotel",
+                "DUBNIUM",
+                "Zigzag Hail"
+            ],
+            "source_name": "MITRE:Darkhotel",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "2008a79d-2f3a-475f-abef-3bc119a1bf38",
+            "created_at": "2022-10-25T16:07:24.028651Z",
+            "updated_at": "2025-03-27T02:02:10.084983Z",
+            "deleted_at": null,
+            "main_name": "Operation WizardOpium",
+            "aliases": [],
+            "source_name": "ETDA:Operation WizardOpium",
+            "tools": [],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "5cd3fcb0-eb56-49ac-8125-47ebee93311d",
+            "created_at": "2023-01-06T13:46:39.065814Z",
+            "updated_at": "2025-03-27T02:00:02.988828Z",
+            "deleted_at": null,
+            "main_name": "Operation WizardOpium",
+            "aliases": [],
+            "source_name": "MISPGALAXY:Operation WizardOpium",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "b13c19d6-247d-47ba-86ba-15a94accc179",
+            "created_at": "2024-05-01T02:03:08.149923Z",
+            "updated_at": "2025-03-27T02:05:17.422065Z",
+            "deleted_at": null,
+            "main_name": "TUNGSTEN BRIDGE",
+            "aliases": [
+                "DUBNIUM ",
+                "DarkHotel ",
+                "CTG-1948 "
+            ],
+            "source_name": "Secureworks:TUNGSTEN BRIDGE",
+            "tools": [
+                "Nemim"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "2b4eec94-7672-4bee-acb2-b857d0d26d12",
+            "created_at": "2023-01-06T13:46:38.272109Z",
+            "updated_at": "2025-03-27T02:00:02.790029Z",
+            "deleted_at": null,
+            "main_name": "DarkHotel",
+            "aliases": [
+                "DUBNIUM",
+                "Fallout Team",
+                "Luder",
+                "Tapaoux",
+                "Shadow Crane",
+                "APT-C-06",
+                "SIG25",
+                "Karba",
+                "Nemim",
+                "Nemin",
+                "G0012",
+                "ATK52",
+                "T-APT-02",
+                "TUNGSTEN BRIDGE",
+                "Zigzag Hail"
+            ],
+            "source_name": "MISPGALAXY:DarkHotel",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c0cedde3-5a9b-430f-9b77-e6568307205e",
+            "created_at": "2022-10-25T16:07:23.528994Z",
+            "updated_at": "2025-03-27T02:02:09.847683Z",
+            "deleted_at": null,
+            "main_name": "DarkHotel",
+            "aliases": [
+                "APT-C-06",
+                "ATK 52",
+                "CTG-1948",
+                "Dubnium",
+                "Fallout Team",
+                "Higaisa",
+                "Luder",
+                "Operation DarkHotel",
+                "Operation Daybreak",
+                "Operation Inexsmar",
+                "Operation PowerFall",
+                "Operation The Gh0st Remains the Same",
+                "SIG25",
+                "Shadow Crane",
+                "T-APT-02",
+                "Tungsten Bridge",
+                "Zigzag Hail"
+            ],
+            "source_name": "ETDA:DarkHotel",
+            "tools": [
+                "Asruex",
+                "DarkHotel",
+                "DmaUp3.exe",
+                "GreezeBackdoor",
+                "Karba",
+                "Nemain",
+                "Nemim",
+                "Ramsay",
+                "Retro",
+                "Tapaoux",
+                "Trojan.Win32.Karba.e",
+                "Virus.Win32.Pioneer.dx",
+                "igfxext.exe",
+                "msieckc.exe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535880,
+    "ts_updated_at": 1743041741,
+    "ts_creation_date": 1653714579,
+    "ts_modification_date": 1653714579,
+    "files": {
+        "pdf": "https://archive.orkl.eu/2d3eb1107a1e4789907c5f92ff198a8145b928fa.pdf",
+        "text": "https://archive.orkl.eu/2d3eb1107a1e4789907c5f92ff198a8145b928fa.txt",
+        "img": "https://archive.orkl.eu/2d3eb1107a1e4789907c5f92ff198a8145b928fa.jpg"
+    }
+}

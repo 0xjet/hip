@@ -1,0 +1,67 @@
+{
+    "id": "333c276b-2675-47ed-8166-bdc3635838ac",
+    "created_at": "2023-01-12T15:02:30.611385Z",
+    "updated_at": "2025-03-27T02:08:41.137245Z",
+    "deleted_at": null,
+    "sha1_hash": "fb2b8133ca137aa6b1cae4fefafdd0b0fc86163d",
+    "title": "2020-07-31 - WastedLocker- technical analysis",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:36:16Z",
+    "file_modification_date": "2022-05-28T19:36:16Z",
+    "file_size": 2497663,
+    "plain_text": "# WastedLocker: technical analysis\n\n**securelist.com/wastedlocker-technical-analysis/97944/**\n\nAuthors\n\nFedor Sinitsyn\n\nThe use of crypto-ransomware in targeted attacks has become an ordinary occurrence lately:\nnew incidents are being reported every month, sometimes even more often.\n\nOn July 23, Garmin, a major manufacturer of navigation equipment and smart devices,\nincluding smart watches and bracelets, experienced a massive service outage. As confirmed\nby an [official statement later, the cause of the downtime was a cybersecurity incident](https://www.garmin.com/outage/)\ninvolving data encryption. The situation was so dire that at the time of writing of this post\n(7/29) the operation of the affected online services had not been fully restored.\n\nAccording to currently available information, the attack saw the threat actors use a targeted\nbuild of the trojan WastedLocker. An increase in the activity of this malware was noticed in\nthe first half of this year.\n\nWe have performed technical analysis of a WastedLocker sample.\n\n## Command line arguments\n\n\n-----\n\nIt is worth noting that WastedLocker has a command line interface that allows it to process\nseveral arguments that control the way it operates.\n\n**_-p <directory-path>_**\n\nPriority processing: the trojan will encrypt the specified directory first, and then add it to an\ninternal exclusion list (to avoid processing it twice) and encrypt all the remaining directories\non available drives.\n\n**_-f <directory-path>_**\n\nEncrypt only the specified directory.\n\n**_-u username:password \\\\hostname_**\n\nEncrypt files on the specified network resource using the provided credentials for\nauthentication.\n\n**_-r_**\n\nLaunch the sequence of actions:\n\n1. Delete ;\n2. Copy to %WINDIR%\\system32\\<rand>.exe using a random substring from the list of\n\nsubkeys of the registry key SYSTEM\\CurrentControlSet\\Control\\;\n3. Create a service with a name chosen similarly to the method described above. If a\n\nservice with this name already exists, append the prefix “Ms” (e.g. if the service\n“Power” already exists, the malware will create a new one with the name “MsPower”).\nThe command line for the new service will be set to “%WINDIR%\\system32\\<rand>.exe\n-s”;\n4. Start this service and wait until it finishes working;\n5. Delete the service.\n\n**_-s:_**\n\nStart the created service. It will lead to the encryption of any files the malware can find.\n\n## UAC bypass\n\nAnother interesting feature of WastedLocker is the chosen method of UAC bypass. When the\ntrojan starts, it will check the integrity level it was run on. If this level is not high enough, the\nmalware will try to silently elevate its privileges using a known bypass technique.\n\n1. Create a new directory in %appdata%; the directory name is chosen at random from\n\nthe substrings found in the list of subkeys of the registry key\nSYSTEM\\CurrentControlSet\\Control\\;\n\n\n-----\n\n2. Copy a random EXE or DLL file from the system directory to this new directory;\n3. Write the trojan’s own body into the alternate NTFS stream “:bin” of this system file;\n4. Create a new temporary directory and set its mount point to “C:\\Windows ” (with a\n\ntrailing whitespace) using the API function NtFsControlFile with the flag\nIO_REPARSE_TAG_MOUNT_POINT;\n5. Create a new subdirectory named “system32” inside the temporary directory. As a\n\nresult of the previous step, this new subdirectory can be equally successfully\naddressed as “%temp%\\<directory_name>\\system32” or “C:\\Windows \\system32”\n(note the whitespace);\n6. Copy the legitimate winsat.exe and winmm.dll into this subdirectory;\n7. Patch winmm.dll: replace the entry point code with a short fragment of malicious code\n\nwhose only purpose is to launch the content of the alternate NTFS stream created on\nstep 2;\n8. Launch winsat.exe, which will trigger the loading of the patched winmm.dll as a result\n\nof DLL hijacking.\n\nThe above sequence of actions results in WastedLocker being relaunched from the alternate\nNTFS stream with elevated administrative privileges without displaying the UAC prompt.\n\n**_Procmon log fragment during the launch of WastedLocker_**\n\n## Cryptographic scheme\n\nTo encrypt victims’ files, the developers of the trojan employed a combination of the AES and\nRSA algorithms that has already become a ‘classic’ among different crypto-ransomware\nfamilies.\n\nThe search mask to choose which files will be encrypted, as well as the list of the ignored\npaths are set in the configuration of the malware.\n\n\n-----\n\n**_Part of the trojan config showing the ignored path substrings_**\n\nFor each processed file, WastedLocker generates a unique 256 bit key and a 128 bit IV\nwhich will be used to encrypt the file content using the AES-256 algorithm in CBC mode. The\nimplementation of the file operations is worthy of note, as it employs file mapping for data\naccess. It must have been an attempt by the criminals to maximize the trojan’s performance\nand/or avoid detection by security solutions. Each encrypted file will get a new additional\nextension: “.garminwasted“.\n\nThe trojan also implements a way of integrity control as part of its file encryption routine. The\nmalware calculates an MD5 hash of the original content of each processed file, and this hash\nmay be utilized during decryption to ensure the correctness of the procedure.\n\nWastedLocker uses a publicly available reference implementation of an RSA algorithm\nnamed “rsaref”.\n\nThe AES key, IV and the MD5 hash of the original content, as well as some auxiliary\ninformation, are encrypted with a public RSA key embedded in the trojan’s body. The sample\nunder consideration contains a 4096 bit public RSA key.\n\n\n-----\n\n**_The public RSA key format used by WastedLocker_**\n\nIt should be noted that this kind of cryptographic scheme, using one public RSA key for all\nvictims of a given malware sample, could be considered a weakness if WastedLocker were\nto be mass-distributed. In this case a decryptor from one victim would have to contain the\nonly private RSA key that would allow all the victims to decrypt their files.\n\nHowever, as we can see, WastedLocker is used in attacks targeted at a specific organization\nwhich makes this decryption approach worthless in real-world scenarios.\n\nThe result of RSA encryption is Base64 encoded and saved in a new file with the extension\n**.garminwasted_info, and what is notable, a new info file is created for each of the victim’s**\nencrypted files. This is a rare approach that was previously used by the BitPaymer and\nDoppelPaymer trojans.\n\n\n-----\n\n**_An example list of encrypted files from our test machine_**\n\n\n-----\n\n**_Ransom note left by the trojan_**\n\n## Recommendations\n\nThis WastedLocker sample we analyzed is targeted and crafted specifically to be used in this\nparticular attack. It uses a “classic” AES+RSA cryptographic scheme which is strong and\nproperly implemented, and therefore the files encrypted by this sample cannot be decrypted\nwithout the threat actors’ private RSA key.\n\nThe Garmin incident is the next in a series of targeted attacks on large organizations\ninvolving crypto-ransomware. Unfortunately, there is no reason to believe that this trend will\ndecline in the near future.\n\nThat is why it is crucial to follow a number of recommendations that may help prevent this\ntype of attacks:\n\n1. Use up-to-date OS and application versions;\n2. Refrain from opening RDP access on the Internet unless necessary. Preferably, use\n\nVPN to secure remote access;\n\n\n-----\n\n3. Use modern endpoint security solutions, such as Kaspersky Endpoint Security for\n\nBusiness, that support behavior detection, automatic file rollback and a number of other\ntechnologies to protect from ransomware.\n4. Improve user education in the field of cybersecurity. [Kaspersky Security Awareness](https://www.kaspersky.com/enterprise-security/security-awareness)\n\noffers computer-based training products that combine expertise in cybersecurity with\nbest-practice educational techniques and technologies.\n5. Use a reliable data backup scheme.\n\nKaspersky products protect from this threat, detecting it as Trojan-Ransom.Win32.Wasted.d\nand PDM:Trojan.Win32.Generic. The relevant behavioral detection logic was added in 2017.\n\n## IoC\n\n[2cc4534b0dd0e1c8d5b89644274a10c1](https://opentip.kaspersky.com/2cc4534b0dd0e1c8d5b89644274a10c1/)\n\n[Malware Descriptions](https://securelist.com/tag/malware-descriptions/)\n[Malware Technologies](https://securelist.com/tag/malware-technologies/)\n[Ransomware](https://securelist.com/tag/ransomware/)\n[Targeted attacks](https://securelist.com/tag/targeted-attacks/)\n[Trojan](https://securelist.com/tag/trojan/)\n\nAuthors\n\nFedor Sinitsyn\n\nWastedLocker: technical analysis\n\nYour email address will not be published. Required fields are marked *\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-07-31 - WastedLocker- technical analysis.pdf"
+    ],
+    "report_names": [
+        "2020-07-31 - WastedLocker- technical analysis.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535750,
+    "ts_updated_at": 1743041321,
+    "ts_creation_date": 1653766576,
+    "ts_modification_date": 1653766576,
+    "files": {
+        "pdf": "https://archive.orkl.eu/fb2b8133ca137aa6b1cae4fefafdd0b0fc86163d.pdf",
+        "text": "https://archive.orkl.eu/fb2b8133ca137aa6b1cae4fefafdd0b0fc86163d.txt",
+        "img": "https://archive.orkl.eu/fb2b8133ca137aa6b1cae4fefafdd0b0fc86163d.jpg"
+    }
+}

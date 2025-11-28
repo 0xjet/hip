@@ -1,0 +1,292 @@
+{
+    "id": "800ad07f-147c-4167-9f29-a3d54b04897a",
+    "created_at": "2023-01-12T14:59:25.104669Z",
+    "updated_at": "2025-03-27T02:16:43.029932Z",
+    "deleted_at": null,
+    "sha1_hash": "349673bc668a1597f108368ee4a728ce295c6ef3",
+    "title": "2020-12-26 - Analyzing APT19 malware using a step-by-step method",
+    "authors": "",
+    "file_creation_date": "2022-05-27T23:03:51Z",
+    "file_modification_date": "2022-05-27T23:03:51Z",
+    "file_size": 5322168,
+    "plain_text": "# Analyzing APT19 malware using a step-by-step method\n\n**[cybergeeks.tech/analyzing-apt19-malware-using-a-step-by-step-method/](https://cybergeeks.tech/analyzing-apt19-malware-using-a-step-by-step-method/)**\n\nSummary\n\nIn this blog post we’re presenting a full analysis of a DLL backdoor also reported publicly as\nDerusbi. This particular piece of malware is associated with the actor known as APT19\n(Codoso, C0d0so, Sunshop Group).\n\nAPT19, also known as C0d0so or Deep Panda, is allegedly a Chinese-based threat group\nthat targeted a lot of industries in the past. FireEye reported that APT19 was active in 2017\nwhen they used 3 different methods to compromise targets: CVE-2017-0199 vulnerability,\nmacro-enabled Microsoft Excel (XLSM) documents and an application whitelisting bypass to\nthe XLSM documents.\n\nThe malware registers itself as a service if it has run with administrator privileges, otherwise,\nit establishes persistence via the “Run” registry key. The main purpose of the malicious DLL\nis to gather information about the victim’s environment such as username, hostname, IP\naddress of the host, the CPU architecture, the default language for the local system, the\namount of physical memory, the amount of physical memory currently available, the\nprocessor name, the width and the height of the screen of the primary display monitor. The\nexfiltrated data is encrypted using a XOR operation (the 1-byte key seems to be randomlychosen), and then encoded using the Base64 algorithm. There is a lot of network\ncommunication performed by the malware, however, due to the fact that the C2 server\nseems to be sinkholed now, we were not able to retrieve the file that was intended to be\ndownloaded by the process.\n\nTechnical analysis\n\nSHA256:\nDE33DFCE8143F9F929ABDA910632F7536FFA809603EC027A4193D5E57880B292\n\nThe file analyzed in this blog post is a DLL that has the following export functions:\n\nFigure 1\n\nDebugCreate and DebugConnect entries have the same address and represent the starting\npoint of the malicious activity. The process computes a random string of 3 characters using\nGetTickCount API calls and the algorithm shown in figure 2:\n\n\n-----\n\nFigure 2\n\nIt tries to delete a file/directory called <3 random chars generated earlier>.dll from System32\ndirectory as shown below:\n\n\n-----\n\nFigure 3\n\nBecause the file doesn’t exist at this time, it’s created using CreateFileA API and then\ndeleted using DeleteFileA API. This technique is used to confirm that it has enough rights to\nwrite files in the System32 directory:\n\nFigure 4\nThe malicious process retrieves process privilege details by calling GetTokenInformation with\nparameter type 0x14 (TokenElevation):\n\n\n-----\n\nFigure 5\nMalware running with admin privileges\n\nNow it queries the “HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\nNT\\CurrentVersion\\Svchost\\netsvcs” registry value using RegQueryValueExA function:\n\nFigure 6\nThe list of services retrieved earlier is shown in the next figure:\n\n\n-----\n\nFigure 7\n\nThere is another service called WinHelpSrv that is added to this list. The “netsvcs” value is\nmodified to reflect the change by calling RegSetValueExA API:\n\nFigure 8\nThe file creates a new service named WinHelpSrv (Windows Helper Service) as follows:\n\n\n-----\n\nFigure 9\n\nThe description of the service is set to “This is windows helper service. Include windows\nupdate and windows error”:\n\nFigure 10\nThe malicious DLL is registered as a service by adding the “ServiceDll” value that points to\nits location to the newly created service registry keys:\n\nFigure 11\nThe confirmation that the operation was successful:\n\n\n-----\n\nFigure 12\nThe process creates a batch file called <10 random chars>.bat (the same algorithm utilized\nbefore to generate the random letters is used):\n\nFigure 13\nThe content of the .bat file is presented below:\n```\n@echo off\nnet start %1\ndel %0\n\n```\nThe malicious file sets the priority class 0x100 (REALTIME_PRIORITY_CLASS) for the\ncurrent process (this means that the current process has the highest possible priority):\n\nFigure 14\nAfter this operation, there is a call to SetThreadPriority that sets the priority 15\n(THREAD_PRIORITY_TIME_CRITICAL) for the current thread:\n\nFigure 15\n\n\n-----\n\nNow there are 2 SHChangeNotify API calls with the following parameters: 0x4\n(SHCNE_DELETE), 0x5 (SHCNF_PATH), the 3rd parameter is the path to rundll32.exe\n(because the dll was run using rundll32) and the name of the batch file, respectively, and the\n4th parameter is 0. These calls have the purpose of notifying the system if rundll32.exe or\nthe batch file is deleted:\n\nFigure 16\nThe batch file is executed using the WinExec function. Basically, it starts the WinHelpSrv\nservice, and then the batch file is deleted:\n\nFigure 17\nNow we’ll talk a bit about the ServiceMain export function that is called when the new service\nstarts. The process registers a function to handle service control requests by calling the\nRegisterServiceCtrlHandlerA function:\n\nFigure 18\nThere is a call to SetServiceStatus function using the following SERVICE_STATUS structure:\n0x10 (SERVICE_WIN32_OWN_PROCESS), 0x2 (SERVICE_START_PENDING), 0 (no\ncontrols are accepted), 0 (dwWin32ExitCode), 0 (dwServiceSpecificExitCode), 0x1\n(dwCheckPoint) and 0xbb8 (3000 ms, the amount of time that the service expects an\noperation to take before the next status update):\n\nFigure 19\n\n\n-----\n\nThe malicious process creates an unnamed event object by calling the CreateEvent function:\n\nFigure 20\nNow it follows another SetServiceStatus call by using the following SERVICE_STATUS\nstructure: 0x10 (SERVICE_WIN32_OWN_PROCESS), 0x4 (SERVICE_RUNNING), 0x1\n(SERVICE_ACCEPT_STOP), 0 (dwWin32ExitCode), 0 (dwServiceSpecificExitCode), 0\n(dwCheckPoint) and 0 (dwWaitHint):\n\nFigure 21\nThe final operation of this section is to create a new thread using the CreateThread function.\nThe same action will be performed even if the process hasn’t run with admin privileges, as\nwe’ll see later on:\n\nFigure 22\nMalware running without admin privileges\n\nThe malware uses an anti-analysis technique by comparing the image path of the executable\nwith rundll32.exe. It is done to ensure that the file is not executed by a sandbox/analyst (it\nexits if that’s the case):\n\n\n-----\n\nFigure 23\nThe malware is made persistent by adding a new value called WinHelpSrv under the “Run”\nregistry key. In our case, this value points to the location of rundll32.exe because the DLL\nwas run using this executable:\n\nFigure 24\nThe confirmation that the persistence was successfully established:\n\nFigure 25\n\n\n-----\n\nAs written before, a new thread is created to execute the same function mentioned when the\nmalware has run with administrator privileges. CreateThread API call is displayed in the next\npicture:\n\nFigure 26\nThere is a call to GetMessage API to retrieve messages from the thread’s message queue. If\nthe message is 0x10 (WM_CLOSE), 0x11 (WM_QUERYENDSESSION) or 0x16\n(WM_ENDSESSION) the current function terminates its execution:\n\n\n-----\n\nFigure\n\n27\nThread activity – StartAddress address\n\nDuring the entire execution, the internet is emulated using Fakenet. We’ve observed multiple\nMultiByteToWideChar function calls used to convert character strings to UTF-16 (wide\ncharacter) strings. One such call is shown below:\n\nFigure 28\n\n\n-----\n\nThe malware uses the WinHttpOpen function to initialize the use of WinHTTP functions. The\nuser agent is hardcoded in the DLL file:\n\nFigure 29\nThere is a call to WinHttpSetTimeouts function in order to set time-outs involved in HTTP\ntransactions. nResolveTimeout, nConnectTimeout, nSendTimeout and nReceiveTimeout are\nset to 0x1D4C0 (120.000ms = 120 seconds):\n\nFigure 30\nThe initial target server of an HTTP request is set to 106.185.43.96 on port 0x50 (80). The\nWinHttpConnect API call is displayed in figure 31.\n\nFigure 31\nThe process performs a GET request to the server mentioned above, with the target\nresource being /user/atv.html. The pwszReferrer parameter is set to “http://www.google.com”\nand dwFlags is set to 0x100 (WINHTTP_FLAG_BYPASS_PROXY_CACHE):\n\nFigure 32\nAfter the WinHttpOpenRequest call there is a WinHttpSendRequest function call. The HTTP\nrequest is intercepted by Fakenet, and it replies with a fake response:\n\n\n-----\n\nFigure 33\nNow the process is awaiting a response to the HTTP request by calling the\nWinHttpReceiveResponse function:\n\nFigure 34\nAfterward, the malicious file retrieves header information using WinHttpQueryHeaders API\nwith 0x16 (WINHTTP_QUERY_RAW_HEADERS_CRLF) parameter – receives all the\nheaders returned by the HTTP server:\n\nFigure 35\nThere is a second WinHttpQueryHeaders API call with 0x20000013\n(WINHTTP_QUERY_FLAG_NUMBER|WINHTTP_QUERY_STATUS_CODE) parameter –\nthe status code returned by the HTTP server. It expects a status code of 200 (OK):\n\nFigure 36\nThe process uses the WinHttpQueryDataAvailable function to see how many bytes are\navailable to be read with WinHttpReadData:\n\n\n-----\n\nFigure 37\nNext, there is a call to the WinHttpReadData function that is used to read data returned by\nthe server:\n\nFigure 38\nThe malicious process uses the WSAStartup function with 0x202 parameter\n(wVersionRequired) in order to use the Winsock DLL. The current directory for the process is\nchanged to the location of the current executable (rundll32.exe):\n\nFigure 39\nGetAdaptersInfo API is utilized to find adapter information for the local machine. The function\ncall is presented in the next figure.\n\nFigure 40\nThe malware opens the “Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings”\nregistry key by calling the RegCreateKeyExA function:\n\nFigure 41\n\n\n-----\n\nNow the user agent is extracted from the local host by calling the RegQueryValueExA\nfunction, as follows:\n\nFigure 42\nThe GetNetworkParams function is utilized to obtain network parameters for the local\nmachine. This information will be exfiltrated as we’ll see later on:\n\nFigure 43\nGetComputerNameW and GetUserNameW APIs are used to retrieve the NetBIOS name of\nthe local computer and the name of the user associated with the thread, respectively:\n\nFigure 44\ngethostname and gethostbyname functions are used to get the standard host name for the\nlocal machine and host information corresponding to the local host, respectively:\n\n\n-----\n\nFigure 45\nThe process verifies the operating system version by calling GetVersionExA function and\nthen it checks if the process is running on a 64-bit machine by calling GetCurrentProcess\nand IsWow64Process APIs (this information is stored in the buffer along with the hostname\nand username). The malware retrieves the default locale for the OS by calling\nGetLocaleInfoA function with the following parameters: 0x800\n(LOCALE_SYSTEM_DEFAULT), 0xb (LOCALE_IDEFAULTCODEPAGE). The result is\nOEMCP 437 for English ( United States ) that is converted to hex and copied in the buffer\nthat will be exfiltrated:\n\nFigure 46\nThere is a call to the GlobalMemoryStatusEx function in order to retrieve information about\nthe physical and virtual memory. The amount of physical memory and the amount of physical\nmemory currently available are saved as 32-bits values to the buffer which will be exfiltrated.\nAlso, the processor name is retrieved using a few cpuid instructions (“AMD Ryzen 5 3550H\nwith Radeon Vega Mobile Gfx”) and then copied to the same buffer. The malicious process\nextracts the width and the height of the screen of the primary monitor (in pixels) via 2\nGetSystemMetrics calls, as follows (these are copied to the same buffer as before):\n\nFigure 47\n\n\n-----\n\nAgain 12 random chars are generated via the same algorithm as presented before, and then\nthe following URI is constructed (data=12 random chars): “/money/ofcom-fines-nuisancecalls?0023528461146965&data=qgvuclxxlgip”. The function WinHttpOpen is called using the\nuser agent extracted earlier from registry, “Mozilla/4.0 (compatible; MSIE 8.0; Win32)”:\n\nFigure 48\nAs before, the file calls the WinHttpSetTimeouts function using the parameters set as 120\nseconds, and then it tries to connect to the C2 server (www.microsoft-cache[.]com) on port\n443:\n\nFigure 49\nThe process performs a GET request using WinHttpOpenRequest and WinHttpSendRequest\nAPIs:\n\nFigure 50\nIf the request is not successful, the process sleeps for 180 seconds, and then it tries again.\nThe process retrieves header information by calling WinHttpQueryHeaders with 0x16\n(WINHTTP_QUERY_RAW_HEADERS_CRLF) parameter:\n\n\n-----\n\nFigure 51\nAs before, the malware extracts the status code and checks if it’s equal to 200 by calling\nWinHttpQueryHeaders API with 0x20000013\n(WINHTTP_QUERY_FLAG_NUMBER|WINHTTP_QUERY_STATUS_CODE) parameter:\n\nFigure 52\nNow there is a call to the WinHttpQueryDataAvailable function, and then it reads the data\nreturned by the C2 server using WinHttpReadData API:\n\nFigure 53\n\n\n-----\n\nThe buffer containing the information that will be exfiltrated is XORed byte-by-byte with a\none-byte key. The following information belongs to the buffer: the C2 server address,\nhostname, username, IP address represented as hex values, 01 constant because the\nprocess is running on a 64-bit environment, the result of GetLocaleInfoA call (0x1b5 = 437 in\nour case), the amount of physical memory represented as a 32-bit value, the amount of\nphysical memory currently available represented as a 32-bit value, the processor name, the\nwidth of the screen of the primary display monitor represented as a 32-bit value (0x780 =\n1920 in our case) and the height of the screen of the primary display monitor represented as\na 32-bit value (0x438 = 1080 in our case):\n\nFigure 54\nAfter the operation is complete, the buffer looks like in the following picture:\n\nFigure 55\n\n\n-----\n\nThe malware developers have written their implementation of the Base64 algorithm rather\nthan relying on Windows APIs. The following picture presents a part of the assembly code\ncorresponding to it:\n\nFigure 56\n\nThe encrypted buffer is encoded with the Base64 algorithm:\n\n\n-----\n\nFigure 57\n\nAs before, there is a WinHttpOpen API call (same user agent as the last time) followed by a\nWinHttpSetTimeouts function call, and then it tries to connect to www.microsoft-cache[.]com\non port 443 using WinHttpConnect API. The malware performs a POST request by calling\nthe WinHttpOpenRequest function (as before, the data parameter contains randomlygenerated characters):\n\nFigure 58\nThe encrypted + encoded buffer is exfiltrated to the C2 server via a WinHttpWriteData\nfunction call, as shown below:\n\nFigure 59\n\n\n-----\n\nThe malicious process performs 2 WinHttpQueryHeaders function calls: 1st one has 0x16\n(WINHTTP_QUERY_RAW_HEADERS_CRLF) parameter and the 2nd one has 0x20000013\n(WINHTTP_QUERY_FLAG_NUMBER|WINHTTP_QUERY_STATUS_CODE) parameter. It\nchecks out the status code and ensures that it’s 200. The thread continues by calling\nWinHttpQueryDataAvailable and WinHttpReadData APIs to retrieve the server’s response.\nThe malware performs another GET request to the C2 server:\n\nFigure 60\nThe same steps as before are repeated one more time: 2 WinHttpQueryHeaders calls\nfollowed by WinHttpQueryDataAvailable and then WinHttpReadData in order to read the\ndata sent by the server. As mentioned in the Unit42 article at\n[https://unit42.paloaltonetworks.com/new-attacks-linked-to-c0d0s0-group/, the server’s](https://unit42.paloaltonetworks.com/new-attacks-linked-to-c0d0s0-group/)\nresponse should contain a “background-color” parameter followed by “#” and an offset. The\noffset is read, converted to an integer using the atoi function, and then divided by 100, as\nshown in figure 61:\n\nFigure 61\n\nThe idea is that the malware reads the data found at the position equal to offset/100. In our\ncase, we’ve modified the response to contain “#28300” which translates to an offset of 28300\n(the position will be 28300/100 = 283). The following picture reveals the fact that the process\nreads the data found at that specific position (0x11b = 283):\n\n\n-----\n\nFigure\n\n62\nAccording to the same article, the first 4 bytes represent the total length, and the remaining\ndata would be Base64-encoded. Indeed we were able to identify the function where the\nserver’s response is Base64-decoded:\n\n\n-----\n\nFigure 63\n\n\n-----\n\nFigure 64\n\nAt the time of analysis, no live response has been provided by the C2 server. According to\nthe Unit42 article, the server would respond with a DLL file with 4 exports: StartWorker,\nStopWorker, WorkerRun and DllEntryPoint. Even if we didn’t receive a valid response from\nthe server, we were able to find out that the malicious process allocates a new memory area\nin order to write the DLL code inside:\n\n\n-----\n\nFigure 65\n\nThe new area of memory has to be executable because the potential DLL has to run, and\nthat’s why the malware uses VirtualProtect in order to change the protection of the area:\n\nFigure 66\nAfter the malicious code would be written in the new memory location, the process would\npass the execution flow to the new DLL file, as shown in the figure below:\n\nFigure 67\n\nReferences\n\n\n-----\n\nUnit42 report: [https://unit42.paloaltonetworks.com/new-attacks-linked-to-c0d0s0-group/](https://unit42.paloaltonetworks.com/new-attacks-linked-to-c0d0s0-group/)\n\nVirusTotal link:\nhttps://www.virustotal.com/gui/file/de33dfce8143f9f929abda910632f7536ffa809603ec027a41\n93d5e57880b292/detection\n\n[MSDN: https://docs.microsoft.com/en-us/windows/win32/api/](https://docs.microsoft.com/en-us/windows/win32/api/)\n\nFakenet: [https://github.com/fireeye/flare-fakenet-ng](https://github.com/fireeye/flare-fakenet-ng)\n\nFireEye: [https://www.fireeye.com/current-threats/apt-groups.html#apt19](https://www.fireeye.com/current-threats/apt-groups.html#apt19)\n\nINDICATORS OF COMPROMISE\n\nC2 domain: www.microsoft-cache[.]com\n\nC2 IP address: 106.185.43.96\n\nSHA256:\nDE33DFCE8143F9F929ABDA910632F7536FFA809603EC027A4193D5E57880B292\n\nURLs: 106.185.43.96/user/atv.html\n\nwww.microsoft-cache[.]com:443/money/ofcom-fines-nuisance-calls?\n0023528460592137&data=<12 random chars>\n\nwww.microsoft-cache[.]com:443/world/video/shrien-dewani-arrives-uk-murder-trial-collapsesvideo?0023528461146965&data=<12 random chars>\n\nwww.microsoft-cache[.]com:443/lifeandstyle/marmalade-paddington-sales-up-makingdrinking?0023528460592137&data=<12 random chars>\n\nYara rules for detecting the threat\n```\nrule APT19_1 {\n  meta:\n    author = \"CyberMasterV\"\n     Date = \"2020-12-26\"\n  strings:\n     $s1 = \"http://www.google.com\" wide ascii\n     $s2 = \"Mozilla/5.0 (Macintosh; U; Intel Mac OS X 10_6_2; en-US)\nAppleWebKit/533.3 (KHTML, like Gecko) Chrome/5.0.354.0 Safari/533.3\" wide ascii\n     $s3 = \"%s?%016I64d&data=%s\"\n     $s4 = \"DebugCreate\"\n     $s5 = \"DebugConnect\"\n  condition:\n     4 of them\n}\n\n```\n\n-----\n\n```\nrule APT19_2 {\n  meta:\n    author = \"CyberMasterV\"\n    Date = \"2020-12-26\"\n  strings:\n    $s1 = \"DbgEng.Dll\" wide ascii\n    $s2 = \"Windows Helper Service\"\n    $s3 = \"WinHelpSrv\"\n     $s4 = \"KBKBKBKBKBKB\"\n  condition:\n    3 of them\n}\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-12-26 - Analyzing APT19 malware using a step-by-step method.pdf"
+    ],
+    "report_names": [
+        "2020-12-26 - Analyzing APT19 malware using a step-by-step method.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "1f3cf3d1-4764-4158-a216-dd6352e671bb",
+            "created_at": "2022-10-25T15:50:23.837615Z",
+            "updated_at": "2025-03-27T02:00:55.556414Z",
+            "deleted_at": null,
+            "main_name": "APT19",
+            "aliases": [
+                "APT19",
+                "Codoso",
+                "C0d0so0",
+                "Codoso Team",
+                "Sunshop Group"
+            ],
+            "source_name": "MITRE:APT19",
+            "tools": [
+                "Cobalt Strike"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "7a9a7873-8e41-40ae-9d06-b27c92bb54e4",
+            "created_at": "2022-10-25T16:47:55.568362Z",
+            "updated_at": "2025-03-27T02:05:17.264615Z",
+            "deleted_at": null,
+            "main_name": "BRONZE FIRESTONE",
+            "aliases": [
+                "C0d0s0",
+                "Deep Panda ",
+                "Pupa ",
+                "TG-3551 ",
+                "APT19 "
+            ],
+            "source_name": "Secureworks:BRONZE FIRESTONE",
+            "tools": [
+                " Alice's Rabbit Hole",
+                " Briba",
+                " Cobalt Strike",
+                " Derusbi",
+                " PlugX",
+                " PoisonIvy",
+                " Powershell Empire",
+                " Zuguo",
+                "9002"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "64ca1755-3883-4173-8e0a-6e5cf92faafd",
+            "created_at": "2022-10-25T15:50:23.636456Z",
+            "updated_at": "2025-03-27T02:00:55.51077Z",
+            "deleted_at": null,
+            "main_name": "Deep Panda",
+            "aliases": [
+                "Deep Panda",
+                "Shell Crew",
+                "KungFu Kittens",
+                "PinkPanther",
+                "Black Vine"
+            ],
+            "source_name": "MITRE:Deep Panda",
+            "tools": [
+                "Mivast",
+                "StreamEx",
+                "Sakula",
+                "Tasklist",
+                "Derusbi"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "46a151bd-e4c2-46f9-aee9-ee6942b01098",
+            "created_at": "2023-01-06T13:46:38.288168Z",
+            "updated_at": "2025-03-27T02:00:02.794118Z",
+            "deleted_at": null,
+            "main_name": "APT19",
+            "aliases": [
+                "Black Vine",
+                "TEMP.Avengers",
+                "PinkPanther",
+                "G0073",
+                "KungFu Kittens",
+                "Group 13",
+                "Shell Crew",
+                "BRONZE FIRESTONE",
+                "G0009",
+                "Sunshop Group",
+                "DEEP PANDA",
+                "Codoso"
+            ],
+            "source_name": "MISPGALAXY:APT19",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "0639667a-fb3f-43d9-a38c-6c123fd19c7f",
+            "created_at": "2022-10-25T16:07:23.335869Z",
+            "updated_at": "2025-03-27T02:02:09.743237Z",
+            "deleted_at": null,
+            "main_name": "APT 19",
+            "aliases": [
+                "APT 19",
+                "Bronze Firestone",
+                "C0d0so0",
+                "Codoso",
+                "Deep Panda",
+                "Operation Kingslayer",
+                "Red Pegasus",
+                "Sunshop Group",
+                "TG-3551"
+            ],
+            "source_name": "ETDA:APT 19",
+            "tools": [
+                "Agentemis",
+                "C0d0so0",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Derusbi",
+                "EmPyre",
+                "EmpireProject",
+                "Fire Chili",
+                "PowerShell Empire",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535565,
+    "ts_updated_at": 1743041803,
+    "ts_creation_date": 1653692631,
+    "ts_modification_date": 1653692631,
+    "files": {
+        "pdf": "https://archive.orkl.eu/349673bc668a1597f108368ee4a728ce295c6ef3.pdf",
+        "text": "https://archive.orkl.eu/349673bc668a1597f108368ee4a728ce295c6ef3.txt",
+        "img": "https://archive.orkl.eu/349673bc668a1597f108368ee4a728ce295c6ef3.jpg"
+    }
+}

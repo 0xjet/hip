@@ -1,0 +1,57 @@
+{
+    "id": "372df740-83b0-40da-aade-e69e5767bff9",
+    "created_at": "2023-01-12T15:04:33.131139Z",
+    "updated_at": "2025-03-27T02:08:00.207627Z",
+    "deleted_at": null,
+    "sha1_hash": "24a6b9b07c72f18edfcdb0486d2bc83a73fee11a",
+    "title": "2020-07-13 - Fell Deeds Awake",
+    "authors": "",
+    "file_creation_date": "2022-05-27T22:32:11Z",
+    "file_modification_date": "2022-05-27T22:32:11Z",
+    "file_size": 1607435,
+    "plain_text": "# Fell Deeds Awake\n\n**cofenselabs.com/fell-deeds-awake/**\n\nBy Charlie July 13, 2020\n\nMalicious documents exploiting CVE-2017-11882 continue to be used by malicious actors,\nbut it has been a [few years since I took a deep dive into their mechanics. A quick spelunk](https://cofense.com/xlsx-phishing-making-comeback/)\nthrough our dataset produces quite a few, but I wanted an RTF example with minimal RTF\nobfuscation and came across this email:\n\n\n-----\n\nFigure 1 – Original Email\n\n## So It Begins\n\nLet’s start out with analyzing the RTF document and compare it with past documents. We\nknow from experience that this vulnerability can be exploited from multiple document types\n(RTF, DOCX, XLSX) and has two options for injecting the malicious stream (Equation stream\nand OleNativeStream). But this one immediately looks different. Most public tools were\nunable to correctly parse the embedded stream (rtfdump, rtfobj, or RTFScan). Although\nrtfdump doesn’t parse the equation stream, it does provide a good layout of all embedded\nobjects and lets us dump the stream suspected of being the equation stream.\n\n\n-----\n\nFigure 2 – rtfdump of the embedded object\nWe see the traditional ClassName (slightly obfuscated), EqUatioN.3, and the required\nFormatID of 0x00000002, and random data for the OLEVersion. And instead of seeing an\nEmbedded Equation object header starting with 0x001c or any bytes reflecting an MTEF\nheader, such as a MTEF version of 0x03 and product version of 0x03, we only see the FONT\nrecord at the correct offset, 0x0108 at 0x29.\n\n## Out of Doubt, Out of Dark\n\nLet’s load this sample into a debugger and see what other tricks have been developed.\nBecause the equation object relies on COM, we can set a breakpoint when these objects are\ncreated and iterate until EQNEDT32.EXE is launched. Then attach a separate debugger to\nthe Equation Editor process and set a break point on the vulnerable function, 0x0041160F.\nJust as my last analysis, the return address is overwritten with an address of a RET\ninstruction. Because the font record location follows the return address on the stack, this also\nresults in execution flow continuing into the first stage shellcode.\n\n\n-----\n\nFigure 3 – x32dbg attached to EQNEDT32.EXE\nThe first stage shellcode is slightly different for this sample, but not unique and already\n[discussed here. Basically, the shellcode locates the OLE stream on the heap and uses](https://www.lastline.com/labsblog/evading-static-analyzers-by-solving-the-equation-editor/)\nkernel32.GlobalLock to lock the stream at this memory location. And then jumps to a\nstatically defined offset with in the OLE stream.\n\nFigure 4 – First stage shellcode\nSimilar to my previous analysis, the second stage shellcode starts with a decoder stub. The\ndecoder contains quite a few JMPs to complicate analysis, but it can be boiled down to the\nfollowing:\n\na CALL instruction to load the start of the encoded shellcode on the stack\nPOP ESI to create a pointer to the encoded shellcode\nInitialize the key for the XOR decoder\nthe key mutates every iteration with IMUL EDI, EDI, 67D6B6F7\neach dword is decoded with XOR DWORD PTR DS:[ESI], EDI\n\n\n-----\n\nFigure 5 – A\n\nsegment of the decoder stub\n\n## If This Is to Be Our End\n\nNow that we know the shellcode for these malicious RTF documents hasn’t changed much,\ncan we use the [unicorn engine to dump the final payload without relying on the heavy weight](https://www.unicorn-engine.org/)\nand manual process of running it within a debugger?\n\nThe first step will be extracting the shellcode from the RTF, starting at the last instruction of\nthe first stage shellcode, JMP EAX. Then modifying this instruction with a relative jump. The\ntwo instructions preceding this one result in 0xD5 and the JMP instruction is at offset 0x33\nfrom the start of the OLE stream. By modifying the JMP EAX to a relative near jump, we will\nbe adding 3 additional bytes to the instruction. This results in JMP 0x9F. Stripping the\nshellcode from the original RTF and modifying the JMP instruction produces the following\nhex string:\n\nFigure 6 – Shellcode\n[I leave it to the reader to review their tutorial and](https://www.unicorn-engine.org/docs/tutorial.html) [sample scripts for your programming](https://github.com/unicorn-engine/unicorn/tree/master/bindings)\nplatform.\n\nOne interesting feature of the unicorn engine is how we can add hooks to instructions, code\nblocks, and even results of an instruction. We can use these hooks to add a callback function\nevery time an instruction writes to memory or when an instruction reads from an unmapped\nsegment of memory. To use the unicorn engine to decode our shellcode we will need to do\nthe following:\n\n\n-----\n\nDefine and map our address space\nDefine ESP to handle any POP instructions\nDefine a callback function on memory writes to determine what segment of our\nshellcode is being modified\nDefine a callback function on a memory read from an unmapped segment, this should\nindicate our final shellcode attempting to load a function from a module\n\nFigure 7 – Unicorn engine decoding the shellcode\nExcellent! Our [script was able to decode the final shellcode and can even see the API calls](https://github.com/CofenseLabs/tools/blob/master/dumper.py)\nthat are loaded via LoadLibraryW. Because the shellcode is UTF-16BE, we can print the\nimportant IoCs by setting the encoding for the strings command. Our pipeline had already\npulled this sample and labeled it as MassLogger.\n\n## IoCs\n\n**IoC Type** **IoC Value**\n\nURL hxxp://transgear[.]in/bana/ot1ZIWtPLBLdX65.exe\n\nSHA256 adfd200a16ffe7c04631176e3ad03ded8785c7ecf9581f42915ea199f8c27e9b\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-07-13 - Fell Deeds Awake.pdf"
+    ],
+    "report_names": [
+        "2020-07-13 - Fell Deeds Awake.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "b740943a-da51-4133-855b-df29822531ea",
+            "created_at": "2022-10-25T15:50:23.604126Z",
+            "updated_at": "2025-03-27T02:00:55.505366Z",
+            "deleted_at": null,
+            "main_name": "Equation",
+            "aliases": [
+                "Equation"
+            ],
+            "source_name": "MITRE:Equation",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535873,
+    "ts_updated_at": 1743041280,
+    "ts_creation_date": 1653690731,
+    "ts_modification_date": 1653690731,
+    "files": {
+        "pdf": "https://archive.orkl.eu/24a6b9b07c72f18edfcdb0486d2bc83a73fee11a.pdf",
+        "text": "https://archive.orkl.eu/24a6b9b07c72f18edfcdb0486d2bc83a73fee11a.txt",
+        "img": "https://archive.orkl.eu/24a6b9b07c72f18edfcdb0486d2bc83a73fee11a.jpg"
+    }
+}

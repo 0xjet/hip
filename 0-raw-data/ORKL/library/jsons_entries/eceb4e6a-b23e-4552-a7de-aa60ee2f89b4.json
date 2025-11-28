@@ -1,0 +1,162 @@
+{
+    "id": "eceb4e6a-b23e-4552-a7de-aa60ee2f89b4",
+    "created_at": "2023-01-12T15:05:05.516118Z",
+    "updated_at": "2025-03-27T02:06:14.837006Z",
+    "deleted_at": null,
+    "sha1_hash": "ecef69b98d349448affcf4c6b802d2b98187b02d",
+    "title": "2017-02-27 - New Neutrino Bot comes in a protective loader",
+    "authors": "",
+    "file_creation_date": "2022-05-28T04:56:15Z",
+    "file_modification_date": "2022-05-28T04:56:15Z",
+    "file_size": 1325907,
+    "plain_text": "# New Neutrino Bot comes in a protective loader\n\n**[blog.malwarebytes.com/threat-analysis/2017/02/new-neutrino-bot-comes-in-a-protective-loader/](https://blog.malwarebytes.com/threat-analysis/2017/02/new-neutrino-bot-comes-in-a-protective-loader/)**\n\nMalwarebytes Labs February 27, 2017\n\n_[Co-authored by Hasherezade and](https://twitter.com/hasherezade)_ _[Jérôme Segura.](https://blog.malwarebytes.com/author/jeromesegura)_\n\nIn this blog post we will cover a recent version of the multi-purpose Neutrino Bot (AKA\nKasidet) which ironically was distributed by an exploit kit of the same name. Earlier in\n[January this year, we had described Neutrino Bot that came via spam so we won’t go over](https://blog.malwarebytes.com/cybercrime/2017/01/post-holiday-spam-campaign-delivers-neutrino-bot/)\nthose details again, but instead will focus on an interesting loader.\n\nAnti VM detection is complemented by multiple layers hiding the actual core which made\nextraction of the final payload a bit of challenge.\n\n## Distribution method\n\nThis sample was collected via a malvertising campaign in the US that leveraged the Neutrino\nexploit kit. The infection flow starts with a fingerprinting check for virtualization, network traffic\ncapture and antivirus software. If any are found (i.e. not a genuine victim), the infection will\nnot happen. This check is done via heavily obfuscated JavaScript code in the pre-landing\n[pages, rather than within the Flash exploit itself, like it used to in the past.](https://blog.malwarebytes.com/cybercrime/exploits/2016/06/neutrino-ek-fingerprinting-in-a-flash/)\n\n\n-----\n\nOnce the initial check has passed, the next step is to launch a specially crafted Flash file\ncontaining a bunch of exploits for Internet Explorer and the Flash Player (similar to what was\n[described here). The final step is the download and execution of the RC4 encoded payload](http://malware.dontneedcoffee.com/2017/01/CVE-2016-7200-7201.html)\nvia wscript.exe to bypass proxies.\n\nThe overall infection flow is summarized in the diagram below (click to enlarge):\n\n\n-----\n\n_[A script from Maciej Kotowicz was used to extract artifacts from the Flash file](https://github.com/mak/ekdeco/tree/master/neutrino)_\n\n\n-----\n\n## Analyzed samples\n\n Behavioral analysis\n\nThe sample was well protected against being deployed in a controlled environment. When it\ndetects that it is being run in a VM/sandbox it just deletes itself:\n\nIf the environment passed the checks, it drops its copy into:\n_%APPDATA%/Y1ViUVZZXQxx/<random_name>.exe (during tests we observed the_\nfollowing names: abgrcnq.exe, uu.exe):\n\nThe folder and the sample are hidden.\n\nPersistence is achieved via the Task Scheduler:\n\nThe malware adds and modifies several registry keys. It adds some basic settings, including\nthe installation date:\n\n\n-----\n\n[It modifies some keys in order to remain hidden in the system. Hidden/SuperHidden features](http://www.msfn.org/board/topic/9950-whats-superhidden-for-exactly/)\nallows its dropped copy to remain unnoticed by the user. It disables viewing such files by\nmodifying the following registry keys:\n```\nSoftware\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\\Hidden\nSoftware\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced\\ShowSuperHidden\n\n```\nIt also adds itself into the firewall’s whitelist with this command:\n```\ncmd.exe \" /a /c netsh advfirewall firewall add rule name=\"Y1ViUVZZXQxx\" dir=in\naction=allow program=[full_executable_path]\n\n```\nSimilarly, path to the malware is added to Windows Defender’s exclusions:\n\nIt disables reporting incidents to Microsoft’s cloud service (SpyNet):\n```\nHKLM\\SOFTWARE\\Microsoft\\Windows Defender\\SpyNet\\SpyNetReporting\n\n```\nIt modifies settings of terminal services, setting MaxDisconnectionTime and MaxIdleTime to\n0. Modified keys:\n```\nHKLM\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Terminal Services\\MaxDisconnectionTime\nHKLM\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\Terminal Services\\MaxIdleTime\n\n```\nIf the full installation process went successfully, it finally loads the malicious core, and we can\nsee a traffic typical for the Neutrino Bot. You can see below the beacon “enter” and the\nresponse “success”, encoded in base64. The response is sent as a comment in the retrieved\nblank html page, in order to avoid being noticed:\n\n\n-----\n\nIn the next request the bot sends information about itself, and in response the CnC gives it\ncommands to be executed. Requests and responses are also base64 encoded. Example\nafter decoding:\n\nreq:\n```\ncmd&9bc67713-9390-4bcd-9811-36457b704c9c&TESTMACHINE&Windows%207%20(32bit)&0&N%2FA&5.2&22.02.2017&NONE\n\n```\nresp:\n```\n1463020066516169#screenshot#1469100096882000#botkiller#1481642022438251#rate 15#\n\n```\nThe first command was to take a screenshot, and indeed, soon after we can see the bot\nsending a screenshot in JPG format:\n\n\n-----\n\nFrom the sent version number we can conclude, that the version of the bot is 5.2 (similarly to\n[this campaign).](https://blog.malwarebytes.com/cybercrime/2017/01/post-holiday-spam-campaign-delivers-neutrino-bot/)\n\n## Inside\n\nThe first layer is a stub of a crypter, that overwrites the initial PE in memory by the image of\nthe loader. Unpacking it is demonstrated in this video: https://www.youtube.com/watch?\nv=m_xh33M_CRo.\n\nThe second layer is a loader that prevents from running the core bot in a controlled\nenvironment (i.e. on VM or under a debugger). This element is probably new (we didn’t\n[observe it so far in previous campaigns of Neturino Bot, i.e. the one described here). We](https://blog.malwarebytes.com/cybercrime/2017/01/post-holiday-spam-campaign-delivers-neutrino-bot/)\nfound the loader very effective in its protective task. Most of the sandboxes and test VMs\nused during tests failed to provide any useful results.\n\nThe final payload had features typical for Neutrino Bot family.\n\nThe loader code shows that it is an integral part of the full Neutrino Bot package – not yet\nanother layer added by an independent crypter. Both, the payload and the loader are written\nin C++, use similar functions and contain overlapping strings. It will be demonstrated in\ndetails later in this article. They both also have very close compilation timestamps: payload:\n_2017-02-16 17:15:43, loader: 2017-02-16 17:15:52._\n\n[A patched version of the loader, with environment checks disabled can be viewed here.](https://www.hybrid-analysis.com/sample/6f22f22ea510f35d3b6f9edd610e6ba3e6499ff6867f52a3361709c48d886c41?environmentId=100)\n\n**Loader**\n\nObfuscation techniques\n\nThe code inside contains some level of obfuscation. A few strings are visible:\n\nDirectory name\nSome functions\n\n\n-----\n\nRegistry keys related with Windows Security features that are going to be disabled\nStrings used to add a new scheduled task.\n\nHowever, that is not all. Most of the strings are decrypted at runtime. Here is an example of\nloading an encrypted string:\n\nFirst, the obfuscated string is written to the dynamically loaded memory by a dedicated\nfunction. Then, it is decrypted using a simple, XOR-based algorithm:\n```\ndef decode(data):\n  maxlen = len(data)\n  decoded = bytearray()\n  for i in range(0, maxlen):\n    dec = data[i] ^ 1\n    decoded.append(dec) \n  return decoded\n\n```\nThe same string after decryption:\n\n\n-----\n\nMost of the API calls are also dynamically resolved. Example:\n\nTracing API calls helps to understand the programs’s functionality. For this reason, the\nauthors of this malware file implemented some of the functions without using API calls at all.\nIn the below example you can see the function GetLastError() implemented by reading a low[level structure: Thread Envioroment Block (TEB):](http://www.geoffchappell.com/studies/windows/win32/ntdll/structs/teb/index.htm)\n\nFunctionality\n\nIn order to prevent from being executed more than once, the loader creates a mutex with a\nname that is hardcoded in the binary: 1ViUVZZXQxx.\n\nThe primary task of the loader is to check the environment, in order to make sure that the\nexecution is not being watched. But, in contrary to most of the malware, the check is not just\ndone once. There is a dedicated thread deployed:\n\n\n-----\n\nIt runs checks in a never ending loop:\n\nIf at any time, the loader detects i.e. some blacklisted process being deployed, execution is\nterminated.\n\nExamples of the checks performed:\n\n1. Enumerates through the list of the running processes (using dynamically loaded functions\n_CreateToolhelp32Snapshot – Process32First– Process32Next). Calculates checksum from_\neach retrieved process name and compares it with the built-in blacklist:\n\nThe blacklisted checksums:\n\nThis file contains bidirectional Unicode text that may be interpreted or compiled differently\nthan what appears below. To review, open the file in an editor that reveals hidden Unicode\ncharacters.\n\n[Learn more about bidirectional Unicode characters](https://github.co/hiddenchars)\n\n[Show hidden characters](http://10.10.0.46/%7B%7B%20revealButtonHref%20%7D%7D)\n\n\n-----\n\n0x6169078A\n\n0x47000343\n\n0xC608982D\n\n0x46EE4F10\n\n0xF6EC4B30\n\n0xB1CBC652 ; vboxservice.exe\n\n0x6D3E6FDD ; vboxtray.exe\n\n0x583EB7E8\n\n0xC03EAA65\n\n[view raw](https://gist.github.com/hasherezade/aefabdb9a67193ef05c93228a78c20c6/raw/9613500a830bdc327639a9eaf00ec9c1526759ea/processes_blacklist.txt)\n\n[processes_blacklist.txt](https://gist.github.com/hasherezade/aefabdb9a67193ef05c93228a78c20c6#file-processes_blacklist-txt)\n\nhosted with ❤ by [GitHub](https://github.com/)\nImplementation of the function searching blacklisted processes – as we can see, every\nfunction is loaded dynamically with the help of a corresponding checksum:\n\n\n-----\n\n2. Searches blacklisted modules within the current process (using dynamically loaded\nfunctions CreateToolhelp32Snapshot – Module32First– Module32Next). Similarly, it\ncalculates the checksum from each retrieved process name and compares it with the built-in\nblacklist.\n\n[Checksum calculation algorithm (implementation):](https://gist.github.com/hasherezade/aefabdb9a67193ef05c93228a78c20c6#file-checksum-cpp)\n\n\n-----\n\nThe blacklisted checksums:\n\nThis file contains bidirectional Unicode text that may be interpreted or compiled differently\nthan what appears below. To review, open the file in an editor that reveals hidden Unicode\ncharacters.\n[Learn more about bidirectional Unicode characters](https://github.co/hiddenchars)\n\n[Show hidden characters](http://10.10.0.46/%7B%7B%20revealButtonHref%20%7D%7D)\n\n0x1C669D6A\n\n0xC2F56A18\n\n0xC106E17B\n\n0x5608BCC4\n\n0x6512F9D0\n\n0xC604D52A ; snxhk.dll\n\n0x4D0651A5\n\n0xAC12B9FB ; sbiedll.dll\n\n0x5B747561\n\n0x53309C85\n\n0xE53ED522\n\n[view raw](https://gist.github.com/hasherezade/aefabdb9a67193ef05c93228a78c20c6/raw/9613500a830bdc327639a9eaf00ec9c1526759ea/modules_blacklist.txt)\n\n\n-----\n\n[modules_blacklist.txt](https://gist.github.com/hasherezade/aefabdb9a67193ef05c93228a78c20c6#file-modules_blacklist-txt)\n\nhosted with ❤ by [GitHub](https://github.com/)\n3, Checking if the process is under the debugger, using: IsDebuggerPresent,\n_CheckRemoteDebuggerPresent_\n\n4. Detecting single-stepping with the help of time measurement, using GetTickCount – Sleep\n_– GetTickCount_\n\n[5. Anti-VM check with the help of detecting blacklisted devices – using QueryDosDevices i.e.](https://msdn.microsoft.com/en-us/library/windows/desktop/aa365461(v=vs.85).aspx)\nVBoxGuest\n\n6. Searching and hiding blacklisted windows by their classes – using EnumWindows –\n_GetClassName (i.e. procexpl)_\n\nThe blacklisted checksums:\n\n\n-----\n\nThis file contains bidirectional Unicode text that may be interpreted or compiled differently\nthan what appears below. To review, open the file in an editor that reveals hidden Unicode\ncharacters.\n[Learn more about bidirectional Unicode characters](https://github.co/hiddenchars)\n\n[Show hidden characters](http://10.10.0.46/%7B%7B%20revealButtonHref%20%7D%7D)\n\n0xFE9EA0D5\n\n0x6689BB92\n\n0x3C5FF312 ; procexpl\n\n0x9B5A88D9 ; procmon_window_class\n\n0x4B4576B5\n\n0xAED304FC\n\n0x225FD98F\n\n0x6D3FA1CA\n\n0xCF388E01\n\n0xD486D951\n\n0x39177889\n\n[view raw](https://gist.github.com/hasherezade/aefabdb9a67193ef05c93228a78c20c6/raw/9613500a830bdc327639a9eaf00ec9c1526759ea/windows_blacklist.txt)\n\n[windows_blacklist.txt](https://gist.github.com/hasherezade/aefabdb9a67193ef05c93228a78c20c6#file-windows_blacklist-txt)\n\nhosted with ❤ by [GitHub](https://github.com/)\nIn another thread, the malware performs operations related to the bot installation – adding a\ntask to the Windows Scheduler, adding exclusions to the Firewall etc.\n\nFinally, it unpacks the final payload and runs it with the help of the Run PE method. First, it\ncreates another instance of its own:\n\nThen, it maps a new PE file on this place:\n\n\n-----\n\n**Payload**\n\nThe loaded payload is a Neutrino Bot, with very similar features to the one that we described\nin [a previous post. However, we can find some similar elements like in the loader, for](https://blog.malwarebytes.com/cybercrime/2017/01/post-holiday-spam-campaign-delivers-neutrino-bot/)\nexample matching strings:\n\n## Conclusion\n\nNeutrino Bot has been on the market for a few years. It is rich in features but its internal\nstructure was never impressive. This time also, the malware authors did not make any\nsignificant improvements to the main bot’s structure. However, they added one more\nprotection layer which is very scrupulous in its task of fingerprinting the environment and not\nallowing the bot to be discovered.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2017/2017-02-27 - New Neutrino Bot comes in a protective loader.pdf"
+    ],
+    "report_names": [
+        "2017-02-27 - New Neutrino Bot comes in a protective loader.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535905,
+    "ts_updated_at": 1743041174,
+    "ts_creation_date": 1653713775,
+    "ts_modification_date": 1653713775,
+    "files": {
+        "pdf": "https://archive.orkl.eu/ecef69b98d349448affcf4c6b802d2b98187b02d.pdf",
+        "text": "https://archive.orkl.eu/ecef69b98d349448affcf4c6b802d2b98187b02d.txt",
+        "img": "https://archive.orkl.eu/ecef69b98d349448affcf4c6b802d2b98187b02d.jpg"
+    }
+}

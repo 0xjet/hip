@@ -1,0 +1,42 @@
+{
+    "id": "0c09e61b-d5f9-44c9-8352-53922b129f54",
+    "created_at": "2023-01-12T15:07:08.161162Z",
+    "updated_at": "2025-03-27T02:06:00.343777Z",
+    "deleted_at": null,
+    "sha1_hash": "8f75ac94295a8318ec932771331a8ca5ee8979a5",
+    "title": "2018-11-13 - Let's Learn- Dissect Panda Banking Malware's -libinject- Process Injection Module",
+    "authors": "",
+    "file_creation_date": "2022-05-28T04:40:13Z",
+    "file_modification_date": "2022-05-28T04:40:13Z",
+    "file_size": 275749,
+    "plain_text": "# Let's Learn: Dissect Panda Banking Malware's \"libinject\" Process Injection Module\n\n**[vkremez.com/2018/01/lets-learn-dissect-panda-banking.html](http://www.vkremez.com/2018/01/lets-learn-dissect-panda-banking.html)**\n\n**Goal: Unpack and dissect the Panda banking malware injection DLL module titled**\n\"libinject.dll.\"\n\n**Source:**\n\nPanda Loader (MD5: [2548a068f7849490c56b63288a8ae5c2)](https://www.virustotal.com/#/file/8ad64a60db191a888042e6f7103cb78e9a20c7d6c0f1837fd05d76f15cfff39b/details)\n\n[Panda Loader (unpacked) (MD5: adab9c2b1d897d6a157b82d59f9c2306)](https://www.virustotal.com/#/file-analysis/YWRhYjljMmIxZDg5N2Q2YTE1N2I4MmQ1OWY5YzIzMDY6MTUxNTgwMDcyMw==)\n\n[Panda \"libinject\" (MD5: 47dcbc79f98ff4501619eb5d25da03bd)](https://www.virustotal.com/#/file-analysis/NDdkY2JjNzlmOThmZjQ1MDE2MTllYjVkMjVkYTAzYmQ6MTUxNTgwMDgwOA==)\n\n**Background:**\n\nWhile analyzing one of the latest Panda malware spam campaings identified by\n@JAMESWT, I decided to investigate the binary deeper to see some interesting and/or\nundisclosed ways the malware interacts with the victim environment. Immediately what stood\nout to me is Panda's DLL inject module due its compatibility with 32-bit (x86) and 64-bit (x64)\narchitecture.\n\n[#zeus](https://twitter.com/hashtag/zeus?src=hash&ref_src=twsrc%5Etfw) [#panda](https://twitter.com/hashtag/panda?src=hash&ref_src=twsrc%5Etfw) [#italy](https://twitter.com/hashtag/italy?src=hash&ref_src=twsrc%5Etfw)\n\n/5.196.121.163/connection.jpg\n\n(thanks to [@SettiDavide89 )](https://twitter.com/SettiDavide89?ref_src=twsrc%5Etfw)\n— JAMESWT (@JAMESWT_MHT) [January 9, 2018](https://twitter.com/JAMESWT_MHT/status/950722111911419904?ref_src=twsrc%5Etfw)\n\nBy and large, the Panda banker malware leverages the following Windows NTDLL and\nkernel32 for process injection:\n\nNtUnmapViewOfSection\n\nZwWow64ReadVirtualMemory64\n\n\n-----\n\nZwGetContextThread\nZwSetContextThread\nZwWow64QueryInformationProcess64\nNtProtectVirtualMemory\nRtlExitUserThread\nNtCreateSection\nCreateRemoteThread\nWriteProcessMemory\nResumeThread\n**Analysis:**\nPanda Banker injection module outline\nI. Export functions\nII. AcInitialize\nIII. AdInjectDll\nIV. Yara Rule\n**I. Export functions**\nThe Panda export ordinal functions are as follows:\n\n**AcInitialize: size_t function type that initializes the structures necessary for the**\ninjection export function.\n**AdInjectDll: DWORD function type that performs the process injection with the**\nargument with the desired process ID (PID) as an argument of the DWRD type.\n\n**II. AcInitialize**\n\nThe functions contain check x64 process check via IsWOW64 returning an integer value.\nThe pseudocoded C++ function is as follows:\nThe main AcInitialize module check_x64:\nv7 = 0;\nv2 = (FARPROC)dword_10004380;\n\n\n-----\n\nif ( dword_10004380\n**|| (v3 = GetModuleHandleW(L\"KERNEL32.DLL\"),**\n**v2 = GetProcAddress(v3, \"IsWow64Process\"),**\n(dword_10004380 = (int)v2) != 0) )\n{\nif ( dwProcessId )\n{\nv4 = OpenProcess(1024u, 0, dwProcessId);\nv2 = (FARPROC)dword_10004380;\n}\nelse\n{\nv4 = (HANDLE)a2;\n}\nif ( v4 )\n{\nv5 = ((int (__stdcall *)(HANDLE, int *))v2)(v4, &v7);\nv7 = v5 != 0 ? v7 : 0;\nif ( dwProcessId )\nCloseHandle(v4);\n}\n}\n\n**III. AdInjectDll main**\nThe main AdInjectDll sets both createthreadfunction and injectfunction functions,\npseudocoded as follows:\nDWORD __stdcall AdInjectDll(DWORD dwProcessId)\n{\nULONG v1;\nint v2;\nHANDLE hObject[4];\n*(_OWORD *)hObject = 0i64;\nv1 = -1;\nhObject[2] = (HANDLE)dwProcessId;\nv2 = 0;\nif ( check_if_x64(dwProcessId, 0) )\nv2 = 16;\nhObject[0] = OpenProcess(1082u, 0, dwProcessId);\nif ( hObject[0] )\n{\nif ( createthreadfunction((int)hObject, v2) )\n{\n\n\n-----\n\nv1 = injectfunction(hObject, v2);\nCloseHandle(hObject[1]);\n}\nCloseHandle(hObject[0]);\n}\nelse\n{\nv1 = GetLastError();\n}\nreturn v1;\n}\n**A. createthreadfunction**\nCreates thread either via CreateRemoteThread or NtCreateThreadEx (or both)\n\n**B. injectfunction**\nThe malware createa a section via NtCreate and calls NtMapViewOfSection to unmap the\npayload in memory.\nOne of the notable Panda features is its compatibility with x32/x64 architectures is achieved\nby using IsWow64Process (definition of OS architecture).\nZwWow64QueryInformationProcess64-ZwWow64ReadVirtualMemory64 are used for\nsearching NTDLL in PEB, then for searching API addresses required for work of injecting\nDLL module (x32/x64) which is being located in AP svchost by using NtCreateSectionNtMapViewOfSection-NtUnmapViewOfSection ResumeThread-Sleep-SuspendThread are\nused for unmapping and injecting the payload into the main thread.\n**IV. Yara Rule**\n**rule crime_win32_64_panda_libinject_dll_module {**\n**meta:**\ndescription = \"Panda Banker linject DLL modile\"\nauthor = \"@VK_Intel\"\n\n\n-----\n\nreference = Detects Panda Banker libinject.dll\ndate = \"2018-01-10\"\nhash = \"75db065b70c6bce9117e46a6201d870e580d07b7c3ee6d2ddab34df0b5dff51f\"\n**strings:**\n$lib = \"libinject.dll\" fullword ascii\n\n$export1 = \"AdInjectDll\" fullword ascii\n$export2 = \"AcInitialize\" fullword ascii\n\n$import0 = \"ZwWow64QueryInformationProcess64\" fullword ascii\n$import1 = \"ZwWow64ReadVirtualMemory64\" fullword ascii\n$import2 = \"NtCreateSection\" fullword ascii\n$import3 = \"NtUnmapViewOfSection\" fullword ascii\n$import4 = \"NtGetContextThread\" fullword ascii\n$import5 = \"NtSetContextThread\" fullword ascii\n$import6 = \"WriteProcessMemory\" fullword ascii\n$import7 = \"ResumeThread\" fullword ascii\n$import8 = \"CreateRemoteThread\" fullword ascii\n$import9 = \"VirtualAllocEx\" fullword ascii\n\n**condition:**\nall of ($export*) and one of $lib and all of ($import*)\n}\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2018/2018-11-13 - Let's Learn- Dissect Panda Banking Malware's -libinject- Process Injection Module.pdf"
+    ],
+    "report_names": [
+        "2018-11-13 - Let's Learn- Dissect Panda Banking Malware's -libinject- Process Injection Module.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673536028,
+    "ts_updated_at": 1743041160,
+    "ts_creation_date": 1653712813,
+    "ts_modification_date": 1653712813,
+    "files": {
+        "pdf": "https://archive.orkl.eu/8f75ac94295a8318ec932771331a8ca5ee8979a5.pdf",
+        "text": "https://archive.orkl.eu/8f75ac94295a8318ec932771331a8ca5ee8979a5.txt",
+        "img": "https://archive.orkl.eu/8f75ac94295a8318ec932771331a8ca5ee8979a5.jpg"
+    }
+}

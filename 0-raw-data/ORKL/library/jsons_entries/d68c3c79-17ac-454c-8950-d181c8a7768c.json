@@ -1,0 +1,181 @@
+{
+    "id": "d68c3c79-17ac-454c-8950-d181c8a7768c",
+    "created_at": "2023-01-12T15:06:21.402379Z",
+    "updated_at": "2025-03-27T02:06:03.048696Z",
+    "deleted_at": null,
+    "sha1_hash": "99c7900132b1c3fceef11741849416e448170dc3",
+    "title": "2015-09-29 - Andromeda Bot Analysis part 2",
+    "authors": "",
+    "file_creation_date": "2022-05-28T00:37:33Z",
+    "file_modification_date": "2022-05-28T00:37:33Z",
+    "file_size": 985061,
+    "plain_text": "# Andromeda Bot Analysis part 2\n\n**[resources.infosecinstitute.com/andromeda-bot-analysis-part-two/](http://resources.infosecinstitute.com/andromeda-bot-analysis-part-two/)**\n\nMalware analysis\nSeptember 28, 2015 by Ayoub Faouzi\n\n## Bot Analysis:\n\nNow, you get the original Andromeda build file. Load the unpacked sample at OllyDBG. As\nbefore, after the stack frame at the EP, you see that the malware is looking to load API’s\naddress using the PEB_LDR_DATA structure, but this time instead of kernel32.dll; the\nmalware try to find ntdll.dll base address, then, it will parse the EAT, hash each APIs then\nmake comparison to find the needed APIs :\n\nAfter getting inside the CALL, it will calculate the hash of a buffer located at 00402028:\n\ndef calc_hash(string):\n\nreturn binascii.crc32(string) & 0xffffffff\n\nThen, it compared it with 0xBD274BDB, if not matches, it calls RtlExitUserThread, we will\nfigure out soon what kind of data has been hashed. Afterwards, ZwAllocateVirtualMemory\nwill be called and return for me 7FFA0000 then the CALL at 00401343 will copy the whole\nbuffer to the allocated space. Next, we see the CALL at VA 00401351 which takes 4\narguments and one of them is a pointer to our unknown buffer. This routine is actually\npreforming a RC4 encryption, you could recognize that by looking at the constants, this is\nhow basically some cryptographic algorithm is detected; RC4 have loops that go till 256\nwhich is 0x100 in hexadecimal.\n\n\n-----\n\nUsing ZwAllocateVirtualMemory again, we allocate a new memory space to the partially\ndecrypted payload so it is finally decompressed using the aPLib-library. The code that\nfollows is responsible for processing relocations and fixing imports. For instance, from\nNTDLL Andromeda is importing these APIs:\n\nLdrLoadDll, RtlDosPathNameToNtPathName_U, RtlFreeUnicodeString,\nLdrProcessRelocationBlock, RtlComputeCrc32, RtlWalkHeap, RtlImageNtHeader,\nRtlImageDirectoryEntryToData, RtlExitUserThread, ZwSetInformationProcess,\nZwUnmapViewOfSection, ZwAllocateVirtualMemory, ZwMapViewOfSection,\nZwFreeVirtualMemory, ZwOpenFile, ZwQueryDirectoryFile, ZwClose,\nZwQueryInformationProcess.\n\nYou can find a script here of an old version of Andromeda thanks to\n**0xEBFE. You still need to make some minor changes on it to get it works correctly**\nparticularly the APIs and Imports, which changed a bit:\n\n[download]\n\nfrom idaapi import *\n\nfrom idautils import *\n\n\n-----\n\nfrom aplib import decompress\n\nimport binascii\n\nimport struct\n\n# hardcoding sucks 🙂\n\nIMPORTS = { ‘ntdll.dll’ : (‘ZwResumeThread’, ‘ZwQueryInformationProcess’,\n‘ZwMapViewOfSection’, ‘ZwCreateSection’, ‘ZwClose’, ‘ZwUnmapViewOfSection’,\n‘NtQueryInformationProcess’, ‘RtlAllocateHeap’, ‘RtlExitUserThread’, ‘RtlFreeHeap’,\n‘RtlRandom’,’RtlReAllocateHeap’, ‘RtlSizeHeap’, ‘ZwQuerySection’, ‘RtlWalkHeap’,\n‘NtDelayExecution’),\n\n‘kernel32.dll’ : (‘GetModuleFileNameW’, ‘GetThreadContext’, ‘GetWindowsDirectoryW’,\n‘GetModuleFileNameA’, ‘CopyFileA’, ‘CreateProcessA’, ‘ExpandEnvironmentStringsA’,\n‘CreateProcessW’, ‘CreateThread’, ‘CreateToolhelp32Snapshot’,\n‘DeleteFileW’,’DisconnectNamedPipe’, ‘ExitProcess’, ‘ExitThread’,\n‘ExpandEnvironmentStringsW’, ‘FindCloseChangeNotification’,\n‘FindFirstChangeNotificationW,FlushInstructionCache’, ‘FreeLibrary’,\n‘GetCurrentProcessId’, ‘GetEnvironmentVariableA’, ‘GetEnvironmentVariableW’,\n‘GetExitCodeProcess’, ‘GetFileSize’, ‘GetFileTime’, ‘GetModuleHandleA’,\n‘GetModuleHandleW’, ‘GetProcAddress’, ‘GetProcessHeap’, ‘CreateNamedPipeA’,\n‘GetSystemDirectoryW’, ‘GetTickCount’, ‘GetVersionExA’, ‘GetVolumeInformationA’,\n‘GlobalLock’, ‘GlobalSize’, ‘GlobalUnlock’, ‘LoadLibraryA’, ‘LoadLibraryW’, ‘LocalFree’,\n‘MultiByteToWideChar’, ‘OpenProcess’, ‘OpenThread’, ‘QueueUserAPC’, ‘ReadFile’,\n‘ResumeThread’, ‘SetCurrentDirectoryW’, ‘SetEnvironmentVariableA’,\n‘SetEnvironmentVariableW’, ‘SetErrorMode’, ‘SetFileAttributesW’, ‘SetFileTime’,\n‘SuspendThread’, ‘TerminateProcess’, ‘Thread32First’, ‘Thread32Next’, ‘VirtualAlloc’,\n‘VirtualFree’, ‘VirtualProtect’, ‘VirtualQuery’, ‘WaitForSingleObject’, ‘WriteFile’, ‘lstrcatA’,\n‘lstrcatW’, ‘lstrcmpiW’, ‘lstrcpyA’, ‘lstrcpyW’, ‘lstrlenA’, ‘lstrlenW’, ‘CreateFileW’,\n‘CreateFileA’, ‘ConnectNamedPipe’, ‘CloseHandle’, ‘GetShortPathNameW’),\n\n‘advapi32.dll’ : (‘CheckTokenMembership’, ‘RegCloseKey’, ‘ConvertStringSidToSidA’,\n‘ConvertStringSecurityDescriptorToSecurityDescriptorA’, ‘RegOpenKeyExA’,\n‘RegSetValueExW’, ‘RegSetValueExA’, ‘RegSetKeySecurity’, ‘RegQueryValueExW’,\n‘RegQueryValueExA’, ‘RegOpenKeyExW’, ‘RegNotifyChangeKeyValue’, ‘RegFlushKey’,\n‘RegEnumValueW’, ‘RegEnumValueA’, ‘RegDeleteValueW’, ‘RegDeleteValueA’,\n‘RegCreateKeyExW’, ‘RegCreateKeyExA’),\n\n‘ws2_32.dll’ : (‘connect’, ‘shutdown’, ‘WSACreateEvent’, ‘closesocket’, ‘WSAStartup’,\n‘WSAEventSelect’, ‘socket’, ‘sendto’, ‘recvfrom’, ‘getsockname’, ‘gethostbyname’, ‘listen’,\n‘accept’, ‘WSASocketA’, ‘bind’, ‘htons’),\n\n‘user32 dll’ : (‘wsprintfW’ ‘wsprintfA’)\n\n\n-----\n\nole32.dll : ( CoInitialize ),\n\n‘dnsapi.dll’ : (‘DnsWriteQuestionToBuffer_W’, ‘DnsRecordListFree’,\n‘DnsExtractRecordsFromMessage_W’)}\n\ndef calc_hash(string):\n\nreturn binascii.crc32(string) & 0xffffffff\n\ndef rc4crypt(data, key):\n\nx = 0\n\nbox = bytearray(range(256))\n\nfor i in range(256):\n\nx = (x + box[i] + key[i % len(key)]) % 256\n\nbox[i], box[x] = box[x], box[i]\n\nx,y = 0, 0\n\nout = bytearray()\n\nfor byte in data:\n\nx = (x + 1) % 256\n\ny = (y + box[x]) % 256\n\nbox[x], box[y] = box[y], box[x]\n\nout += bytearray([byte ^ box[(box[x] + box[y]) % 256]])\n\nreturn out\n\ndef fix_payload_relocs_and_import(segment, relocs_offset):\n\ncurrent_offset = 0\n\n# processing relocations\n\nwhile True:\n\nbase = Dword(segment + relocs_offset + current_offset)\n\nsize = Dword(segment + relocs_offset + current_offset + 4)\n\n\n-----\n\nif (base == 0 and current_offset != 0) or size == 0:\n\ncurrent_offset += 4\n\nbreak\n\ncurrent_offset += 8\n\nsize = (size – 8) // 2\n\nfor i in range(size):\n\nreloc = Word(segment + relocs_offset + current_offset)\n\nif reloc & 0x3000:\n\nreloc = reloc & 0xFFF\n\nPatchDword(segment + base + reloc, Dword(segment + base + reloc) + segment)\n\nSetFixup(segment + base + reloc, idaapi.FIXUP_OFF32 or idaapi.FIXUP_CREATED, 0,\nDword(segment + base + reloc) + segment, 0)\n\ncurrent_offset += 2\n\n# processing imports\n\nwhile True:\n\nmodule_hash = Dword(segment + relocs_offset + current_offset)\n\nimport_offset = Dword(segment + relocs_offset + current_offset + 4)\n\ncurrent_offset += 8\n\nif module_hash == 0 or import_offset == 0:\n\nbreak\n\nmodule = None\n\nfor library in iter(IMPORTS):\n\nif module_hash == calc_hash(library.lower()):\n\nmodule = library\n\nwhile True:\n\n\n-----\n\nfunc_hash = Dword(segment + relocs_offset + current_offset)\n\ncurrent_offset += 4\n\nif func_hash == 0:\n\nbreak\n\nif module is not None:\n\nfor function in iter(IMPORTS[module]):\n\nif func_hash == calc_hash(function):\n\nMakeDword(segment + import_offset)\n\nMakeName(segment + import_offset, SegName(segment) + ‘_’ + module.split(‘.’)[0] + ‘_’ +\nfunction)\n\nelse:\n\nprint(‘Import not found: module = 0x{0:08X}, function = 0x{1:08X}’.format(module_hash,\nfunc_hash))\n\nimport_offset += 4\n\nreturn\n\ndef decrypt_payload(encrypted_addr, rc4key, encrypted_size, unpacked_size, entry_point,\nrelocs, relocs_size):\n\nbuffer = bytearray(encrypted_size)\n\nfor i in range(len(buffer)):\n\nbuffer[i] = Byte(encrypted_addr + i)\n\ndecrypted = rc4crypt(buffer, rc4key)\n\nunpacked = decompress(str(decrypted)).do()\n\n# checking for free segment address\n\nseg_start = 0x10000000\n\nwhile SegName(seg_start) != ”:\n\nseg_start += 0x10000000\n\n\n-----\n\nAddSeg(seg_start, seg_start + unpacked_size, 0, 1, idaapi.saRelPara, idaapi.scPub)\n\n# copying data to new segment\n\ndata = unpacked[0]\n\nfor i in range(len(data)):\n\nPatchByte(seg_start + i, ord(data[i]))\n\nfix_payload_relocs_and_import(seg_start, relocs)\n\nMakeFunction(seg_start + entry_point)\n\nreturn\n\ndef main():\n\npayload_addr = AskAddr(ScreenEA(), “Enter address of andromeda payload”)\n\nif payload_addr != idaapi.BADADDR and payload_addr is not None:\n\npayload = bytearray(0x28)\n\nfor i in range(len(payload)):\n\npayload[i] = Byte(payload_addr + i)\n\ndwords = struct.unpack_from(‘<LLLLLL’, bytes(payload), 0x10)\n\ndecrypt_payload(payload_addr + 0x28, payload[:16], dwords[0], dwords[2], dwords[3],\ndwords[4], dwords[5])\n\nif __name__ == ‘__main__’:\n\nmain()\n\nAt the end, you see the call to: 00401532 |. FFD0 CALL EAX\n\nThis will transfer the control to the payload. Here is a screenshot about the payload\ndecrypted.\n\n\n-----\n\nThe next step shows anti-analysis tricks that are employed. The call at VA 7FF91408 is\niterating through process names and computing their CRC32 hash values: if a hash value\nmatches any of those on a list of hash values of VM processes and monitoring tools like\nwireshark.exe, etc., this indicates that the debugging process is inside a sandbox\nenvironment or being monitored.\n\nFurthermore, this trick is not changed. As in version 2.07 and 2.08, the 2.09 version\ncontinues to calculate the CRC32 hash of the volume name of drive C:, which is then\ncompared with the hardcoded value 0x20C7DD84. If you get caught, you will run in infinite\n\n\n-----\n\nloop that call ZwDelayExecution ! just patch the JNZ after the call or put RET in\nZwDelayExecution.\n\nAfter that I think that the CALL at VA 7FF91420 is trying to setup a KiFastSystemCall hook,\nthis API is the lowest level API available in the “usermode” layer aka Ring3, all application’\ncalls pass from KiFastSystemCall, which redirects all those controls onto the Windows\nKernel via an instruction called SYSENTER.\n\nNext, because processes run by the user can’t do everything like writing in explorer.exe\nmemory, the malware is trying to use SeDebugPrivilege and calling ZwAdjustTokenPrivilege\nto escalate to System privileges. It calls the SetEnvironmentVariableW API to save the\noriginal bot’s full path to the environment variable. Afterwards, it comes the injection\nprocess, depending if you have a 32 or a 64 bits operating system, the malware will launch\na hallowed version of msiexe.exe and inject its code there:\n\n## Code Injection:\n\nThe injection process involves several steps:\n\nAs with the previous versions, the malware calls CreateFile to get the handle of the file it\nwants to inject. It then gets its section handle by calling ZwCreateSection, which is used by\nZwMapViewOfSection to get the image of the file in memory. From this image, it extracts\nthe size of image and the address of the entry point from the PE header.\n\nA memory address with the same size as that of the image of the file that it wants to inject is\ncreated with PAGE_EXECUTE_READWRITE access. Then the image of the file is copied\nover to this memory address.\n\nAnother memory address is created with the same size as that of the image of the original\nbot file, also with PAGE_EXECUTE_READWRITE access. The original file is then copied\nover to this new memory address.\n\nA suspended process of the file to be injected is created. The memory address containing\nthe original file is unmapped. ZwMapViewOfSection is called with the bot’s file handle and\nthe process handle (acquired from creating the suspended file process). So now the\ninjected file’s process handle has a map view of the botnet file. The final step is the call to\nZwResumeThread, which resume the process.\n\n\n-----\n\nIf the User is an admin, it checks that with CheckTokenMemberShip, it installes into\n“%ALLUSERPROFILE%” and autostarts using an uncommon Registry Path\n“softwaremicrosoftwindowscurrentversionPoliciesExplorerRun” – with a random Key name.\nIf not it only installs into “%USERPROFILE%”.\n\n## CnC Communication:\n\nBefore establishing a connection, the bot prepares the message to be sent to the C&C\nserver. It uses the following format: id:%lu|bid:%lu|os:%lu|la:%lu|rg:%lu\n\nThis string is encrypted using RC4 with a hard-coded key of length 0x20 and is further\nencoded using base64. The message is then sent to the server. Once a message is\nreceived, the bot calculates the CRC32 hash of the message without including the first\nDWORD. If the calculated hash matches the first DWORD, the message is valid. Later it is\n\n\n-----\n\ndecrypted using RC4 with the VolumeSerialNumber as the key. After the RC4 decryption\nthe message is in the format gn([base64-encoded string]). This used to be just the base64encoded string, but for some reason the author decided not to make the server backward\ncompatible with the older bot versions. Then it decodes the base64 string inside the\nbrackets to get the message in plain text.\n\nThe first DWORD of the message is used as a multiplier to multiply a value in a fixed offset.\nThe DWORD in that offset is used as an interval to delay calling the thread again to\nestablish another connection. The next byte indicates what action to carry out – there are\nseven options:\n\nCase 1 (download EXE): Connect to the domain decrypted from the message to\ndownload an EXE file. Save the file to the %tmp% location with a random name and\nrun the process.\nCase 2 (load plug-ins): Connect to the domain decrypted from the message, install\nand load plug-ins. The plug-ins are decrypted by RC4 using the same key of length\n0x20h.\nCase 3 (update case): Connect to the domain to get the update EXE file. If a file name\nof VolumeSerialNumber is present in theregistry, then save the PE file to the %tmp%\nlocation with a random name; else save it to the current location with the name of the\nfile as VolumeSerialNumber. The file in %tmp% is run, while the current process\nterminates. It also sends the message ‘kill’ xor’ed by VolumeSerialNumber to\nterminate the older process.\nCase 4 (download DLL): Connect to the domain and save the DLL file to the\n%alluserprofile% location. The file is saved as a .dat file with a random name and\nloaded from a specified export function. The registry is modified so it can be autoloaded by the bot.\nCase 5 (delete DLLs): Delete and uninstall all the DLLs loaded and installed in Case\n4.\nCase 6 (delete plug-ins): Uninstall all the plug-ins loaded in Case 3.\nCase 7 (uninstall bot): Suspend all threads and uninstall the bot.\nAfter executing the action based on which instruction it received, another message is\nsent to the server to notify it that the action has been completed:\n\n**id:%lu|tid:%lu|res:%lu**\n\n\n-----\n\n**id is the VolumeSerialNumber**\n**tid is the next byte (task id) after the byte displaying the case number in the message**\nreceived\n**res is the result of whether or not the task was carried out successfully.**\n\nOnce the message has been sent, the thread exits and waits for the delay interval period to\npass before it reconnects to the server to receive additional instructions.\n\n## Conclusion:\n\nAndromeda’s current version 2.09 increased the barriers that it has set up for security\nresearchers. The new features raise additional difficulty for analysis, but are still easy to\nskip.\n\nWe anticipate that the Andromeda botnet will keep on evolving. Our botnet monitoring\nsystem is continuing to track its activities and we will respond immediately when it enters its\nnext generation.\n\n## Credits and References:\n\n[https://blog.fortinet.com/post/andromeda-2-7-features](https://blog.fortinet.com/post/andromeda-2-7-features)\n\nPosted: September 28, 2015\n\nAuthor\n\n**Ayoub Faouzi**\n\n**VIEW PROFILE**\nAyoub Faouzi is interested to computer viruses and reverse engineering, In the first hand,\nhe likes to study PE packers and protectors, and write security tools. In the other hand, he\nenjoys coding in python and assembly.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2015/2015-09-29 - Andromeda Bot Analysis part 2.pdf"
+    ],
+    "report_names": [
+        "2015-09-29 - Andromeda Bot Analysis part 2.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535981,
+    "ts_updated_at": 1743041163,
+    "ts_creation_date": 1653698253,
+    "ts_modification_date": 1653698253,
+    "files": {
+        "pdf": "https://archive.orkl.eu/99c7900132b1c3fceef11741849416e448170dc3.pdf",
+        "text": "https://archive.orkl.eu/99c7900132b1c3fceef11741849416e448170dc3.txt",
+        "img": "https://archive.orkl.eu/99c7900132b1c3fceef11741849416e448170dc3.jpg"
+    }
+}

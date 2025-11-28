@@ -1,0 +1,166 @@
+{
+    "id": "bdd66224-d2b6-4b2f-8c8f-5df05607485f",
+    "created_at": "2023-01-12T15:02:06.088737Z",
+    "updated_at": "2025-03-27T02:15:35.729034Z",
+    "deleted_at": null,
+    "sha1_hash": "0d3cfa9ded0fb6d3713f07f633b4061573e7f7d1",
+    "title": "2021-11-11 - Analyzing a watering hole campaign using macOS exploits",
+    "authors": "",
+    "file_creation_date": "2022-05-28T02:36:52Z",
+    "file_modification_date": "2022-05-28T02:36:52Z",
+    "file_size": 670994,
+    "plain_text": "# Analyzing a watering hole campaign using macOS exploits\n\n**[blog.google/threat-analysis-group/analyzing-watering-hole-campaign-using-macos-exploits/](https://blog.google/threat-analysis-group/analyzing-watering-hole-campaign-using-macos-exploits/)**\n\nErye Hernandez November 11, 2021\n\n[Threat Analysis Group](https://blog.google/threat-analysis-group/)\n\nTo protect our users, TAG [routinely hunts for 0-day vulnerabilities exploited in-the-wild. In late](https://blog.google/threat-analysis-group/how-we-protect-users-0-day-attacks/)\nAugust 2021, TAG discovered watering hole attacks targeting visitors to Hong Kong websites\nfor a media outlet and a prominent pro-democracy labor and political group. The watering\n[hole served an XNU privilege escalation vulnerability (CVE-2021-30869) unpatched in](https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2021-30869)\nmacOS Catalina, which led to the installation of a previously unreported backdoor.\n\nAs is our policy, we quickly reported this 0-day to the vendor (Apple) and a patch was\nreleased to protect users from these attacks.\n\nBased on our findings, we believe this threat actor to be a well-resourced group, likely state\nbacked, with access to their own software engineering team based on the quality of the\npayload code.\n\nIn this blog we analyze the technical details of the exploit chain and share IOCs to help\nteams defend against similar style attacks.\n\n## Watering Hole\n\nThe websites leveraged for the attacks contained two iframes which served exploits from an\nattacker-controlled server—one for iOS and the other for macOS.\n\n**iOS Exploits**\n\n[The iOS exploit chain used a framework based on Ironsquirrel to encrypt exploits delivered](https://github.com/MRGEffitas/Ironsquirrel)\nto the victim's browser. We did not manage to get a complete iOS chain this time, just a\npartial one where CVE-2019-8506 was used to get code execution in Safari.\n\n**macOS Exploits**\n\nThe macOS exploits did not use the same framework as iOS ones. The landing page\ncontained a simple HTML page loading two scripts—one for Capstone.js and another for the\nexploit chain.\n\n\n-----\n\nThe parameter rid is a global counter which records the number of exploitation attempts. This\nnumber was in the 200s when we obtained the exploit chain.\n\nWhile the javascript starting the exploit chain checks whether visitors were running macOS\nMojave (10.14) or Catalina (10.15) before proceeding to run the exploits, we only observed\nremnants of an exploit when visiting the site with Mojave but received the full non-encrypted\nexploit chain when browsing the site with Catalina.\n\nThe exploit chain combined an RCE in WebKit exploiting CVE-2021-1789 which was\n[patched on Jan 5, 2021 before discovery of this campaign and a 0-day local privilege](https://github.com/WebKit/WebKit/commit/f4e35a4796f9570c860d39f2701b2a8213f2e10a#diff-cc796f83ce6dd05d2337dcccb59527826a3bdf8cfa3faa686af7b67a1af9bd39)\n[escalation in XNU (CVE-2021-30869) patched on Sept 23, 2021.](https://support.apple.com/en-us/HT212825)\n\n## Remote Code Execution (RCE)\n\nLoading a page with the WebKit RCE on the latest version of Safari (14.1), we learned the\nRCE was an n-day since it did not successfully trigger the exploit. To verify this hypothesis,\n[we ran git bisect and determined it was fixed in this commit.](https://github.com/WebKit/WebKit/commit/f4e35a4796f9570c860d39f2701b2a8213f2e10a#diff-cc796f83ce6dd05d2337dcccb59527826a3bdf8cfa3faa686af7b67a1af9bd39)\n\n## Sandbox Escape and Local Privilege Escalation (LPE)\n\n**Capstone.js**\n\n[It was interesting to see the use of Capstone.js, a port of the](https://alexaltea.github.io/capstone.js/) [Capstone disassembly](https://www.capstone-engine.org/)\nframework, in an exploit chain as Capstone is typically used for binary analysis. The exploit\nauthors primarily used it to search for the addresses of dlopen and dlsym in memory. Once\nthe embedded Mach-O is loaded, the dlopen and dlsym addresses found using Capstone.js\nare used to patch the Mach-O loaded in memory.\n\nWith the Capstone.js configured for X86-64 and not ARM, we can also derive the target\nhardware is Intel-based Macs.\n\n\n-----\n\n**Embedded Mach-O**\n\nAfter the WebKit RCE succeeds, an embedded Mach-O binary is loaded into memory,\npatched, and run. Upon analysis, we realized this binary contained code which could escape\nthe Safari sandbox, elevate privileges, and download a second stage from the C2.\n\nAnalyzing the Mach-O was reminiscent of a CTF reverse engineering challenge. It had to be\nextracted and converted into binary from a Uint32Array.\n\nThen the extracted binary was heavily obfuscated with a relatively tedious encoding\nmechanism--each string is XOR encoded with a different key. Fully decoding the Mach-O\nwas necessary to obtain all the strings representing the dynamically loaded functions used in\nthe binary. There were a lot of strings and decoding them manually would have taken a long\ntime so we wrote a short Python script to make quick work of the obfuscation. The script\nparsed the Mach-O at each section where the strings were located, then decoded the strings\nwith their respective XOR keys, and patched the binary with the resulting strings.\n\nOnce we had all of the strings decoded, it was time to figure out what capabilities the binary\nhad. There was code to download a file from a C2 but we did not come across any URL\nstrings in the Mach-O so we checked the javascript and saw there were two arguments\npassed when the binary is run–the url for the payload and its size.\n\n\n-----\n\nAfter downloading the payload, it removes the quarantine attribute of the file to bypass\nGatekeeper. It then elevated privileges to install the payload.\n\n**N-day or 0-day?**\n\nBefore further analyzing how the exploit elevated privileges, we needed to figure out if we\nwere dealing with an N-day or a 0-day vulnerability. An N-day is a known vulnerability with a\npublicly available patch. Threat actors have used N-days shortly after a patch is released to\ncapitalize on the patching delay of their targets. In contrast, a 0-day is a vulnerability with no\navailable patch which makes it harder to defend against.\n\nDespite the exploit being an executable instead of shellcode, it was not a standalone binary\nwe could run in our virtual environment. It needed the address of dlopen and dlsym patched\nafter the binary was loaded into memory. These two functions are used in conjunction to\ndynamically load a shared object into memory and retrieve the address of a symbol from it.\nThey are the equivalent of LoadLibrary and GetProcAddress in Windows.\n\nTo run the exploit in our virtual environment, we decided to write a loader in Python which did\nthe following:\n\nload the Mach-O in memory\nfind the address of dlopen and dlsym\npatch the loaded Mach-O in memory with the address of dlopen and dlsym\npass our payload url as a parameter when running the Mach-O\n\nFor our payload, we wrote a simple bash script which runs id and pipes the result to a file in\n/tmp. The result of the id command would tell us whether our script was run as a regular user\nor as root.\n\nHaving a loader and a payload ready, we set out to test the exploit on a fresh install of\nCatalina (10.15) since it was the version in which we were served the full exploit chain. The\nexploit worked and ran our bash script as root. We updated our operating system with the\nlatest patch at the time (2021-004) and tried the exploit again. It still worked. We then\ndecided to try it on Big Sur (11.4) where it crashed and gave us the following exception.\n\n\n-----\n\nThe exception indicates that Apple added generic protections in Big Sur which rendered this\nexploit useless. Since Apple still supports Catalina and pushes security updates for it, we\ndecided to take a deeper look into this exploit.\n\n**Elevating Privileges to Root**\n\nThe Mach-O was calling a lot of undocumented functions as well as XPC calls to mach_msg\nwith a MACH_SEND_SYNC_OVERRIDE flag. This looked similar to an earlier in-the-wild\niOS vulnerability analyzed by Ian Beer of Google Project Zero. Beer was able to quickly\n[recognize this exploit as a variant of an earlier port type confusion vulnerability he analyzed](https://bugs.chromium.org/p/project-zero/issues/detail?id=2107&q=MACH_SEND_SYNC_OVERRIDE&can=1)\nin the XNU kernel (CVE-2020-27932). Furthermore, it seems this exact exploit was\n[presented by Pangu Lab in a public talk at zer0con21 in April 2021 and Mobile Security](https://github.com/wangtielei/Slides/blob/main/zer0con21.pdf)\nConference (MOSEC) in July 2021.\n\nIn exploiting this port type confusion vulnerability, the exploit authors were able to change the\nmach port type from IKOT_NAMED_ENTRY to a more privileged port type like\nIKOT_HOST_SECURITY allowing them to forge their own sec_token and audit_token, and\nIKOT_HOST_PRIV enabling them to spoof messages to kuncd.\n\n## MACMA Payload\n\nAfter gaining root, the downloaded payload is loaded and run in the background on the\nvictim's machine via launchtl. The payload seems to be a product of extensive software\n[engineering. It uses a publish-subscribe model via a Data Distribution Service (DDS)](https://en.wikipedia.org/wiki/Data_Distribution_Service)\nframework for communicating with the C2. It also has several components, some of which\nappear to be configured as modules. For example, the payload we obtained contained a\nkernel module for capturing keystrokes. There are also other functionalities built-in to the\ncomponents which were not directly accessed from the binaries included in the payload but\nmay be used by additional stages which can be downloaded onto the victim's machine.\n\nNotable features for this backdoor include:\n\nvictim device fingerprinting\nscreen capture\nfile download/upload\nexecuting terminal commands\naudio recording\nkeylogging\n\n## Conclusion\n\nOur team is constantly working to secure our users and keep them safe from targeted\nattacks like this one. We continue to collaborate with internal teams like Google Safe\nBrowsing to block domains and IPs used for exploit delivery and industry partners like Apple\n\n\n-----\n\nto mitigate vulnerabilities. We are appreciative of Apple s quick response and patching of this\ncritical vulnerability.\n\nFor those interested in following our in-the-wild work, we will soon publish details\nsurrounding another, unrelated campaign we discovered using two Chrome 0-days (CVE2021-37973 and [CVE-2021-37976). That campaign is not connected to the one described in](https://chromereleases.googleblog.com/2021/09/stable-channel-update-for-desktop_30.html)\ntoday’s post.\n\n## Related IOCs\n\n**Delivery URLs**\n\nhttp://103[.]255[.]44[.]56:8372/6nE5dJzUM2wV.html\nhttp://103[.]255[.]44[.]56:8371/00AnW8Lt0NEM.html\nhttp://103[.]255[.]44[.]56:8371/SxYm5vpo2mGJ?rid=<redacted>\nhttp://103[.]255[.]44[.]56:8371/iWBveXrdvQYQ?rid=?rid=<redacted>\nhttps://appleid-server[.]com/EvgSOu39KPfT.html\nhttps://www[.]apple-webservice[.]com/7pvWM74VUSn2.html\nhttps://appleid-server[.]com/server.enc\nhttps://amnestyhk[.]org/ss/defaultaa.html\nhttps://amnestyhk[.]org/ss/4ba29d5b72266b28.html\nhttps://amnestyhk[.]org/ss/mac.js\n\n**Javascript**\n\ncbbfd767774de9fecc4f8d2bdc4c23595c804113a3f6246ec4dfe2b47cb4d34c\n(capstone.js)\nbc6e488e297241864417ada3c2ab9e21539161b03391fc567b3f1e47eb5cfef9 (mac.js)\n9d9695f5bb10a11056bf143ab79b496b1a138fbeb56db30f14636eed62e766f8\n\n**Sandbox escape / LPE**\n\n8fae0d5860aa44b5c7260ef7a0b277bcddae8c02cea7d3a9c19f1a40388c223f\ndf5b588f555cccdf4bbf695158b10b5d3a5f463da7e36d26bdf8b7ba0f8ed144\n\n**Backdoor**\n\ncf5edcff4053e29cb236d3ed1fe06ca93ae6f64f26e25117d68ee130b9bc60c8 (2021\nsample)\nf0b12413c9d291e3b9edd1ed1496af7712184a63c066e1d5b2bb528376d66ebc (2019\nsample)\n\n**C2**\n\n123.1.170.152\n207 148 102 208\n\n\n-----\n\nPOSTED IN:\n\n[Threat Analysis Group](https://blog.google/threat-analysis-group/%20)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-11-11 - Analyzing a watering hole campaign using macOS exploits.pdf"
+    ],
+    "report_names": [
+        "2021-11-11 - Analyzing a watering hole campaign using macOS exploits.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "9f101d9c-05ea-48b9-b6f1-168cd6d06d12",
+            "created_at": "2023-01-06T13:46:39.396409Z",
+            "updated_at": "2025-03-27T02:00:03.074969Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "CHROMIUM",
+                "ControlX",
+                "Red Dev 10",
+                "RedHotel",
+                "Red Scylla",
+                "TAG-22",
+                "BRONZE UNIVERSITY",
+                "AQUATIC PANDA",
+                "Charcoal Typhoon",
+                "BountyGlad"
+            ],
+            "source_name": "MISPGALAXY:Earth Lusca",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "6abcc917-035c-4e9b-a53f-eaee636749c3",
+            "created_at": "2022-10-25T16:07:23.565337Z",
+            "updated_at": "2025-03-27T02:02:09.868522Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Bronze University",
+                "Charcoal Typhoon",
+                "Chromium",
+                "Red Dev 10",
+                "Red Scylla"
+            ],
+            "source_name": "ETDA:Earth Lusca",
+            "tools": [
+                "Agentemis",
+                "AntSword",
+                "BIOPASS",
+                "BIOPASS RAT",
+                "BadPotato",
+                "Behinder",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Doraemon",
+                "FRP",
+                "Fast Reverse Proxy",
+                "FunnySwitch",
+                "HUC Port Banner Scanner",
+                "KTLVdoor",
+                "Mimikatz",
+                "NBTscan",
+                "POISONPLUG.SHADOW",
+                "PipeMon",
+                "RbDoor",
+                "RibDoor",
+                "RouterGod",
+                "SAMRID",
+                "ShadowPad Winnti",
+                "SprySOCKS",
+                "WinRAR",
+                "Winnti",
+                "XShellGhost",
+                "cobeacon",
+                "fscan",
+                "lcx",
+                "nbtscan"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d53593c3-2819-4af3-bf16-0c39edc64920",
+            "created_at": "2022-10-27T08:27:13.212301Z",
+            "updated_at": "2025-03-27T02:00:55.529662Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Earth Lusca",
+                "TAG-22",
+                "Charcoal Typhoon",
+                "CHROMIUM",
+                "ControlX"
+            ],
+            "source_name": "MITRE:Earth Lusca",
+            "tools": [
+                "Mimikatz",
+                "PowerSploit",
+                "Tasklist",
+                "certutil",
+                "Cobalt Strike",
+                "Winnti for Linux",
+                "Nltest",
+                "NBTscan",
+                "ShadowPad"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535726,
+    "ts_updated_at": 1743041735,
+    "ts_creation_date": 1653705412,
+    "ts_modification_date": 1653705412,
+    "files": {
+        "pdf": "https://archive.orkl.eu/0d3cfa9ded0fb6d3713f07f633b4061573e7f7d1.pdf",
+        "text": "https://archive.orkl.eu/0d3cfa9ded0fb6d3713f07f633b4061573e7f7d1.txt",
+        "img": "https://archive.orkl.eu/0d3cfa9ded0fb6d3713f07f633b4061573e7f7d1.jpg"
+    }
+}

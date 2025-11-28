@@ -1,0 +1,77 @@
+{
+    "id": "7054cea6-8f4d-4e71-b23d-5a8b93ef3367",
+    "created_at": "2023-01-12T15:04:30.844917Z",
+    "updated_at": "2025-03-27T02:12:44.195979Z",
+    "deleted_at": null,
+    "sha1_hash": "bd15ee77ed3a79a90e71ea55584687baad07fd80",
+    "title": "2017-07-08 - Analysis of A New Variant of Konni RAT",
+    "authors": "",
+    "file_creation_date": "2022-05-29T01:08:29Z",
+    "file_modification_date": "2022-05-29T01:08:29Z",
+    "file_size": 1257691,
+    "plain_text": "# Analysis of new variant of Konni RAT\n\n**[vallejo.cc/2017/07/08/analysis-of-new-variant-of-konni-rat/](https://vallejo.cc/2017/07/08/analysis-of-new-variant-of-konni-rat/)**\n\n[These days TalosIntelligence commented about a new variant of Konni RAT. It is not a](http://blog.talosintelligence.com/2017/07/konni-references-north-korean-missile-capabilities.html?utm_source=feedburner&utm_medium=feed&utm_campaign=Feed%3A+feedburner%2FTalos+%28Talos+Blog%29)\ncomplicated malware, but it implements some interesting tricks and functionality typical of\nRATs. I wanted to take a look at something different (there is more life after the ransomware\n) and in this post you can find a brief analysis of this RAT. I hope you enjoy it.\n\nBefore startintg with the post, i would like to refer to you to the TalosIntelligence analysis of a\nprevious variant of Konni. New variant is similar to the variant analyzed in Talos post.\nHowever there are some different things. In addition i reversed different parts of the code,\nand i give other details. For this reason i recommend reading both posts if you are interesting\nin having a good knowledge about this RAT.\n\n## Modules\n\n[We have the sample f4abe28f3c35fa75481ae056d8637574. It is a dropper that is able to](https://www.hybrid-analysis.com/sample/33f828ad462c414b149f14f16615ce25bd078630eee36ad953950e0da2e2cc90?environmentId=100)\ndrop different PE files depending on the architecture (32 / 64). If we unpack the dropper we\ncan find it has two PE files and two DOCX files into resources:\n\n\n-----\n\n[Docx file1: 63a43fe8874fbbf3adb1b9aeb03adb6bfaa2935a40bb1893e90e3ab762dd44bd](https://virustotal.com/es/file/63a43fe8874fbbf3adb1b9aeb03adb6bfaa2935a40bb1893e90e3ab762dd44bd/analysis/1499453050/)\n\n[Docx file2: a12db66cb7b7b991ac2ba736fb48e04566ffd2defdcb08fb9a8ab3781253f73c](https://virustotal.com/es/file/a12db66cb7b7b991ac2ba736fb48e04566ffd2defdcb08fb9a8ab3781253f73c/analysis/1499453062/)\n\n\n-----\n\nPE file1: [290b1e2415f88fc3dd1d53db3ba90c4a760cf645526c8240af650751b1652b8a](https://virustotal.com/es/file/290b1e2415f88fc3dd1d53db3ba90c4a760cf645526c8240af650751b1652b8a/analysis/)\n\nPE file2: [8aef427aba54581f9c3dc923d8464a92b2d4e83cdf0fd6ace00e8035ee2936ad](https://virustotal.com/es/file/8aef427aba54581f9c3dc923d8464a92b2d4e83cdf0fd6ace00e8035ee2936ad/analysis/)\n\nPE files are packed with ASPack v2.12.\n\nWe will analyze the 32 bit version.\n\n## RAT module\n\nThe 32 bits rat module is installed into this folder:\n\nC:\\Users\\<user>\\AppData\\Local\\MFAData\\event\\errorevent.dll\n\nAnd the Run registry key is modified:\n\n[HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run]\n\n“RTHDVCP”=”rundll32.exe C:\\\\Users\\\\javi\\\\AppData\\\\Local\\\\MFAData\\\\event\\\\errorevent.dll\ncheck”\n\nAfter removing the ASPack v2.12 layer, we take a look into the malware with IDA.\n\n\n-----\n\nThe malware installs a windows hook and because of this, the errorevent.dll is loaded into\nmachine’s running processes:\n\nIn the SetWindowsHookEx callback, it logs and queues keyboard events together with the\nwindow where they happened. Another thread analyzes the keyboard events, and it keeps to\na file events happened in browser processes:\n\nIt checks these processes names:\n\n\n-----\n\nInteresting keyboard events are logged to the file:\n\nC:\\Users\\<user>\\AppData\\Local\\Packages\\microsoft\\debug.tmp\n\nOther files are used by the RAT in the process of managing commands:\n\nMalware dll is injected into multiple processes. To monitor what malware files are created\nand written we can use this breakpoint with instructions (it is splitted in multiple lines for\nbetter reading):\n\nbp NtWriteFile -> when NtWriteFile hit, execute the next script\n“.foreach (tok { !handle (poi (esp+4)) }) -> search “Packages” in the path\n{\n.if ($spat(\\”${tok}\\”, \\”*Packages*\\”) != 0)\n{\nda (poi (esp+18));.break; -> if found, print the data written\n}\n};g;”\n\nbp NtWriteFile “.foreach (tok { !handle (poi (esp+4)) }) { .if ($spat(\\”${tok}\\”, \\”*Packages*\\”) !=\n0) { da (poi (esp+18));.break;}};g;”\n\nThe other RAT functionality is executed under demand, as we will see it in the next section\nabout communications.\n\n## Communications\n\n\n-----\n\nThe malware executes a thread for communications with the CnC. It asks for commands\neach 15 minutes. A file with commands is downloaded and parsed, and the commands are\nexecuted (and the results uploaded to the CnC):\n\nThe RAT calculates a value based on the installation time and infected computer info, and\nthat value is used as bot_id to identify the current infected machine. In my case it generated\nCB5D234D.\n\nTo download the commands it connects by http GET to:\n\n[http://member-daumchk.netai.net/weget/download.php?file=CB5D234D_dropcom](http://member-daumchk.netai.net/weget/download.php?file=CB5D234D_dropcom)\n\nIt is:\n\n[http://<domain>/weget/download.php?file=<bodid>_dropcom](http://%3Cdomain%3E/weget/download.php?file=%3Cbodid%3E_dropcom)\n\nThis new variant uses wininet api to connect CnC (Talos analysis about the previous variant\nsays the RAT was using winsock api connect, send, recv,… instead of http specified api):\n\n\n-----\n\nAfter downloading the commands they are decrypted (key “xzxzxz”) and parsed:\n\n\n-----\n\nThe decryption function:\n\nSeeing the communications code, it seems it would be not difficult to create a fake CnC to\ncontrol a bot (not RSA keys or something like that are used to certify the command comes\nfrom the author).\n\n\n-----\n\nOnce decrypted it starts to parse commands:\n\n## Command for collecting computer info\n\nWith this command the malware collects different information about the machine:\n\n\n-----\n\n## Command for screen capturing\n\nCapture of the screen it is done here:\n\n\n-----\n\n## References\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2017/2017-07-08 - Analysis of A New Variant of Konni RAT.pdf"
+    ],
+    "report_names": [
+        "2017-07-08 - Analysis of A New Variant of Konni RAT.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "b43c8747-c898-448a-88a9-76bff88e91b5",
+            "created_at": "2024-02-02T02:00:04.058535Z",
+            "updated_at": "2025-03-27T02:00:03.302832Z",
+            "deleted_at": null,
+            "main_name": "Opal Sleet",
+            "aliases": [
+                "OSMIUM",
+                "Konni",
+                "Vedalia"
+            ],
+            "source_name": "MISPGALAXY:Opal Sleet",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "b9458777-d970-4e89-b2d2-e532140a390f",
+            "created_at": "2024-05-01T02:03:08.140328Z",
+            "updated_at": "2025-03-27T02:05:17.41728Z",
+            "deleted_at": null,
+            "main_name": "NICKEL JUNIPER",
+            "aliases": [
+                "OSMIUM ",
+                "Opal Sleet ",
+                "Konni"
+            ],
+            "source_name": "Secureworks:NICKEL JUNIPER",
+            "tools": [
+                "KONNI"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535870,
+    "ts_updated_at": 1743041564,
+    "ts_creation_date": 1653786509,
+    "ts_modification_date": 1653786509,
+    "files": {
+        "pdf": "https://archive.orkl.eu/bd15ee77ed3a79a90e71ea55584687baad07fd80.pdf",
+        "text": "https://archive.orkl.eu/bd15ee77ed3a79a90e71ea55584687baad07fd80.txt",
+        "img": "https://archive.orkl.eu/bd15ee77ed3a79a90e71ea55584687baad07fd80.jpg"
+    }
+}

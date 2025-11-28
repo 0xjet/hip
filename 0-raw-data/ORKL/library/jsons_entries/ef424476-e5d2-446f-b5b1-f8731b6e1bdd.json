@@ -1,0 +1,241 @@
+{
+    "id": "ef424476-e5d2-446f-b5b1-f8731b6e1bdd",
+    "created_at": "2023-01-12T15:00:38.916007Z",
+    "updated_at": "2025-03-27T02:15:35.613116Z",
+    "deleted_at": null,
+    "sha1_hash": "200cd3a1c5acf76584ec85aa81538c8e009fb21a",
+    "title": "2021-08-12 - Uncovering Tetris – a Full Surveillance Kit Running in your Browser",
+    "authors": "",
+    "file_creation_date": "2022-05-28T03:11:38Z",
+    "file_modification_date": "2022-05-28T03:11:38Z",
+    "file_size": 1985092,
+    "plain_text": "# Uncovering Tetris – a Full Surveillance Kit Running in your Browser\n\n**imp0rtp3.wordpress.com/2021/08/12/tetris/**\n\nBy imp0rtp3 August 12, 2021\n\n## Executive Summary\n\nA Chinese state sponsored threat actor is targeting Chinese-speaking opposition through\nwaterholed websites.\nThe Campaign uses a modular and custom JS surveillance framework, dubbed “Tetris”,\nimplementing a wide range of browser feature.\nAlmost all of Tetris’ components have zero AV detections.\nTetris exploits vulnerabilities is 58 widely used websites, including Aliexpress, Baidu, QQ\nand Tmall.\nThree different waterholed websites have been found, there are indications to at least 5\nmore.\n\n## Introduction\n\nThis report is based on exemplary work by @felixaime, who found 2 waterholed websites which\ntriggered all this research.\n\n\n-----\n\nAs of the time of this writing, all the components of the framework are undetected by AV, except\na 2nd stage detected by “Ikarus”. This report includes several detection and prevention ideas\nand indicators, for the web users and for developers.\n\n**Update 22/08/21 – Added 3 wateholed site, additional web users mitigations.rd**\n\n## Tetris Attack Chain\n\n### Waterholed sites\n\nFelix has found two sites containing links to the malicious domain googledrivers[.]com. The\nsites both appear to be independent newsblogs. Both are focused on China, one site on its\nactions against Taiwan and Hong-Kong written in Chinese and still updated and the other about\ngeneral atrocities done by the Chinese government, written in Swedish and last updated 2016.\n\n**Update 22/08/21 –** **[@k3yp0d Found a third waterholed site, the site is the Chinese language](https://twitter.com/k3yp0d)**\nsubdomain of an organization doing artificial intelligence research and consultation but also\nreports on Chinese aggressive actions, e.g. indirect support to the Taliban. Interestingly, the\nEnglish-language site was not infected, although it appears to be hosted on the same\nWordPress instance.\n\n\n-----\n\n1st site waterhole link\n\n2nd site waterhole script\nAs seen in the code snippets, the waterhole is embedded differently in each site. Moreover,\nwhile the first site has every page infected with the script, The second has the waterhole only\non its homepage. I believe this difference stems from the first site being managed by\nWordPress and thus enabling the attackers to inject their script tag in the default heading.\n\n301 redirection response to /s/02Bl\nBoth links redirect to a second path in the same domain (Status 301 redirection). The path is\nthe same except the value of ‘ver’ GET argument, which I later discovered is called Project ID\nby the Tetris developers.\n\n### Jetriz\n\nJetriz is a Javascript script which has undergone massive obfuscation. After deobfuscation(see\nAppendix D), it turns out most of the script is an obfuscated version of the known JS\nframeworks “fetch.js” and “core.js”. Each time the script is requested from the server a different\n\n\n-----\n\nuid variable is set for it, so there is no common hash.\n\n**Update 13/08/21 –** [Arkbird introduced me to a public obfuscation framework named plainly](https://twitter.com/Arkbird_SOLG)\n[“Javascript obfuscator” available here. The framework has different options which allow the](https://obfuscator.io/)\nattacker to choose the sophistication of the obfuscated script. It is highly likely this framework\nwas used to obfuscate the Tetris scripts.\n\nThe custom functions of the script are simple:\n\n1. Anti-debugging (the script detects if the developer tools sidebar is opened).\n2. Basic browser information extraction.\n3. Sending of the browser information, the current time and the sid back to the server.\n```\n{\n device:\"PC\",\n language:\"zh_CN\",\n engine:\"Blink\",\n browser:\"Chrome\",\n os:\"Windows\",\n osVersion:\"10.0\",\n version:\"91.0.4472.124\"\n}\n\n```\nJetriz before deobfuscation, not much fun to read:(\nThe response to the request depends on whether the browsers’ language is Chinese. If it’s not\nthen “<h1>Not Found</h1>” is returned. If it is Chinese then the server responses with Swid.\n\n### Swid\n\nOn First sight, Swid looks exactly like Jetriz – same obfuscation, similar size and it even shared\nfunctionality. A closer look reveals that although it shares the anti-debug and redirection\nfunctions of Jetriz its main logic is different Moreover it depends on environment variables set\n\n\n-----\n\nin Jetriz – the browser information object and the projId. Interestingly, the sid is no longer\nregarded.\nThe Script has two main functions:\n\n1. Injecting itself to any new page opened\n2. Loading, managing and running plugins\n\n**Link Hijacker**\n\nThe mechanism used by the script is pretty simple: it registers a callback for every link of the\nsame domain clicked. Once a user clicks a link the callback neutralizes the original browser\nevent that should have occurred (redirecting the user to a new path) and instead performs the\nsame mechanism itself. Before loading the next page, it appends to it a <script> tag with\nJetriz’s url as source. That way, as long as the user stays in the same website, the attacker\n**can run its code.**\n\nLink hijacking mechanism\nOf course, if it were up to the attackers, they would have hijacked all links, and not just links to\nthe same website. Unfortunately for them, CORS prevents that. Cross-Origin **[Resource](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS)** **Sharing**\nis a mechanism implemented in every browser and enables servers to decide which (if any)\nother domains can access their content. This way, the attacker cannot implant a script in a web\npage in which he wasn’t given access to.\n\n**Plugin Manager**\n\nSwid contains a quite impressive plugin manager, built in a modular way and even giving an\nAPI for the plugins to use. Although very easy to implement, the manager can’t run the plugins\nperiodically, and they only run once.\n\n**communications**\n\n\n-----\n\nThe plugin manager initiates a websocket connection to the server using the public socket.io\nframework ver. 2.2.0. The client also uses a specific namespace in the socket named\n“/zSocket”. The websocket connection is based on the current http(s) connection – so a long as\nthe http connection to the server is encrypted so is the websocket.\nOnce connected, the client sends every 5 seconds a “heartbeat” message, which contains the\nprojId and the browser information collected by Jetriz. Because websockets are asynchronous\nthe client doesn’t have to wait for any response and can send a message while still handling\nthe other.\n\nPlugin Loading\n\nThe main client message callback is “task”. A “task” message contains a plugin that the plugin\nmanager should run. Each task contains:\n\npluginId – 24 characters long hex string\ndata – javascript code of the plugin\npluginType – always 0\nrun – always empty\n\nInterestingly, “data” is run immediately when getting a new task. it does not run the plugin itself\nbut rather returns a function which is called to run the plugin. The function is called with 3\nparameters – The plugin managers’ context, the “run” argument and a dictionary containing the\npluginId and pluginType.\n\n“task” message parsing and running\nPlugin API\n\nThe plugin managers create a dictionary of 29 functions to be used by the plugins easily by\nreferencing the plugin managers’ context. Many of the functions are not used by any of the\nplugins I found. Please See Appendix C for the complete function list.\n\nMoreover, the manager enables the different plugins to use a unified way to send information\nback to the server. By calling the “callback” function the plugins can send back the data they\ncollected to the server. The callback message contains 6 fields:\n\n1. userSocketId (internal ID of socket.io, doesn’t work in version 2.2.0)\n2. data – response data\n3. msg – always empty\n4. status – always true\n5. type – type of data, “string” (for json) or “object”\n6. save – always true\n\n\n-----\n\n### Plugins\n\nOnce the server gets the first heartbeat, it sends between 11 to 15 different plugins at once.\n\nThe plugins are generally much lighter obfuscated but the degree of obfuscation varies. All\nplugin have the same class creation mechanism. This plugin class has always at least 2\nfunctions: “run” which runs the main logic of the plugin and “callback” or “report” which, well,\nreport back to the server. The numbering of the plugins was done by me randomly, and doesn’t\nhave to do with the order of arrival (which wasn’t consistent since the protocol is\nasynchronous).\n\nPlugins 0-7\n\n[These plugins use a known but not a widely used technique called JSONP-hijacking. The](http://capec.mitre.org/data/definitions/111.html)\ntechnique enables exfiltrating the logged-in user account information from vulnerable sites.\nWhile it doesn’t give the attacker a password or any authentication token, it enables him to\nidentify the victims and to assess his interest in them.\n\nThe Implementation is quite easy – the attacker needs to load the relevant JSONP address as\na script ($.getScript()) and to set the name of the callback function inside the url of the JSONP.\nThe callback function will be called once the JSONP is loaded and will get as argument the\nuser data.\n\nPlugin 0 gathers information from 58 different sites. 57 of those sites are very popular Chinese\nsites, like qq and baidu. There are approximately 30 different attributes the attacker tries to\nexfiltrate, which differ from site to site. The common attributes are userid, real name and phone\nnumber. A complete list of the sites and attributes is available in APPENDIX C.\n\nNYT JSONP callback function\n\nA site that stands out is the New York Times. The JSONP vulnerability look like it enables the\nattacker to get the user id and the name of the logged-in reader.\n\n**Update 16/08/21 – After though examination by the NYT security team it turns out the name of**\n**the user cannot be accessed via this request, but solely its uid and subscriptions.**\n\n\n-----\n\nPlugins 1-7 are used to exfiltrate user data specifically from one specific website each, using\nthe same technique. While all the domains in those plugins appear and are already queried in\nplugin 0, the plugins use more complicated techniques and site-specific vulnerabilities to\naccess more comprehensive user data.\nThe sites queried by the plugins are:\n\nP1 – 163.com basic user info query\nP2 – employer.58.com – get “enterpriseinfo“\nP3 – jd.com JSONP request embedded in iframe\nP4 – sohu.com JSONP request embedded in iframe\nP5 – **_hupu.com JSONP request embedded in iframe_**\nP6 – qq.com – JSONP exploiting music access API of qq that leaks comprehensive user\ndata.\nP7 – baidu.com – complicated JSONP request utilizing a vulnerability enabling the\nattacker to run code in the context of the iframe. The plugin had also additional\nobfuscation (possibly because it used a newer version of the obfuscator).\n\nPlugin 8\n\nThe plugin collects geolocation data. The collection happens through regular browser query, so\nthe accuracy can vary depending on the type of network access and whether the device has\nGPS. The browser gives some value representing accuracy.\nIt is worth noting that this plugin would cause the browser to request permission from the\nvictim unless the victim has granted the waterholed website that permission before.\n\nPlugin 9\n\nThe plugin gets the internal IP(s) of the victim through the use of WebRTC api.\n\nPlugin 10\n\nThe plugin attempts to take one photo of the victim using the webcam of the device, if present.\nSimilarly to plugin 8, this could make the browser request permission from the victim.\n\nPlugin 11\n\nThe plugin uses the public javascript library fingerprint2. The result, excluding pixel ration,\nmemory information and devices information is hashed and sent back to the server.\nAdditionally, it loads icons of 11 Chinese security research sites, the purpose of that is unclear.\n\nPlugin 12\n\nThe plugin is used to capture anything the user types in the waterholed domain.\nThe plugin does that by registering a callback on any <input> and <textarea> tags in the\ndocument and reports their textual data back to the server.\n\nPlugin 13\n\nThe plugin checks if the victim is using TOR by trying to access a favicon with an onion\naddress. It is worth mentioning that on a victim not running TOR this could trigger a DNS\nrequest to an onion address (see detection).\n\n\n-----\n\nPlugin 14\n\nThe plugin tries to connect to websockets at localhost. If the connection succeeds all data\ntransferred through the socket is forwarded to the attackers’ server. This known but relatively\nnew technique allows Tetris to exfiltrate developer information and even API secrets. This\narticle is an excellent explanation of the technique.\n\nThe Following table shows the ports tried by the plugin and their default use:\n\nPort Service\n\n3000 webpack-dev server, core component in React.js development\n\n3001 socket.io secure websocket common port\n\n7000 Used in [eventletexamples, Default in](http://eventlet.net/doc/examples.html) [RSocket – binary protocol able to run on WS](https://rsocket.io/)\n\n8000 Used in many examples, likely to be used by several frameworks\n\n9856 [reload (node module)](https://www.npmjs.com/package/reload)\n\nPlugin 15\n\nThe plugin collects very comprehensive OS information, including battery status, ad blocker\nstatus, hardware concurrency support and browser plugins. Additionally, it requests the\nlocalstorage for the current site.\n\n## Additional Attack chains\n\n### Discovery\n\nThe two links used in the waterholed sites originally found were very similar: /s/02Bl & /s/02Bn.\nThis prompted me to try similar combinations. Through this basic approach I was able to find 7\nadditional redirection URIs (/s/02Bj was also found later in the 3 waterholed site).rd\n\n**original URI** **Redirected path**\n\n\n-----\n\n/s/02Bi /public/jquery.min.js?ver=607fd694d0dfb600379f3bb9\n\n**/s/02Bj** /public/jquery.min.js?ver=6085111875349500318504f6\n\n/s/02Bk /public/x/jquery.min.js?ver=6085111875349500318504f6\n\n**/s/02Bl** /public/jquery.min.js?ver=60851543c3baea002ff24ff4\n\n/s/02Bm /public/x/jquery.min.js?ver=60851543c3baea002ff24ff4\n\n**/s/02Bn** /public/jquery.min.js?ver=60878220c25fbf0035f9876c\n\n/s/02Bo /public/x/jquery.min.js?ver=60878220c25fbf0035f9876c\n\n/s/02Bp public/jquery.min.js?ver=609351de045c15003a22361c\n\n/s/02Bq /public/x/jquery.min.js?ver=609351de045c15003a22361c\n\nIn bold – URIs used in the waterholed sites.\nAs you can see, the redirection links alternate between public/x/jquery and public/jquery, and\nkeep the same projId between them. while all the public/jquery links lead to exactly the same\nJetriz script, the public/x/jquery lead to a different script, which I named Jineva.\n\n### Jineva\n\nJineva is a weird combination of Jetriz and Swid. Judging by its design, shared code and\nobfuscation it was developed by the same team. It has 2 main differences:\n\n1. No link hijacking logic\n2. No dynamic Plugin manager, but rather a websocket client with 3 functions.\n\n**Websocket Client**\n\nCommunications\n\nThe Client uses the same socket.io version as Swid. Unlike Swid, its namespace is “/sSocket“.\n\nThe connection request contains 4 parametrs: projId, baseurl (current URL base64 encoded),\n_cookie (document.cookie), isRender (boolean argument, purpose unclear)._\n\nOnce connected, the client sends a heartbeat containing the projId every 5 seconds (unlike\nSwid which also includes device information and language).\n\nFunctionality\n\nThere are 3 functions the server can execute on the client :\n\n– processGET: performs a GET request to a url given by the server using the native JS Fetch\ncall (or the fetchjs polyfill if the native is not available). The response is sent back to the server.\n\n\n-----\n\nThe request to the url includes credentials. in this way, the attacker can steal NTLM credentials,\ncookies and authorization headers of the victim.\n– processPOST: Same as processGET but sends a POST fetch request, with parameters set\nby the server.\n– setLS : Gets a dictionary from the server and sets Items in the locastorage according to it.\n\nAdditionally, without regards to server request, the client sends a copy of the localstorage of the\ncurrent website (window.localStorage) every 5 seconds (independently of the heartbeat)\n\n### Why A Parallel attack chain?\n\nThere are several possible explanations for the use of different chains:\n\n1. Different Targets – Jineva is ideal for exfiltration of data from on-premise web servers\n\nand credential stealing, While Jetriz and Swid serve more for surveillance of individuals\n2. Different stages of attack – It is possible the TA uses Jineva as a second stage\n\ndesigned to be used in case it deems Swid’s victim interesting. It is possible that the\nJineva link is injected into subpages of the watehole so to infect only more “interested\nusers”. Unfortunately I have not found any indication of that in the 2 waterholed sites I\nknow. I think this is less likely that Swid redirects to Jineva using the plugins, because\nJineva is accessible via a short link, which was used by the TA only for the waterholed\nsites.\n\nThe use of the same projID for different attack chains is also interesting, as the projID looked at\nfirst like a unique ID per waterholed site. I see two possible explanations:\n\n1. The TA has a number conversion system like “1” -> “60851…”. “2” ->”60935…” etc. This\n\nhypothesis is strengthened by the fact that the projIDs all start with “60” and move up\nfrom “607” to “609”. It could explain why the attacker would have the same IDs, as the\nsame ID can mean “2nd Jetriz site” and “2nd Jineva site” depending on the path.\n2. Each time the attacker creates a new wateholed website instance the server\n\nautomatically creates two links, for Jetriz and Jineva, regardless what the attacker\nchooses.\n\nBased on these hypotheses, I assess with medium confidence that there are at least 3 more\ninfected domains we don’t know about.\n\n### Infrastructure\n\nI am only aware of one domain used by the group. The domain and the HTTPS certificate were\nbought in April. The certificate (by “Let’s Encrypt”) was valid only for 3 months from April 20th\nuntil July 19, was not updated and is still the server’s certificate. The attackers used theth\ncommon “openresty” web server.\n\n\n-----\n\nWhile it makes sense For a TA to change domains frequently, not taking it down and leaving all\nscripts there is quite surprising. Moreover, the waterholed websites are not highly visited and\nthus the short term benefit from the waterhole doesn’t seem substantial.\n\n## Detection & prevention\n\n**Detection**\n\nSOC & Security Researchers\n\n1. In some browsers, plugin 13 would cause a DNS request for an onion address. This can\n\nbe easily detected if DNS is monitored.\n2. Please See Appendix B for YARA rules.\n\n**Prevention&mitigation**\n\nWeb Users\n\n[1. Noscript is an excellent add-on which would have prevented a user visiting such](https://noscript.net/)\n\nwaterholed site prevent infection. This method comes with its problems, as it can prevent\nlegitimate sites from loading correctly.\n[2. Update 22/08/21 – Using Firefox with strict tracking protection or the latest Chromium](https://support.mozilla.org/en-US/kb/enhanced-tracking-protection-firefox-desktop#w_adjust-your-global-enhanced-tracking-protection-settings)\n\n[(see referrer policy default) based browsers (Chrome, Edge, Opera, Brave etc.) can](https://developers.google.com/web/updates/2020/07/referrer-policy-new-chrome-default)\nprevent some of plugins (mainly those using JSONP) from runnning correctly. This would\nmitigate the effect of Tetris, but would not prevent it.\n3. Visiting less-known or less-trusted sites in incognito mode can mitigate the effect an\n\ninfection has and the amount of data it can harvest, but would not prevent it.\n4. Using proxy, VPN or TOR can also make it harder for the threat actor to target or identify\n\nyou, but would not prevent an infection.\n\nWeb Developers\n\n1. The TA was able to use the waterholed sites only because their Access-control list was\n\n[set to “*”. Changing that setting and verifying it periodically would prevent that. This is a](https://enable-cors.org/server.html)\ngreat resource containing explanations about it.\n\n## Attribution\n\nI asses with high confidence that the TA is working on behalf of the Chinese government. This\nassessment is based on several reasons:\n\n1. Victimology – Based on the type of waterholed websites and the fact that the attackers\n\nsearch for Chinese keyboard it is reasonable that the TA is interested in Chinese\nopposition movements, activists and supporters. Naturally, this interest is almost exclusive\nto China.\n\n\n-----\n\n2. Language – There are several occurrences of short sentences written in Chinese in the\n\nplugins. While this could be a false flag, its presence specifically in the plugins, where\nthere is also no complicated obfuscation, raises doubts about that, as it looks like the TA\ndid not foresee any researcher accessing these scripts. Moreover, there are several\nplaces with bad English – sometimes in a way that is unlikely to be intentional – instead of\naccessing the “dependencies” folder, the server has a “dependence” folder. More similar\nerrors are seen in the plugins.\n3. Similarity – plugin 0 used by the TA has a strong resemblance to a report published by\n\nAlienVault in 2015 . While the report doesn’t include samples, the use of wide JSONPhijacking against a subset of the Chinese sites used in plugin 0 hints at some connection\nbetween both operations. The report attributes this attack to china.\n\n## Conclusion\n\nAn Analysis and comparison of the different techniques used by the actor lead to 3 interesting\nconclusions:\n\n1. Separation between teams – Some parts of the attack chain are done quite\n\nprofessionally – several stages, obfuscation anti-debugging, generic URL path with a\nunique GET argument and a modular plugin manager. Other parts seem to be done\nunprofessionally – “dependece” path, huge dead code, invalid certificate, the sending of\n15 plugins at once, plugins that cause permission requests from the user and redirection\nlinks that enable brute forcing. I believe these inconsistencies show us that there is a\nstrong separation between the team developing the code infrastructure (Jetriz and Swid)\nand the team operating the specific server and writing some of the plugins.\n2. Experience with public discoveries – The obfuscation used by the TA, randomization of\n\nsome paths and multi-stage design hint that the TA had several encounters with AV\ndetections or publications in the past. It is possible that the TA learnt from mistakes of\ncolleagues or reports by the cybersecurity industry alone.\n3. Type of use – It is unclear why the TA chose to keep the server running with an invalid\n\ncertificate. I see 2 possible explanations:\n\n_a) The TA had been denied access by the cloud provider but the provider didn’t care to_\ntake down its server.\n\n_b) This specific campaign wasn’t effective and thus the team didn’t actively continue it._\nThey did not take down the server because they either did not care for the code to be\nfound (because it was written by another team, or didn’t see this as a risk), or that they\nthought that it still could have some value in the future.\n\n## Summary\n\nTetris accomplishes to take the most out of the browser sandbox, and illustrates its almost\ninherent vulnerability. As browser implement more and more capabilities, which were reserved\nfor executables, It’s likely we will see more similar frameworks.\n\n\n-----\n\nA state spying on its citizens and dissidents is not new – for some states that is even their top\npriority. Still, the amount of such cyber-espionage campaigns published is relatively low. From\nlack of telemetry, to the nonexistent incentive of most of the private and public sector to prevent\nit, many campaigns remain hidden and serve as a powerful tool for authoritarian governments.\n\nThis research is based alone on the finding of the two waterholed sites by Felix. There are still\nseveral open questions: How widespread are infections? Are there more sophisticated plugins?\nDoes the actor utilize a sanbdox-escape exploit at some point? What are the other waterholed\nsites?\n\nI believe that by collaboration we can answer some of these questions. As cybersecurity\nexperts, we have the ability to contribute to those who do not have the privilege to live in a\ndemocratic and liberal state, and providing them with a little more freedom.\n\nYou are welcome contact me if you have any new finding or questions regarding Tetris.\n\n## Appendix A – Mitre ATT&CK® Techniques\n\n### Matrix\n\n[The Techniques are also available as JSON and Excel in my git repository.](https://github.com/imp0rtp3/Research/tree/master/2021-08-12%20Tetris)\n\n\n-----\n\n## Notable Techniques\n\n**Hide Atrifacts (T1564)**\n**Network Service Scanning (T1046) – plugin 14 Tries to connect to 5 different ports of**\nthe host to discover services and exfiltrate their traffiic.\n**Software Discovery (T1518) – Plugin 15 discovers browser plugins and adblockers**\ninstalled by the user.\n**System Network Configuration Discovery (T1016) – Plugin 13 checks whether the**\nsystem is configured to connect through TOR, Plugin 9 discovers the internal IP.\n**Data From local System (T1005) – Plugin 15 exfiltrates localstorage and cookies of the**\nwaterholed website from the browser.\n\n## Appendix B – Detection\n\n### Yara Rules\n\n[Rules detecting Tetris components.](https://github.com/imp0rtp3/yara-rules/blob/main/2021-08-12%20Tetris/tetris_advanced.yar)\n\n[Rule detecting the fingerprint2 library – can be used for legitimate purposes..](https://github.com/imp0rtp3/yara-rules/blob/main/2021-08-12%20Tetris/fingerprint2.yar)\n\n### IOCs\n\ngoogledrivers[.]com\n\n45.77.103[.]201\n\n**Samples & Hashes**\n\nThe hashes of the various components of the framework all depend on projId and some on sid,\n[except the plugins. I have uploaded the raw scripts to virustotal and to my repository both the](https://github.com/imp0rtp3/Research/tree/master/2021-08-12%20Tetris/samples)\nraw and deobfuscated versions of them (with some of my comments and more readable\nvariables).\nI have not uploaded plugins 0-7 to any platform, as I believe their value for more threat actors is\nbigger than their value for security researchers.\n\nAny company that was targeted by the plugins can contact me directly and once verified I\nwould send the relevant code used to exploit their site.\n\nVirusTotal Links\n\n[Jetriz](https://www.virustotal.com/gui/file/94705d794aa28addf33b48383f6371614de97bd5572bf81c73fd12f726c475d4/detection)\n[Swid](https://www.virustotal.com/gui/file/a43ecad9d65ac298e1409d75ed6414f90c1543850002997aedf6e4e78cbeedcc/detection)\n[Jeniva](https://www.virustotal.com/gui/file/bfcd10ca12d04cb1cc14e7a7a1c1a040faea6e22a914a1a3386d77f2bf97b755/detection)\n\nPlugins Hashes\n\n0e10230dacf24c762c5b931fbb9d7f810b3761cacc06823b0422338f818235b4 – plugin 0\n22a36d03806d4db34654aba285585e1a76459cd41e3c109a9f24738533710634 – plugin\n1\nced981f8f9b321949d880df65142d7a6931ed862b02b72ffe36b1ebed4c848a2 – plugin 2\n\n\n-----\n\nURIs\n\n\n1491de46915a6781a3fe82b371d3236a616d89da213f77e2d07c780ca7e65da5 – plugin 3\nd1b87b6de14091a70291e04541ecb07a0b6ca4cb848cb8906fcf6059a0ae15e4 – plugin 4\n6ea2189452b9fcb072bd2d09c9a03ba3c43118382b5687c010783defc27f4b62 – plugin 5\ncd2795f34c37ff5b7dac60e8f618631bdf14f88d017f0073eb8133068e21d150 – plugin 6\n78a0b96ca39944a04a7981a13cff76a9f9a3bc285f347ebeae1274c128358ea7 – plugin 7\nb1b50a18e8a166f47416a73a5e19351ea042bf2c7fb4e3088a5e457d7b8ff05b – plugin 8\nf3ab3203289c30e4e137f73696ab46d7434769c6965583d69b8b297845f9aefc – plugin 9\n8b623691edc5ba724405acac4e2f446c977670dca4488b6526852101dca76e52 – plugin\n10\n4dfa39a06ea81d0a80df2002c643ae07f1bb8a4c608133741d972589a9f874f0 – plugin 11\ncae143b302ce23c361bc6cb0ff612ad44cb47e1d15fadc64991d3cec89e42892 – plugin 12\n46e47db6175296c2768d13779173684d742a702caa7e71d7bb998f5ef1f29467 – plugin\n13\nc7653aa63e5c1723c4bd63b7a78f2219e84495502c97313b287f95877064df96 – plugin 14\n88f45be2b5117e8d554261e31e02c0e5812c87cfa664472fd43558c3f5603258 – plugin 15\n\n/public/jquery.min.js?ver=607fd694d0dfb600379f3bb9\n/public/jquery.min.js?ver=6085111875349500318504f6\n/public/jquery.min.js?ver=60878220c25fbf0035f9876c\n/public/jquery.min.js?ver=609351de045c15003a22361c\n/public/jquery.min.js?ver=60851543c3baea002ff24ff4\n/public/x/jquery.min.js?ver=6085111875349500318504f6\n/public/x/jquery.min.js?ver=60851543c3baea002ff24ff4\n/public/x/jquery.min.js?ver=60878220c25fbf0035f9876c\n/public/x/jquery.min.js?ver=609351de045c15003a22361c\n/s/02Bi\n/s/02Bj\n/s/02Bk\n/s/02Bl\n/s/02Bm\n/s/02Bn\n/s/02Bo\n/s/02Bp\n/s/02Bq\n/zSocket\n/sSocket\n/public/dependence/jquery/3.1.1/jquery.min.js\n/public/dependence/fingerprint2.min.js\n/public/dependence/jquery/1.12.4/jquery.min.js\n\n\n## Appendix C – Plugins\n\n\n-----\n\n### Plugins API calls\n\n_addIEMeta – Add an Internet Explorer Compatible Meta tag._\n**_addNoRefererMeta – Set any page request or redirection to be without Referer._**\n_ajaxPromise – Perform basic Ajax request._\n_base64Decode – Decode buffer from base64 to string._\n**_base64Encode – Encode buffer to base64._**\n**_createElement – Create a DOM element in the <body> of a document of the attackers_**\nchoosing.\n**_createHiddenElement – Create element with no visibility and 0 dimensions._**\n_crossOriginJsonp – See noRefererJsonp._\n**_debounce – Common function used in JS to prevent fast numerous repetitious running of_**\nsame function.\n_SwidIframe – Create an Iframe with the dimensions of the windows, overshadowing any_\nother element\n_getHighestZindex – Get highest Z-Index in the document, used to calculate how to create_\nan element in the foreground.\n_getLang – Get browser language the function distinguishes between two “types” of_\nChinese – mainland Chinese and Hong Kong, Taiwan or Mongol Chinese\n_hasJquery – Check whether window has jquery with Minor version above 8. (Maybe used_\nwhen older jquery ver. 1 were used by the TA).\n**_hiddenIframe – Create invisible iframe with zero dimensions._**\n**_hiddenImg – Create invisible img with zero dimensions._**\n**_iframe – Create an iframe element with attacker controlled parameters._**\n**_img – Create an img element with attacker controlled parameters. if projId is not present_**\nin the img URL the function appends it as ?ver=<projId>.\n_ipec – See xsrf._\n_isIE – Check for ActiveXObject in the windows._\n_loadCSS – Load a css file._\n**_loadJS – Load a JS file._**\n**_noRefererJsonp – Create hiddenIframe and loads a script URl in it. crossOriginJsonp_**\ndoes the same except it sets the iframe‘s referrerPolicy as ‘origin‘.\n**_random – Return random number._**\n_removeCSS – Remove all CSS from windows._\n_rewriteLink – Rewrite all links in the document to a URL of the attackers’ choosing._\n_scriptViaIframe – Embed a script in a an Iframe of the attackers’ choosing. if projId is not_\npresent in the img URL the function appends it as ?ver=<projId>.\n_scriptViaWindow – Same as scriptViaIframe but the script is embedded in a windows of_\nthe attackers choosing.\n_xsrf – Perform a CSRF\\XSRF attack by submitting an invisible form with attacker_\ncontrolled parameters. ipec does the same except it uses textarea instead of input and\nworks only with POST requests.\n\n*Calls in bold are used directly or indirectly by the plugins I know.\n\n\n-----\n\n### JSONP-vulnerable Sites Accessed by Plugin 0\n\nSites in bold are also queried by Plugin 1-7.\n\nDomain Attributes Global\nAlexa\nRank\n\n\nChinese\nRank\n\n\ntmall.com isLogin 3 1\n\n**qq.com** userId,nickName,headURL,userHome 4 2\n\nbaidu.com userId,userName 5 3\n\n**sohu.com** nickName,headURL,userHome,profile,userName 6 4\n\ntaobao.com isLogin 8 5\n\n**jd.com** userName,headURL 10 7\n\nweibo.com userId 14 8\n\ntianya.cn userName 42 17\n\naliexpress.com isLogin 44 –\n\ngome.com.cn userId,nickName,headURL 89 26\n\n163.com nickName,headURL 97 27\n\nnytimes.com uid,subscriptions 113 –\n\nzol.com.cn userId 310 50\n\niqiyi.com userinfo,qiyi_vip_info 390 53\n\noutbrain.com userName 419 –\n\n**58.com** userName,userId,phone 468 58\n\nzhibo8.cc userId,nickName,background,headURL 482 69\n\ndianping.com userId,nickName 619 93\n\nrenren.com userId,nickName,userName,headURL,birth 696 94\n\nyouku.com userId,userName,sex,headURL 710 104\n\ndangdang.com ddoy,loginTime 799 109\n\nanjuke.com userId,userName,lastUser,profileURL 844 119\n\nsmzdm.com userId,nickName,headURL 1489 207\n\n\n-----\n\nifeng.com isLogin,isLogin 1607 218\n\n7k7k.com userId,userName,nickName,headURL,level 1902 216\n\nzhaopin.com userName 2587 289\n\n4399.com isLogin,gameInfos 2764 254\n\nctrip.com userName,level 3185 346\n\n10086.cn userName 4047 383\n\n**hupu.com** userId,userName 4440 543\n\nvip.com level,lastLogin 6074 1519\n\npconline.com.cn userId,nickName 7303 773\n\nxunlei.com nickName,payName,userName 8680 2126\n\nxcar.com.cn headURL,userName,userName 10868 1157\n\nqunar.com isLogin 11185 1708\n\npcauto.com.cn userId 11410 2117\n\njumei.com nickName,userId 14264 1726\n\n37.com userName,lastLoginIP,lastLoginTime 14905 1548\n\nhexun.com userId,userName,headURL,sex 20653 2480\n\nsuning.com phone,headURL,level 28883 2845\n\nlu.com userId,sex,realName,userName,mobile 29184 2985\n\ntiexue.net userId,userName 31430 3235\n\nbaihe.com userId,nickName,gender,age,headURL,cityID 36791 –\n\nbbs.360safe.com userName,userId,email,adminId,lastVisit,group 39660 –\n\nqyer.com username,userid 43347 –\n\n56.com userHome 48982 –\n\nzongheng.com level,headURL 59346 –\n\nziroom.com userName 74364 3702\n\nbitauto.com userId,userName 84849 –\n\nchinaiiss.com userName 119808 –\n\n\n-----\n\n2144.cn userId,userName,nickName 199953 –\n\nyhd.com userName,headURL 343737 –\n\nletv.com userId 671069 –\n\nreadnovel.com userName,headURL 1167917 –\n\nduoshuo.com userId,userName,userHome,headURL,social_uid,email – –\n\naliyun.com userId – –\n\nhuihui.com uid,userName – –\n\ndaijun.com userName – –\n\n### Icons loaded by plugin 11\n\nhttps[:]//www.seebug[.]org/static/images/favicon.ico\nhttps[:]//www.vulbox[.]com/static/web/img/favicon.ico\nhttps[:]//www.secfree[.]com/favicon.ico\nhttps[:]//www.secpulse[.]com/favicon.ico\nhttps[:]//zhongce.360[.]cn/favicon.ico\nhttps[:]//bbs.ichunqiu[.]com/favicon.ico\nhttps[:]//www.cnvd.org[.]cn/favicon.ico\nhttp[:]//cnnvd.org[.]cn/favicon.ico\nhttps[:]//xz.aliyun[.]com/static/icon/favicon.ico\nhttps[:]//www.t00ls.net/favicon.ico\nhttps[:]//bbs.pediy[.]com/view/img/favicon.ico\nhttps[:]//www.freebuf[.]com/favicon.ico\nhttps[:]//www.zoomeye[.]org/favicon.ico\nhttps[:]//fofa[.]so/favicon.ico\n\n### TOR URL Accessed by Plugin 13\n\nhttp[:]//bn6kma5cpxill4pe[.]onion/static/images/tor-logo1x.png – Legitimate official TOR browser\nwebsite for onion v2 (Deprecated).\n\n## APPENDIX D — Deobfuscation\n\nEach obfuscated script starts with setting an array which consists of base64 encoded strings.\nThe array is then rotated. Next, a string access function is initialized, which serves throughout\nthe script for any string used.\n\nI wrote a [python script to automatically deobfuscate scripts obfuscated in that way.](https://github.com/imp0rtp3/Research/blob/master/2021-08-12%20Tetris/deobfuscate.py)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-08-12 - Uncovering Tetris – a Full Surveillance Kit Running in your Browser.pdf"
+    ],
+    "report_names": [
+        "2021-08-12 - Uncovering Tetris – a Full Surveillance Kit Running in your Browser.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "9f101d9c-05ea-48b9-b6f1-168cd6d06d12",
+            "created_at": "2023-01-06T13:46:39.396409Z",
+            "updated_at": "2025-03-27T02:00:03.074969Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "CHROMIUM",
+                "ControlX",
+                "Red Dev 10",
+                "RedHotel",
+                "Red Scylla",
+                "TAG-22",
+                "BRONZE UNIVERSITY",
+                "AQUATIC PANDA",
+                "Charcoal Typhoon",
+                "BountyGlad"
+            ],
+            "source_name": "MISPGALAXY:Earth Lusca",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "6abcc917-035c-4e9b-a53f-eaee636749c3",
+            "created_at": "2022-10-25T16:07:23.565337Z",
+            "updated_at": "2025-03-27T02:02:09.868522Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Bronze University",
+                "Charcoal Typhoon",
+                "Chromium",
+                "Red Dev 10",
+                "Red Scylla"
+            ],
+            "source_name": "ETDA:Earth Lusca",
+            "tools": [
+                "Agentemis",
+                "AntSword",
+                "BIOPASS",
+                "BIOPASS RAT",
+                "BadPotato",
+                "Behinder",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Doraemon",
+                "FRP",
+                "Fast Reverse Proxy",
+                "FunnySwitch",
+                "HUC Port Banner Scanner",
+                "KTLVdoor",
+                "Mimikatz",
+                "NBTscan",
+                "POISONPLUG.SHADOW",
+                "PipeMon",
+                "RbDoor",
+                "RibDoor",
+                "RouterGod",
+                "SAMRID",
+                "ShadowPad Winnti",
+                "SprySOCKS",
+                "WinRAR",
+                "Winnti",
+                "XShellGhost",
+                "cobeacon",
+                "fscan",
+                "lcx",
+                "nbtscan"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "e3492534-85a6-4c87-a754-5ae4a56d7c8c",
+            "created_at": "2022-10-25T15:50:23.819113Z",
+            "updated_at": "2025-03-27T02:00:55.552554Z",
+            "deleted_at": null,
+            "main_name": "Threat Group-3390",
+            "aliases": [
+                "Threat Group-3390",
+                "Earth Smilodon",
+                "TG-3390",
+                "Emissary Panda",
+                "BRONZE UNION",
+                "APT27",
+                "Iron Tiger",
+                "LuckyMouse"
+            ],
+            "source_name": "MITRE:Threat Group-3390",
+            "tools": [
+                "Systeminfo",
+                "gsecdump",
+                "PlugX",
+                "ASPXSpy",
+                "Cobalt Strike",
+                "Mimikatz",
+                "Impacket",
+                "gh0st RAT",
+                "certutil",
+                "China Chopper",
+                "HTTPBrowser",
+                "Tasklist",
+                "netstat",
+                "SysUpdate",
+                "HyperBro",
+                "ZxShell",
+                "RCSession",
+                "ipconfig",
+                "Clambling",
+                "pwdump",
+                "NBTscan",
+                "Pandora",
+                "Windows Credential Editor"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "c63ab035-f9f2-4723-959b-97a7b98b5942",
+            "created_at": "2023-01-06T13:46:38.298354Z",
+            "updated_at": "2025-03-27T02:00:02.798255Z",
+            "deleted_at": null,
+            "main_name": "APT27",
+            "aliases": [
+                "TG-3390",
+                "EMISSARY PANDA",
+                "TEMP.Hippo",
+                "Budworm",
+                "Group 35",
+                "BRONZE UNION",
+                "Lucky Mouse",
+                "Iron Taurus",
+                "GreedyTaotie",
+                "Red Phoenix",
+                "ZipToken",
+                "Iron Tiger",
+                "G0027",
+                "Earth Smilodon"
+            ],
+            "source_name": "MISPGALAXY:APT27",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d53593c3-2819-4af3-bf16-0c39edc64920",
+            "created_at": "2022-10-27T08:27:13.212301Z",
+            "updated_at": "2025-03-27T02:00:55.529662Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Earth Lusca",
+                "TAG-22",
+                "Charcoal Typhoon",
+                "CHROMIUM",
+                "ControlX"
+            ],
+            "source_name": "MITRE:Earth Lusca",
+            "tools": [
+                "Mimikatz",
+                "PowerSploit",
+                "Tasklist",
+                "certutil",
+                "Cobalt Strike",
+                "Winnti for Linux",
+                "Nltest",
+                "NBTscan",
+                "ShadowPad"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535638,
+    "ts_updated_at": 1743041735,
+    "ts_creation_date": 1653707498,
+    "ts_modification_date": 1653707498,
+    "files": {
+        "pdf": "https://archive.orkl.eu/200cd3a1c5acf76584ec85aa81538c8e009fb21a.pdf",
+        "text": "https://archive.orkl.eu/200cd3a1c5acf76584ec85aa81538c8e009fb21a.txt",
+        "img": "https://archive.orkl.eu/200cd3a1c5acf76584ec85aa81538c8e009fb21a.jpg"
+    }
+}

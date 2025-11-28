@@ -1,0 +1,116 @@
+{
+    "id": "c79005f0-8237-42dc-a052-f1412cbbe170",
+    "created_at": "2023-01-12T15:04:42.746818Z",
+    "updated_at": "2025-03-27T02:15:39.544965Z",
+    "deleted_at": null,
+    "sha1_hash": "c1f7daffdc1decac0b050f157dc644e6922e1b77",
+    "title": "2022-03-22 - Storm Cloud on the Horizon- GIMMICK Malware Strikes at macOS",
+    "authors": "",
+    "file_creation_date": "2022-05-27T22:16:02Z",
+    "file_modification_date": "2022-05-27T22:16:02Z",
+    "file_size": 1187077,
+    "plain_text": "# Storm Cloud on the Horizon: GIMMICK Malware Strikes at macOS\n\n**[volexity.com/blog/2022/03/22/storm-cloud-on-the-horizon-gimmick-malware-strikes-at-macos/](https://www.volexity.com/blog/2022/03/22/storm-cloud-on-the-horizon-gimmick-malware-strikes-at-macos/)**\n\nMarch 22, 2022\n\nby Damien Cash, Steven Adair, Thomas Lancaster\n\nIn late 2021, Volexity discovered an intrusion in an environment monitored as part of its\n[Network Security Monitoring service. Volexity detected a system running frp, otherwise](https://github.com/fatedier/frp)\nknown as fast reverse proxy, and subsequently detected internal port scanning shortly\nafterward. This traffic was determined to be unauthorized and the system, a MacBook Pro\nrunning macOS 11.6 (Big Sur), was isolated for further forensic analysis. Volexity was able to\nrun [Surge Collect to acquire system memory (RAM) and select files of interest from the](https://www.volexity.com/products-overview/surge/)\nmachine for analysis. This led to the discovery of a macOS variant of a malware implant\nVolexity calls GIMMICK. Volexity has encountered Windows versions of the malware family\non several previous occasions.\n\nGIMMICK is used in targeted attacks by [Storm Cloud, a Chinese espionage threat actor](https://www.volexity.com/blog/2020/03/31/storm-cloud-unleashed-tibetan-community-focus-of-highly-targeted-fake-flash-campaign/)\nknown to attack organizations across Asia. It is a feature-rich, multi-platform malware family\nthat uses public cloud hosting services (such as Google Drive) for command-and-control\n(C2) channels. The newly identified macOS variant is written primarily in Objective C, with\nWindows versions written in both .NET and Delphi. Despite core differences in programming\n\n\n-----\n\nlanguages used and operating systems targeted, Volexity tracks the malware under the\nsame name due to shared C2 architecture, file paths, and behavioral patterns used by all\nvariants.\n\n_Figure 1. The GIMMICK workflow_\n\nThis blog post provides an in-depth analysis of the macOS variant of GIMMICK, but\nalso demonstrates the features and characteristics of the Windows variant. Volexity\ndiscovered this sample through memory analysis of the compromised system and was able\nto recover the implant from both memory and disk. The file name and install path were\nunique to the victim system and had been configured in a manner designed to blend in with\njob functions of the user. Additionally, GIMMICK was configured to only communicate with its\nGoogle Drive-based C2 server on working days in order to further blend in with network\ntraffic in the target environment.\n\nThe SHA1 hash of the file Volexity was able to obtain from disk was\n“fe3a3e65b86d2b07654f9a6104c8cb392c88b7e8”.\n\nVolexity worked closely with Apple to add protections for the GIMMICK malware across their\nuserbase. On March 17, 2022, Apple pushed new signatures to XProtect and MRT to block\nand remove GIMMICK. Though on by default, users can confirm they are automatically\nprotected by verifying the \"Install system data files and security updates” box is checked in\n[their Settings (instructions can be found here).](https://support.apple.com/guide/mac-help/get-macos-updates-mchlpx1065/mac)\n\n\n-----\n\n## Startup and Initialization\n\nOn macOS, GIMMICK was found to support being launched as a daemon on the system or\nby a user. Should GIMMICK be launched directly by a user, rather than a daemon, it will\ninstall itself as a launch agent by dropping a PLIST file with contents, similar to that shown\nbelow, to /Users/<username>/Library/LaunchAgents. The name of the binary, PLIST, and\nagent will vary per sample. In the case observed by Volexity, the implant was customized to\nimitate an application commonly launched by the targeted user. It is worth noting that the\nWindows versions of GIMMICK Volexity has observed have no concept of setting their own\npersistence.\n\n\n-----\n\n<?xml version= 1.0 encoding= UTF-8 ?>\n\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\"\n\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\n<plist version=\"1.0\">\n\n<dict>\n\n<key>Label</key>\n\n<string>com. /[applicationname].va.plist</string>\n\n<key>ProgramArguments</key>\n\n<array>\n\n<string>/Users/#####/Library/Preferences/[pathto/binary]>/</string>\n\n</array>\n\n<key>RunAtLoad</key>\n\n<true/>\n\n<key>StartInterval</key>\n\n<integer>30</integer>\n\n<key>ThrottleInterval</key>\n\n<integer>2</integer>\n\n<key>WorkingDirectory</key>\n\n<string>/Users/<removed>/Library/Preferences/[applicationname]string>\n\n</dict>\n\n</plist>\n\nLikewise, the implant provides an uninstall function accessible by adding the argument\n“uninstall” on the command line. This removes the implant and all associated files, and then\nkills the process.\n\nDuring initialization, the sample decodes several pieces of data critical to the malware\noperation using a rotating addition algorithm.\n\n\n-----\n\nThe first decoding loop results in a JSON object containing OAuth2 credentials for\nestablishing a session to Google Drive. An example JSON object is shown in Figure 2:\n\n_Figure 2. An example JSON object containing credentials required to authenticate with_\n_Google Drive_\n\nThe second loop decodes the 32-byte string “943c3743f72f06e58e60fa147481db83”. This\nstring is run through an additional conversion stage that converts two characters at a time\ninto a numeric representation and writes the resulting byte to a buffer. This buffer is used as\n[an AES key in several calls to CCCrypt() function.](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/CCCrypt.3cc.html)\n\n\n-----\n\n_Figure 3. AES key conversion_\n\nThe final decode is done in place and its result is a 200-byte binary blob of configuration\ndata, with only a few seemingly visible data boundaries.\n\n_Figure 4: Config blob_\n\nOutside of this data obfuscation, and the use of AES for certain external files, the malware\nmakes little attempt to obfuscate its functionality or presence on the system.\n\n\n-----\n\n## C2 Protocol\n\nPost initialization, the operation of the GIMMICK malware is highly asynchronous. Prior\nvariants of the malware written for Windows have managed this using thread pool techniques\ninternal to the program, provided by Delphi’s System.Threading.TThreadPool and .NET’s\nSystem.Thread and System.Action. The macOS variant, however, manages the protocol\n[using Apple's Grand Central Dispatch (GCD) technology. This feature allows developers to](https://en.wikipedia.org/wiki/Grand_Central_Dispatch)\ndistribute tasks to a system-managed pool of threads for later processing. These tasks are\n[encapsulated into self-contained objects called blocks which are scheduled on dispatch](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ProgrammingWithObjectiveC/WorkingwithBlocks/WorkingwithBlocks.html)\nqueues for processing. The precise structures and implementation details of GCD are fairly\ncomplicated and beyond the scope of this document; several resources are provided in the\nAppendix.\n\nThere are three custom ObjectiveC classes in the malware that manage critical aspects of\nthe C2 protocol: DriveManager, FileManager, and GCDTimerManager.\n\nDriveManager has several responsibilities:\n\nManage the Google Drive and proxy sessions.\nMaintain a local map of the Google Drive directory hierarchy in memory.\nManage locks for synchronizing tasks on the Google Drive session.\nHandle download and upload tasks to and from the Google Drive session.\n\nBased on the way command files are enumerated by the malware, the Google Drive appears\nto be populated with a directory for each infected host. The name of this directory differs\nslightly by platform. Windows implants generate a unique GUID to operate as their ID, while\nthe macOS implant uses Apple's own Hardware UUID for the task.\n\nFileManager manages a local directory hierarchy containing C2 information and command\ntasks in various stages of completion. Older variants of GIMMICK used slightly different\nnames for directories, but they have remained consistent across several recent variants. The\nmacOS implant stores this hierarchy in the root directory of the application’s main [bundle in a](https://developer.apple.com/library/archive/documentation/CoreFoundation/Conceptual/CFBundles/BundleTypes/BundleTypes.html)\ndirectory named “MGD”. Each folder within the directory structure is designated for holding a\nsingle type of file as it moves through the C2 process. A summary all directories and their\npurpose are given in the table below.\n\n\n**Name** **Interpreted**\n**Meaning**\n\n\n**Contents**\n\n\ntmp Temporary Temporary safe location for writing files; no dispatch code is\nchecking files in this directory\n\nc Credentials Stores the AES- encrypted credentials JSON decoded during\ninitialization\n\n\n-----\n\n**Name** **Interpreted**\n**Meaning**\n\n\n**Contents**\n\n\ne Errors Stores error logs as individual files; errors are reported as opaque\nintegral values of usually four digits\n\np Proxies Stores proxy definition files consisting of a host and port separated\nby a \":\"\n\n\nu Upload\nCommand\n\nd Download\nCommand\n\nds Download\nSuccess\n\ndf Download\nFailed\n\nl List\nCommand\n\nls List\nSuccess\n\n\nStored AES-encrypted command results pending upload\n\n\nStores temporary listing files containing paths of remote Google\nDrive files to be download\n\n\nStores pending download command files, each containing the\nGoogle Drive path of a command file to be downloaded\n\n\nStorage location for downloaded AES-encrypted command files\nawaiting processing\n\n\nTemporary location for failed download command until they can be\nretried or cleared\n\n\nStores pending list of command files that indicate the directory of\nthe Google Drive from which to download commands\n\n\nlf List Failed Temporary location for failed list commands until they can be retried\nor cleared\n\nNot all variants of GIMMICK use all directories. For instance, the macOS implant does not\nuse the \"df\" directory, and it creates, but does not access, the \"lf\" and \"p\" directories.\n\nGCDTimerManager manages the various GCD objects that ensure the regular dispatching of\nwork for the implant and holds collections of the dispatch timers along with their\ncorresponding blocks. The malware creates several named dispatch queues for managing\nspecific C2-related tasks:\n\n**Name** **Purpose**\n\nSendBaseinfoQueue Regularly generates and sends a system reconnaissance\nheartbeat message to the C2 containing the following:\n\nHardware UUID\nMAC address of the eth0 interface\nCPU model string\nOS Version string\n\nlist_request_queue Generates a list request file in the \"l\" directory containing a path\nin the format “/<HardwareUUID>”\n\n\n-----\n\n**Name** **Purpose**\n\nls_cmd_queue Parses files from the \"ls\" directory and for each line, writes a\ncorresponding download command file to the \"d\" directory\n\nReadCmdQueue Decrypts and parses files from the \"ds\" directory, and executes\nthe commands contained within, saving results to the \"u\"\ndirectory\n\nCredsCheck Checks for timeout of the Google Drive session, and reauthenticates if necessary\n\nDriveClearTrashQueue Regularly deletes the Google Drive trash file\n\nDriveDownQueue Parses files stored in the \"d\", and downloads corresponding files\nfrom Google Drive to the \"ds\" directory\n\nDriveUploadQueue Uploads feedback files stored in the \"u\" directory\n\nDriveFailUploadQueue Second attempt to upload any failed upload items. Second\nattempt is marked successful regardless of result.\n\nfileListQueue Parses files stored in the \"l\" directory and for each, updates the\nDriveManager’s directory map of the Google Drive, and\ngenerates a listing of files to download in the \"ls\" directory\n\nIn addition, GCDTimerManager uses the static config information decoded during\ninitialization to set a work period for the implant, limiting off-hour connections that might draw\ndefender attention. It parses the work period from the string at the very start of the config\ndata. This string starts with a set of single-digit numbers separated by hyphen characters,\nfollowed by two colon characters and two two-digit numbers separated again by a hyphen.\nThe first set of numbers indicate the day number the malware will be active, with day 0 being\nSunday. The second set of two-digit numbers indicate the range of active hours. Taking the\ninitial value of “1-2-3-4-5::00-23”, the implant will be active from 12AM to 11PM on weekdays\n—this is the first data seen in the Configuration blob shown in Figure 4.\n\n## Command Lifetime\n\nDue to the asynchronous nature of the malware operation, command execution requires a\nstaged approach. Though the individual steps occur asynchronously, every command follows\nthe same steps:\n\n1. An encrypted payload is uploaded by the attacker to the Google Drive.\n2. The dispatch timer on “list_request_queue” triggers.\n\nNew request file to be written to the \"l\" directory\n\n\n-----\n\n3. The dispatch timer on te fileListQueue triggers.\n\nReads the list request from the \"l\" directory\nUpdates the DriveManager state from the Google Drive session\nDrops a listing file to the \"ls\" directory\n4. The dispatch timer on “ls_cmd_queue” triggers.\n\nParses the listing files from the \"ls\" directory\nDrops download command files for each remote file in the \"d\" directory\nDeletes listing files from the \"ls\" directory\n5. The dispatch timer on “DriveDownloadQueue” triggers.\n\nEnumerates the files in the \"d\" directory\nQueues the download of command files to the \"ds\" directory\nQueues deletion of remote Google Drive file and local download command file\nafter download is complete\n6. The dispatch timer on “ReadCmdQueue” triggers.\n\nReads and decrypts command files from \"ds\" directory\nHandles command execution\nDeletes local command file\nWrites encrypted “feedback” files to \"u\" directory\n7. The dispatch timer on “DriveUploadQueue” triggers.\n\nEnumerates the files in the \"u\" directory\nQueues the upload of the result files\nQueues the deletion of local result files once upload is completed\n\n## Commands and Feedback\n\nCommands reach the system as encrypted files in the \"ds\" directory which, once decrypted\nwith the implant's static AES key, result in a JSON object. There are only four JSON fields\nread by the command parser.\n\n**Name** **Type**\n\nCMDType Number\n\ncontent String\n\nparams String\n\nsavepath String\n\nWhile each command JSON must have a CMDType field, the fields required vary from\ncommand to command. The table below summarizes the available commands and their\nrequired fields.\n\n\n-----\n\n**EnumEnum** **DescriptionDescription** **Additional Required JSONAdditional Required JSON**\n**FieldsFields**\n\n0 Transmit base system information None\n\n1 Upload file to C2 params\n\n2 Download file to client content, savepath\n\n3 Execute a shell command and write output to C2 params\n\n4 Set client Google Drive timer interval params\n\n\n5 Set client timer interval for client info heartbeat\nmessage\n\n\nparams\n\n\n6 Overwrite client work period information params\n\nFeedback to the C2 is also formatted as JSON, with fields fairly similar to the commands.\nHowever, all feedback JSON objects have one additional required field, “uuid”, which is\npopulated with the device's Hardware UUID.\n\n## Conclusion\n\nStorm Cloud is an advanced and versatile threat actor, adapting its tool set to match\ndifferent operating systems used by its targets. They make use of built-in operating system\nutilities, open-source tools, and custom malware implants to achieve their objectives.\nLeveraging cloud platforms for C2, such as using Google Drive, increases the likelihood of\noperating undetected by network monitoring solutions. This is especially true when coupled\nwith the fact that the malware only beacons on victims' working days.\n\nIrrespective of platform, samples of the GIMMICK malware family are fairly large and\ncomplex, which is partly due to the complexity of their asynchronous design, such as the\nthreading and locking mechanisms required. The work involved in porting this malware and\nadapting its systems to a new operating system (macOS) is no light undertaking and\nsuggests the threat actor behind it is well resourced, adept, and versatile. It is worth noting\nthat Volexity has only ever observed GIMMICK (macOS and Windows) in use by Storm\nCloud. However, it is unknown if this malware implant is developed or otherwise used by\nthem exclusively.\n\nTo generally prevent similar attacks from being successful, Volexity recommends the\nfollowing:\n\nRegularly audit and monitor persistence locations, such as LaunchAgents and\nLaunchDaemons on endpoint macOS devices. This can be done through an EDR\n[solution and/or with free tools such as BlockBlock and](https://objective-see.com/products/blockblock.html) [KnockKnock.](https://objective-see.com/products/knockknock.html)\nMonitor network traffic for anomalous proxy activity and internal scanning\n\n\n-----\n\nEnsure that XProtect and MRT from Apple are enabled and running on macOS\nsystems.\n\nTo prevent these specific attacks from being successful, Volexity recommends the following:\n\n[Use the rules provided to identify related activity, provided here.](https://github.com/volexity/threat-intel/blob/main/2022/2022-03-22%20GIMMICK/indicators/yara.yar)\n\n[Files related to this post are provided here.](https://github.com/volexity/threat-intel/tree/main/2022/2022-03-22%20GIMMICK/attachments)\n\nThis threat activity was detailed to Volexity Threat Intelligence customers in MAR-20220120.\n\n## Appendix\n\nThe following resources describe Apple's Grand Central Dispatch:\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-03-22 - Storm Cloud on the Horizon- GIMMICK Malware Strikes at macOS.pdf"
+    ],
+    "report_names": [
+        "2022-03-22 - Storm Cloud on the Horizon- GIMMICK Malware Strikes at macOS.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "33eef76c-a6fa-4855-a77e-9a1e92fe8474",
+            "created_at": "2023-11-21T02:00:07.393519Z",
+            "updated_at": "2025-03-27T02:00:03.250084Z",
+            "deleted_at": null,
+            "main_name": "Storm Cloud",
+            "aliases": [],
+            "source_name": "MISPGALAXY:Storm Cloud",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "19ac84cc-bb2d-4e0c-ace0-5a7659d89ac7",
+            "created_at": "2022-10-25T16:07:23.422755Z",
+            "updated_at": "2025-03-27T02:02:09.791931Z",
+            "deleted_at": null,
+            "main_name": "Bronze Highland",
+            "aliases": [
+                "Daggerfly",
+                "Evasive Panda",
+                "Storm Cloud",
+                "StormBamboo",
+                "TAG-102",
+                "TAG-112"
+            ],
+            "source_name": "ETDA:Bronze Highland",
+            "tools": [
+                "Agentemis",
+                "CDDS",
+                "CloudScout",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "DazzleSpy",
+                "KsRemote",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "MacMa",
+                "Macma",
+                "MgBot",
+                "Mgmbot",
+                "NetMM",
+                "Nightdoor",
+                "POCOSTICK",
+                "RELOADEXT",
+                "Suzafk",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535882,
+    "ts_updated_at": 1743041739,
+    "ts_creation_date": 1653689762,
+    "ts_modification_date": 1653689762,
+    "files": {
+        "pdf": "https://archive.orkl.eu/c1f7daffdc1decac0b050f157dc644e6922e1b77.pdf",
+        "text": "https://archive.orkl.eu/c1f7daffdc1decac0b050f157dc644e6922e1b77.txt",
+        "img": "https://archive.orkl.eu/c1f7daffdc1decac0b050f157dc644e6922e1b77.jpg"
+    }
+}

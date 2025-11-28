@@ -1,0 +1,196 @@
+{
+    "id": "1fe9d400-f3eb-4fe7-aef5-03e3020d5a85",
+    "created_at": "2023-01-12T15:09:09.58399Z",
+    "updated_at": "2025-03-27T02:15:46.108152Z",
+    "deleted_at": null,
+    "sha1_hash": "a9eba1c0e4167e77831b113392953ced63b2a06d",
+    "title": "2016-09-17 - A few notes on SECONDDATE's C&C protocol",
+    "authors": "",
+    "file_creation_date": "2022-05-28T04:50:33Z",
+    "file_modification_date": "2022-05-28T04:50:33Z",
+    "file_size": 230967,
+    "plain_text": "# A few notes on SECONDDATE's C&C protocol\n\n**laanwj.github.io/2016/09/17/seconddate-cnc.html**\n\n## Laanwj's blog\n\nRandomness\n\n[Blog](https://laanwj.github.io/) [About](https://laanwj.github.io/about)\nSECONDDATE is the most well-known of the spy toys in the EQGRP dump. It is a Man-inthe-Middle attack tool that is installed on intermediate routes. It can be used to fake DNS\n[replies as well as inject HTTP redirects. This intercept article does a great job of explaining](https://theintercept.com/2016/08/19/the-nsa-was-hacked-snowden-documents-confirm/)\nthe operational side.\n\nSECONDDATE (abbreviated as SD from here on) is a module in all of the leaked implant\nframeworks:\n\nBLATSTING\nBUZZDIRECTON\nBANANAGLEE\nTURBO (PANDAROCK, POLARSCORE, POLARTX)\n\nOf both the [BLATSTING and](https://gist.github.com/laanwj/9e5e404266a8956beabde522f97c421b) [BUZZDIRECTION modules it is the module with the largest](https://laanwj.github.io/2016/09/11/buzzdirection.html)\ncode size. This alone puts up some challenges for reverse-engineering. I have mainly looked\nat the BLATSTING module as I’m furthest with analyzing that framework, but at first sight it\nappears that the SD modules for all these frameworks are based on the same underlying\ncode - much of the binary and its data matches.\n\nThe primary reason for its large size appears to be that it contains a copy of the open source\n[regular expression library PCRE1 as well as a weighty part of a C library required to support](http://www.pcre.org/)\nthat, statically linked.\n\n\n-----\n\n[Pretty soon after examining the dump I noticed that many of the SD Listening Post](https://twitter.com/orionwl/status/765849507116507136)\nexecutables still had some debugging symbols. After [dumping these with](https://gist.github.com/laanwj/96841340cecb5ada220af39551df2896) [dwarf_to_c, a tool I](https://github.com/laanwj/dwarf_to_c)\nwrote a few years back for a completely different reason, I surmised that the whole C&C\nprotocol was already revealed there.\n\nBut only recently after completing the BLATSTING simulation and experimenting with it a it I\ncould know this for sure.\n\n### Header\n\nThe SD C&C protocol uses encrypted UDP packets with a fixed payload size of `1060`\nbytes, contents defined by:\n```\ntypedef struct\n{\n int munge; /* +0x0 */\n int magic; /* +0x4 */\n int checkSum; /* +0x8 */\n /* De-munging and checksum XORing starts here */\n unsigned char encCounter[8]; /* +0xc */\n /* Decryption starts here */\n int encMagic; /* +0x14 */\n int sequenceNum; /* +0x18 */\n unsigned int type; /* +0x1c */\n int errCode; /* +0x20 */\n unsigned int logTime; /* +0x24 */\n union\n {\n  RULE_TYPE rule;\n  SD_INFO info;\n  LOG_ENTRY log[15];\n }; /* +0x28 */\n} SD_PDUTYPE;\n\n### Commands\n\n```\nOf these header fields `type specifies the type of packet, which in turn specifies which of`\nthe union fields should be used to access the parameters. These were not part of the debug\ninformation but fairly easy to discover playing with the LP program:\n\n**type** **description** **parameter**\n\n0x01 ping _N/A_\n\n0x02 set rule rule\n\n0x03 enable rule rule\n\n0x04 disable rule rule\n\n\n-----\n\n**type** **description** **parameter**\n\n0x05 get rule rule\n\n0x06 get log log\n\n0x07 get info info\n\n0x08 uninstall _N/A_\n\n0x09 hello _N/A_\n\n0x0a clear log _N/A_\n\n### Rule definitions\n\nRule definitions are the bread and butter of this software. They define what to match on (TCP\nor UDP packets), a regular expression on the packet contents, and a specification of what to\ninject in turn. They can be set using the `set rule command, enabled and disabled using`\nthe `enable rule and` `disable rule command respectively, and requested using` `get`\n\n\n-----\n\n```\ntypedef struct\n{\n unsigned char enabled; /* +0x0 */\n unsigned char checkHTTPGET; /* +0x1 */\n unsigned char checkPattern; /* +0x2 */\n unsigned char tcpFlags; /* +0x3 */\n unsigned char injectflag; /* +0x4 */\n unsigned int index; /* +0x8 */\n unsigned int start_index; /* +0xc */\n unsigned int stop_index; /* +0x10 */\n unsigned int tagOffset; /* +0x14 */\n unsigned int u_timestamp; /* +0x18 */\n unsigned int e_timestamp; /* +0x1c */\n unsigned int srcAddrFilter; /* +0x20 */\n unsigned int srcAddrFilterMask; /* +0x24 */\n unsigned int dstAddrFilter; /* +0x28 */\n unsigned int dstAddrFilterMask; /* +0x2c */\n unsigned int protocolFilter; /* +0x30 */\n short unsigned int srcPortFilter; /* +0x34 */\n short unsigned int dstPortFilter; /* +0x36 */\n unsigned int minInterval; /* +0x38 */\n unsigned int maxInjections; /* +0x3c */\n unsigned int injectWindow; /* +0x40 */\n unsigned int injectLen; /* +0x44 */\n unsigned int currentInjections; /* +0x48 */\n unsigned int totalInjections; /* +0x4c */\n unsigned int totalMisses; /* +0x50 */\n unsigned int nextInjectTime; /* +0x54 */\n unsigned int injectWindowEnd; /* +0x58 */\n unsigned char pattern[256]; /* +0x5c */\n unsigned char inject[512]; /* +0x15c */\n} RULE_TYPE;\n\n### Info structure\n\n```\nSome basic information about the implant can be requested using the `get info command:`\n```\ntypedef struct\n{\n unsigned int version; /* +0x0 */\n unsigned int logEntries; /* +0x4 */\n unsigned int ruleCount; /* +0x8 */\n unsigned int timeStamp; /* +0xc */\n} SD_INFO;\n\n### Log structure\n\n```\nThe implant keeps a small log of the last matches and injections that it did (likely in a circular\nbuffer). This can be requested using the `get log command and wiped with the` `clear`\n```\nlog command.\n\n```\n\n-----\n\n```\ntypedef struct LOG_ENTRY_\n{\n unsigned int index; /* +0x0 */\n unsigned int srcAddr; /* +0x4 */\n unsigned int dstAddr; /* +0x8 */\n short unsigned int srcPort; /* +0xc */\n short unsigned int dstPort; /* +0xe */\n unsigned int timeStamp; /* +0x10 */\n unsigned int rule; /* +0x14 */\n char protocol; /* +0x18 */\n char dataBuffer[40]; /* +0x19 */\n} LOG_ENTRY;\n\n### Decryption\n\n```\nReceived UDPv4 packets go through the following flow:\n\nAfter receiving a packet first the size is checked against `1060 (like in BLATSTING,`\nthe ports don’t matter, though the LP always uses source port `32768 and a random`\ndestination port).\n\nIf that matches, the first two fields read as big-endian, `munge and` `magic are`\nchecked via `munge + magic - 0x61e57cc6 == 0 . If these match it will proceed to`\nthe next steps.\n\nThen a simple checksum is computed and checked (simply XOR together all 4-byte\nwords), and a XOR de-munging step is done. Munging is the term that the Equation\nGroup uses for simple obfuscation. Anyhow a `xorkey = munge - 0x61e57cc6 is`\ncomputed and the entire packet is XORed with the 4-byte word.\n\n[Then, the packet is decrypted using RC6 in CTR (counter mode)3, instead of OFB](https://en.wikipedia.org/wiki/CTR_mode)\nmode as in BLATSTING C&C. The counter is part of every packet, as header field\n```\n   encCounter .\n   encMagic is checked to be 0x9e 0x1a 0x83 0x3a . If this matches, the packet is\n\n```\ndispatched for command processing.\n\nIt does not look like the packets are authenticated in any way. There is no MAC. This is\nusually a bad idea, but even more with crypto modes such as CCM that use the underlying\nblock cipher as a stream cipher. Bits can be flipped for a lot of fun as long as you don’t forget\nto update the checksum.\n\nAgain, if you were hoping to find evidence of unworldly cryptographic magic here, you’ll be\ndisappointed.\n\n### Hardcoded key\n\n\n-----\n\nCuriously all the samples in the dump use a hardcoded RC6 key:\n```\ne2be1a91aed43cf0398acdd13f7bc3f9 2. I have only verified this for sure with the\n\n```\nBLATSTING implementation but this key can be found (in binary, not as hex string) in all\nimplants of SD as well as all LP executables to control it, except for BUZZDIRECTION.\n\nThere appears to be no way to change or override the key externally, although there is of\ncourse the possibility that the “keying system”, which is missing from this dump for all of the\nframeworks, changes the key in the binary.\n\n### Conclusion\n\n_Screenshot of a Wireshark dump of SECONDDATE C&C packets. Would be nice to have a_\n_[dissector… Here’s the accompanying seconddate.cap file.](https://laanwj.github.io/assets/2016/09/17/seconddate-cnc/seconddate.cap)_\n\nI hope this article gives enough information to detect SD C&C usage in the wild. I may do a\n[LP transcript or demo of using the implant later on. Also I think the rule structure deserves](https://laanwj.github.io/2016/09/09/blatsting-lp-transcript.html)\nmore attention.\n\n_Footnotes_\n\n1. I found at least `regexp_compile and` `regexp_match with the same API as`\ndocumented by PCRE. It is used to look for the for the famous string `ace02468bdf13579`\n(see the Intercept article linked at the beginning) match HTTP in TCP streams with `^GET.*`\n```\n(?:/ |\\\\.(?:htm|asp|php)).*\\\\r\\\\n, as well as look for user-defined patterns.\n\n```\n\n-----\n\n2. No hosts on the internet respond to SD packets under this key. That has been checked.\nAlso it’s all out in the open, no one knows how long this leak has been floating around prior\nto publication, and I doubt that I’m the first one to discover this. So it is safe to reveal. But it is\nfun (or scary) to think that once this may have been the key to the castle for controlling a\nsignificant part of the internet.\n\n[3. Details: It is standard 20-round RC6, with blocksize 128 bits. Example C implementation.](https://github.com/radare/radare2/blob/master/libr/crypto/p/crypto_rc6.c)\nCounter is padded to input block as `<8b counter (big endian)><8b 0>, then encrypted`\nto generate keystream. Initial value of counter is in the packet, after each block the counter is\nincreased with 1.\n\nWritten on September 17, 2016\n\nTags: [eqgrp](https://laanwj.github.io/tags/#eqgrp) [malware](https://laanwj.github.io/tags/#malware)\n[Filed under Reverse-engineering](https://laanwj.github.io/categories/#reverse-engineering)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2016/2016-09-17 - A few notes on SECONDDATE's C&C protocol.pdf"
+    ],
+    "report_names": [
+        "2016-09-17 - A few notes on SECONDDATE's C&C protocol.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "b740943a-da51-4133-855b-df29822531ea",
+            "created_at": "2022-10-25T15:50:23.604126Z",
+            "updated_at": "2025-03-27T02:00:55.505366Z",
+            "deleted_at": null,
+            "main_name": "Equation",
+            "aliases": [
+                "Equation"
+            ],
+            "source_name": "MITRE:Equation",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "1a76ed30-4daf-4817-98ae-87c667364464",
+            "created_at": "2022-10-25T16:47:55.891029Z",
+            "updated_at": "2025-03-27T02:05:17.408867Z",
+            "deleted_at": null,
+            "main_name": "IRON LIBERTY",
+            "aliases": [
+                "ATK6 ",
+                "BROMINE ",
+                "CASTLE ",
+                "Crouching Yeti ",
+                "DYMALLOY ",
+                "Dragonfly ",
+                "Energetic Bear / Berserk Bear ",
+                "Ghost Blizzard ",
+                "TEMP.Isotope ",
+                "TG-4192 ",
+                "ALLANITE "
+            ],
+            "source_name": "Secureworks:IRON LIBERTY",
+            "tools": [
+                " Ddex Loader",
+                " Havex",
+                " Karagany",
+                " Loek",
+                " MCMD",
+                " Sysmain",
+                " xfrost",
+                "ClientX"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "08623296-52be-4977-8622-50efda44e9cc",
+            "created_at": "2023-01-06T13:46:38.549387Z",
+            "updated_at": "2025-03-27T02:00:02.859535Z",
+            "deleted_at": null,
+            "main_name": "Equation Group",
+            "aliases": [
+                "Tilded Team",
+                "EQGRP",
+                "G0020"
+            ],
+            "source_name": "MISPGALAXY:Equation Group",
+            "tools": [
+                "EquationLaser",
+                "EquationDrug",
+                "DoubleFantasy",
+                "TripleFantasy",
+                "GrayFish"
+            ],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "2d9fbbd7-e4c3-40e5-b751-27af27c8610b",
+            "created_at": "2024-05-01T02:03:08.144214Z",
+            "updated_at": "2025-03-27T02:05:17.419705Z",
+            "deleted_at": null,
+            "main_name": "PLATINUM COLONY",
+            "aliases": [
+                "Equation Group "
+            ],
+            "source_name": "Secureworks:PLATINUM COLONY",
+            "tools": [
+                " EquationDrug",
+                " EquationLaser",
+                " Fanny",
+                " GrayFish",
+                " TripleFantasy",
+                "DoubleFantasy"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "e0fed6e6-a593-4041-80ef-694261825937",
+            "created_at": "2022-10-25T16:07:23.593572Z",
+            "updated_at": "2025-03-27T02:02:09.879892Z",
+            "deleted_at": null,
+            "main_name": "Equation Group",
+            "aliases": [
+                "APT-C-40",
+                "Platinum Colony",
+                "Tilded Team"
+            ],
+            "source_name": "ETDA:Equation Group",
+            "tools": [
+                "Bvp47",
+                "DEMENTIAWHEEL",
+                "DOUBLEFANTASY",
+                "DanderSpritz",
+                "DarkPulsar",
+                "DoubleFantasy",
+                "DoubleFeature",
+                "DoublePulsar",
+                "Duqu",
+                "EQUATIONDRUG",
+                "EQUATIONLASER",
+                "EQUESTRE",
+                "Flamer",
+                "GRAYFISH",
+                "GROK",
+                "OddJob",
+                "Plexor",
+                "Prax",
+                "Regin",
+                "Skywiper",
+                "TRIPLEFANTASY",
+                "Tilded",
+                "UNITEDRAKE",
+                "WarriorPride",
+                "sKyWIper"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536149,
+    "ts_updated_at": 1743041746,
+    "ts_creation_date": 1653713433,
+    "ts_modification_date": 1653713433,
+    "files": {
+        "pdf": "https://archive.orkl.eu/a9eba1c0e4167e77831b113392953ced63b2a06d.pdf",
+        "text": "https://archive.orkl.eu/a9eba1c0e4167e77831b113392953ced63b2a06d.txt",
+        "img": "https://archive.orkl.eu/a9eba1c0e4167e77831b113392953ced63b2a06d.jpg"
+    }
+}

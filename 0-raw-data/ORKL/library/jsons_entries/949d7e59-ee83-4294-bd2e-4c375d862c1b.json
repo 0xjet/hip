@@ -1,0 +1,62 @@
+{
+    "id": "949d7e59-ee83-4294-bd2e-4c375d862c1b",
+    "created_at": "2023-01-12T15:05:34.388612Z",
+    "updated_at": "2025-03-27T02:09:18.777674Z",
+    "deleted_at": null,
+    "sha1_hash": "9e59f0c7f75b49d53f859e819036ecfe76141bc9",
+    "title": "2022-05-05 - Studying “Next Generation Malware” - NightHawk’s Attempt At Obfuscate and Sleep",
+    "authors": "",
+    "file_creation_date": "2022-12-29T00:20:56Z",
+    "file_modification_date": "2022-12-29T00:20:56Z",
+    "file_size": 114891,
+    "plain_text": "# Studying “Next Generation Malware” - NightHawk’s Attempt At Obfuscate and Sleep\n\n**[web.archive.org/web/20220505170100/https://suspicious.actor/2022/05/05/mdsec-nighthawk-study.html](https://web.archive.org/web/20220505170100/https://suspicious.actor/2022/05/05/mdsec-nighthawk-study.html)**\n\nAustin Hudson May 5, 2022\n\nMay 5, 2022\n• Austin Hudson\n\nShare on:\nOver the last year and a half, I’ve often seen mentions of a self-proclaimed “next generation\nmalware” of the name NightHawk. Ordinarily, I’d know most of those claims tend to be\nnothing more than hubris, and choose to ignore it, but, I get bored. As such, I’ve chosen to\nstart analyzing and tearing about the malware based on samples I acquired via VirusTotal, a\nhub which contains a plethora of commercial, closed-source, and open source samples. This\nresearch is done on my own time, and is not associated with anyone other than myself. I’ve\ntorn about other similiar malware such as Beacon from Cobalt Strike.\n\nTLDR: A very simple, yet effective technique. Can this be replicated with ease? Yes! Was it\nsomething new? Fortunately, no. A little dissapointed? A bit.\n\n## Understanding its PE-SIEVE / Moneta Evasion\n\nA while back, a friend of mine notified me about a video which proclaimed that it was capable\n[of circumventing Hasherezade’s memory scanning tool PE-SIEVE, as well as](https://web.archive.org/web/20220505170100/https://github.com/hasherezade/pe-sieve) Forrest’s\nMoneta, something that peaked my interest, as I had developed a similiar capability a few\n[years prior, to improve the original research named Gargoyle for x86/x64/WOW64.](https://web.archive.org/web/20220505170100/https://github.com/JLospinoso/gargoyle)\n\nAt first, I was intrigued about the technique. Was there perhaps an easier method that I had\nmissed? Fortunutely for me, not so much. Further study revealed that it supported numerous\nsleeping methods, such as leveraging NtSignalAndWaitForSingleObject by notifying an\nevent, then awaiting on the current process while remaining non-alertable, or by leveraging\n```\nNtWaitForSingleObject to await on the current process object as non-alertable.\nEvt = CreateEventW( NULL, 0, 0, NULL );\n\nif ( Evt != NULL ) {\n\n  Nst = NtSignalAndWaitForSingleObject( Evt, NtCurrentProcess(), FALSE, &Del );\n\n}\n\n\n```\n_Pseudo-C demonstrating the underlying concept of using NtSignalAndWaitForSingleObject_\n\nNothing new, fortunately. Its used as a means of circumventing the check on HuntingSleeping-Beacons to hide detections based on the DelayExecution wait status for threads.\nIts certainly sufficient and something I was doing myself\n\n\n-----\n\nHowever, its evasion to hide traces of itself in memory are a little different. It first ( I believe )\nleverages RtlCaptureContext as a callback to kernel32!CreateTimerQueueTimer with an\nargument to a context structure to capture the return address value to return to. A call below\nwould replicate the similiar behavior:\n```\nif ( CreateTimerQueueTimer( &TimerObj, TimerQueue, RtlCaptureContext, ContextStruct,\n0, 0, WT_EXECUTEINTIMERTHREAD ))\n\n{\n\n WaitForSingleObject( TimerObj, 50 ); \n\n}\n\n\n```\nThe callback will promptly be executed within a new thread, and on x64, RSP will be filled\nwith the complete return address. After this has completed, NightHawk then fills in the\nfunction-call CONTEXT structures for VirtualProtect, SuspendThread, GetThreadContext,\n```\nSetThreadContext, and ResumeThread. These context structures allow NightHawk to redirect\n\n```\nexecution to the specified functions with full control over RSP, RCX, RDX, R8, R9.\n\nIt does not have any further control over any functions that are over 4 arguments on x64, due\nto the usage of timers and heavy reliance on its termination callback from calling the\nspecified callback. Furthermore, it adjusts RSP back to 8 bytes to accomodate the offset\ncreated by calling RtlCaptureContext.\n```\n__builtin_memcpy( & ContextVirtualProtect, & ContextStructure, sizeof(\nContextStructure ) );\n\nContextVirtualProtect.Rsp -= 8;\n\nContextVirtualProtect.Rip = VirtualProtect\n\nContextVirtualProtect.Rcx = NightHawkImageBase;\n\nContextVirtualProtect.Rdx = NightHawkImageLength;\n\nContextVirtualProtect.R8  = PAGE_READWRITE\n\nContextVirtualProtect.R9  = &OriginalProtect;\n\n__builtin_memcpy( & ContextSuspendThread, & ContextStructure, sizeof(\nContextStructure ) );\n\nContextSuspendThread.Rsp -= 8;\n\nContextSuspendThread.Rip = SuspendThread;\n\nContextSuspendThread.Rcx = MyOriginalThreadHandle;\n\n\n```\nOnce the call has been built, it then attempts to queue it using the same timer function with a\ncallback set to either NtContinue or RtlRestoreContext which will leverage the context\nstructure to execute the specified function with the set registers and return safely without\ncausing a potential crash - While promptly adjusting the timing period between the calls to\navoid any functions from being queued out of order.\n\n\n-----\n\n```\nLARGE_INTEGER Time;\n\nRtlSecureZeroMemory( &Time, sizeof( Time ) );\n\nTime.QuadPart += 100;\n\nCreateTimerQueueTimer( TimerObj, TimerQueue, RtlRestoreContext,\n&ContextVirtualProtect, &Time, 0, WT_EXECUTEINTIMERTHREAD );\n\nTime.QuadPart += 100;\n\nCreateTimerQueueTimer( TimerObj, TimerQueue, RtlRestoreContext,\n&ContextSuspendThread, &Time, 0,\n\nWT_EXECUTEINTIMERTHREAD );\n\n```\nAs a result, the timer queue will first execute ContextVirtualProtect, before\nContextSuspendThread to avoid issues of them conflicting or running before the other has\ncompleted safely. But first! To avoid issues of the calls running before it has reached a\nwaitable state, it will then use WaitForSingleObject to block until the timer queue has\ncompleted. A very similiar style to how I accomplished my Foliage/Gargyoyle chain a few\nyears ago, yet just as effective.\n\nI will be sharing my PoC in the coming days replicating their varition to completion. For those\nof you who utilize Cobalt or other similiar toolsets, and dont want to waste $30K, fortunately,\nthis can be achieved with very little effort and tooling using something like a custom\nReflective Loader, which I will be re-posting my Titan variant with their implementation\ncontained.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-05-05 - Studying “Next Generation Malware” - NightHawk’s Attempt At Obfuscate and Sleep.pdf"
+    ],
+    "report_names": [
+        "2022-05-05 - Studying “Next Generation Malware” - NightHawk’s Attempt At Obfuscate and Sleep.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535934,
+    "ts_updated_at": 1743041358,
+    "ts_creation_date": 1672273256,
+    "ts_modification_date": 1672273256,
+    "files": {
+        "pdf": "https://archive.orkl.eu/9e59f0c7f75b49d53f859e819036ecfe76141bc9.pdf",
+        "text": "https://archive.orkl.eu/9e59f0c7f75b49d53f859e819036ecfe76141bc9.txt",
+        "img": "https://archive.orkl.eu/9e59f0c7f75b49d53f859e819036ecfe76141bc9.jpg"
+    }
+}

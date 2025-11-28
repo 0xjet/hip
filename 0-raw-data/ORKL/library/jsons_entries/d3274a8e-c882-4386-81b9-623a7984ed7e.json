@@ -1,0 +1,81 @@
+{
+    "id": "d3274a8e-c882-4386-81b9-623a7984ed7e",
+    "created_at": "2023-01-12T14:59:47.299713Z",
+    "updated_at": "2025-03-27T02:08:40.787868Z",
+    "deleted_at": null,
+    "sha1_hash": "5a1c6aa170dac217ddddd1f09d021a0b0544d24a",
+    "title": "2022-05-20 - PDF Malware Is Not Yet Dead",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:09:46Z",
+    "file_modification_date": "2022-05-28T19:09:46Z",
+    "file_size": 2729957,
+    "plain_text": "# Recent Posts\n\n**threatresearch.ext.hp.com/pdf-malware-is-not-yet-dead/**\n\n[HP Threat Research Blog • PDF Malware Is Not Yet Dead](https://threatresearch.ext.hp.com/blog/)\n\n## PDF Malware Is Not Yet Dead\n\n\nMay 20, 2022\n\n\nFor the past decade, attackers have preferred to package malware in Microsoft Office file\nformats, particularly Word and Excel. In fact, in Q1 2022 nearly half (45%) of malware\nstopped by [HP Wolf Security used Office formats. The reasons are clear: users are familiar](https://www.hp.com/uk-en/security/endpoint-security-solutions.html)\nwith these file types, the applications used to open them are ubiquitous, and they are suited\nto social engineering lures.\n\nIn this post, we look at a malware campaign isolated by HP Wolf Security earlier this year\nthat had an unusual infection chain. The malware arrived in a PDF document – a format\nattackers less commonly use to infect PCs – and relied on several tricks to evade detection,\nsuch as embedding malicious files, loading remotely-hosted exploits, and shellcode\nencryption.\n\n\n-----\n\nFigure 1 – Alert timeline in HP Wolf Security Controller showing the malware being isolated.\n\n## PDF Campaign Delivering Snake Keylogger\n\nA PDF document named “REMMITANCE INVOICE.pdf” was sent as an email attachment to\na target. Since the document came from a risky vector – email, in this case – when the user\nopened it, HP Sure Click ran the file in an isolated micro virtual machine, preventing their\nsystem from being infected.\n\nAfter opening the document, Adobe Reader prompts the user to open a .docx file. The\nattackers sneakily named the Word document “has been verified. However PDF, Jpeg, xlsx,\n_.docx” to make it look as though the file name was part of the Adobe Reader prompt (Figure_\n2).\n\n\n-----\n\nFigure 2 – PDF document prompting the user to open another document.\n\n\n-----\n\nAnalyzing the PDF file reveals that the .docx file is stored as an EmbeddedFile object.\nInvestigators can quickly summarize the most important properties of a PDF document using\n[Didier Stevens’ pdfid script (Figure 3).](https://blog.didierstevens.com/programs/pdf-tools/)\n\nFigure 3 – PDFiD analysis of document.\n\nTo analyze the EmbeddedFile, we can use another tool from Didier Stevens’ toolbox, pdf_parser. This script allows us to extract the file from the PDF document and save it to disk._\n\nFigure 4 – Using pdf-parser to save embedded file to disk.\n\n## Embedded Word Document\n\n\n-----\n\nIf we return to our PDF document and click on Open this file at the prompt, Microsoft Word\nopens. If Protected View is disabled, Word downloads a Rich Text Format (.rtf) file from a\nweb server, which is then run in the context of the open document.\n\nFigure 5 – Word document contacting web server.\n\nSince Microsoft Word does not say which server it contacted, we can use Wireshark to\nrecord the network traffic and identify the HTTP stream that was created (Figure 6).\n\n\n-----\n\nFigure 6 – HTTP GET request returning RTF file.\n\nLet’s switch back to the Word document to understand how it downloads the .rtf. Since it is\nan OOXML (Office Open XML) file, we can unzip its contents and look for URLs in the\ndocument using the command shown in Figure 7.\n\nFigure 7 – List of URLs in the Word document.\n\n\n-----\n\nThe highlighted URL caught our eye because it s not a legitimate domain found in Office\ndocuments. This URL is in the document.xml.rels file, which lists the document’s\nrelationships. The relationship that caught our eye shows an external object linking and\nembedding (OLE) object being loaded from this URL (Figure 8).\n\nFigure 8 – XML document relationships.\n\n## External OLE Object\n\nConnecting to this URL leads to a redirect and then downloads an RTF document called\n_f_document_shp.doc. To examine this document more closely, we can use_ _[rtfobj to check if it](https://github.com/decalage2/oletools/wiki/rtfobj)_\ncontains any OLE objects.\n\nFigure 9 – RTFObj output showing two OLE objects.\n\nHere there are two OLE objects we can save to disk using the same tool. As indicated in the\n[console output, both objects are not well-formed, meaning analyzing them with oletools could](http://www.decalage.info/python/oletools)\nlead to confusing results. To fix this, we can use _[foremost to reconstruct the malformed](http://foremost.sourceforge.net/)_\n[objects. Then we can view basic information about the objects using oleid. This tells us the](https://github.com/decalage2/oletools/wiki/oleid)\nobject relates to Microsoft Equation Editor, a feature in Word that is commonly exploited by\nattackers to run arbitrary code.\n\n\n-----\n\nFigure 10 – Basic OLE information extracted with oleid.\n\n## Encrypted Equation Editor Exploit\n\n[Examining the OLE object reveals shellcode that exploits the CVE-2017-11882 remote code](https://msrc.microsoft.com/update-guide/vulnerability/CVE-2017-11882)\nexecution vulnerability in Equation Editor. There are many analyses of this vulnerability, so\nwe won’t analyze it in detail. Instead we focus below on how the attacker encrypted the\nshellcode to evade detection.\n\n\n-----\n\nFigure 11 – Shellcode that exploits CVE-2017-11882.\n\nThe shellcode is stored in the OLENativeStream structure at the end of the object. We can\n[then run the shellcode in a debugger, looking for a call to GlobalLock. This function returns a](https://docs.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-globallock)\npointer to the first byte of the memory block, a technique used by shellcode to locate itself in\nmemory. Using this information, the shellcode jumps to a defined offset and runs a\ndecryption routine.\n\nFigure 12 – Multiplication and addition part of decryption routine.\n\nThe key is multiplied by a constant and added at each iteration. The ciphertext is then\ndecrypted each time with an XOR operation. The decrypted data is more shellcode, which is\nexecuted afterwards.\n\n\n-----\n\nFigure 13 – Decrypted shellcode presenting the payload URL.\n\nWithout running it further, we see that the malware downloads an executable called fresh.exe\n[and runs it in the public user directory using ShellExecuteExW. The executable is Snake](https://docs.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecuteexw)\n[Keylogger, a family of information-stealing malware that we have written about before. We](https://threatresearch.ext.hp.com/the-many-skins-of-snake-keylogger/)\ncan now extract indicators of compromise (IOCs) from this malware, for example using\ndynamic analysis. At this point, we have analyzed the complete infection chain and collected\nIOCs, which can now be used for threat hunts or building new detections.\n\n## Conclusion\n\nWhile Office formats remain popular, this campaign shows how attackers are also using\nweaponized PDF documents to infect systems. Embedding files, loading remotely-hosted\nexploits and encrypting shellcode are just three techniques attackers use to run malware\nunder the radar. The exploited vulnerability in this campaign (CVE-2017-11882) is over four\nyears old, yet continues being used, suggesting the exploit remains effective for attackers.\n\n## IOCs\n\n_REMMITANCE INVOICE.pdf_\n05dc0792a89e18f5485d9127d2063b343cfd2a5d497c9b5df91dc687f9a1341d\n\n_has been verified. however pdf, jpeg, xlsx, .docx_\n250d2cd13474133227c3199467a30f4e1e17de7c7c4190c4784e46ecf77e51fe\n\n\n-----\n\n_f_document_shp.doc_\n165305d6744591b745661e93dc9feaea73ee0a8ce4dbe93fde8f76d0fc2f8c3f\n\nf_document_shp.doc_object_00001707.raw\n297f318975256c22e5069d714dd42753b78b0a23e24266b9b67feb7352942962\n\nExploit shellcode\nf1794bfabeae40abc925a14f4e9158b92616269ed9bcf9aff95d1c19fa79352e\n\n_fresh.exe (Snake Keylogger)_\n20a3e59a047b8a05c7fd31b62ee57ed3510787a979a23ce1fde4996514fae803\n\nExternal OLE reference URL\nhxxps://vtaurl[.]com/IHytw\n\nExternal OLE reference final URL\nhxxp://192.227.196[.]211/tea_shipping/f_document_shp.doc\n\nSnake Keylogger payload URL\nhxxp://192.227.196[.]211/FRESH/fresh.exe\n\nSnake Keylogger exfiltration via SMTP\nmail.saadzakhary[.]com:587\n\nTags\n\n[CVE-2017-11882](https://threatresearch.ext.hp.com/blog/?post-tag=CVE-2017-11882) [PDF](https://threatresearch.ext.hp.com/blog/?post-tag=PDF) [snake](https://threatresearch.ext.hp.com/blog/?post-tag=snake)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-05-20 - PDF Malware Is Not Yet Dead.pdf"
+    ],
+    "report_names": [
+        "2022-05-20 - PDF Malware Is Not Yet Dead.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "b740943a-da51-4133-855b-df29822531ea",
+            "created_at": "2022-10-25T15:50:23.604126Z",
+            "updated_at": "2025-03-27T02:00:55.505366Z",
+            "deleted_at": null,
+            "main_name": "Equation",
+            "aliases": [
+                "Equation"
+            ],
+            "source_name": "MITRE:Equation",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535587,
+    "ts_updated_at": 1743041320,
+    "ts_creation_date": 1653764986,
+    "ts_modification_date": 1653764986,
+    "files": {
+        "pdf": "https://archive.orkl.eu/5a1c6aa170dac217ddddd1f09d021a0b0544d24a.pdf",
+        "text": "https://archive.orkl.eu/5a1c6aa170dac217ddddd1f09d021a0b0544d24a.txt",
+        "img": "https://archive.orkl.eu/5a1c6aa170dac217ddddd1f09d021a0b0544d24a.jpg"
+    }
+}

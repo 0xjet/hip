@@ -1,0 +1,162 @@
+{
+    "id": "3dd66cfc-5e7d-40da-aa59-3d0f3875ffec",
+    "created_at": "2023-01-12T15:06:19.753313Z",
+    "updated_at": "2025-03-27T02:05:29.114689Z",
+    "deleted_at": null,
+    "sha1_hash": "3b6da142765deeb858a1b7806c8680edce8bda00",
+    "title": "2021-01-28 - Learn how to fix PE magic numbers with Malduck",
+    "authors": "",
+    "file_creation_date": "2022-05-27T21:13:28Z",
+    "file_modification_date": "2022-05-27T21:13:28Z",
+    "file_size": 311878,
+    "plain_text": "# Learn how to fix PE magic numbers with Malduck\n\n**0xc0decafe.com/fix-pe-magic-numbers-with-malduck/**\n\nJanuary 28, 2021\n\nMalware often corrupts the Portable Executable (PE) header to hinder its analysis. By\noverwriting parts of the PE header, malware evades simple memory dumpers and thwarts\nproper loading by analysis tools. If we’re lucky then malware only overwrites the magic\nnumbers of the PE header ( MZ and `PE ) and leaves the rest of the header intact. We can`\nfix such corrupted PE headers with ease. All we need is a little bit of knowledge about the PE\nformat and the right tool to manipulate memory dumps.\n\nFirst, we’ll learn how to identify such corrupted PE headers quickly with a hexeditor. Next,\n[we’ll see how to manipulate memory dumps with Malduck. This section gives you a head](https://malduck.readthedocs.io/en/latest/)\nstart on how to use this great Python module effectively. Finally, we are putting it all together\nand write a script to fix PE magic numbers of a corrupted PE header.\n\n## Identifying overwritten magic numbers\n\nIn the following, I assume that you’ve got a basic understanding of the PE format. If not, I can\n[recommend the article on osdev.org (check the overview graphic of the PE format) as an](https://wiki.osdev.org/PE)\nintroduction.\n\n\n-----\n\nThere are two magic numbers in the PE header that are frequently overwritten by malware.\nFirst, the magic number of the DOS header ( _IMAGE_DOS_HEADER ), which is a two-byte or\nWORD constant ( MZ ). Second, the magic number of the PE header, which is a four-byte or\nDWORD constant ( PE\\x00\\x00 ). This is illustrated in the following screenshot of a PE file\nopened in a hexeditor. Both magic numbers are colored in orange. The `MZ magic is at`\noffset `0x0 and the` `PE\\x00\\x00 is at offset` `0x80 .`\n\nPrincipal\n\nmagic numbers of a PE file (orange)\nNow that we’ve seen a perfectly fine PE header, let’s see how a slightly corrupted PE header\nlooks like. The next screenshot shows a PE header with both (principal) magic numbers\noverwritten.\n\nOverwritten\n\nmagic numbers (MZ + PE)\nWe can still identify that this is likely a PE file since the famous string `This program`\n```\ncannot be run in DOS mode is still there. But we are missing these two magic numbers,\n\n```\nwhich in turn hinders many analysis tools to properly load and analyze such a binary.\n\nSo, fixing this kind of corrupted PE header is straightforward. First, we have to restore the\nmagic number `MZ at offset` `0x0 . Second, we have to determine the offset to the PE`\nheader. The DOS header holds this offset in its field `e_lfanew (see next code block with`\nDOS header for reference). Therefore, we have to read the value of `e_lfanew from the`\n\n\n-----\n\nDOS header. `e_lfanew resides at offset` `0x3c . Third, we have to restore the PE header`\nmagic number `PE\\x00\\x00 at the offset pointed to by` `e_lfanew . Finally, we should`\nvalidate, if the file is now a valid PE file.\n```\ntypedef struct _IMAGE_DOS_HEADER {        \n  WORD e_magic;   /* 00: MZ Header signature */    \n  WORD e_cblp;    /* 02: Bytes on last page of file */    \n  WORD e_cp;     /* 04: Pages in file */    \n  WORD e_crlc;    /* 06: Relocations */    \n  WORD e_cparhdr;  /* 08: Size of header in paragraphs */    \n  WORD e_minalloc;  /* 0a: Minimum extra paragraphs needed */    \n  WORD e_maxalloc;  /* 0c: Maximum extra paragraphs needed */    \n  WORD e_ss;     /* 0e: Initial (relative) SS value */    \n  WORD e_sp;     /* 10: Initial SP value */    \n  WORD e_csum;    /* 12: Checksum */    \n  WORD e_ip;     /* 14: Initial IP value */      \n  WORD e_cs;     /* 16: Initial (relative) CS value */     \n  WORD e_lfarlc;   /* 18: File address of relocation table */    \n  WORD e_ovno;    /* 1a: Overlay number */    \n  WORD e_res[4];   /* 1c: Reserved words */    \n  WORD e_oemid;   /* 24: OEM identifier (for e_oeminfo) */    \n  WORD e_oeminfo;  /* 26: OEM information; e_oemid specific */    \n  WORD e_res2[10];  /* 28: Reserved words */    \n  DWORD e_lfanew;   /* 3c: Offset to extended header */    \n} IMAGE_DOS_HEADER, *PIMAGE_DOS_HEADER;\n\n```\nNote that if you encounter a memory dump that starts with around 1000 / 0x400 zero bytes,\nfollowed by properly aligned code, then you are likely out of luck. What you are looking at is\nlikely a completely overwritten PE header. Here I’ve encountered two scenarios throughout\nthe years. First, the malware unpacks a perfectly fine PE file and overwrites the PE header,\nfor instance, before injecting it into another process. If this is the case then go back to\ndebugging and dump the PE file before the header is overwritten.\n\nSecond, the malware unpacks a PE file with an already corrupted PE header. In this case,\nyou have to restore the PE header. If it is really necessary then you can try to build a PE file\nfrom scratch with [LIEF. However, this is out of the scope of this blog post.](https://lief.quarkslab.com/doc/latest/index.html)\n\n## Manipulating memory dumps with Malduck\n\n[Malduck is a Python module that helps writing malware analysis scripts quickly. It is](https://malduck.readthedocs.io/en/latest/)\n[developed and maintained by CERT.pl.](https://www.cert.pl/) [Malduck’s documentation is very decent. It is my](https://malduck.readthedocs.io/en/latest/)\n[default go-to tool to write malware analysis scripts (e.g. for aPLib decompression).](https://0xc0decafe.com/malware-analysts-guide-to-aplib-decompression/)\n\n### Open a memory dump with Malduck\n\nBefore we can manipulate memory dumps (of PE files), we have to open them with Malduck.\nThe basis for all memory representations is the class `Malduck.procmem (alias for`\n```\nmalduck.procmem.procmem.ProcessMemory ). The constructor takes three parameters:\n\n```\n\n-----\n\n**buf: a buffer of the memory contents (as among others Python bytes)**\n**base (optional): the base address of the memory dump, which defaults to** `0x0`\n**regions (optional): a list of regions of the memory dump, defaults to** `None (not`\nrelevant in the following since we’ll work with PE dumps)\n\nWe can get the length of a `ProcessMemory instance with the method` `length and close it`\nwith `close .`\n\nApart from methods for reading and writing (see next sections), there are methods for\nsearching ( findmz, `findp,` `findv,` `regexp,` `regexv ), YARA scanning ( yarap,`\n```\nyarav ), and disassembling ( disasmv ). Note that methods may be suffixed with either v\n\n```\n(virtual) or `p (physical). Methods suffixed with` `v work on virtual addresses and methods`\nsuffixed with `p work on physical addresses (raw offsets in the memory dump). The`\nmethods `p2v and` `v2p translate from physical addresses to virtual and vice versa.`\n\nBased on `malduck.procmem.procmem.ProcessMemory, there are four more memory`\nrepresentations in Malduck:\n\n[ProcessMemoryPE (alias](https://malduck.readthedocs.io/en/latest/procmem.html#processmemorype-procmempe) `procmempe ) for PE files`\n[ProcessMemoryELF (alias](https://malduck.readthedocs.io/en/latest/procmem.html#processmemoryelf-procmemelf) `malduck.procmemelf ) for ELF files`\n[CuckooProcessMemory (alias](https://malduck.readthedocs.io/en/latest/procmem.html#cuckooprocessmemory-cuckoomem) `malduck.cuckoomem ) for memory dumps in Cuckoo`\n2.x format\n[IDAProcessMemory (alias](https://malduck.readthedocs.io/en/latest/procmem.html#idaprocessmemory-idamem) `malduck.idamem ) for working with IDAPython`\n\nSince this blog post covers PE files, we will work with `ProcessMemoryPE (alias`\n```\nprocmempe ) in the following. The constructor differs slightly from the constructor of\nProcessMemory . The first two parameters are still buf and base . However, it does not\n\n```\ntake the parameter `regions but takes two more parameters:`\n```\n   image (optional): indicate that this is a dump of a memory-mapped PE file, which\n\n```\ndefaults to `False`\n```\n   detect_image (optional): heuristically detects if is a memory-mapped PE file, which\n\n```\ndefaults to `False`\n\nA useful method of `ProcessMemoryPE is` `is_valid, which checks if the imagebase of the`\nmemory dump points to a valid PE header.\n\n[I encourage you to read the documentation to find other hidden gems. There are further](https://malduck.readthedocs.io/en/latest/index.html)\nmethods like `extract that tries to extract a malware configuration from the memory dump.`\nSee Malduck’s [static configuration extractor engine for more information.](https://malduck.readthedocs.io/en/latest/extractor.html)\n\n### Read ProcessMemoryPE\n\n\n-----\n\nMalduck supports two ways to read from a `ProcessMemory instance. First, it allows reading`\nraw data chunks with `readp,` `readv, and` `readv_until . While` `readp takes as input a`\nraw `offset and an optional` `length,` `readv takes as input a virtual` `addr . The method`\n```\nreadv_until is useful when you want to read until a certain stop marker (e.g. end of\n\n```\nconfiguration).\n\nSecond, Malduck supports reading various data types:\n\nstrings: `asciiz and` `utf16z`\nsigned integers: `int8p / int8v,` `int16p / int16v,` `int32p / int32v,` `int64p`\n/ int64v\nunsigned integers: `uint8p / uint8v,` `uint16p / uint16v,` `uint32p / uint32v,`\n```\n   uint64p / uint64v\n\n```\nNote that there is always a physical ( p ) and virtual ( v ) version. Internally, all utilize either\n```\nreadp or readv to read the data.\n\n### Write ProcessMemoryPE\n\n```\nThe support for writing `ProcessMemory instances is rudimentary when compared with the`\nreading support. There are just two functions to know: `patchp and` `patchv . Both accept a`\nraw `offset / virtual` `addr and a bytes` `buf . That’s it, pretty straight forward!`\n\n## Putting it all together: fix PE magic numbers with Malduck\n\nThis section puts it all together: our theoretical knowledge about the PE format and our\npractical knowledge about memory dump manipulation with Malduck. The script\n```\nfix_pe_magic_numbers.py takes a path to a dump of PE file with a corrupted header as\n\n```\ninput and outputs a fixed dump.\n\nFirst, it loads the dump into a buffer `data and opens it with` `malduck.procmempe (alias of`\n```\nmalduck.procmem.procmempe.ProcessMemoryPE ) in line 11. The method is_valid\n\n```\nchecks if a `ProcessMemoryPE object is a valid PE file (line 13). Next, it patches the` `MZ`\nmagic number with the method `patchp (line 17) and reads the DOS header field`\n```\ne_lfanew with the method uint32p . Again, e_lfanew resides at offset 0x3C .\n\n```\nAfterwards, it patches the `PE\\x00\\x00 magic number with the method` `patchp (line 24).`\nFinally, it validates the PE file with the method `is_valid (line 26). If it is valid, then it writes`\nall bytes of the `ProcessMemoryPE object to a file (line 29).`\n\n\n-----\n\n```\nimport sys\nimport malduck\ndef main(argv):\n  if len(argv) != 2:\n  print('Usage: fix_pe_magic_numbers.py PATH_TO_DUMP')   \n    return\n  with open(argv[1], 'rb') as f:   \n    data = f.read()\n    pe = malduck.procmempe(buf=data)   \n    if pe.is_valid():     \n      print('This file is already a valid PE file. Skipping...')     \n      return   \n    pe.patchp(0, b'MZ')   \n    lfanew = pe.uint32p(0x3c)   \n    if lfanew > len(data):     \n      print('Bogus lfanew value ({hex(lfanew)}). Bailing out...')     \n      return   \n    print(f'lfanew: {hex(lfanew)}')   \n    pe.patchp(lfanew, b'PE\\x00\\x00')   \n    if pe.is_valid():     \n      print('Fixed file successfully. Dumping to new file...')     \n      with open(argv[1].replace('bin', '') + '_fixed_header.bin', 'wb') as g:\n     g.write(pe.readp(0))     \n        print('Done.')   \n    else:     \n      print('Could not fix file, still not a valid PE file.')   \n    pe.close()\nif name == 'main':\n  main(sys.argv)\n\n```\nLet’s see how it works with our broken memory dump from the beginning:\n```\n> file memdump.bin\nmemdump.bin: data\n> python fix_pe_magic_numbers.py memdump.bin\n lfanew: 0x80\n Fixed file successfully. Dumping to new file…\n Done.\n> file memdump_fixed_header.bin\nmemdump_fixed_header.bin: PE32+ executable (console) x86-64, for MS Windows\n\n```\net voilà! The script fixed the memory dump as we can see in the following screenshot:\n\n\n-----\n\nFixed PE\n\nheader with MZ and PE magic numbers restored\nBoth magic numbers are located at their correct offsets: the magic number of the DOS\nheader `MZ resides at offset zero and the magic number of the File header resides at offset`\n0x80 (as indicated by `e_lfanew ). Now you can load the PE file with other analysis tools`\nand continue your analysis.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-01-28 - Learn how to fix PE magic numbers with Malduck.pdf"
+    ],
+    "report_names": [
+        "2021-01-28 - Learn how to fix PE magic numbers with Malduck.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "1162e0d4-b69c-423d-a4da-f3080d1d2b0c",
+            "created_at": "2023-01-06T13:46:38.508262Z",
+            "updated_at": "2025-03-27T02:00:02.851407Z",
+            "deleted_at": null,
+            "main_name": "Molerats",
+            "aliases": [
+                "Gaza Hackers Team",
+                "Gaza cybergang",
+                "Gaza Cybergang",
+                "Operation Molerats",
+                "Extreme Jackal",
+                "ALUMINUM SARATOGA",
+                "G0021",
+                "BLACKSTEM"
+            ],
+            "source_name": "MISPGALAXY:Molerats",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "0c502f6d-640d-4e69-bfb8-328ba6540d4f",
+            "created_at": "2022-10-25T15:50:23.756782Z",
+            "updated_at": "2025-03-27T02:00:55.539397Z",
+            "deleted_at": null,
+            "main_name": "Molerats",
+            "aliases": [
+                "Molerats",
+                "Operation Molerats",
+                "Gaza Cybergang"
+            ],
+            "source_name": "MITRE:Molerats",
+            "tools": [
+                "MoleNet",
+                "DustySky",
+                "DropBook",
+                "SharpStage",
+                "PoisonIvy"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "847f600c-cf90-44c0-8b39-fb0d5adfcef4",
+            "created_at": "2022-10-25T16:07:23.875541Z",
+            "updated_at": "2025-03-27T02:02:10.005591Z",
+            "deleted_at": null,
+            "main_name": "Molerats",
+            "aliases": [
+                "ATK 89",
+                "Aluminum Saratoga",
+                "Extreme Jackal",
+                "Gaza Cybergang",
+                "Gaza Hackers Team",
+                "Molerats",
+                "Operation DustySky",
+                "Operation DustySky Part 2",
+                "Operation Molerats",
+                "Operation Moonlight",
+                "Operation SneakyPastes",
+                "Operation TopHat",
+                "TA402",
+                "TAG-CT5"
+            ],
+            "source_name": "ETDA:Molerats",
+            "tools": [
+                "BadPatch",
+                "Bladabindi",
+                "BrittleBush",
+                "Chymine",
+                "CinaRAT",
+                "Darkmoon",
+                "Downeks",
+                "DropBook",
+                "DustySky",
+                "ExtRat",
+                "Gen:Trojan.Heur.PT",
+                "H-Worm",
+                "H-Worm RAT",
+                "Houdini",
+                "Houdini RAT",
+                "Hworm",
+                "Iniduoh",
+                "IronWind",
+                "Jenxcus",
+                "JhoneRAT",
+                "Jorik",
+                "KasperAgent",
+                "Kognito",
+                "LastConn",
+                "Micropsia",
+                "MoleNet",
+                "Molerat Loader",
+                "NeD Worm",
+                "NimbleMamba",
+                "Njw0rm",
+                "Pierogi",
+                "Poison Ivy",
+                "Quasar RAT",
+                "QuasarRAT",
+                "SPIVY",
+                "Scote",
+                "SharpSploit",
+                "SharpStage",
+                "WSHRAT",
+                "WelcomeChat",
+                "Xtreme RAT",
+                "XtremeRAT",
+                "Yggdrasil",
+                "dinihou",
+                "dunihi",
+                "njRAT",
+                "pivy",
+                "poisonivy"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535979,
+    "ts_updated_at": 1743041129,
+    "ts_creation_date": 1653686008,
+    "ts_modification_date": 1653686008,
+    "files": {
+        "pdf": "https://archive.orkl.eu/3b6da142765deeb858a1b7806c8680edce8bda00.pdf",
+        "text": "https://archive.orkl.eu/3b6da142765deeb858a1b7806c8680edce8bda00.txt",
+        "img": "https://archive.orkl.eu/3b6da142765deeb858a1b7806c8680edce8bda00.jpg"
+    }
+}

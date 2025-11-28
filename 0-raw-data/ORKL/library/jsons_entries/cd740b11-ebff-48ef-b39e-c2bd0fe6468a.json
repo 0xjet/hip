@@ -1,0 +1,177 @@
+{
+    "id": "cd740b11-ebff-48ef-b39e-c2bd0fe6468a",
+    "created_at": "2023-01-12T15:06:45.063456Z",
+    "updated_at": "2025-03-27T02:13:57.323704Z",
+    "deleted_at": null,
+    "sha1_hash": "6ac5dd37d65d1f7f3f9e1f10fd6d5deaaf557090",
+    "title": "2022-02-24 - HermeticWiper & resurgence of targeted attacks on Ukraine",
+    "authors": "",
+    "file_creation_date": "2022-05-27T23:18:18Z",
+    "file_modification_date": "2022-05-27T23:18:18Z",
+    "file_size": 1794873,
+    "plain_text": "# HermeticWiper & resurgence of targeted attacks on Ukraine\n\n**zscaler.com/blogs/security-research/hermeticwiper-resurgence-targeted-attacks-ukraine**\n\n## Summary\n\nSince Jan 2022, ThreatLabz has observed a resurgence in targeted attack activity against Ukraine. We identified two attack-chains in the\ntimeframe - Jan to Feb 2022, which we attribute to the same threat actor with a moderate confidence level. It is important to note that we are\nnot attributing the attacks to any nation-state backed threat actors at this point, since we don't have full visibility into the final payloads and the\nmotives of the attack. The C2 infrastructure re-use points to Gamaredon APT threat actor, however more visibility is needed for proper\nattribution.\n\nThe first attack-chain was blogged by the CERT team of Ukraine on 1st Feb 2022 [here . It involved spear phishing emails sent to the “State](https://cert.gov.ua/article/18365)\n**Administration of Seaports of Ukraine”. The samples corresponding to the next-stage document template and the VBScript payload were**\nnot available in public domain. We were able to identify the document template and VBScript payload, and we aim to share the technical\nanalysis in this blog.\n\nOn 11th Feb 2022, we identified a sample uploaded to VirusTotal from Ukraine which resulted in our discovery of a previously\n**undocumented attack-chain. We describe the technical details of this second attack-chain in the blog. By pivoting on the metadata of the**\nfiles, we were able to discover 7 unique samples and the origins of campaign tracing back to Nov 2020.\n\n[On 23rd Feb 2022, there were reports of a new sophisticated wiper malware hitting several organizations in the Ukraine with an objective of](https://twitter.com/ESETresearch/status/1496581903205511181)\ndestroying data and causing business disruption. Threatlabz team analyzed the malware payload involved and uncovered several new tactics\nused in these attacks. A [ransomware decoy known as PartyTicket was also observed being deployed during these attacks.](https://symantec-enterprise-blogs.security.com/blogs/threat-intelligence/ukraine-wiper-malware-russia)\n\nIn this blog, we will look at the technical details of these recent attacks targeting commercial and public entities in Ukraine.\n\n## 1. HermeticWiper DoS Attack - Technical Analysis\n\nHermeticWiper is a sophisticated malware family that is designed to destroy data and render a system inoperable\nThe wiper is multi-threaded to maximize speed and utilizes a kernel driver for low-level disk access\nThese driver files appear to be part an outdated version of the EaseUS Partition Master application developed by CHENGDU YIWO\nTech Development\n\nThe HermeticWiper malware sample with SHA256 1bc44eef75779e3ca1eefb8ff5a64807dbc942b1e4a2672d77b9f6928d292591 was\ncompiled at 2022-02-23 09:48:53 UTC and was digitally signed with a valid certificate that was issued to Hermetica Digital Ltd. as shown in\nFigure 1.\n\n\n-----\n\nFigure 1: HermeticWiper’s digital signature\n\nThe malware supports two command-line arguments that control the maximum duration to spend destroying data before forcing the system to\nreboot. After parsing the command-line, HermeticWiper calls OpenProcessToken() with the access mask TOKEN_ADJUST_PRIVILEGES |\n_TOKEN_QUERY. If the wiper does not have sufficient privileges, it will terminate without performing any malicious actions. Otherwise_\nHermeticWiper will attempt to grant itself the privileges SeShutdownPrivilege and SeBackupPrivilege and install a Windows kernel driver.\nThe driver is embedded in the malware’s resource section, which contains the names and SHA256 hashes shown in Table 1. These files are\ndigitally signed drivers that are used to interact with disks.\n\n\nDriver\nfilename\n\n\nCompressed SHA256 Decompressed SHA256\n\n\nDRV_X64 e5f3ef69a534260e899a36cec459440dc572388defd8f1d98760d31c700f42d5 96b77284744f8761c4f2558388e0aee2140618b\n\nDRV_X86 b01e0c6ac0b8bcde145ab7b68cf246deea9402fa7ea3aede7105f7051fe240c1 8c614cf476f871274aa06153224e8f7354bf5e23\n\nDRV_XP_X64 b6f2e008967c5527337448d768f2332d14b92de22a1279fd4d91000bb3d4a0fd 23ef301ddba39bb00f0819d2061c9c14d17dc30\n\nDRV_XP_X86 fd7eacc2f87aceac865b0aa97a50503d44b799f27737e009f91f3c281233c17d 2c7732da3dcfc82f60f063f2ec9fa09f9d38d5cfbe\n\nTable 1. Driver files embedded in HermeticWiper\n\nThe specific driver that is extracted depends on whether the Windows operating system version is 32-bit or 64-bit and Windows XP or newer.\nThe functions that are used to determine the Windows operating system version are VerSetConditionMask and VerifyVersionInfoW. These\nfunctions are rarely seen in comparison to the standard GetVersion functions to identify the Windows version.\n\nAfter these resources are extracted from the binary, the Windows LZ extraction library functions are used to decompress them. The Windows\ncommand-line utility expand.exe can also be used to manually decompress the drivers as shown in Figure 2.\n\n\n-----\n\nFigure 2: Manual decompression of the HermeticWiper drivers using the Windows expand utility\n\nThe certificate for these signed drivers is registered to CHENGDU YIWO Tech Development Co., Ltd., but expired on September 11, 2014\nas shown in Figure 3.\n\nFigure 3: Expired certificate used to sign the HermeticWiper drivers\n\n[These driver files appear to be part of the EaseUS Partition Master application developed by CHENGDU YIWO Tech Development.](https://www.easeus.com/partition-manager/)\n\nThe driver file is written to the Windows drivers directory with a filename that includes two alphabetic characters that are pseudorandomly\nchosen using the current process ID concatenated with the string \"dr\" and appended with a .sys extension (e.g., lxdr.sys). Hermetic Wiper will\nthen elevate its privileges to SeLoadDriverPrivilege and load the driver and start it as a service. The malware disables the vss (Volume\nShadow Copy) service used for backing up and restoring data and sets the CrashDumpEnabled registry value to zero in the registry key\n_HKLM\\SYSTEM\\CurrentControlSet\\Control\\CrashControl to disable crash dumps. This ensures that if the malware crashes, Windows will not_\nproduce a crash dump file that can be used to identify the cause. The registry values ShowCompColor and ShowInfoTip are also set to\nzero (i.e. disabled) under the registry key HKEY_USERS\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced to suppress popups and other indicators of data destruction.\n\nThe driver registers itself as a device named EPMNTDRV to expose itself to the userland component of HermeticWiper. The malware\nenumerates physical disks 0-100 and destroys the Master Boot Record (MBR) on every physical disk by overwriting the first 512 bytes with\nrandom data. The malware then parses the file system to determine whether the partition is NTFS or FAT. If the file system is the former, it will\noverwrite the Master File Table (MFT) that stores information about every file on the system. Hermetic also targets files that are located in the\ndirectories:\n\nC:\\System Volume Information\n\n\n-----\n\nC \\ do s\\S S O\nC:\\Documents and Settings\nC:\\Windows\\System32\\winevt\\Logs\n\nAfter the data destruction occurs, a forced reboot will occur. As a result, the boot loader will not be able to load the operating system as\nshown in Figure 4.\n\nFigure 4. Result after HermeticWiper erases the Master Boot Record and forces a system reboot\n\n## 2. Targeted Attacks\n\n_Timeframe - Nov 2021 onwards_\n\nDuring our analysis, we found a C2 infrastructure overlap between the two targeted attack chains seen below in Figure 4 and 5.\n\nFigure 4: Targeted attack chain #1\n\n\n-----\n\nFigure 5: Targeted attack chain #2\n\n**Technical analysis**\n\n**Attack chain #1**\n\nThe attack chain #1 infection starts with an email which has a malicious RAR archive attachment. The victim downloads and extracts the RAR\narchive contents which contains a malicious document file that is themed using the ongoing geo-political conflict between Russia and\nUkraine.\n\n**[+] Stage 1: Document**\n\nThe document on execution simply downloads a macro-based template from the specified remote location. Figure 6 below shows the\ntemplate reference present inside one of the documents.\n\nFigure 6: Relationship referring the macro-based remote template\n\n**[+] Stage 2: Macro template (714f8341bd1c4bc1fc38a5407c430a1a)**\n\n\n-----\n\ne ac o code s de t e te p ate s ob uscated by add g a ot o ju code s ot o y ates t e s e o ac o code but a so de s\nthe code analysis. The main operation it performs is to drop and execute a VBScript.\n\nThe VBScript is Base64-encoded inside the VBA macro as shown in Figure X below.\n\nFigure 7: Base64-encoded VBScript inside the VBA macro\n\n**[+] Stage 3: VBScript**\n\nAs per OSINT, this stage-3 VBScript which is dropped by the stage-2 macro is called GammaLoad. The VBScript code is obfuscated similar\nto the macro code. On execution it performs the following operations:\n\n**1. Collects user and system information for exfiltration**\n\n**2. Grabs the IP address associated with the configured C2 domain using WMI**\n\n**WMI query format:**\n\n_SELECT * FROM Win32_PingStatus WHERE Address={configured_c2_domain}_\n\n**3. Sends a network request to download the next stage payload using the IP address obtained from step #2 and also exfiltrate the information**\ncollected from step #1 using the UserAgent field\n\n**UserAgent Format:**\n\n{hardcoded_useragent_string}::%USERPROFILE%_%SYSTEMDRIVE%.SerialNumber::\\.{static_string}\\.\n\n**4. Drops and executes the downloaded payload**\n\n**[Note: At the time of analysis we didn’t get this next stage payload but based on past analysis the threat actor is known to drop some remote](https://www.ria.ee/sites/default/files/content-editors/kuberturve/tale_of_gamaredon_infection.pdf)**\ndesktop application like UltraVNC\n\n**Attack Chain #2**\n\nWe identified another attack-chain used by the same threat actor which is not documented anywhere in the public domain, to the best of our\nknowledge. Based on our research, this campaign has been active since as early as November 2020 and only 7 unique samples have been\nidentified till date related to this campaign. The most recent instance was observed on 11th Feb 2022 and based on the filename, we believe\nthat it was distributed on 8th Feb 2022 to the targeted victim(s).\n\nThis low-volume campaign involves RAR archive files distributed through spear phishing emails. These RAR archive files contain a malicious\nWindows shortcut file (LNK) which downloads the MSI payload from the attacker-controlled server and executes it on the endpoint using\nMSIEXEC.\n\nThis results in the packaged NSIS binary to be dropped on the system and it starts the infection-chain.\n\nComponents of the NSIS binary will be unpacked in the directory: %temp%\\<random_name>.tmp\\ during the course of its execution.\n\nAll the extracted components are shown below.\n\n\n-----\n\n_Figure 8: components of the NSIS binary_\n\nIt loads the DLL from the above directory.\n\n**MD5 hash of the DLL: 74ce360565fa23d9730fe0c5227c22e0**\n\n**Filename of the DLL: ypagjgfyy.dll**\n\nThe NSIS script which controls the execution of the NSIS installer can be used to analyze the activity. The relevant code sections from the\nscript are included in the Appendix section.\n\nThe steps below summarize the activity:\n\n1. Call the export function: \"oqiuqqaxaicm\" in the DLL file - ypagjgfyy.dll and pass it two parameters. The first one is the encrypted string\n\nand the second one is the decryption key.\n2. The decrypted string is a URL: hxxp://kfctm[.]online/0102adqeczoL2.txt\n3. Call the download_quiet function in nsisdl (downloader component of NSIS installer) to fetch the contents of the URL which was\n\ndecrypted in step #2.\n4. The response is saved in the file - $PLUGINSDIR\\readme.txt\n5. Call the export function: “cfyhayyyu” in the DLL file - ypagjgfyy.dll and pass it three parameters. The first parameter is the file created in\n\nstep #4 and the other 2 parameters are used to decrypt the contents of the readme.txt file.\n6. At this point, the code can take 2 paths based on whether the readme.txt file was successfully created or not in step #4. If step #4 was\n\nsuccessful, then the decrypted contents of the readme.txt file will be used as a decryption key to decrypt other important strings and\ncontinue the malicious activities.\n\nAt the time of our analysis, since the URL in step #2 did not respond so the readme.txt file was not created. As a result, the code execution\ncontinued to call the export function: “euuxijbaha” in the DLL - ypagjgfyy.dll to decrypt the contents of the DAT file - gofygsg.dat packaged\ninside the NSIS installer. The resulting decrypted content is a DOCX file which is displayed to the victim with MS Office Word application.\n\n**Infrastructure overlap and re-use**\n\nDuring our analysis of the targeted attacks, we found that one of the C2 domain - \"download.logins[.]online\" which was used to host the\nMSI payload as part of attack-chain #2 was previously attributed to the Gamaredon APT threat actor by [Anomali labs. At that time, it was](https://www.anomali.com/blog/primitive-bear-gamaredon-targets-ukraine-with-timely-themes)\nused to host a macro-based template document which overlaps with the attack-chain #1, as we described in this blog.\n\n## Zscaler coverage\n\nWe have ensured coverage for the payloads seen in these attacks via advanced threat signatures as well as advanced cloud sandbox.\n\n**Advanced Threat Protection**\n\nWin32.Trojan.KillDisk\n\nWin32.Trojan.HermeticWiper\n\n**Advanced Cloud Sandbox**\n\n\n-----\n\n3 oja e et c pe\n\n**Advanced Cloud Sandbox Report**\n\nFigure 9 below shows the sandbox detection report for Wiper malware.\n\n_Figure 9: Zscaler Cloud Sandbox Report - HermeticWiper_\n\nFigure 10 below shows the document template (from attack chain #1) detection in the Zscaler sandbox.\n\nFigure 10: Zscaler Cloud Sandbox Report - Targeted Attack document template\n\n\n-----\n\n**p**\n\n**# Attack Chain 1**\n\n**[+] Hashes**\n\n**MD5** **Description**\n\n9fe8203b06c899d15cb20d2497103dbb RAR archive\n\n\n178b0739ac2668910277cbf13f6386e8\n\nfd4de6bb19fac13487ea72d938999fbd\n\n714f8341bd1c4bc1fc38a5407c430a1a\n\n8293816be7f538ec6b37c641e9f9287f\n\n**[+] C2 Domains**\n\ncoagula[.]online\n\ndeer.dentist.coagula[.]online\n\ndeclaration.deed.coagula[.]online\n\nsurname192.temp.swtest[.]ru\n\n**[+] Download URLs**\n\n**Component** **URL**\n\n\nDocument\n\nTemplate\n\n\nTemplate http://surname192.temp.swtest[.]ru/prapor/su/ino.gif\n\nhttp://surname192.temp.swtest[.]ru/prapor/su/derg.gif\n\nhttp://surname192.temp.swtest[.]ru/prapor/su/flagua.gif\n\nhttp://surname192.temp.swtest[.]ru/prapor/su/flages.gif\n\nSecondary payload 94.158.244[.]27/absolute.ace\n\n94.158.244[.]27/distant.cdr\n\n**[+] Associated IPs**\n\n94.158.244[.]27\n\n**# Attack Chain 2**\n\n**[+] Hashes**\n\n**MD5** **Description**\n\n\n-----\n\n7c1626fcaf47cdfe8aaed008d4421d8c\n\n6d40826dc7a9c1f5fc15e9823f30966b\n\nc2ef9f814fc99670572ee76ba06d24da\n\n3751b3326f3963794d3835dbf65ac048\n\n3cfc9972ad7cbd13cac51aade3f2b501\n\nba1f2bfe95b219354ddad04b79579346\n\n56be65fe4d9709c10cae511d53d92d1a\n\n5f568c80ab68a4132506f29ede076679\n\n2b7b4ad2947516e633f5008ace02690d\n\nbdcb83cc6f54d571a2c102fbbd8083c7\n\nb25865010562a3863ef892311644b3bb\n\nbc740d642893e0fe23c75264ca7c2bca\n\nd5628fe5de110e321110bbc76061702b\n\n53ee0babcf03b17e02e4317b6a410b93\n\nc3564bde7b49322f2bacdc495146cfbc\n\n6fa9d3407b70e3928be3ee0a85ddb01c\n\ne6a9e19e1b019f95bfc5a4e161794a7f\n\n2cc96a41092e7adf726365bbc5726150\n\n9f566a164a5c6ae046c24d0e911dc577\n\n**[+] C2 domains**\n\nkfctm[.]online\n\nmy.cloud-file[.]online\n\nmy.mondeychamp[.]xyz\n\nfiles-download.infousa[.]xyz\n\ndownload.logins[.]online\n\n**[+] Download URLs**\n\n**Component** **URL**\n\n\nRAR archive\n\nLNK\n\nMSI\n\n\nMSI http://kfctm[.]online/0802adqeczoL7.msi\n\nhttp://my.cloud-file[.]online/Microsoft_VieweR_2012.msi\n\nhttp://my.mondeychamp[.]xyz/uUi1rV.msi\n\nhttp://my.mondeychamp[.]xyz/ReadMe.msi\n\nhttp://files-download.infousa[.]xyz/Windows_photo_viewers.msi\n\nhttp://files-download.infousa[.]xyz/Windows_photo_viewer.msi\n\nhttp://download.logins[.]online/exe/LinK13112020.msi\n\n\n-----\n\n**Appendix I**\n\n**NSI script**\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-02-24 - HermeticWiper & resurgence of targeted attacks on Ukraine.pdf"
+    ],
+    "report_names": [
+        "2022-02-24 - HermeticWiper & resurgence of targeted attacks on Ukraine.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "81bd7107-6b2d-45c9-9eea-1843d4b9b308",
+            "created_at": "2022-10-25T15:50:23.320841Z",
+            "updated_at": "2025-03-27T02:00:55.441723Z",
+            "deleted_at": null,
+            "main_name": "Gamaredon Group",
+            "aliases": [
+                "Gamaredon Group",
+                "IRON TILDEN",
+                "Primitive Bear",
+                "ACTINIUM",
+                "Armageddon",
+                "Shuckworm",
+                "DEV-0157",
+                "Aqua Blizzard"
+            ],
+            "source_name": "MITRE:Gamaredon Group",
+            "tools": [
+                "QuietSieve",
+                "Pteranodon",
+                "PowerPunch"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d5156b55-5d7d-4fb2-836f-861d2e868147",
+            "created_at": "2023-01-06T13:46:38.557326Z",
+            "updated_at": "2025-03-27T02:00:02.861124Z",
+            "deleted_at": null,
+            "main_name": "Gamaredon Group",
+            "aliases": [
+                "Aqua Blizzard",
+                "Actinium",
+                "DEV-0157",
+                "Blue Otso",
+                "G0047",
+                "PRIMITIVE BEAR",
+                "Shuckworm",
+                "Trident Ursa",
+                "UAC-0010",
+                "Winterflounder",
+                "ACTINIUM",
+                "BlueAlpha",
+                "IRON TILDEN"
+            ],
+            "source_name": "MISPGALAXY:Gamaredon Group",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "61940e18-8f90-4ecc-bc06-416c54bc60f9",
+            "created_at": "2022-10-25T16:07:23.659529Z",
+            "updated_at": "2025-03-27T02:02:09.912404Z",
+            "deleted_at": null,
+            "main_name": "Gamaredon Group",
+            "aliases": [
+                "Actinium",
+                "Aqua Blizzard",
+                "Armageddon",
+                "Blue Otso",
+                "BlueAlpha",
+                "Callisto",
+                "DEV-0157",
+                "Iron Tilden",
+                "Operation STEADY#URSA",
+                "Primitive Bear",
+                "SectorC08",
+                "Shuckworm",
+                "Trident Ursa",
+                "UAC-0010",
+                "Winterflounder"
+            ],
+            "source_name": "ETDA:Gamaredon Group",
+            "tools": [
+                "Aversome infector",
+                "BoneSpy",
+                "DessertDown",
+                "DilongTrash",
+                "DinoTrain",
+                "EvilGnome",
+                "FRAUDROP",
+                "Gamaredon",
+                "GammaDrop",
+                "GammaLoad",
+                "GammaSteel",
+                "Gussdoor",
+                "ObfuBerry",
+                "ObfuMerry",
+                "PlainGnome",
+                "PowerPunch",
+                "Pteranodon",
+                "Pterodo",
+                "QuietSieve",
+                "Remote Manipulator System",
+                "Resetter",
+                "RuRAT",
+                "SUBTLE-PAWS",
+                "UltraVNC"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "236a8303-bf12-4787-b6d0-549b44271a19",
+            "created_at": "2024-06-04T02:03:07.966137Z",
+            "updated_at": "2025-03-27T02:05:17.410356Z",
+            "deleted_at": null,
+            "main_name": "IRON TILDEN",
+            "aliases": [
+                "Aqua Blizzard ",
+                "Armageddon",
+                "Blue Otso ",
+                "BlueAlpha ",
+                "Dancing Salome ",
+                "Gamaredon",
+                "Gamaredon Group",
+                "Hive0051 ",
+                "Primitive Bear ",
+                "Shuckworm ",
+                "Trident Ursa ",
+                "UAC-0010 ",
+                "UNC530 ",
+                "WinterFlounder ",
+                "ACTINIUM "
+            ],
+            "source_name": "Secureworks:IRON TILDEN",
+            "tools": [
+                "Pterodo"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536005,
+    "ts_updated_at": 1743041637,
+    "ts_creation_date": 1653693498,
+    "ts_modification_date": 1653693498,
+    "files": {
+        "pdf": "https://archive.orkl.eu/6ac5dd37d65d1f7f3f9e1f10fd6d5deaaf557090.pdf",
+        "text": "https://archive.orkl.eu/6ac5dd37d65d1f7f3f9e1f10fd6d5deaaf557090.txt",
+        "img": "https://archive.orkl.eu/6ac5dd37d65d1f7f3f9e1f10fd6d5deaaf557090.jpg"
+    }
+}

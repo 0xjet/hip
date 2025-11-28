@@ -1,0 +1,145 @@
+{
+    "id": "b737e9da-cdda-422c-89a8-21a996cdeec1",
+    "created_at": "2023-06-05T02:07:43.156573Z",
+    "updated_at": "2025-03-27T02:15:35.762341Z",
+    "deleted_at": null,
+    "sha1_hash": "4c8c9f0aaf7bea495e6e02b25e86cf8a77eae2d8",
+    "title": "2018-12-19 - Analysis of Smoke Loader in New Tsunami Campaign",
+    "authors": "",
+    "file_creation_date": "2023-06-04T12:54:13Z",
+    "file_modification_date": "2023-06-04T12:54:13Z",
+    "file_size": 1267382,
+    "plain_text": "# Analysis of Smoke Loader in New Tsunami Campaign\n\n**[unit42.paloaltonetworks.com/analysis-of-smoke-loader-in-new-tsunami-campaign/](https://unit42.paloaltonetworks.com/analysis-of-smoke-loader-in-new-tsunami-campaign/)**\n\nKaoru Hayashi December 20, 2018\n\nBy [Kaoru Hayashi](https://unit42.paloaltonetworks.com/author/khayashi/)\n\nDecember 19, 2018 at 8:12 PM\n\n[Category: Unit 42](https://unit42.paloaltonetworks.com/category/unit-42/)\n\nTags: [Azorult,](https://unit42.paloaltonetworks.com/tag/azorult/) [Japan,](https://unit42.paloaltonetworks.com/tag/japan/) [Marcher,](https://unit42.paloaltonetworks.com/tag/marcher/) [Smoke Loader](https://unit42.paloaltonetworks.com/tag/smoke-loader/)\n\nThis post is also available in: 日本語 [(Japanese)](https://unit42.paloaltonetworks.jp/analysis-of-smoke-loader-in-new-tsunami-campaign/)\n\n[On November 8th, the Japanese Meteorological Agency issued an alert about a fake](https://www.jma.go.jp/jma/press/1811/08c/WARNmail_20181108.pdf)\ntsunami warning email masquerading as coming from the agency. According to the alert, the\nemail was written in Japanese and asked recipients to click the link to confirm their\nevacuation area from a tsunami after an earthquake. The link in the email is not critical\ninformation to save your life but malware to steal crucial information from you. The malware\n[is Smoke Loader, infamous commodity malware used by various cybercriminals since 2011.](https://cyb3rsleuth.blogspot.com/2011/08/smoke-loader.html)\n\nSmoke Loader is a modular loader where attackers can select any payload to be installed on\nthe victim by Smoke Loader. Thus, the final payload can vary between attacks. For example,\nwe previously reported on the Retefe Banking Trojan being distributed by Smoke Loader in\nSweden, and Japan. We have also seen backdoors, ransomware, cryptominers, password\nstealers, Point-of-Sale (PoS) malware, and banking Trojans installed by Smoke Loader.\n\nThis attack seems to be aiming to steal credentials from unidentified targets in Japan and\ntook a similar approach to normal targeted attacks. The attacker registered the fake\nJapanese government agency domain and ensured the file path to the malware on the\nserver is close to the legitimate agency web site. They wrote the lure email in fluent\nJapanese and did not distribute it broadly. In late November, the attacker started using\nanother commodity malware known as AzoRult. Figure 1 shows the timeline of this attack.\n\n\n-----\n\n-----\n\n_Figure 1 Time line of the attack_\n\n## Smoke Loader Analysis\n\nThough it’s been seven years since Smoke Loader first appeared, the author keeps updating\nthe code. [Malwarebytes published an excellent analysis of Smoke Loader in 2016. The](https://blog.malwarebytes.com/threat-analysis/2016/08/smoke-loader-downloader-with-a-smokescreen-still-alive/)\nsamples we looked at added the following techniques to avoid detection or analysis.\n\nCode obfuscation by junk jump\nDecrypts subroutines and encrypts them after execution\n[Employs PROPagate trick to inject second stage code into an explorer.exe process](https://www.hexacorn.com/blog/2017/10/26/propagate-a-new-code-injection-trick/)\nChanges the algorithm of generating the unique ID\nEncrypts network traffics and payload file\n\n[Some of these techniques were already reported by FireEye and](https://www.fireeye.com/blog/threat-research/2018/06/rig-ek-delivering-monero-miner-via-propagate-injection-technique.html) [Talos this year. We will](https://blog.talosintelligence.com/2018/07/smoking-guns-smoke-loader-learned-new.html)\nfocus on the unique ID, C2 communication, and the payload in this blog.\n\n## Generating a unique ID\n\nInitially, the threat generates a unique ID for the compromised machine from the computer\nname, the hardcoded static number(0B0D0406), and the volume serial number of the system\ndrive. Smoke Loader uses the unique ID for three purposes:\n\nTracking the compromised machine at C2.\nEncrypting payload by the ID.\nCreating random file names for persistence.\n\nHere’s how to create the unique ID. If the computer name is “Test_PC” and the volume serial\nnumber is “12345678”, the threat appends the three values like the following:\n\n\"Test_PC\" + \"0B0D0406\" + \"12345678\" = \"Test_PC0B0D040612345678\"\n\nand it calculates the MD5 hash value of the string,\n\nMD5(\"Test_PC0B0D040612345678\") = 41EE612602833345FC5BD2B98103811C\n\nIt then appends the volume serial to the hash value and gets the 40 characters unique ID.\n\n\"41EE612602833345FC5BD2B98103811C\" + \"12345678\" =\n\"41EE612602833345FC5BD2B98103811C12345678\"\n\nNext, Smoke Loader generates two strings based on the first eight characters and the last\neight characters of the ID. Following is the algorithm written in Python.\n\n\n-----\n\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n\n\n# the unique ID\nid = \"41EE612602833345FC5BD2B98103811C12345678\"\n\ndef makeStrings(_s):\nresults = \"\"\n\nfor n in _s:\nresults += chr((ord(n) - 0x30) + ord('a'))\n\nreturn results\n\nstringA = makeStrings(id[:8]) # \"ebvvgbcg\"\nstringB = makeStrings(id[-8:]) # \"bcdefghi\"\n\n\nSmoke Loader uses these strings for the file name. It copies itself as follows.\n\n%APPDATA%\\Microsoft\\Windows\\[stringA\\[stringB].exe\n\nand it creates following shortcut file to execute the threat when the computer starts.\n\n%StartUp%\\[stringA].lnk\n\nThese two strings look random. However, the attacker always generates two identical strings\nto the compromised machine since it is based on the static values of the environment.\n\n## C2 Communication\n\nSmoke Loader contains the following hardcoded C2 address.\n\njma-go[.]jp/js/metrology/jma.php\n\nAn outline of initial C2 communication follows.\n\n1. Smoke Loader sends the encrypted data to C2 by HTTP POST method.\n2. C2 server replies HTTP 404 response (Not Found) with encrypted data.\n3. Smoke Loader extracts the plugin from C2, encrypts it by using the unique ID, and\n\nsaves it local disk.\n4. Smoke Loader extracts the payload modules from the encrypted plugin file and injects\n\nthem into an Explorer.exe process.\n\n\n-----\n\n_Figure 2 Initial communication_\n\n## Making initial POST data\n\nSmoke Loader creates the data to send C2. At offset 0, there is a marker ‘E207’ followed by\n[the unique ID (Figure 3). The marker is ‘072E’ in little-endian form and ‘2018’ in decimal.](https://en.wikipedia.org/wiki/Endianness)\nSmoke Loader uses the marker every time communicating with C2.\n\n_Figure 3 POST data_\n\nSmoke Loader finally encrypts the data with RC4 cipher by using the static key 0x161A9A0C\nand send it to the C2 by HTTP POST method.\n\n## Plugin from C2\n\nThe C2 server responds the plugin data contains the final payload with HTTP 404 status\ncode. Smoke Loader obtains the encrypted header size from the first DWORD value of the\nplugin and decrypts the following bytes with RC4 cipher by the different static key\n\n\n-----\n\n0x1D17D70A. Figure 4 shows the plugin data after decryption. It then verifies the marker\n‘E207’ and gets the plugin size which is defined in the \"plugin_size’ variable.\n\n_Figure 4 Reply data from C2_\n\nAfter checking the plugin size, Smoke Loader encrypts plugin data with an RC4 cipher using\nthe unique ID and saves it as the following path with the generated string from the ID. Since\nthe file is encrypted with the distinct value to the machine, the file hash is always different on\neach computer even if the plugin is identical.\n\n%APPDATA%\\Microsoft\\Windows\\[stringA]\\[stringA]\n\nThen Smoke Loader decrypts the saved plugin data. The plugin data has thirteen-byte length\nheader and consists from following values.\n\n**Offset** **Size** **Value**\n\n0x00 DWORD Plugin size\n\n0x04 DWORD Plugin marker, 0xD5A08DD8\n\n0x08 DWORD Unknown, possible plugin identifier\n\n0x0C BYTE Number of modules in the plugin\n\n_Table 1 Plugin header_\n\nThe plugin can contain multiple modules. In the case of this tsunami campaign, the payload\ncontains six modules. Each module has a header that includes its size and RC4 key to\ndecrypt.\n\n\n-----\n\n_Figure 5 Plugin header and module header_\n\nSmoke Loader decrypts a module with RC4 cipher by the specified key. After verifying\narchitecture flag (64 bit or 32 bit) in the module, the threat executes Explorer.exe process\nand injects the module into the process. Since the threat repeats this the number of modules\ntimes, there should be multiple Explorer.exe processes on the compromised machine.\n\n## Payload Modules\n\nTable 2 shows the list of modules in this campaign. There are three types of functions in two\narchitectures.\n\n**Module** **Architecture** **Function**\n\n1 32 bit Stealing stored credential from browsers and email programs\n\n2 64 bit Incomplete porting of Module 1\n\n3 32 bit Stealing data sending from Browsers\n\n4 64 bit Same with Module 3\n\n5 32 bit Stealing login credential from email protocols\n\n6 64 bit Same with Module 5\n\n_Table 2 Module list_\n\n\n-----\n\nWhen injecting modules, Smoke Loader passes the configuration data including the following\nvalues to the modules for C2 communication. Each module has exact same C2\ncommunication code with the loader.\n\nRC4 encryption key for HTTP POST\nThe unique ID\nC2 URL\n\n**Module 1**\n\nThis module aims to steal stored credentials in following programs.\n\nInternet Explorer\nFirefox\nChrome\nOpera\nChromium\nYandex\nAmigo\nQQBrowser\nOutlook\nThunderbird\nWinSCP\n\nModule 2 contains a partial code of Module 1 but appears to be in the under development\nphase.\n\n**Modules 3 and 4**\n\nThese modules hook APIs and steals all data being sent data from following browsers.\n\nFirefox\nInternet Explorer\nEdge\nChrome\nOpera\n\n**Modules 5 and 6**\n\nThese modules hook APIs and steals user id, password, and their associated remote ftp and\nemail server addresses on following protocols.\n\nFTP on port 21\nSMTP on port 25, 587, 2525\nPOP3 on port 110\n\n\n-----\n\nIMAP on port 143\n\n## Infrastructures and another tools\n\nA person registered the domain name jma-go[.]jp on Oct 30, 2018. The domain does not\nhave a second level domain name, such as .co.jp nor .ne.jp. It is defined as General-use JP\ndomain name by JPNIC. In the definition, JPNIC described the registration requirements of\nthe general-use JP domain name as following.\n\n_‘In the general-use JP domain name system, we have established what we call a \"local_\n_presence\" prerequisite, which asks for a connection or relationship with Japan.‘_\n\nAccording to the Whois information of the domain, the domain was owned by a person who\nhas a postal address in Russia and uses a Gmail address. The registrant may change the\npostal address after registration or could prove a connection or relationship with Japan.\n\nThe same person also registered another eight domains with the same Gmail address. We\nfound that the three of the domains were used in attacks involving the Android banking\n[trojan/password stealing malware, Marcher from Feb to March in 2018. We haven’t identified](https://info.phishlabs.com/blog/analyzing-android.trojan.marcher)\nthe targets of the mobile malware yet. Following is the sample list.\n\n**Domain** **Marcher SHA256**\n\nSungmap[.]at 254925e47fbfff4786eada6cbcb0805ed79d9bd417955c016236143eb2ec\n\nMountainhigh[.]at 75edaae605622e056a40c2d8a16b86654d7ddc772f12c4fc64292a32a96\n\nRacemodel[.]at 55ae2b00234674d82dcc401a0daa97e7b3921057a07970347815d9c50d\n\n_Table 3 Domains and Marcher hashes_\n\nOn November 25, we confirmed that another malware, AzoRult, was served from the same\nURL previously serving Smoke Loader. [AzoRult is also a commodity malware that steals](https://www.vkremez.com/2017/07/lets-learn-reversing-credential-and.html)\ncredentials, cookies, and cryptocurrencies. This AzoRult accesses the following C2 address,\nwhich is a different path on the same C2 server with the Smoke Loader.\n\nwww.jma-go[.]jp/java/java9356/index.php\n\nWe observed three AzoRult samples using the same C2 at the time of writing this blog. The\nattacker distributes those files from following URLs.\n\nthunderbolt-price[.]com/Art-and-Jakes/Coupon.scr\nbite-me.wz[.]cz/1.exe\n\n\n-----\n\nthunderbolt-price[.]com was registered in 2012 in Japan, and the Privacy Protection Service\nprotects its registrant information. The website of the domain does not host content at the top\npage as of today. According to the Google search, the domain appears in shopping related\npages from 2014 to 2015. Interestingly, those web pages are low-quality and mostly hosted\non hacked web servers. These web pages are likely created for malicious Search Engine\nOptimization (SEO) backlinks which gain scores for better page rank in the search engine\nresults. Figure 6 is a ladies’ shoes shopping web page hosted on the website of a\nconstruction and building materials company in Turkey.\n\n\n-----\n\n_Figure 6 SEO backlinks on hacked site_\n\nThe domain may have been used for a shopping or affiliate site previously, but the owner\ndoes not use it for that purpose anymore. It looks like the attacker compromised the website,\nwhich had not been used for few years, and is using it for distributing AzoRult. However, we\n\n\n-----\n\ndon t know the connection between the attacker and the current owner of the thunderboltprice[.]com.\n\nTable 4 shows the timetable of infrastructure changes and timestamp of malware.\n\n**Date** **Activities**\n\n\nOct 30,\n2018\n\nNov 5,\n2018\n\nNov 6,\n2018\n\nNov 8,\n2018\n\nNov 9,\n2018\n\nNov 15,\n2018\n\nNov 24,\n2018\n\nNov 25,\n2018\n\nNov 27,\n2018\n\nNov 30,\n2018\n\n\nRegisters jma-go[.]jp domain\n\nSmoke Loader\n3d75eabb8460450a49e2fb68053d9f591efe5aefd379205e5cc3af574bb9f415\n\nSmoke Loader\n8a1aab36c3940e4dd83f489432fa710fba582e254c3a52459c52826d6a822f2d\n\n0db3fd1394b15b98f4e112102cdec6cc569062cdb199b66c5838c54cbc286277\n\nbe3817b9f14df3e0af82ae47b0904ac38d022e2b2d7bb7f8f9800b534b60183c\n\nSmoke Loader\n27aa9cdf60f1fbff84ede0d77bd49677ec346af050ffd90a43b8dcd528c9633b\n\nSmoke Loader\n42fdaffdbacfdf85945bd0e8bfaadb765dde622a0a7268f8aa70cd18c91a0e85\n\nSmoke Loader\nfb3def9c23ba81f85aae0f563f4156ba9453c2e928728283de4abdfb5b5f426f\n\nAzoRult\n70900b5777ea48f4c635f78b597605e9bdbbee469b3052f1bd0088a1d18f85d3\n\nSmoke Loadera\n1ce72ec2f2fe6139eb6bb35b8a4fb40aca2d90bc19872d6517a6ebb66b6b139\n\nAzoRult\n7337143e5fb7ecbdf1911e248d73c930a81100206e8813ad3a90d4dd69ee53c7\n\nChanges the IP address associates with jma-go[.]jp\nfrom 47.74.255[.]111 to 149.129.135[.]53\n\n\n-----\n\nDec 3,\n2018\n\n\nAzoRult7\n48c94bfdb94b322c876114fcf55a6043f1cd612766e8af1635218a747f45fb9\n\n\n_Table 4 Timetable_\n\n## Conclusion\n\nCommodity malware is widely used by cyber criminals these days. The authors of malware\nkeep updating the code to expand the capabilities and trying to gain more customers. As we\ndetailed in this article, Smoke Loader encrypts network traffic and files with various keys to\n[avoid analysis. We recently published a report of a new variant of AzoRult that introduces a](https://blog.paloaltonetworks.com/2018/11/unit42-new-wine-old-bottle-new-azorult-variant-found-findmyname-campaign-using-fallout-exploit-kit/)\nnew advanced obfuscation technique to evade detection by security products. Attackers, like\nthose in this tsunami campaign, can pick up malware fitting for their purpose from online\nthreat marketplaces.\n\nPalo Alto Networks customers are protected from this threat in the following ways:\n\n[AutoFocus customers can track these samples with the Smoke Loader,](https://autofocus.paloaltonetworks.com/#/tag/Unit42.SmokeLoader) [AzoRult and](https://autofocus.paloaltonetworks.com/#/tag/Unit42.AzoRult)\n[Marcher.](https://autofocus.paloaltonetworks.com/#/tag/Commodity.Marcher)\nWildFire detects all files mentioned in this report with malicious verdicts.\nTraps blocks all of the files described in this article.\n\n## IoC\n\n Smoke Loader Samples\n\n3d75eabb8460450a49e2fb68053d9f591efe5aefd379205e5cc3af574bb9f415\n\n8a1aab36c3940e4dd83f489432fa710fba582e254c3a52459c52826d6a822f2d\n\n0db3fd1394b15b98f4e112102cdec6cc569062cdb199b66c5838c54cbc286277\n\nbe3817b9f14df3e0af82ae47b0904ac38d022e2b2d7bb7f8f9800b534b60183c\n\n27aa9cdf60f1fbff84ede0d77bd49677ec346af050ffd90a43b8dcd528c9633b\n\n42fdaffdbacfdf85945bd0e8bfaadb765dde622a0a7268f8aa70cd18c91a0e85\nfb3def9c23ba81f85aae0f563f4156ba9453c2e928728283de4abdfb5b5f426f\n\na1ce72ec2f2fe6139eb6bb35b8a4fb40aca2d90bc19872d6517a6ebb66b6b139\n\n## AzoRult Samples\n\n70900b5777ea48f4c635f78b597605e9bdbbee469b3052f1bd0088a1d18f85d3\n\n7337143e5fb7ecbdf1911e248d73c930a81100206e8813ad3a90d4dd69ee53c7\n\n748c94bfdb94b322c876114fcf55a6043f1cd612766e8af1635218a747f45fb9\n\n\n-----\n\n## Marcher Samples\n\n55ae2b00234674d82dcc401a0daa97e7b3921057a07970347815d9c50dddbda8\n75edaae605622e056a40c2d8a16b86654d7ddc772f12c4fc64292a32a96fde7a\n\n254925e47fbfff4786eada6cbcb0805ed79d9bd417955c016236143eb2ecd827\n\n## Infrastructures\n\nhttp://jma-go[.]jp/js/metrology/jma.php\n\nhttp://www.jma-go[.]jp/java/java9356/index.php\n\nhttp://jma-go[.]jp/jma/tsunami/tsunami_regions.scr\n\nhttp://thunderbolt-price[.]com/Art-and-Jakes/Coupon.scr\n\nhttp://bite-me.wz[.]cz/1.exe\n\nhttps://racemodel[.]at\n\nhttps://mountainhigh[.]at\n\nhttps://sungmap[.]at\n\n## Appendix\n\n .bits domain support\n\nSmoke Loader supports .bit Top Level Domains (TLD). Author of the threat includes the\nfollowing hard-coded DNS servers to resolve .bit domains. Though we haven’t seen any .bit\ndomain in Tsunami campaign, we listed the IP addresses just in case for another attack by\nthe threat.\n\n192.71.245[.]208\n\n58.251.121[.]110\n\n101.226.79[.]205\n\n188.165.200[.]156\n\n185.121.177[.]177\n\n185.121.177[.]53\n\n144.76.133[.]38\n\n169.239.202[.]202\n\n5.135.183[.]146\n\n193.183.98[.]66\n\n51.254.25[.]115\n\n51.255.48[.]78\n\n**Get updates from**\n\n**Palo Alto**\n\n**Networks!**\n\n\n-----\n\nSign up to receive the latest news, cyber threat intelligence and research from us\n\n[By submitting this form, you agree to our Terms of Use and acknowledge our Privacy](https://www.paloaltonetworks.com/legal-notices/terms-of-use)\nStatement.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2018/2018-12-19 - Analysis of Smoke Loader in New Tsunami Campaign.pdf"
+    ],
+    "report_names": [
+        "2018-12-19 - Analysis of Smoke Loader in New Tsunami Campaign.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "9f101d9c-05ea-48b9-b6f1-168cd6d06d12",
+            "created_at": "2023-01-06T13:46:39.396409Z",
+            "updated_at": "2025-03-27T02:00:03.074969Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "CHROMIUM",
+                "ControlX",
+                "Red Dev 10",
+                "RedHotel",
+                "Red Scylla",
+                "TAG-22",
+                "BRONZE UNIVERSITY",
+                "AQUATIC PANDA",
+                "Charcoal Typhoon",
+                "BountyGlad"
+            ],
+            "source_name": "MISPGALAXY:Earth Lusca",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "6abcc917-035c-4e9b-a53f-eaee636749c3",
+            "created_at": "2022-10-25T16:07:23.565337Z",
+            "updated_at": "2025-03-27T02:02:09.868522Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Bronze University",
+                "Charcoal Typhoon",
+                "Chromium",
+                "Red Dev 10",
+                "Red Scylla"
+            ],
+            "source_name": "ETDA:Earth Lusca",
+            "tools": [
+                "Agentemis",
+                "AntSword",
+                "BIOPASS",
+                "BIOPASS RAT",
+                "BadPotato",
+                "Behinder",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Doraemon",
+                "FRP",
+                "Fast Reverse Proxy",
+                "FunnySwitch",
+                "HUC Port Banner Scanner",
+                "KTLVdoor",
+                "Mimikatz",
+                "NBTscan",
+                "POISONPLUG.SHADOW",
+                "PipeMon",
+                "RbDoor",
+                "RibDoor",
+                "RouterGod",
+                "SAMRID",
+                "ShadowPad Winnti",
+                "SprySOCKS",
+                "WinRAR",
+                "Winnti",
+                "XShellGhost",
+                "cobeacon",
+                "fscan",
+                "lcx",
+                "nbtscan"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d53593c3-2819-4af3-bf16-0c39edc64920",
+            "created_at": "2022-10-27T08:27:13.212301Z",
+            "updated_at": "2025-03-27T02:00:55.529662Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Earth Lusca",
+                "TAG-22",
+                "Charcoal Typhoon",
+                "CHROMIUM",
+                "ControlX"
+            ],
+            "source_name": "MITRE:Earth Lusca",
+            "tools": [
+                "Mimikatz",
+                "PowerSploit",
+                "Tasklist",
+                "certutil",
+                "Cobalt Strike",
+                "Winnti for Linux",
+                "Nltest",
+                "NBTscan",
+                "ShadowPad"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1685930863,
+    "ts_updated_at": 1743041735,
+    "ts_creation_date": 1685883253,
+    "ts_modification_date": 1685883253,
+    "files": {
+        "pdf": "https://archive.orkl.eu/4c8c9f0aaf7bea495e6e02b25e86cf8a77eae2d8.pdf",
+        "text": "https://archive.orkl.eu/4c8c9f0aaf7bea495e6e02b25e86cf8a77eae2d8.txt",
+        "img": "https://archive.orkl.eu/4c8c9f0aaf7bea495e6e02b25e86cf8a77eae2d8.jpg"
+    }
+}

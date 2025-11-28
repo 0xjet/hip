@@ -1,0 +1,162 @@
+{
+    "id": "9acefb15-b0a2-4170-ac38-59fc427ba997",
+    "created_at": "2022-10-25T16:48:25.132166Z",
+    "updated_at": "2025-03-27T02:16:59.227777Z",
+    "deleted_at": null,
+    "sha1_hash": "d10d8afa48caf110f7e2261e6a5521231d96800d",
+    "title": "Guard Your Drive from DriveGuard: Moses Staff Campaigns Against Israeli Organizations Span Several Months",
+    "authors": "fortinet",
+    "file_creation_date": "2022-02-21T01:02:03Z",
+    "file_modification_date": "2022-02-21T01:02:03Z",
+    "file_size": 628416,
+    "plain_text": "# Guard Your Drive from DriveGuard: Moses Staff Campaigns Against Israeli Organizations Span Several Months\n\n**[fortinet.com/blog/threat-research/guard-your-drive-from-driveguard](https://www.fortinet.com/blog/threat-research/guard-your-drive-from-driveguard)**\n\nFebruary 15, 2022\n\n## FortiGuard Labs Research\n\n**Affected Platforms: Windows**\n\n**Impacted Users: Windows Users**\n\n**Impact: Data theft and execution of additional malicious payloads**\n\n**Severity Level: Critical**\n\nOver the past year, FortiEDR has prevented multiple attacks that attempted to exploit\nvarious Microsoft Exchange server vulnerabilities, some of which we have previously\n[covered.](https://www.fortinet.com/blog/threat-research/more-proxyshell-web-shells-lead-to-zerologon-and-application-impersonation-attacks)\n\nAmong these attacks, we identified a campaign operated by Moses Staff, a geo-political\nmotivated threat group believed to be sponsored by the Iranian government. After tracking\nthis campaign for the last several months we found that the group has been using a custom\nmulti-component toolset for the purpose of conducting espionage against its victims.\n\nThis campaign exclusively targets Israeli organizations. Close examination reveals that the\ngroup has been active for over a year, much earlier than the group’s first official public\nexposure, managing to stay under the radar with an extremely low detection rate.\n\nIn this blog, we will cover the Techniques, Tactics, and Procedures (TTPs) used by Moses\nStaff and reveal a new backdoor used by them to download files, execute payloads, and\nexfiltrate data from target networks, along with threat intelligence data on their activities.\n\n### Infection Vector\n\n[The initial infiltration was accomplished by leveraging the ProxyShell exploit in Microsoft](https://www.zerodayinitiative.com/blog/2021/8/17/from-pwn2own-2021-a-new-attack-surface-on-microsoft-exchange-proxyshell)\nExchange servers to allow an unauthenticated attacker to execute arbitrary commands on\nthem through an exposed HTTP\\S port. As a result, the attackers were able to deploy two\nweb shells:\n\nC:/inetpub/wwwroot/aspnet_client/system_web/iispool.aspx\nC:/inetpub/wwwroot/aspnet_client/system_web/map.aspx\n\n\n-----\n\nThese two web shells are used in conjunction with one another, and some of their\nfunctionalities overlap. On numerous occasions, map.aspx was used to validate the results of\nthe commands executed by iispool.aspx.\n\nPost infection, the attackers dedicated several days to the exfiltration of PST files and other\nsensitive data from the compromised server. Next, they attempted to steal credentials by\ncreating a memory dump of lsass.exe using a LOLBin. Finally, the attackers dropped and\ninstalled the backdoor components.\n\nFigure 1: Command line for dumping memory for lsass.exe\n\n### Execution Chain\n\nThe loader resides in C:\\Windows\\System32\\drvguard.exe. When executed with the “-I”\ncommand-line argument, it installs itself as a service named DriveGuard.\n\nFigure 2: DriveGuard service properties\nThe loader is responsible for executing the backdoor component and then monitoring its\nprocess, executing it whenever it has stopped. In addition, it launches a watchdog\nmechanism that ensures its own service is never stopped. The following flow chart illustrates\nthe described process:\n\n\n-----\n\nFigure 3: Loading mechanism flow\nIf the backdoor does not exist on the disk, the loader creates it by reading the content of\nC:\\Windows\\System32\\rsc.dat and restoring its DOS header magic value to 4D 5A 90. The\nvalid executable is written to disk at C:\\Windows\\System32\\broker.exe\n\n\n-----\n\nFigure 4: rsc.dat – the backdoor without magic bytes in the header\nThe next step is to execute the backdoor. When doing so, the loader attempts to spoof the\nbackdoor’s parent process to be svchost.exe. This is achieved via calling CreateProcess and\nsetting the parent process attribute (PROC_THREAD_ATTRIBUTE_PARENT_PROCESS)\nto the first svchost.exe process found in the system. Parent process spoofing may aid in the\nevasion of security products. Generally, this method may also be used for gaining SYSTEM\nprivileges, but in our case, the loader is already running as a system service. If the spoofing\nfails, the loader will run the backdoor without it.\n\nThe backdoor is executed with the command-line argument “-ser”.\n\nService Watchdog\n\nThe loader also sets a watchdog to ensure it remains operational. The watchdog module,\nlic.dll, is injected to a newly spawned lsass.exe process.\n\nThe injection is implemented in inj.dll, which uses VirtualAllocEx and SetThreadContext to\nrun shellcode in the target process. The shellcode loads a DLL and then jumps back to the\nprevious instruction pointer of the thread.\n\nSubsequently, lic.dll begins to monitor the DriveGuard service, restarting it whenever it has\nstopped. In addition, it ensures that the DriveGuard service is always configured to start\nautomatically on system startup.\n\nFigure 5: The shellcode injected by inj.dll into lsass.exe\nBroker Backdoor\n\nThe backdoor component oversees receiving and executing commands from the C2 server. It\nruns only if it receives the command-line argument “-ser”. Otherwise, it triggers a divide-byzero exception. This is most likely an attempt to thwart dynamic analysis by automatic\nsecurity products such as sandboxes.\n\nTo ensure that only one instance of the backdoor is running on the system, it creates an event\ncalled “Program event”.\n\n\n-----\n\nFigure 6: Event created by the backdoor\nConfiguration\n\nThe backdoor’s configuration is stored encrypted in a file at\nC:\\Users\\Public\\Libraries\\cfg.dat. The encryption scheme used is XOR-based and can be\ndecrypted by the following Python code. The hardcoded key is consistent throughout all the\nsamples in our possession.\n\n\n-----\n\n_def decrypt(encrypted):_\n\nkey = '9c4arSBr32g6IOni'\n\nresult = ''\n\nfor i in range(len(encrypted)):\n\nkey_char = ord(key[i%16]) + 4\n\nenc_char = encrypted[i]\n\nresult_char = (key_char ^ enc_char) + 4\n\nresult += chr(result_char)\n\nreturn result\n\nFigure 7: Python implementation of the decryption routine for the configuration file\n\nThe decrypted configuration contains two sets of C2 and URI addresses, alongside a time\ninterval, in seconds, that determines the frequency at which to contact the server. A random\nvalue between 0 and 2 seconds is added to the interval to cause jitter.\n\nIf the configuration file does not exist, the malware uses plaintext configuration values\nhardcoded in the executable. In our samples, these values are identical to the ones in the\nconfiguration file.\n\nFigure 8: Decrypted backdoor configuration\nCommunicate Your “Boundries”\n\nThe main part of the malware oversees communication with the server, parsing its responses\nand executing commands. The backdoor first sends a POST request, as can be seen in figure\n9, to the first configured server. It alternates between contacting the two servers depending\non their status, switching between them when they are unresponsive or return empty replies.\n\n\n-----\n\nFigure 9: HTTP POST request sent by the backdoor to the C2\nThe request looks like encoded HTML form data that is delimited by a boundary value which\nappears to contain a misspelled \"BoundrySign\" string. The noteworthy fields in the request\nare token and data .\n\nThe data field contains information about the infected machine. The machine time zone has\nbeen chosen by the attackers for the purpose of regional attribution. This string is encrypted\nwith the same algorithm and key that were used to encrypt the configuration file.\n\n\n-----\n\nFigure 10: Format of victim information sent to the C2\nInterestingly, the malware fails to retrieve the correct OS version due to usage of the\ndeprecated GetVersionEx API, which causes executables without updated manifests to\ninvariably return the Windows 8 value while actually running on a newer operating system.\n\nThe token field is comprised of the hostname, username, and an ID. The hostname and\nusername are encrypted with a ROT5 Caesar cipher, meaning that 5 is added to each\ncharacter’s ascii value. The encrypted result is then appended to the ID.\n\nFigure 11: Format of unique identifier sent to the C2\nThe ID is hardcoded in the binary and is a distinctive identifier of a specific target\norganization. Namely, backdoor binaries are specially compiled per target before they are\ndeployed by the threat actor.\n\nThe backdoor continually queries the server for commands. In the event of five consecutive\nunsuccessful queries, the backdoor will switch to contacting the backup server. An\nunsuccessful query is considered to be one of the following:\n\nThe server is unresponsive.\nThe parsed response starts with the byte 0xA.\nThe parsed response is empty.\n\nThe server response is parsed until the first “]” character and everything after is disregarded.\nIf the response lacks a “]” it is treated as an empty response.\n\nIf the parsed server response is “on”, the backdoor will continue to query the same server\nwithout switching to the backup server. Any other response is treated as a command. As\nsuch, it is decrypted with the same algorithm and key as specified previously. If the decrypted\nresponse data is self, the backdoor stops executing. Otherwise, it proceeds to parse the\ndecrypted data as a command with the following format:\n\nFigure 12: Format of commands sent by the C2\n\n\n-----\n\nType – The command type. This can be one of the values from the Type column in the\nCommands table.\nArg1…Arg4 – The command arguments. Not all arguments are provided for every\ncommand, in which case their value will be the string “null”.\nID – A unique identifier. This ID is sent to the server alongside the command results to\nassociate the results with the executed command.\n\n**Supported Commands**\n\nThe following is a list of the commands that the backdoor may receive from the server.\nSeveral commands involve downloading additional DLLs from the server and executing\nthem. The functionality of these modules is unknown at this time.\n\n|Type|Description|\n|---|---|\n|fe|Directory listing (recursive).|\n|ce|Execute command line.|\n|dw|Upload a file from the disk to the C2.|\n|up|Download a file from the C2 and save to the disk.|\n|sb|Download a DLL from the C2 and execute it using LoadLibrary, calling its “mainfunc” export.|\n|tlg|Download a DLL from the C2 and execute it using LoadLibrary, calling its “mkb64” export.|\n|rns|Download a DLL from the C2 and execute it using LoadLibrary, calling its “mkb64” export.|\n|int|Update the interval field in the configuration.|\n|ki|Delete the malware from the disk using a CMD command. This may potentially be used in conjunction with the self command for complete self-destruction.|\n|upd|Update the tool by running CMD commands to replace the current module on the disk with a file received from the C2.|\n\n\n-----\n\nho* Update the C2 and URI fields in the configuration.\n\ninf* Send the configuration content and the malware’s filename to the C2.\n\ncmprs* 7-zip compress using ar.dll and ar.dat utilities. If they are not present on the disk,\nthe tool downloads them from the C2.\n\nsc** Capture a screenshot, saving it to C:\\Users\\Public\\Libraries\\tmp.bin before\nsending it unencrypted to the C2.\n\nkl** The command name and its operation imply keylogger functionality.\n\nThe first time this command is received, the malware will download a DLL from\nthe C2 and execute it using LoadLibrary, calling its “strt” export. Upon\nsubsequent receipts of this command, the contents of\nC:\\Users\\Public\\Libraries\\async.dat will be sent to the C2.\n\nThis DLL most likely writes its output to that file. However, as it is not in our\npossession, we cannot confirm this.\n\nau** Establish scheduled task persistence for itself using the following command:\n\nSCHTASKS /CREATE /TN \"Mozilla\\Firefox Default Browser Agent\n409046Z0FF4A39CB\" /ST 11:00 /F /SC DAILY /TR\n“<CURRENT_EXECUTABLE>”\n\n_Figure 13: List of supported commands_\n\n- Command present in the newer versions only\n\n** Command present in the older versions only\n\n## History of Operations\n\nUsing Yara rules in VirusTotal’s retrohunt engine we detected two older samples of the\nbackdoor. Both samples were uploaded around the end of December 2020, which leads us to\n[believe that this campaign has been operating for at least a year. Until recently, they have](https://www.cybereason.com/blog/strifewater-rat-iranian-apt-moses-staff-adds-new-trojan-to-ransomware-operations)\nbeen flying under the radar with a very low detection rate.\n\n|inf*|Send the configuration content and the malware’s filename to the C2.|\n|---|---|\n|cmprs*|7-zip compress using ar.dll and ar.dat utilities. If they are not present on the disk, the tool downloads them from the C2.|\n|sc**|Capture a screenshot, saving it to C:\\Users\\Public\\Libraries\\tmp.bin before sending it unencrypted to the C2.|\n|kl**|The command name and its operation imply keylogger functionality. The first time this command is received, the malware will download a DLL from the C2 and execute it using LoadLibrary, calling its “strt” export. Upon subsequent receipts of this command, the contents of C:\\Users\\Public\\Libraries\\async.dat will be sent to the C2. This DLL most likely writes its output to that file. However, as it is not in our possession, we cannot confirm this.|\n|au**|Establish scheduled task persistence for itself using the following command: SCHTASKS /CREATE /TN \"Mozilla\\Firefox Default Browser Agent 409046Z0FF4A39CB\" /ST 11:00 /F /SC DAILY /TR “<CURRENT_EXECUTABLE>”|\n\n\n-----\n\nFigure 14: VirusTotal entries of the older backdoor versions\nThe most notable differences between the versions are the configuration file and the\ncommands.\n\nIn lieu of a configuration file, the older variants exclusively use values hardcoded in the\nbinary. In terms of commands, a few modifications have taken place in between the versions.\nAs can be seen in figure 13, various new commands have been added to the latest samples,\nwhile other commands have been eliminated. Although commands were removed, we assess\nthat the code might have been moved to one of the modules that can be fetched from the\nserver.\n\nCertain modifications may aim to improve covertness and hinder detection. For example, the\nolder samples were able to receive the “au” command to register a scheduled task using a\ncommand-line that was hardcoded in the binary. On the other hand, in recent attacks, we\nobserved task registration via a scheduled task XML file that was dropped by the backdoor.\n\nThe last minor difference between versions is the name of the event. Older versions created\nan event called “program Event”. This capitalization error was corrected in the recent\nversions.\n\nSearching for the C2 addresses in FortiGuard Labs’ threat intelligence systems shows a large\nspike in traffic volume during April 2021. This indicates that the group was operational long\nbefore their initial public exposure. All the network traffic to the malicious servers originated\nfrom Israeli IP addresses\n\nFigure 15: FortiGuard Labs' historical data for C2 IP address\n\n\n-----\n\nFigure 16: FortiGuard Labs historical data for C2 domain name\nDuring our investigations, we were able to take over and sinkhole the techzenspace[.]com\ndomain in the beginning of January 2022. This was done to try and prevent the backdoor\nfrom operating for the near future while attempting to identity additional infected\norganizations that are not Fortinet customers.\n\n## Attribution\n\nWe were able to attribute the iispool.aspx web shell to the Moses Staff group based on past\nresearch. Both the web shell path and its code are identical to the ones previously reported.\nAnother recent publication referenced in the previous section reaffirms our attribution.\n\nAll victims are Israeli organizations belonging to various industries. Although the attacks we\nidentified did not reach a destructive stage, we can’t rule out the possibility that the backdoor\nis used before that to exfiltrate data from target networks.\n\n## Conclusion\n\nWe have been monitoring Moses Staff operations closely these past few months. We have\nanalyzed new TTPs and attributed a new set of tools to the group, including a backdoor, a\nloader and a web shell.\n\nThe group is highly motivated, capable, and set on damaging Israeli entities. While they have\nbeen operating continuously and vigorously since late 2020, they were only publicly\nacknowledged about a year after. At this point, they continue to depend on 1-day exploits for\ntheir initial intrusion phase.\n\nAlthough the attacks we identified were carried out for espionage purposes, this does not\nnegate the possibility that the operators will later turn to destructive measures. We believe\nthat ransomware or wipers may have not been deployed because FortiEDR blocked earlier\nstages of the attack.\n\n## Fortinet Protections\n\nFortiEDR detects and blocks these threats out-of-the-box without any prior knowledge or\nspecial configuration. It does this using its post-execution prevention engine to identify\nmalicious activities:\n\n\n-----\n\nFigure 17: FortiEDR blocking the memory dumping attempt of lsass.exe\n\nFigure 18: FortiEDR blocking the backdoor communication\nAll network IOCs have been added to the FortiGuard WebFiltering blocklist.\n\nThe FortiGuard AntiVirus service engine is included in\nFortinet’s FortiGate, FortiMail, FortiClient, and FortiEDR solutions. FortiGuard\nAntiVirus has coverage in place as follows:\n\nASP/Webshell.DW!tr\n\nW64/Agent.AVV!tr\n\nW32/Agent.UWN!tr\n\nW32/Agent.UYS!tr\n\nW64/Agent.AVS!tr\n\nW64/Agent.AVU!tr\n\nIn addition, as part of our membership in the Cyber Threat Alliance, details of this threat\nwere shared in real time with other Alliance members to help create better protections for\ncustomers.\n\n## Appendix A – MITRE ATT&CK Techniques\n\n|ID|Description|\n|---|---|\n|T1190|Exploit Public-Facing Application|\n|T1505.003|Server Software Component: Web Shell|\n|T1083|File and Directory Discovery|\n|T1003.001|OS Credential Dumping: LSASS Memory|\n|T1005|Data from Local System|\n|T1114|Email Collection|\n\n\n-----\n\nT1569.002 System Services: Service Execution\n\nT1480 Execution Guardrails\n\nT1134.004 Access Token Manipulation: Parent PID Spoofing\n\nT1055 Process Injection\n\nT1140 Deobfuscate/Decode Files or Information\n\nT1071.001 Application Layer Protocol: Web Protocols\n\nT1082 System Information Discovery\n\nT1033 System Owner/User Discovery\n\nT1573.001 Encrypted Channel: Symmetric Cryptography\n\nT1008 Fallback Channels\n\nT1059.003 Command and Scripting Interpreter: Windows Command Shell\n\nT1113 Screen Capture\n\nT1053.005 Scheduled Task/Job: Scheduled Task\n\nT1041 Exfiltration Over C2 Channel\n\n## Appendix B: IOCs\n\n**File Hashes (SHA256)**\n\n2ac7df27bbb911f8aa52efcf67c5dc0e869fcd31ff79e86b6bd72063992ea8ad (map.aspx)\n\nff15558085d30f38bc6fd915ab3386b59ee5bb655cbccbeb75d021fdd1fde3ac (agent4.exe)\n\ncafa8038ea7e46860c805da5c8c1aa38da070fa7d540f4b41d5e7391aa9a8079 (calc.exe)\n\n|T1480|Execution Guardrails|\n|---|---|\n|T1134.004|Access Token Manipulation: Parent PID Spoofing|\n|T1055|Process Injection|\n|T1140|Deobfuscate/Decode Files or Information|\n|T1071.001|Application Layer Protocol: Web Protocols|\n|T1082|System Information Discovery|\n|T1033|System Owner/User Discovery|\n|T1573.001|Encrypted Channel: Symmetric Cryptography|\n|T1008|Fallback Channels|\n|T1059.003|Command and Scripting Interpreter: Windows Command Shell|\n|T1113|Screen Capture|\n|T1053.005|Scheduled Task/Job: Scheduled Task|\n|T1041|Exfiltration Over C2 Channel|\n\n\n-----\n\n**File Names**\niispool.aspx\nmap.aspx\ndrvguard.exe\nagent4.exe\ncalc.exe\ninj.dll\nlic.dll\n\n**Event Names**\nprogram Event\nProgram event\n\n**IPs**\n87.120.8[.]210\n\n**Domains**\ntechzenspace[.]com\n\n**URLs**\nhxxp://87.120.8.210:80/RVP/index3.php\nhxxp://techzenspace.com:80/RVP/index8.php\n\n_[Learn more about Fortinet’s FortiGuard Labs.](https://www.fortinet.com/fortiguard/labs?utm_source=blog&utm_campaign=fortiguard-labs)_\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "d63ae2b7-445f-460d-965d-2676dacdb6de",
+            "created_at": "2022-10-25T15:59:19.552139Z",
+            "updated_at": "2022-10-25T15:59:19.552139Z",
+            "deleted_at": null,
+            "name": "APTnotes",
+            "url": "https://github.com/aptnotes/data",
+            "description": "APTnotes data",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://app.box.com/s/7p28si8yrjdrag1cvr43843itdscx8ur"
+    ],
+    "report_names": [
+        "Fortinet_DriveGuard-Moses-Staff-Campaigns(02-15-2022)"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "527e04ee-7f5f-49aa-8653-f893b43730bd",
+            "created_at": "2022-10-25T16:07:24.512541Z",
+            "updated_at": "2025-03-27T02:02:10.266333Z",
+            "deleted_at": null,
+            "main_name": "Moses Staff",
+            "aliases": [
+                "Abraham's Ax",
+                "Cobalt Sapling",
+                "DEV-0500",
+                "Marigold Sandstorm",
+                "Vengeful Kitten",
+                "White Dev 95"
+            ],
+            "source_name": "ETDA:Moses Staff",
+            "tools": [
+                "DCSrv",
+                "DCrSrv",
+                "PyDCrypt",
+                "StrifeWater",
+                "StrifeWater RAT"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "ba5bc606-8b26-416a-881d-76cdefc6c75c",
+            "created_at": "2024-06-04T02:03:07.777739Z",
+            "updated_at": "2025-03-27T02:05:17.322164Z",
+            "deleted_at": null,
+            "main_name": "COBALT SAPLING",
+            "aliases": [
+                "Moses Staff",
+                "Abraham's Ax"
+            ],
+            "source_name": "Secureworks:COBALT SAPLING",
+            "tools": [
+                " PyDcrypt",
+                " StrifeWater RAT",
+                "DCSrv"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "bef06c82-0f51-44ba-8451-049cd4ad8a52",
+            "created_at": "2023-01-06T13:46:39.325635Z",
+            "updated_at": "2025-03-27T02:00:03.05159Z",
+            "deleted_at": null,
+            "main_name": "MosesStaff",
+            "aliases": [
+                "Moses Staff",
+                "Marigold Sandstorm",
+                "DEV-0500"
+            ],
+            "source_name": "MISPGALAXY:MosesStaff",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c4d0e4e1-5ad3-4455-8291-ce72a1e09e46",
+            "created_at": "2022-10-27T08:27:13.055675Z",
+            "updated_at": "2025-03-27T02:00:55.458634Z",
+            "deleted_at": null,
+            "main_name": "Moses Staff",
+            "aliases": [
+                "Moses Staff",
+                "DEV-0500",
+                "Marigold Sandstorm"
+            ],
+            "source_name": "MITRE:Moses Staff",
+            "tools": [
+                "PyDCrypt",
+                "PsExec",
+                "DCSrv",
+                "StrifeWater"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "f9806b99-e392-46f1-9c13-885e376b239f",
+            "created_at": "2023-01-06T13:46:39.431871Z",
+            "updated_at": "2025-03-27T02:00:03.08926Z",
+            "deleted_at": null,
+            "main_name": "Watchdog",
+            "aliases": [
+                "Thief Libra"
+            ],
+            "source_name": "MISPGALAXY:Watchdog",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716505,
+    "ts_updated_at": 1743041819,
+    "ts_creation_date": 1645405323,
+    "ts_modification_date": 1645405323,
+    "files": {
+        "pdf": "https://archive.orkl.eu/d10d8afa48caf110f7e2261e6a5521231d96800d.pdf",
+        "text": "https://archive.orkl.eu/d10d8afa48caf110f7e2261e6a5521231d96800d.txt",
+        "img": "https://archive.orkl.eu/d10d8afa48caf110f7e2261e6a5521231d96800d.jpg"
+    }
+}

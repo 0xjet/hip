@@ -1,0 +1,134 @@
+{
+    "id": "7b3276c0-495f-40b2-9941-5d5a4e231f3b",
+    "created_at": "2022-10-25T16:48:24.900952Z",
+    "updated_at": "2025-03-27T02:16:25.615761Z",
+    "deleted_at": null,
+    "sha1_hash": "3e599de2f9e4fcf383811d108da149e929ac811e",
+    "title": "",
+    "authors": "",
+    "file_creation_date": "2019-03-05T05:46:37Z",
+    "file_modification_date": "2019-03-05T05:46:37Z",
+    "file_size": 3256123,
+    "plain_text": "**objective-see.com/blog/blog_0x3B.html**\n\nMiddle East Cyber-Espionage\n\nanalyzing WindShift's implant: OSX.WindTail (part 1)\n\nDecember 20, 2018\n\n� s Want to play along?\n\nI’ve shared various OSX.WindTail [samples (password: infect3d) …don’t infect yourself!](https://objective-see.com/downloads/malware/WindTail.zip)\n\nIn this blog post, we’ll analyze the WindShift APT group’s 1 -stage macOS implant:st\n\nOSX.WindTail (likely variant A )\n\nSpecifically we’ll detail the malware’s:\n\ninitial infection vector\nmethod of persistence\ncapabilities\ndetection and removal\n\n# Background\n\nA few months ago, Taha Karim (head of malware research labs, at Dark Matter) presented\nsome intriguing research at [Hack in the Box Singapore.](https://gsec.hitb.org/sg2018/)\n\n“[the APT] targeted specific individuals working in government departments and critical\ninfrastructure across the Middle East”\n\nTo me, besides WindShift’s targets, the most intriguing aspect of this APT group was (is?)\ntheir use of macOS vulnerabilities and custom macOS implants (backdoors). In his talk,\nKarim provided a good overview of the technique utilized by WindShift to infect macOS\ncomputers, and the malware they then installed ( OSX.WindTail.A, OSX.WindTail.B,\nand OSX.WindTape ). However, my rather insatiable technical cravings weren’t fully\nsatisfied, so I decided to dig deeper!\n\nFrom the details Karim’s talk, I was able to replicate WindShift’s macOS exploitation\ncapabilities:\n\n\n## patrick wardle\n@patrickwardle\n\n## If you want to remotely infect Macs, read this objective- see.com/blog/blog_0x38…\n\n credit:\n\n\n-----\n\n## Eastern .govts\n Taha Karim/@GuardedbyGenius for the excellent \"The Trails of WINDSHIFT APT\" talk at @hitbgsec\n\n[343](https://twitter.com/intent/like?tweet_id=1035106254077579264) [6:05 PM - Aug 30, 2018](https://twitter.com/patrickwardle/status/1035106254077579264)\n\n**Remote Mac Exploitation Via Custom URL Schemes**\n\na cyber-espionage campaign infects macs with a novel infection\nmechanism\n\nobjective-see.com\n\n210 people are talking about this\n\n\nMy blog post, [“Remote Mac Exploitation Via Custom URL Schemes”, describes the](https://objective-see.com/blog/blog_0x38.html)\ntechnical details of how WindShift (ab)used custom URL schemes to infect macOS\nsystems. The image below provides a illustrative overview.\n\n\n-----\n\na full-technical analysis was never available…until now!\n\n# Analyzing OSX.WindTail\n\nEarlier today, [Phil Stokes, uncovered an interesting application on VirusTotal. He noted](https://twitter.com/philofishal)\nthat in Karim’s talk, one of the slides contained a file name: Meeting_Agenda.zip …\nwhich was identified as by Karim as malware:\n\nOn VirusTotal, if we search for files with this name, we find what appears to be a match!\n\nThe [sample (SHA-1:](https://www.virustotal.com/gui/file/ad282e5ba2bc06a128eb20da753350278a2e47ab545fdab808e94a2ff7b4061e/detection) 4613f5b1e172cb08d6a2e7f2186e2fdd875b24e5 ) is currently only\ndetected by two anti-virus engines:\n\n\n-----\n\nUsing the similar-to: search modifier, I uncovered three other samples, that are not\nflagged as malicious by any anti-virus engine!\n\nNPC_Agenda_230617.zip1\n\nSHA-1: df2a83dc0ae09c970e7318b93d95041395976da7\n\nScandal_Report_2017.zip\n\nSHA-1: 6d1614617732f106d5ab01125cb8e57119f29d91\n\nFinal_Presentation.zip\n\nSHA-1: da342c4ca1b2ab31483c6f2d43cdcc195dfe481b\n\nIf we download and extract these applications, the uses Microsoft Office icons, likely to\navoid raising suspicion:\n\n\n-----\n\nIn his talk, Karim notes, “[the WindShift] attackers gave a backdoor a realistic look by\nmimicking an Excel sheet icon”.\n\n…the fact that our samples all similarly utilize Microsoft Office icons, is the first (of many)\ncharacteristics that lead us to confidently tie these samples to the WindShift APT group.\n\nVia the [WhatsYourSign utility, we can confirm that indeed they are applications (not](https://objective-see.com/products/whatsyoursign.html)\ndocuments):\n\n\n-----\n\nneither fully signed and that its signing certificate has been revoked. We can confirm this\nwith the codesign and spctl utilities:\n\n$ codesign -dvvv Final_Presentation.app\nExecutable=Final_Presentation.app/Contents/MacOS/usrnode\nIdentifier=com.alis.tre\nFormat=app bundle with Mach-O thin (x86_64)\n...\nAuthority=(unavailable)\nInfo.plist=not bound\nTeamIdentifier=95RKE2AA8F\nSealed Resources version=2 rules=12 files=4\nInternal requirements count=1 size=204\n\n$ spctl --assess Final_Presentation.app\nFinal_Presentation.app: CSSMERR_TP_CERT_REVOKED\n\nThe fact that the signing certificate(s) of all the samples are revoked\n( CSSMERR_TP_CERT_REVOKED ) means that Apple knows about about this certificate…and\nthus surely this malware as well. …yet the majority of the samples (3, of 4) are detected\nby zero anti-virus engines on VirusTotal.\n\nDoes this mean Apple isn’t sharing valuable malware/threat-intel with AV-community,\npreventing the creation of widespread AV signatures that can protect end-users?! �\n\nNarrator: yes*\n\n\n*of course sometimes they may not have permission (if the information was sourced from\n\nelsewhere).\n\nBefore diving into reversing/debugging these samples, let’s take quick peak at their\napplication bundles:\n\nFirst, note the main executable is named usrnode . This is also specified in the\napplication’s Info plist file ( CFBundleExecutable is set to usrnode ):\n\n\n-----\n\ng\n<plist version=\"1.0\">\n<dict>\n...\n<key>CFBundleExecutable</key>\n<string>usrnode</string>\n...\n<key>CFBundleIdentifier</key>\n<string>com.alis.tre</string>\n...\n\n<key>CFBundleURLTypes</key>\n<array>\n<dict>\n<key>CFBundleURLName</key>\n<string>Local File</string>\n<key>CFBundleURLSchemes</key>\n<array>\n<string>openurl2622007</string>\n</array>\n</dict>\n</array>\n...\n<key>LSMinimumSystemVersion</key>\n<string>10.7</string>\n...\n<key>NSUIElement</key>\n<string>1</string>\n\n</dict>\n</plist>\n\nOther interesting keys include LSMinimumSystemVersion which indicates the (malicious)\napplication is compatible with OSX 10.7 (Lion), and NSUIElement key which tells the OS\nto execute the application without a dock icon nor menu (i.e. hidden).\n\nHowever the most interesting key is the CFBundleURLSchemes (within the\n\nCFBundleURLTypes ). This key holds an array of custom URL schemes that the\napplication implements (here: openurl2622007 ). In the aforementioned blog post\n[“Remote Mac Exploitation Via Custom URL Schemes”, we described how WindShift](https://objective-see.com/blog/blog_0x38.html)\n(ab)used custom URL schemes to infect macOS systems…in exactly this manner! Yet\nanother data point tying our samples to WindShift.\n\nThe OSX.WindTail.A sample described by Karim used a similarly named custom URL\nscheme: openurl2622015\n\nOk, let’s dive in to look at some disassembly!\n\nLoading the main binary usrnode into a disassembler (I used [Hopper), we start at the](https://www.hopperapp.com/)\n\nmain() function:\n\n\n-----\n\nr12 = [NSURL fileURLWithPath:[[NSBundle mainBundle] bundlePath]];\nrbx = LSSharedFileListCreate(0x0, _kLSSharedFileListSessionLoginItems, 0x0);\n\nLSSharedFileListInsertItemURL(rbx, _kLSSharedFileListItemLast, 0x0, 0x0, r12,\n0x0, 0x0);\n...\n\nrax = NSApplicationMain(r15, r14);\nreturn rax;\n}\n\nThe LSSharedFileListInsertItemURL API is [documented by Apple. Just kidding: “No](https://developer.apple.com/documentation/coreservices/1444471-lssharedfilelistinsertitemurl?language=objc)\noverview available”:\n\nSo what does the LSSharedFileListInsertItemURL API do? It adds a login item,\nwhich is mechanism to gain persistence and ensure that the (malicious) application will be\nautomatically (re)started everytime the user logs in. This is visible via System\n\nPreferences application:\n\n…not the stealthiest persistence mechanism, but meh, gets the job done!\n\nThe main() function invokes the NSApplicationMain method, which in turn invokes\nthe applicationDidFinishLaunching method:\n\n\n-----\n\n;\nr14 = [[NSDate alloc] init];\nrbx = [[NSDateFormatter alloc] init];\n[rbx setDateFormat:@\"dd-MM-YYYYHH:mm:ss\"];\nr14 = [[[[rbx stringFromDate:r14] componentsSeparatedByCharactersInSet:\n[NSCharacterSet characterSetWithCharactersInString:cfstring____]]\ncomponentsJoinedByString:@\"\"] stringByReplacingOccurrencesOfString:@\" \"\nwithString:@\"\"];\n\nrcx = [[NSBundle mainBundle] resourcePath];\nrbx = [NSString stringWithFormat:@\"%@/date.txt\", rcx];\nrax = [NSFileManager defaultManager];\nrdx = rbx;\nif ([rax fileExistsAtPath:rdx] == 0x0) {\nrax = arc4random();\nrax = [NSString stringWithFormat:@\"%@%@\", r14,\n[[NSNumber numberWithInt:rax - (rax * 0x51eb851f >> 0x25) * 0x64,\n(rax * 0x51eb851f >> 0x25) * 0x64] stringValue]];\nrcx = 0x1;\nr8 = 0x4;\nrdx = rbx;\nrax = [rax writeToFile:rdx atomically:rcx encoding:r8 error:&var_28];\nif (rax == 0x0) {\nr8 = 0x4;\nrax = [NSUserDefaults standardUserDefaults];\nrcx = @\"GenrateDeviceName\";\nrdx = 0x1;\n[rax setBool:rdx forKey:rcx, r8];\n[[NSUserDefaults standardUserDefaults] synchronize];\n}\n}\n[r15 read];\n[r15 tuffel];\n[NSThread detachNewThreadSelector:@selector(mydel) toTarget:r15\nwithObject:0x0];\n\nreturn;\n}\n\nPulling apart the above code, we can see: 1. The (malicious) application generates the\ncurrent date/time, and formats it. 2. Builds a path to date.txt in it’s application bundle\n( Contents/Resources/date.txt ) 3. If this file doesn’t exist, write out the (formatted)\ndate and a random number 4. If this fails, set the GenrateDeviceName (sic) user default\nkey to true 5. Read in the data from the date.txt file 6. invoke the tuffel method 7.\nSpawn a thread to execute the mydel method\nClearly steps 1-5 are executed to generate, then load, a unique identifier for the implant.\n\nLet’s observe this happening (via the fs_usage utility):\n\n# fs_usage -w -filesystem | grep date.txt\n00:38:09.784384 lstat64\n/Users/user/Desktop/Final_Presentation.app/Contents/Resources/date.txt usrnode.8894\n00:38:09.785711 open   F=3    (R_____)\n/Users/user/Desktop/Final_Presentation.app/Contents/Resources/date.txt usrnode.8894\n...\n\n# t /D kt /Fi l P t ti /C t t /R /d t t t\n\n\n-----\n\npost). However, some of it s main actions include:\n\n1. Moving the (malicious) application into the /Users/user/Library/ directory\n2. Executing this persisted copy, via the open command\n3. Decrypting embedded strings that relate to file extensions of (likely) interest\n\nWe can observe step #2 (execution of the persisted copy) via my open-source process\nmonitor library, [ProcInfo:](https://github.com/objective-see/ProcInfo)\n\nprocInfo[915:9229] process start:\npid: 917\npath: /usr/bin/open\nuser: 501\nargs: (\nopen,\n\"-a\",\n\"/Users/user/Library/Final_Presentation.app\"\n)\n\nStep #3, (string decryption) is interesting as it both reveals the capabilities of the malware\nas well as (again) helps identify the (malicious) application as OSX.WindTail . The\n\nyoop method appears to be the string decryption routine:\n\n-(void *)yoop:(void *)arg2 {\nrax = [[[NSString alloc] initWithData:[[yu decode:arg2]\nAESDecryptWithPassphrase:cfstring__] encoding:0x1] stringByTrimmingCharactersInSet:\n\n[NSCharacterSet whitespaceCharacterSet]];\nreturn rax;\n}\n\nSpecifically it invokes a decode and AESDecryptWithPassphrase helper methods.\nLooking closer at the call to the AESDecryptWithPassphrase method, we can see it’s\ninvoked with a variable named cfstring__ (at address 0x100013480 ). This is the\n(hard-coded) AES decryption key:\n\ncfstring___100013480:\n0x000000010001c1a8, 0x00000000000007d0,\n0x000000010000bc2a, 0x0000000000000010 ; u\"æ$&łŁńŚŽ~Ę?|!~<Œ\",\n\nInterestingly this is the exact same key as Karin showed in his slides, for OSX.WindTail.A:\n\nTo see what the (malicious) application is decrypting, we can simply set a breakpoint\nwithin the yoop method, and then dump the (now) decrypted strings:\n\n\n-----\n\np ___ _ _ y $$,\n0x000000010000229b\n(lldb) po $rax\nhttp://flux2key.com/liaROelcOeVvfjN/fsfSQNrIyxeRvXH.php?very=%@&xnvk=%@\n\nIt’s rather easy to break ‘AES’ when you have the key C\n\nOther strings that are decrypted (as noted) relate to file extensions of (likely) interest such\nas doc, pdf, db, etc. Makes sense that a cyber-espionage implant would be\ninterested in such things, ya?\n\nMoving on the myDel method appears to attempt to connect to the malware’s C&C\nservers. Of course these are encrypted, but again, by dynamically debugging the malware,\nwe can can simply wait until it invokes the AES decryption routine, then dump the (now)\nplaintext strings:\n\n(lldb) x/s 0x0000000100350a40\n0x100350a40: \"string2me.com/qgHUDRZiYhOqQiN/kESklNvxsNZQcPl.php\n\n...\n(lldb) x/s 0x0000000100352fe0\n0x100352fe0: \"http://flux2key.com/liaROelcOeVvfjN/fsfSQNrIyxeRvXH.php?\nvery=%@&xnvk=%@\n\nThe C&C domains ( string2me.com and flux2key.com ) are both WindShift domains,\nas noted by Karim in an interview with [itWire](https://www.itwire.com/security/84324-researcher-unsure-if-apple-has-acted-to-curb-malware.html)\n\n“the domains string2me.com and flux2key.com identified as associated with these attacks”\n\nThese domains are currently offline:\n\n$ ping flux2key.com\nping: cannot resolve flux2key.com: Unknown host\n\n$ nslookup flux2key.com\nServer:  8.8.8.8\nAddress: 8.8.8.8#53\n\n** server can't find flux2key.com: SERVFAIL\n\n…thus the malware appears to remain rather inactive. That is to say, (in a debugger), it\ndoesn’t do much - as it’s likely awaiting commands from the (offline) C&C servers.\n\nHowever, a brief (static) triage of other methods found within the (malicious) application\nindicate it likely supports ‘standard’ backdoor capabilities such as file exfiltration and the\n(remote) execution of arbitrary commands. I’ll keep digging and update this post with any\nnew findings!\n\n# Conclusion\n\nWindShift is an intriguing APT, selectively targeting individuals in the Middle East. Its\nmacOS capabilities are rather unique and make for a rather interesting case study!\n\nToday, for the first time, we publicly shared samples of a malicious application that I’m\nhighly confident is OSX.WindTail.A (or is some variant thereof). This claim is based\n\n\n-----\n\nIn this blog post, we analyzed the OSX.WindTail to reveal its:\n\ninitial infection vector\nmethod of persistence\ncapabilities\ncommmand & control servers\n\nAll that’s left is to talk about detection an removal.\n\n…since current anti-virus engines (at least those found on VirusTotal) currently do not\ndetect these threats, it’s probably best to stick to tools (such as BlockBlock and\nKnockKnock) that can heuristically detect malware.\n\nThough a tool such as [KnockKnock is the suggested way to detect an infection, you can](https://objective-see.com/products/knockknock.html)\nalso manually check if you’re infected. Check for a suspicious Login Item via the System\n\nPreferences application, and/or for the presence of suspicious application in your\n\n~/Library/ folder (likely with a Microsoft Office icon, and perhaps an invalid code\nsignature). Deleting any such applications and Login Item will remove the malware.\n\nHowever if you were infected (which is very unlikely, unless you’re a government official in\na specific Middle Eastern country), it’s best to fully wipe your system and re-install macOS!\n\n\n-----\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2018/2018.12.20.WindShift_Middle_East/analyzing%20WindShift%20implant%20OSX.WindTail.pdf"
+    ],
+    "report_names": [
+        "analyzing WindShift implant OSX.WindTail"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "6bd4ed50-e116-494c-bb70-9587876663f1",
+            "created_at": "2023-01-06T13:46:39.004062Z",
+            "updated_at": "2025-03-27T02:00:02.974882Z",
+            "deleted_at": null,
+            "main_name": "WindShift",
+            "aliases": [
+                "Windy Phoenix"
+            ],
+            "source_name": "MISPGALAXY:WindShift",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "ada9e5d3-1cb2-4b70-a3c8-96808c304ac8",
+            "created_at": "2022-10-25T15:50:23.6515Z",
+            "updated_at": "2025-03-27T02:00:55.513513Z",
+            "deleted_at": null,
+            "main_name": "Windshift",
+            "aliases": [
+                "Windshift",
+                "Bahamut"
+            ],
+            "source_name": "MITRE:Windshift",
+            "tools": [
+                "WindTail"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "68f12936-2361-4720-87e1-b79a4fdbf1a0",
+            "created_at": "2022-10-25T16:07:24.409855Z",
+            "updated_at": "2025-03-27T02:02:10.21199Z",
+            "deleted_at": null,
+            "main_name": "WindShift",
+            "aliases": [
+                "Windy Phoenix"
+            ],
+            "source_name": "ETDA:WindShift",
+            "tools": [
+                "WindTail"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716504,
+    "ts_updated_at": 1743041785,
+    "ts_creation_date": 1551764797,
+    "ts_modification_date": 1551764797,
+    "files": {
+        "pdf": "https://archive.orkl.eu/3e599de2f9e4fcf383811d108da149e929ac811e.pdf",
+        "text": "https://archive.orkl.eu/3e599de2f9e4fcf383811d108da149e929ac811e.txt",
+        "img": "https://archive.orkl.eu/3e599de2f9e4fcf383811d108da149e929ac811e.jpg"
+    }
+}

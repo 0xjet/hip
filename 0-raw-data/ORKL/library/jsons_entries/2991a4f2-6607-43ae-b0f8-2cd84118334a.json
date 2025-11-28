@@ -1,0 +1,88 @@
+{
+    "id": "2991a4f2-6607-43ae-b0f8-2cd84118334a",
+    "created_at": "2023-01-12T15:01:53.229493Z",
+    "updated_at": "2025-03-27T02:12:11.047536Z",
+    "deleted_at": null,
+    "sha1_hash": "69669084c7d122c353ef6ce100f18c6df45d493b",
+    "title": "2020-09-08 - TeamTNT activity targets Weave Scope deployments",
+    "authors": "",
+    "file_creation_date": "2022-05-29T01:26:20Z",
+    "file_modification_date": "2022-05-29T01:26:20Z",
+    "file_size": 409757,
+    "plain_text": "# TeamTNT activity targets Weave Scope deployments\n\n**techcommunity.microsoft.com/t5/azure-security-center/teamtnt-activity-targets-weave-scope-deployments/ba-**\np/1645968\n\nSeptember 9, 2020\n\nSep 08 2020 10:26 PM\n\nYossi Weizman, Security Researcher, Azure Security Center\n\nRoss Bevington, Principal Software Engineer, Microsoft Threat Intelligence Center\n\nThe cybercrime group TeamTNT has been tracked by various research groups for a while\nnow, with several articles that were written about their activity that is focused on Docker\n[workloads. In May, TrendMicro research team described the group’s attempts to spread](https://www.trendmicro.com/vinfo/hk-en/security/news/virtualization-and-cloud/coinminer-ddos-bot-attack-docker-daemon-ports)\ncryptocurrency miners via exposed Docker API servers. In August, Aqua Security released\n[an analysis of several images that are stored under TeamTNT’s Dockerhub account:](https://blog.aquasec.com/container-security-tnt-container-attack)\n_hildeteamtnt. In this blog we will share new details about this group and elaborate about_\nanother, an unknown, access vector that the group uses in addition to exposed Docker API\nservers.\n\nAzure Security Center leverages data that is collected by Microsoft Threat Intelligence\nCenter’s sensor network. In mid-August, several deployments of the image\n**hildeteamtnt/pause-amd64:3.4 were observed in our sensor network. This repository hasn’t**\nbeen seen in previous known attacks of this group. Another image from that repository,\n**pause-amd64:3.3, was seen as well. In this blog post, we’ll focus on the first image, pause-**\namd64:3.4, which has more functionality. Microsoft's sensor network exposes an open\nDocker API server and tracks the connection to this service. The attackers tried to deploy\ntheir images via this service, which is consistent with the known behavior of TeamTNT group,\nthat spread their malware in this method.\n\nThis image has been deployed also on several Kubernetes clusters. Azure Kubernetes\nService (AKS) is a managed Kubernetes service that allows customers to easily deploy a\nKubernetes cluster in Azure. Azure Security Center monitors the behavior of the AKS\nmanagement layer as well as the behavior of the containers themselves to find malicious\nactivity. AKS clusters, as managed services, should not expose Docker API externally. The\n\n\n-----\n\nfact that several clusters were infected by this image might imply that there is additional\naccess vector that is used by the group for spreading their malware. And indeed, we\ndiscovered an additional access vector that is used by this group which we will describe later.\n\nThe image pause-amd64:3.4 has a similar functionality to other images that are used by this\ngroup and is focused on running cryptocurrency mining and spreading the malware to other\nmachines.\n\nThe entry point of the image is /root/pause which is a shell script.\n\nThe script starts with downloading the main payload: Coin miner (packed with UPX) that is\ndownloaded from: hxxp[://]85.214.149.236:443/sugarcrm/themes/default/images/default.jpg.\nThis server, located in Germany, contains large number binaries and malicious scripts that\nare used by this group. Some of them were observed in previous campaigns of this group\nand were analyzed before.\n\nThe miner is saved on the host as /usr/sbin/docker-update and executed after allowing its\nexecution and changing its attributes to immutable:\n\nThe attackers use a service called iplogger.org which allows them to track the number of\ninfected hosts and get their details:\n\nThe script enters a loop, in which in every iteration it invokes the function pwn() five times;\neach invocation differs in the second parameter, which is a destination port:\n\n\n-----\n\nThe function itself, which a very similar version of it also seen on previous malware of the\n[group as described by TrendMicro, retrieves an IP range from the server (first parameter)](https://www.trendmicro.com/vinfo/hk-en/security/news/virtualization-and-cloud/coinminer-ddos-bot-attack-docker-daemon-ports)\nwhich returns a different range in every request. The function scans that range for open\n[Docker API endpoints with the open-source tool masscan. The scanned port is passed as a](https://github.com/robertdavidgraham/masscan)\nparameter to the function. The scanned ports are 2375, 2376, 2377, 4243 and 4244. On\neach exposed endpoint that is found, the script deploys the same image (pause-amd64:3.4)\nusing the exposed TCP socket. In addition, the script attempts to kill competitor images using\n_docker rm commands._\n\nThe details above refer to the image pause-amd:3.4. The image pause-amd:3.3, that was\nalso seen in the honeypots, is very similar and contains the same reconnaissance and\nspreading phase. However, it does not include the execution of the miner itself. This image\ncontains strings in German, which might, like the IP address of the payload server, point to\nthe origin of the group.\n\nAs written above, that image was also observed on several AKS clusters, which are\nmanaged Kubernetes clusters. In such a scenario, it is less likely that Docker API service will\nbe exposed to the Internet, as the AKS nodes are configured with the proper configuration of\nthe Docker server. Therefore, we could assume that the attackers had a different access\nvector in those incidents.\n\nWhen we looked for the common deployments of the various Kubernetes clusters that were\ninfected by this image, we noticed that all of them have an open Weave Scope service.\n[Weave Scope is a popular visualization and monitoring framework for containerized](https://www.weave.works/oss/scope/)\nenvironments. Among other features, Weave Scope shows the running processes and the\nnetwork connections of the various containers. In addition, Weave Scope allows users to run\nshell on the pods or nodes in the cluster (as root). Since Weave Scope does not use any\nauthentication by default, exposure of this service to the Internet poses a severe security\nrisk. And still, we see cluster administrators who enable public access to this interface, as\nwell as other similar services. Attackers, including this group, take advantage of this\nmisconfiguration and use the public access to compromise Kubernetes clusters.\n\n\n-----\n\nThis is not the first time that we detect a campaign that targets exposed sensitive interfaces\nto the Internet. In June, [we revealed a large scale attack that exploited exposed Kubeflow](https://www.microsoft.com/security/blog/2020/06/10/misconfigured-kubeflow-workloads-are-a-security-risk/)\ndashboard. In both cases, a high impact service, that allows eventually code execution on\nthe containers or underlying nodes is openly exposed to the Internet. Misconfigured services\nseem to be among the most popular and dangerous access vectors when it comes to attacks\nagainst Kubernetes clusters.\n\n**How Azure Security Center protects customers?**\n\nAzure Security Center (ASC) detects this attack, as well as similar attacks, both in the\n[Kubernetes management layer and in the node-level:](https://docs.microsoft.com/en-us/azure/security-center/alerts-reference#alerts-akscluster)\n\nManagement Layer protection\n\n1. ASC automatically detects sensitive services that are exposed to the Internet. In this\n\nincident, ASC detected the exposed Weave Scope service. Detecting exposure of such\nservices immediately when they occur is crucial to prevent their exploitation.\n2. ASC detects deployments of malicious containers in AKS clusters. The detection\n\ncovers the images that were used in this attack. ASC uses the data from Microsoft\nThreat Intelligence Center’s sensor network to continuously expand its coverage and\ndetect the recent attacks in the wild.\n\nNode Level protection\n\n1. ASC detects Docker API services that are openly accessible to the Internet.\n2. ASC detects malicious behavior on the nodes, including cryptocurrency mining activity.\n\nRecommendations\n\n1. Azure Policy for Kubernetes can be used to restrict and audit sensitive actions in the\n\ncluster such as deploying images from public repositories, deployment of privileged\n[containers etc. For more information see the documentation. Integration with Azure](https://docs.microsoft.com/en-us/azure/governance/policy/concepts/policy-for-kubernetes)\nSecurity Center will be available soon. Policies such as the following can prevent\nsimilar incidents: “Privileged containers should be avoided” and “Container images\n_should be deployed from trusted registries only”_\n\n**IoCs**\n\nhxxp://85[.]214[.]149[.]236:443/sugarcrm/themes/default/images/default.jpg\nhxxp://rhuancarlos[.]inforgeneses[.]inf[.]br/%20%20%20.%20%20%20.%20%20%20./index.php\nhildeteamtnt/pause-amd64:3.4\nhildeteamtnt/pause-amd64:3.3\nsha256:c88b9f32c143ee78b215b106320dbe79e28d39603353b0b9af2c806bcb9eb7b6\n\n\n-----\n\nsha256:340d9af58a3b3bedaae040ce9640dd3a9a8c30ddde2c85fb7aa28d2bff2d663e\nsha256:139f393594aabb20543543bd7d3192422b886f58e04a910637b41f14d0cad375\nsha256:68ad2df23712767361d17a55ee13a3b482bee5a07ea3f3741c057db24b36bfce\n\nUpdate (September 10 2020):th\n\n[Following the attack, Weaveworks has released a blog post about how to secure Weave](https://www.weave.works/blog/preventing-malicious-use-of-weave-scope)\nScope deployments and avoid this and similar attacks that use Weave Scope.\n\nTags:\n[Azure Security Center](https://techcommunity.microsoft.com/t5/tag/Azure%20Security%20Center/tg-p/board-id/MicrosoftDefenderCloudBlog)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-09-08 - TeamTNT activity targets Weave Scope deployments.pdf"
+    ],
+    "report_names": [
+        "2020-09-08 - TeamTNT activity targets Weave Scope deployments.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f809bfcb-b200-4988-80a8-be78ef6a52ef",
+            "created_at": "2023-01-06T13:46:39.186988Z",
+            "updated_at": "2025-03-27T02:00:03.016358Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "Adept Libra"
+            ],
+            "source_name": "MISPGALAXY:TeamTNT",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c3ca592f-0669-49bd-ab5c-310007ab2fb4",
+            "created_at": "2022-10-25T15:50:23.334495Z",
+            "updated_at": "2025-03-27T02:00:55.445098Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "TeamTNT"
+            ],
+            "source_name": "MITRE:TeamTNT",
+            "tools": [
+                "Peirates",
+                "MimiPenguin",
+                "LaZagne",
+                "Hildegard"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "629af275-d425-4bd1-ac91-0ec3d18ff4e1",
+            "created_at": "2023-01-06T13:46:39.361287Z",
+            "updated_at": "2025-03-27T02:00:03.061888Z",
+            "deleted_at": null,
+            "main_name": "Cosmic Lynx",
+            "aliases": [],
+            "source_name": "MISPGALAXY:Cosmic Lynx",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535713,
+    "ts_updated_at": 1743041531,
+    "ts_creation_date": 1653787580,
+    "ts_modification_date": 1653787580,
+    "files": {
+        "pdf": "https://archive.orkl.eu/69669084c7d122c353ef6ce100f18c6df45d493b.pdf",
+        "text": "https://archive.orkl.eu/69669084c7d122c353ef6ce100f18c6df45d493b.txt",
+        "img": "https://archive.orkl.eu/69669084c7d122c353ef6ce100f18c6df45d493b.jpg"
+    }
+}

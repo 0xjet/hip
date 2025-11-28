@@ -1,0 +1,62 @@
+{
+    "id": "60f158f0-522b-4dcc-81dc-bfd0d22ff1e3",
+    "created_at": "2023-01-12T14:59:46.911336Z",
+    "updated_at": "2025-03-27T02:05:41.833952Z",
+    "deleted_at": null,
+    "sha1_hash": "4a127d776eee73029add76211bdeedc5691770ae",
+    "title": "2021-06-20 - Unpacking UPX Manually",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:49:16Z",
+    "file_modification_date": "2022-05-28T19:49:16Z",
+    "file_size": 843862,
+    "plain_text": "# Unpacking UPX Manually\n\n**kausrini.github.io/2021-06-20-unpacking-upx-manually/**\n\nUPX [1] is one of the most common packers used by malware authors to obfuscate their\nbinaries. Obfuscated binaries are harder to analyze than the original binary. UPX is a\npacker, so it does have legitimate usage like compressing a binary for reduced file size. Not\nall UPX packed files are malicious but for this blogpost, we will be choosing something\nmalicious.\n\nUPX packed executables can be automatically unpacked by UPX tool (which available\nonline for free). To prevent this, malware authors often tamper with the packed binary in\nsuch a way that they can’t be unpacked by UPX tool but the binary unpacks itself in\nmemory without any issues. So, learning to unpack them manually always helps. Moreover,\nthe general principle mentioned below can be used to unpack any custom packer or\nobfuscation techniques used by malware authors.\n\nI took a long time to search for a sample malicious file and in the end, chose one randomly\nin VirusTotal (VT) by searching for “UPX Ransomware” [2]. I used Detect It Easy (DIE) [3]\ntool to confirm that the binary is UPX packed.\n\n\n-----\n\nFor the purpose of this post, I ll be using packed and obfuscated interchangeably. I ve\nrenamed the downloaded binary to “sample”. Using the long hash value as the binary name\nmakes the x32dbg debug windows look cluttered as the function names are referred to as\n_filename.memory_address in the debugger._\n\n## Theory Crafting\n\nBefore we proceed, we need to talk about how a packed binary is unpacked. A packed\nbinary, when executed (starts from a point called Entry Point - EP), allocates memory space\nto unpack itself and then populates it with the unpacked instructions. This process of writing\nto the memory is unpacking.\n\nOnce unpacked, the packer will start executing instructions from the unpacked section (The\nstarting address is called Original Entry Point - OEP). By debugging the packed executable,\nwe can execute/debug until we can identify the OEP. Once we identify OEP, we can dump\nthe instructions into a binary file and this is the unpacked code. This can be considered as\nthe standard process for unpacking manually.\n\nWe already know it’s packed. If we did not know that, we can use a tool like PeID [4] or\nDetect It Easy to check for packers. Before we start debugging, let’s take a look at the\npacked binary in the tool - PeStudio. It gives us a quick look at the PeFile structure, strings\nand imported libraries. Each of these sections provides us with more context to focus on\nwhile analyzing the binary.\n\n## Pe File Structure\n\n_Figure 1: PE File Structure_\nThe basic unit of code within a PE file is contained within a section [5]. There are 3\nsections, UPX0, UPX1 and .rsrc in the packed binary. Sections being named as UPX is a\nhint to what packer might be used.\n\n\n-----\n\n**Warning: PE File section names can be anything and is not a reliable indicator of the**\ncontents within.\n\nThe section UPX0 has raw size of 0 bytes but virtual size of 0x3800 bytes. And the section\nUPX1 has 96.5% entropy. High entropy value indicates packed or encrypted data. In this\ncase, the packed data in UPX1 will be unpacked into the empty space of UPX0.\n\n**Note: Sections with high entropy indicate compressed or encrypted data. Sections with 0**\nraw size but large virtual size might be used to write instructions dynamically and execute\nthem during runtime.\n\n## Strings\n\nIt shows 3935 strings, but majority of it is unreadable/gibberish. The small percentage of\nreadable strings also indicates that binary might be obfuscated. There is not much more to\ndo here, let’s move on.\n\n## Imports\n\nPeStudio shows only 15 functions imported. The small number of library imports is another\nindicator of packed or obfuscated content. Malicious files might often contain obfuscate\nmodule and library names (won’t show up in simple string analysis). These obfuscated\nlibraries names, can then be deobfuscated during runtime and then loaded using\nLoadLibraryA api call followed by GetProcAddress to obtain the address to specific\nmodule/function within that library.\n\nThis binary has the following interesting imports\n\nVirtualProtect\nVirtualAlloc\nShellExecuteW\nLoadLibraryA\nGetProcAddress\n\nThese are sufficient for the binary to unpack itself in memory and run the deobfuscated\ncode. For the sake of this blogpost size and your time, I’ll not go into details of how they are\nused. We can discuss them in future posts.\n\n## Identifying OEP\n\nLet’s load the binary into x32dbg. As soon as it is loaded, the execution is paused at the\nvery beginning. As stated above, the next set of instructions are meant to unpack the\noriginal binary instructions and execute them. So, we are looking for an unconditional jump\nor a call instruction to a specific memory location.\n\n\n-----\n\nYou can verify that you are still in packed section of instructions by searching for the\n“Intermodular calls” and “String references” in the “current region”. Both these will open a\nnew window displaying limited data. This is an indicator that you are still in packed\nexecutable region.\n\n_Figure 2: Search for Intermodular Calls_\n\n_Figure 3: Intermodular calls before the code is unpacked_\nContinue to “step over” the instructions to avoid jumping into function calls. As you continue,\nkeep an eye on the title of the debugger. If it has ntdll.dll or some other system library, it\nmeans you are in the library code and that does not interest you (usually) as a malware\nanalyst. You can select “Run to user code” to get back to your binary code.\n\nAfter a few step instructions, you’ll notice that you are now at the very end of the binary. If\nyou scroll further down, you’ll notice an unconditional jump right before a series of opcodes\n**0000 signaling the end of the binary.**\n\n\n-----\n\n_Figure 4: Likely End of the Packed Section_\nSet a breakpoint right before the `jmp sample.416520 instruction and check for`\nintermodular calls again. You will still see limited number of calls indicating packed data.\nNow, step over this instruction, which will jump or change the instruction pointer to a new\nlocation.\n\nThis new location is the beginning of the the unpacked called or also called as OEP. the\naddress location 0x416520 is the OEP where the unpacked code (instructions) resides.\nYou can (and need to) verify this by checking for intermodular calls which will show a larger\nnumber of function calls, indicating that the binary has been packed.\n\n\n-----\n\n_Figure 5: Truncated Image of Intermodular calls after the code is unpacked_\n**Note: Figure 5 has significantly greater number of function calls than Figure 3. Furthermore,**\nthe function names are indicated clearly and not obfuscated. This indicates that we have\nsuccessfully unpacked the binary.\n\nBefore we proceed, make sure your Instruction Pointer is pointing to the OEP we have\nidentified above.\n\n## Dump Unpacked Binary From Memory\n\nOnce we have the unpacked binary instructions and the instruction pointer is pointing to the\nOEP, we can use the “OllyDumpEx” plugin [6] for x32dbg to dump the process to a file.\nMake sure that the OEP is pointing to the very first instruction after the Jump instruction we\npreviously identified. This makes sure that we are dumping only the unpacked code in\nmemory to a file. This plugin takes care of building the PE file structure around the dumped\nfile. There is no need to change any parameters in the OllyDumpEx window. Select Dump\nand you will have the unpacked binary.\n\n\n-----\n\n_Figure 6: OllyDumpEx Plugin_\nThe dumped file is named as “sample_dump.exe”. Opening this file in PeStudio, will show\nyou 15 imports with no name values. This is because the OllyDumpEx does not take care of\nrebuilding the imports while dumping it from memory. Imports on a file and imports in\nmemory have different address offsets and this causes the dumped binary to be\n‘incomplete’ in some ways as shown in the image below.\n\n\n-----\n\n_Figure 7: PeStudio Output For The Dumped File_\nTo rebuild the import table, we will use a different plugin - Scylla x86 [7] which searches for\nthe Import Address Table in the packed binary and obtains the imports from it. Select “IAT\nAutosearch” and when prompted for advanced search choose no. The plugin will return with\nthe starting address of the IAT. Now select “Get Imports” to obtain the list of imports for the\nbinary.\n\nIn this case, it will return with 247 valid APIs and missing 4 APIs as shown below. If there\nwere large number of missing APIs, try the advanced search mentioned earlier and check if\nit returns better results.\n\n\n-----\n\n_Figure 8: Scyllax86 Plugin_\nOnce Scylla returns the above response, select “Fix Dump”, and this will generate a new file\ncalled “sample_dump_scy.exe”. As shown in the image below, opening\n“sample_dump_scy.exe” in the PeStudio shows that the imports are now populated.\n\n\n-----\n\n_Figure 9: PeStudio Output For The Dumped File_\nCompare Figure 7 with Figure 9 to see how Scyllax86 helps with populating the imports. We\n**have successfully extracted the UPX packed binary into a file**\n**“sample_dump_scy.exe”. We can now continue analayzing this sample for identifying its**\nfunctionality and purpose. Subsequent posts will be focused on this.\n\n## References\n\nTags: [malware](https://kausrini.github.io/tags#malware) [analysis](https://kausrini.github.io/tags#analysis) [upx](https://kausrini.github.io/tags#upx) [unpacking](https://kausrini.github.io/tags#unpacking)\n\n[Next Post →](https://kausrini.github.io/2021-06-23-maldoc-analysis-basic/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-06-20 - Unpacking UPX Manually.pdf"
+    ],
+    "report_names": [
+        "2021-06-20 - Unpacking UPX Manually.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535586,
+    "ts_updated_at": 1743041141,
+    "ts_creation_date": 1653767356,
+    "ts_modification_date": 1653767356,
+    "files": {
+        "pdf": "https://archive.orkl.eu/4a127d776eee73029add76211bdeedc5691770ae.pdf",
+        "text": "https://archive.orkl.eu/4a127d776eee73029add76211bdeedc5691770ae.txt",
+        "img": "https://archive.orkl.eu/4a127d776eee73029add76211bdeedc5691770ae.jpg"
+    }
+}

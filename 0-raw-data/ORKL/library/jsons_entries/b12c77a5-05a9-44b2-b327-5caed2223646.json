@@ -1,0 +1,145 @@
+{
+    "id": "b12c77a5-05a9-44b2-b327-5caed2223646",
+    "created_at": "2023-01-12T15:04:02.675375Z",
+    "updated_at": "2025-03-27T02:15:35.65083Z",
+    "deleted_at": null,
+    "sha1_hash": "cd3116bb1e20c7c4018e42a7106954873fc74f46",
+    "title": "2021-07-07 - Deep analysis of KPOT Stealer",
+    "authors": "",
+    "file_creation_date": "2022-05-28T03:54:17Z",
+    "file_modification_date": "2022-05-28T03:54:17Z",
+    "file_size": 107217,
+    "plain_text": "# Deep analysis of KPOT Stealer\n\n**[medium.com/s2wlab/deep-analysis-of-kpot-stealer-fb1d2be9c5dd](https://medium.com/s2wlab/deep-analysis-of-kpot-stealer-fb1d2be9c5dd)**\n\nS2W July 7, 2021\n\nS2\nW\n\n\n[S2W](https://medium.com/@s2w?source=post_page-----fb1d2be9c5dd--------------------------------)\n\nJul 7, 2021\n\n\n7 min read\n\n**Author: Seunghoe Kim @ Talon**\n\n\n-----\n\nPhoto by on\n\n## Executive Summary\n\nKPOT steals data from browsers, gaming services, FTP clients, VPN clients, messengers,\nand cryptocurrency wallets. This sample of KPOT seems to have some minor changes\ncompared to the older version analyzed by Proofpoint in May 2019.- Decentralized\nblockchain DNS is used for resolving C2 domain with .bit or .lib TLDs. The encryption\nmethod is changed for C2 communication. - Stealer can be configured to run an arbitrary\nshell command. It will even run on CIS machines.\n\n## Detailed Analysis\n\n\n-----\n\n## Malware Information\n\nFilename : klfile.exe\nMD5 : 9dc97eaed4e61901afc327ce9f122262\nSHA-1 : 41881d3463f4246d4d0146faf39703354bab83e9\nSHA-256 : 4412624d06991fa64f684fcc6d66c787d040eaa12356885cf0a0919c732c82a3\nFile type : PE32 executable (GUI) Intel 80386, for MS Windows\nPDB path : N/A\nOriginal name : hita.exe\nCertificate : N/A\n\n```\nC&C : kpotuvorot10[.]bit, dolboeb1701[.]com\n\n```\n\n## Behavior\n\n**1) Packed with DerpLoader**\n\nThis binary is packed with DerpLoader, which is also used for packing Raccoon stealer, Vidar\nstealer and REvil ransomware. It’s almost impossible to cover every polymorphic variant of this\nloader with a static method like Yara, since each packed binary has a unique stub built with\ndummy API calls and exported functions. This packer has 3 stages — decryption,\ndecompression, and execution with process hollowing.\n\n**2) Using Murmurhash3 for string comparison & importing procedures**\n\nThis stealer calculates 32-bit Murmurhash3 of a given string with a specific seed and compares\nit against the hash value of the target string, which is hardcoded in binary, to check the value of\nthe given string. For this sample, `-794794744 ( D0A06508 in unsigned hexadecimal) is used`\nfor seed value, but it can be changed for other builds. This string comparison technique\nprevents exposure of some keywords like process name or folder name, which makes analysis\nharder. Murmurhash3 is also used for importing procedures from libraries by calculating the\nhash of the procedure name and get the address of the procedure only if it matches the target\nhash value. We can write a simple code to brute force these hashes with pre-built word lists.\n\n**3) XOR-encoded string**\n\nIf plaintext is required to accomplish the job, then the stealer uses XOR encoded strings. Each\nstring is encoded with 1-byte XOR key, and these keys are stored along with string length and\npointer to the encoded string. Following IDAPython script will decode the string stored at the\ngiven index in the table.\n\n**4) Resolve domain name of C2 with Blockchain DNS**\n```\n.bit and .lib TLD is managed by a decentralized blockchain called Namecoin and\n\n```\nEmercoin. This stealer can resolve these blockchain-based domain names by using blockchain\n[DNS services like Blockchain-DNS, dotBit.me, or OpenNIC DNS servers. During the](http://dotbit.me/)\n\n\n-----\n\ninitialization step of the stealer, it tries to resolve `kpotuvorot10[.]bit, and if it fails to`\nresolve `.bit or` `.lib C2 domain then it falls back to other address`\n```\nhttp://dolboeb1701[.]com . Unfortunately, those C2 servers are not available at this time.\n\n```\nQuerying `dolboeb1701[.]com on RiskIQ shows that the domain was last seen at 04-01-`\n2021.\n\nThe stealer tests the availability of C2 by sending HTTP GET requests to\n```\n{resolved_addr}/bgczXibj92HSlSCK . If it succeeds, then the whole URL is stored in\n\n```\nmemory and used for other C2 communications.\n\n**5) Using volume serial number for mutex name & victim ID generation**\n\n\n-----\n\nThe stealer calculates a simple hash using the volume serial number of `C:\\ drive for mutex`\nname and victim ID. Following code is hash algorithm ported to Python.\n\n**6) Download configuration from C2**\n\nThe stealer sends HTTP GET request to `{resolved_addr}/bgczXibj92HSlSCK/util.php?`\n```\nid={vsn_hash} . The response should be a configuration of the stealer, which is encrypted\n\n```\nwith XTEA and encoded to the base64 string. The stealer decodes the downloaded base64\nstring, and decrypts it with key `TezTfpjNMdcP6FNE, which is stored in XOR encoded format.`\n\nDecrypted configuration is slightly changed from the older version of KPOT 2.0. Now there’s a\nslot for a shell command between feature flags and the victim’s external IP address.\n\n**7) Collect system information**\n\nAfter downloading the configuration, the stealer collects some system information.\n\nPrivilege status of the current process (elevated or not)\nIntegrity level of the current process\nWindows version\nVictim ID (generated with volume serial number)\n\nThen, the stealer performs ‘CIS check’ by querying the user’s default language ID. If the\nlanguage ID belongs to CIS, the stealer won’t steal information from this computer.\n\nIf the victim’s computer passes a CIS check, then it collects more system information.\n\nWindows product name (with bitness)\nMachineGuid\nIP (use external one retrieved from C2 server)\nCPU (Model, number of cores)\nRAM\nScreen size\nComputer name & Username\nLocal time\nGPUs\nKeyboard layout\nInstalled softwares\n\nAll pieces of information are written to the stream, which minimizes footprint.\n\n**8) Steal application data**\n\nThe stealer steals data from some apps by default and additional features can be enabled by\nconfiguration. Applications and feature flags annotated with bold characters can be applied to\nother users in victim PC, if the stealer process has required privileges. Some stealer functions\nrequire registry access for HKCU or HKU.\n\n\n-----\n\nStealing data from these applications are enabled by default.\n\nNordVPN\nmRemoteNG\nRDP connection profiles\nEarthVPN (Registry access required)\nOutlook\nWindows Mail\n\nThe first 16-bit digit of the stealer configuration controls the optional feature of the stealer. Bit\n0~13 enables or disables info-stealing functions.\n\nflag[0]: Steal data from Chromium-based browsers\n\n**flag[1]: Steal data from Firefox-based browsers and Mozilla products**\n\n**flag[2]: Steal wininet cookies**\n\n**flag[3]: Steal cryptocurrency wallets (Registry access required for Namecoin and Monero)**\n\n**flag[4]: Steal Skype database**\n\n**flag[5]: Steal Telegram database (Registry access required)**\n\n**flag[6]: Steal Discord database**\n\n**flag[7]: Steal** [Battle.net configuration files (including auto-login information)](http://battle.net/)\n\nflag[8]: Steal data from IE (including FTP accounts and Windows Vault)\n\nflag[9]: Steal Steam accounts (loginusers.vdf and SSFN files)\n\nflag[10]: Take a screenshot\n\n**flag[11]: Steal accounts from Total Commander, SmartFTP, Filezilla, WS_FTP, and WinSCP**\n(Registry access required for WinSCP)\n\nflag[12]: Steal Windows user credentials and Pstore (for the older version of Windows)\n\n**flag[13]: Steal XMPP(Jabber) accounts from Psi, Psi+, Pidgin, and libpurple based clients**\n\nIf the stealer process has a high integrity level, SeDebugPrivilege is enabled to duplicate\nSeCreateTokenPrivilege from other processes.\n\nAfter acquiring SeCreateTokenPrivilege, the stealer process creates a new process token with\nSeBackupPrivilege enabled which allows accessing other users’ folders and files by ignoring\nACL.\n\n\n-----\n\nProducts targeted by KPOT stealer\n**9) Exfiltrate & drop files**\n\nThe stealer can be configured to exfiltrate files from the victim's PC. Configuration can contain\nmultiple file grabber settings delimited by keyword `__DELIMM__, and each element of grabber`\nsettings like filter or path is delimited by keyword `__GRABBER__ . The path can be set as`\n```\n%FULLDISK% to exfiltrate files from all drives of the system, or %NETWORK% to exfiltrate files\n\n```\nfrom all resources on the network. If the stealer process has SeCreateTokenPrivilege, it can\nexfiltrate files owned by other users by creating a new process token with SeBackupPrivilege\nenabled.\n\n\n-----\n\nThe stealer can drop files after exfiltration based on configured URLs. If the downloaded file is\nDLL, then it is manually loaded by a custom PE mapper and the entry point of DLL will be called\nwith DLL_PROCESS_ATTACH. If it’s not a DLL, then it is executed by ShellExecuteW with\n```\nopen command.\n\n```\n**10) Send collected information to C2**\n\nThe stream of stolen data is encrypted with Chacha20 using with hard-coded key and nonce. If\nthe victim PC belongs to one of CIS countries, then the data is limited to privilege & integrity\nlevel of the current process, Windows version, and victim ID generated with VSN. Otherwise,\nthe data would also contain stolen information like accounts, cookies, browsing history, crypto\nwallets, and exfiltrated files.\n\nKey: `TezTfpjNMdcP6FNE (Same as XTEA key used for config decryption)`\nNonce: `OX8Qe3j7BczD`\n\nThe stealer uploads encrypted data to C2 by sending an HTTP POST request to\n```\n{resolved_addr}/bgczXibj92HSlSCK/util.php, with Content-Type set as\napplication/octet-stream and Content-Encoding set as binary .\n\n```\n**11) Execute shell command**\n\nShell command parsed from configuration is executed after the information is uploaded to the\nC2 server. The only condition determining the execution of the command is the existence of\ncommand, which means that the command will be executed even on CIS machines.\n\n**12) Cleanup**\n\nThe stealer destroys the input stream by filling the stream with zeros, which makes it hard to be\ndetected by scanning memory. It also closes the handle for a mutex, frees allocated memory,\nand calls WSACleanup to terminate Winsock2. Finally, the stealer checks bit 14 of the feature\nflag and executes the shell command for self-destruction if it is enabled.\n\n## Attribution\n\nIn November 2020, the Source code of KPOT was sold to REvil ransomware gang. It’s not clear\nthat these updates for KPOT were done by the original authors or REvil operators.\n\n## Conclusion\n\nStealers are becoming more evasive thanks to packers and new technologies like blockchainbased domain names. Not only applying security patches and updates but also awareness of\nsocial engineering techniques can help to minimize the risk of becoming a victim of this\nmalware.\n\n## Appendix 1. Actionable Items\n\n\n-----\n\n## C2 domains\n\nkpotuvorot10[.]bit\ndolboeb1701[.]com\n\n## Hashes of unpacked binary\n\n**MD5: 989b32b7094ccb9493e6c2ca58696c1a**\n\n**SHA1: f4d8ab987da7e199b62cac0ffd3d2ccab1634a61**\n\n**SHA256: b8ceee160c1b674d336fed3027425cbd6228475c1a738d7a41cf176fc42fd1f2**\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-07-07 - Deep analysis of KPOT Stealer.pdf"
+    ],
+    "report_names": [
+        "2021-07-07 - Deep analysis of KPOT Stealer.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "9f101d9c-05ea-48b9-b6f1-168cd6d06d12",
+            "created_at": "2023-01-06T13:46:39.396409Z",
+            "updated_at": "2025-03-27T02:00:03.074969Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "CHROMIUM",
+                "ControlX",
+                "Red Dev 10",
+                "RedHotel",
+                "Red Scylla",
+                "TAG-22",
+                "BRONZE UNIVERSITY",
+                "AQUATIC PANDA",
+                "Charcoal Typhoon",
+                "BountyGlad"
+            ],
+            "source_name": "MISPGALAXY:Earth Lusca",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "6abcc917-035c-4e9b-a53f-eaee636749c3",
+            "created_at": "2022-10-25T16:07:23.565337Z",
+            "updated_at": "2025-03-27T02:02:09.868522Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Bronze University",
+                "Charcoal Typhoon",
+                "Chromium",
+                "Red Dev 10",
+                "Red Scylla"
+            ],
+            "source_name": "ETDA:Earth Lusca",
+            "tools": [
+                "Agentemis",
+                "AntSword",
+                "BIOPASS",
+                "BIOPASS RAT",
+                "BadPotato",
+                "Behinder",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Doraemon",
+                "FRP",
+                "Fast Reverse Proxy",
+                "FunnySwitch",
+                "HUC Port Banner Scanner",
+                "KTLVdoor",
+                "Mimikatz",
+                "NBTscan",
+                "POISONPLUG.SHADOW",
+                "PipeMon",
+                "RbDoor",
+                "RibDoor",
+                "RouterGod",
+                "SAMRID",
+                "ShadowPad Winnti",
+                "SprySOCKS",
+                "WinRAR",
+                "Winnti",
+                "XShellGhost",
+                "cobeacon",
+                "fscan",
+                "lcx",
+                "nbtscan"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d53593c3-2819-4af3-bf16-0c39edc64920",
+            "created_at": "2022-10-27T08:27:13.212301Z",
+            "updated_at": "2025-03-27T02:00:55.529662Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Earth Lusca",
+                "TAG-22",
+                "Charcoal Typhoon",
+                "CHROMIUM",
+                "ControlX"
+            ],
+            "source_name": "MITRE:Earth Lusca",
+            "tools": [
+                "Mimikatz",
+                "PowerSploit",
+                "Tasklist",
+                "certutil",
+                "Cobalt Strike",
+                "Winnti for Linux",
+                "Nltest",
+                "NBTscan",
+                "ShadowPad"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535842,
+    "ts_updated_at": 1743041735,
+    "ts_creation_date": 1653710057,
+    "ts_modification_date": 1653710057,
+    "files": {
+        "pdf": "https://archive.orkl.eu/cd3116bb1e20c7c4018e42a7106954873fc74f46.pdf",
+        "text": "https://archive.orkl.eu/cd3116bb1e20c7c4018e42a7106954873fc74f46.txt",
+        "img": "https://archive.orkl.eu/cd3116bb1e20c7c4018e42a7106954873fc74f46.jpg"
+    }
+}

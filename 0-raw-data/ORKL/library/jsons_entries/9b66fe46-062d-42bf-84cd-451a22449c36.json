@@ -1,0 +1,104 @@
+{
+    "id": "9b66fe46-062d-42bf-84cd-451a22449c36",
+    "created_at": "2023-01-12T15:01:21.476958Z",
+    "updated_at": "2025-03-27T02:06:15.140777Z",
+    "deleted_at": null,
+    "sha1_hash": "542022e60433b146bd9ce8cfd76b550893958b04",
+    "title": "2022-03-02 - AvosLocker Ransomware Linux Version Analysis",
+    "authors": "",
+    "file_creation_date": "2022-05-28T15:12:32Z",
+    "file_modification_date": "2022-05-28T15:12:32Z",
+    "file_size": 444698,
+    "plain_text": "# AvosLocker Ransomware Linux Version Analysis\n\n**blog.lexfo.fr/Avoslocker.html**\n\n## Avoslinux Analysis\n\n Introduction\n\nOver the last few months, several cyber gangs (BlackCat, Hive, Revil, etc.) have built Linux versions of their ransomware, specifically\ntargeting the VMware ESXi. The reason is that a single command could encrypt all the data contained on the virtual machines. In autumn\n2021, the Avoslocker operators announced their new Linux variant of AvosLocker. The sample has been publicly available since January\n2022.\n\nThis article is a detailed analysis of the Avoslinux piece of ransomware. The main objectives were to show the differences with the\nWindows variant, to understand the encryption mechanisms and to see if any anti-reverse engineering techniques were used.\n\n## ELF Analysis\n\n[The analyzed sample was found on the public platform MalwareBazaar and its sha256sum is](https://bazaar.abuse.ch/)\n```\n  10ab76cd6d6b50d26fde5fe54e8d80fceeb744de8dbafddff470939fac6a98c4 . Based on the ELF header, it was compiled with GCC\n\n```\n4.4.7.\n```\n $ readelf -p .comment 10ab76cd6d6b50d26fde5fe54e8d80fceeb744de8dbafddff470939fac6a98c4.elf\n String dump of section '.comment':\n  [   0] GCC: (GNU) 4.4.7 20120313 (Red Hat 4.4.7-23)\n\n```\nObviously, the binary is stripped and does not contain any symbols:\n```\n $ nm 10ab76cd6d6b50d26fde5fe54e8d80fceeb744de8dbafddff470939fac6a98c4.elf\n nm: 10ab76cd6d6b50d26fde5fe54e8d80fceeb744de8dbafddff470939fac6a98c4.elf: no symbols\n\n```\nThe ELF header also contains the sections `.ctors and` `.dtors . The` `.ctors section contains a list of functions ran before the main`\nfunction to initialize dynamic non-local variables.\n```\n $ readelf -S ./10ab76cd6d6b50d26fde5fe54e8d80fceeb744de8dbafddff470939fac6a98c4.elf\n Section Headers:\n  [Nr] Name       Type       Address      Offset\n     Size       EntSize     Flags Link Info Align\n  [ 0]          NULL       0000000000000000 00000000\n     0000000000000000 0000000000000000      0   0   0\n  [ 1] .interp      PROGBITS     0000000000400200 00000200\n     000000000000001c 0000000000000000  A    0   0   1\n ....\n snip\n ....\n  [19] .ctors      PROGBITS     0000000000757000 00157000\n     00000000000000a0 0000000000000000 WA    0   0   8\n  [20] .dtors      PROGBITS     00000000007570a0 001570a0\n     0000000000000010 0000000000000000 WA    0   0   8\n\n```\nThe last constructor function called initializes three strings, the ransom notes, the sample ID, and base64 strings:\n\n\n-----\n\nransom_notes\nThe decoded base64 strings are 88-byte long and at first sight I couldn't figure out what it was.\n```\n$echo -en\n\"MFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAE9U+h7UA0Do9mVDFVJM9Gj5Qi/5zn2b/5dH9qFMApEmVngoc4zlLk49U1iWc2l+in2CtyQb+/s+JKvyPvack9gw==\" |\nbase64 -d | xxd\n00000000: 3056 3010 0607 2a86 48ce 3d02 0106 052b 0V0...*.H.=....+\n00000010: 8104 000a 0342 0004 f54f a1ed 4034 0e8f .....B...O..@4..\n00000020: 6654 3155 24cf 468f 9422 ff9c e7d9 bff9 fT1U$.F..\"......\n00000030: 747f 6a14 c029 1265 6782 8738 ce52 e4e3 t.j..).eg..8.R..\n00000040: d535 8967 3697 e8a7 d82b 7241 bfbf b3e2 .5.g6....+rA....\n00000050: 4abf 23ef 69c9 3d83           J.#.i.=.\n\n```\nThen, by digging further in the binary, it appears to be an elliptic curve public key generated using the secp256k1 curve.\n```\n$echo -en\n\"MFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAE9U+h7UA0Do9mVDFVJM9Gj5Qi/5zn2b/5dH9qFMApEmVngoc4zlLk49U1iWc2l+in2CtyQb+/s+JKvyPvack9gw==\" |\nbase64 -d | openssl asn1parse -inform DER -dump\n  0:d=0 hl=2 l= 86 cons: SEQUENCE\n  2:d=1 hl=2 l= 16 cons: SEQUENCE\n  4:d=2 hl=2 l=  7 prim: OBJECT      :id-ecPublicKey\n  13:d=2 hl=2 l=  5 prim: OBJECT      :secp256k1\n  20:d=1 hl=2 l= 66 prim: BIT STRING\n   0000 - 00 04 f5 4f a1 ed 40 34-0e 8f 66 54 31 55 24 cf  ...O..@4..fT1U$.\n   0010 - 46 8f 94 22 ff 9c e7 d9-bf f9 74 7f 6a 14 c0 29  F..\"......t.j..)\n   0020 - 12 65 67 82 87 38 ce 52-e4 e3 d5 35 89 67 36 97  .eg..8.R...5.g6.\n   0030 - e8 a7 d8 2b 72 41 bf bf-b3 e2 4a bf 23 ef 69 c9  ...+rA....J.#.i.\n   0040 - 3d 83                       =.\n\n```\nFinally, three objects are initialized, two of them will hold a public and private key, and one is for the random generator. These objects\ncome from the crypto++ library.\n\n\n-----\n\nctors_object_init\n\n## Main function\n\nNo technique has been set up to obfuscate and protect the ransomware. The ransomware is basic and accepts two parameters, the\nnumber of threads to be used and the directories to encrypt:\n\nprogram_helper\n\nIf one of the given paths contains the strings \"esxi\" or \"vmfs\", a global variable is set to true and the running VMs (virtual machines) are\nkilled using the esxcli command line:\n\nkilling_ESXi\n\nFinally, it will browse the given lists of directories recursively, load the attackers' public key and build a list of files that the encryption\nthread routine will consume.\n\n\n-----\n\nmain_encryption_flow\n\n## Generating the list of files to encrypt\n\nThe function that builds the list of files to encrypt is simple. First, it calls \"opendir\" with the directory path name to encrypt, and then, using\n\"readdir\", it iterates through the files in the directory. If it is a regular file and the name is not \"README_FOR_RESTORE\" or it does not\nend with the \".avoslinux\" or \".avos2\" extension, it is added to the global list. If the esxi global variable is set to true, only files that end with\n\".vmdk\", \".vmem\", \".vswp\", \".vmsn\" or \".log\" are added to the list:\n\n\n-----\n\nbuild_files_list_to_encrypt\nUnlike most Windows pieces of ransomware, that only encrypt data files based on their extension name using a whitelist or a blacklist, this\nLinux variant may encrypt all the files, including system files.\n\n## Load the attackers' public key\n\nBecause the ransomware uses the crypto++ library, we recognize the particular concept of filters and pipes used by the library in the\nreversed code. Similarly to Unix, Pipes allows data flows from a source to a sink and filters them to transform them. The original function\nthat decodes and loads the base64 attackers' public key would probably look like this:\n```\nAutoSeededRandomPool prng;\nstring encoded =\n\"MFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAE9U+h7UA0Do9mVDFVJM9Gj5Qi/5zn2b/5dH9qFMApEmVngoc4zlLk49U1iWc2l+in2CtyQb+/+JKvyPvack9gw==\";\nstring decoded;\nStringSource ss(encoded, true, new Base64Decoder( new StringSink(decoded)));\nECIES<ECP>::Encryptor e0;\ne0.AccessPublicKey().Load(decoded);\ne0.GetPublicKey().ThrowIfInvalid(prng, 3); // Validate the public key\n\n```\n\n-----\n\nload_attackers_public_elliptic_curvre_key\n\n## Encryption\n\nTo encrypt files on the disk, Avoslinux uses the Salsa20 stream ciphers using the 12-round variant. For each file to encrypt, it generates a\n32-byte long Salsa key and an 8-byte long nonce.\n\ngen_salsa_key_nonce\nThe generated key and nonce are passed to the function \"ECIES_n_b64\" to be encrypted using the ECIES (Elliptic Curve Integrated\nEncryption Scheme) crypto scheme, and then base64-encoded.\n\n\n-----\n\nECIES_encrypt_key_and_nonce\nThe function would probably look like this:\n```\nstring key_nonce;\nStringSource ss1 (key_nonce, true, new PK_EncryptorFilter(prng, e0, new Base64Encoder( new StringSink(b64_ecies_key_nonce))));\n\n```\nThe ECIES-encrypted output is bigger than the original: 125-byte long. Based on the crypto++ ECIES documentation, \"The output of the\nencryption function is the tuple {K,C,T}, where K is the encrypted common secret, C is the ciphertext, and T is the authentication tag.\"\n\nThe number of Salsa rounds is set:\n\nset_salsa_rounds_and_key\n\nThe file is encrypted using the Salsa20/12 algorithm, and the key with the previously encrypted nonce (ECIES and base64) is appended to\nthe end of the file.\n\n\n-----\n\nsalsa20/12 encrypting\nThen, the file is renamed by appending the \".avoslinux\" extension to the file.\n\nFile renamed\n\nFinally, the Salsa key and the nonce are erased from the memory:\n\nSalsa key and nonce zeroing\n\n## Conclusion\n\nThe Linux variant is very simple and has no special features like network encryption or any anti-reverse techniques to obfuscate codes.\nThe encryption process is not common for a piece of ransomware and it is different from the Windows variant, which uses the RSA and\nAES combination. Another thing to note is that unlike most Windows pieces of ransomware, that only encrypt data files based on their\nextension name using a whitelist or a blacklist, this Linux variant may encrypt all the files, including system files.\n\n## IOCs\n\nSample hash\n\nSHA256: 10ab76cd6d6b50d26fde5fe54e8d80fceeb744de8dbafddff470939fac6a98c4\nSHA1: 9c8f5c136590a08a3103ba3e988073cfd5779519\nMD5: f659d1d15d2e0f3bd87379f8e88c6b42\n\nElliptic curve public key\n\n\n-----\n\no j0C Q o Qg 9U U 0 o9 J 9Gj5Q /5 b/5d 9q p goc 9U c CtyQb /s\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-03-02 - AvosLocker Ransomware Linux Version Analysis.pdf"
+    ],
+    "report_names": [
+        "2022-03-02 - AvosLocker Ransomware Linux Version Analysis.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "bbe36874-34b7-4bfb-b38b-84a00b07042e",
+            "created_at": "2022-10-25T15:50:23.375277Z",
+            "updated_at": "2025-03-27T02:00:55.457787Z",
+            "deleted_at": null,
+            "main_name": "APT37",
+            "aliases": [
+                "APT37",
+                "InkySquid",
+                "ScarCruft",
+                "Group123",
+                "TEMP.Reaper",
+                "Ricochet Chollima"
+            ],
+            "source_name": "MITRE:APT37",
+            "tools": [
+                "BLUELIGHT",
+                "CORALDECK",
+                "KARAE",
+                "SLOWDRIFT",
+                "ROKRAT",
+                "SHUTTERSPEED",
+                "POORAIM",
+                "HAPPYWORK",
+                "Final1stspy",
+                "Cobalt Strike",
+                "NavRAT",
+                "DOGCALL",
+                "WINERACK"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "552ff939-52c3-421b-b6c9-749cbc21a794",
+            "created_at": "2023-01-06T13:46:38.742547Z",
+            "updated_at": "2025-03-27T02:00:02.906537Z",
+            "deleted_at": null,
+            "main_name": "APT37",
+            "aliases": [
+                "ScarCruft",
+                "Venus 121",
+                "Moldy Pisces",
+                "Group 123",
+                "APT 37",
+                "Group123",
+                "Operation Daybreak",
+                "Operation Erebus",
+                "Red Eyes",
+                "TA-RedAnt",
+                "InkySquid",
+                "Reaper Group",
+                "Ricochet Chollima",
+                "ATK4",
+                "G0067"
+            ],
+            "source_name": "MISPGALAXY:APT37",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535681,
+    "ts_updated_at": 1743041175,
+    "ts_creation_date": 1653750752,
+    "ts_modification_date": 1653750752,
+    "files": {
+        "pdf": "https://archive.orkl.eu/542022e60433b146bd9ce8cfd76b550893958b04.pdf",
+        "text": "https://archive.orkl.eu/542022e60433b146bd9ce8cfd76b550893958b04.txt",
+        "img": "https://archive.orkl.eu/542022e60433b146bd9ce8cfd76b550893958b04.jpg"
+    }
+}

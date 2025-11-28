@@ -1,0 +1,137 @@
+{
+    "id": "3b0cbbf6-8f32-4312-bc78-3b84d1bd15c9",
+    "created_at": "2022-10-25T16:48:19.707194Z",
+    "updated_at": "2025-03-27T02:16:39.71888Z",
+    "deleted_at": null,
+    "sha1_hash": "ec83db1b099ad2e211b9633f66ebed82f8bb93e5",
+    "title": "",
+    "authors": "",
+    "file_creation_date": "2021-01-14T02:46:42Z",
+    "file_modification_date": "2021-01-14T02:46:42Z",
+    "file_size": 2436116,
+    "plain_text": "# Opening “STEELCORGI”: A Sophisticated APT Swiss Army Knife\n\n**[yoroi.company/research/opening-steelcorgi-a-sophisticated-apt-swiss-army-knife](https://yoroi.company/research/opening-steelcorgi-a-sophisticated-apt-swiss-army-knife/)**\n\nJanuary 12, 2021\n\n01/12/2021\n\n## Introduction\n\n2020 was a really intense year in terms of APT activities, in fact it brought us new\nevidence of sophisticated campaigns targeting Enterprises organization across Europe\nand also Italy. In particular the threat group we track as TH-239, also mentioned as\nUNC1945 by FireEye security researchers, has been one of the sneakiest.\n\nWe discussed some of the new techniques and modus operandi used by this actor in our\n[previous post, revealing how it leverages modern post exploitation tools even in legacy](https://yoroi.company/research/shadows-from-the-past-threaten-italian-enterprises/)\nenvironments such as old Linux-based machines: with the help of a portable virtual\nmachine, TH-239 is able to move part of its arsenal directly into the victim's internal\nnetwork.\n\nThis time we decided to dissect and share intelligence information about another piece of\nthe TH-239 arsenal: a tiny and mysterious tool dubbed “STEELCORGI” on FireEye\n[research. This tool was heavily protected using a novel technique able to make things](https://www.fireeye.com/blog/threat-research/2020/11/live-off-the-land-an-overview-of-unc1945.html)\nreally difficult to any DFIR Team tackling with TH-239 intrusion, but it’s contents reveal\nhuge surprises and unattended capabilities.\n\n## Technical Analysis\n\nOne of the most interesting components of the TH-239arsenal is an ELF binary file\nclassified as “STEELCORGI”. The tool is presented in the form of an ELF named with the\nfollowing md5: 0845835e18a3ed4057498250d30a11b1.\n\nThis binary is protected in a very aggressive way, let’s see how.\n\n## A Packed ELF\n\n\n-----\n\nDuring the analysis we noticed that this ELF was very far from being readable, we\nextracted a series of elements confirming us that:\n\nHigh file dimension (more than 4MB);\nObfuscated strings;\nAbsence of Dynamic and (.dynsym) and Static Symbol Tables (.symtab);\nAbsence of section-headers as Anti-reverse engineering Technique;\nHigh value of entropy > 7.9\nRuntime linking mechanism with dlopen and dlsym\n\nAs the first step, we focused on the static analysis of the sample in order to reconstruct the\nhigh level of sophistication and complexity of the packing. At first impact, strings are\nobfuscated, the binary is dynamically linked but the dynamic symbols table is empty.\n\nAlso, the absence of section-headers is an anti-reverse engineering technique adopted in\nthis packer. Another indicator that the binary is packed is the high value of entropy 7.99,\nas it is possible to observe in the following picture, on the right we have the whole portion\nof the ELF binary with compressed data.\n\nFigure. High entropy section\n\nAt this point, we aren’t able to retrieve any other information about the packer, so we have\nto analyze the malicious routines aimed at unpack the sample. During the code\ninspection, a very long and complex subroutine emerges and it looks like the following\nscreen:\n\n\n-----\n\nFigure. Part of the decoding routines\n\nIt is a particular decoding routine instructed to decrypt some other protected code and\nstrings. The code is a complex succession of logic instructions, like xor, shift, or etc. In the\nend of the decoding routine, the sample performs a check on the environment variables,\nlooking for a custom one installed by the TH-239 operators.\n\nIn fact, the environment variable “MCARCH_” contains the decryption key of the\nprotector wrapper. When the malware retrieves the desidered environment variable, it\nstarts the unpacking routine using the key stored in it and then starts the execution of the\nreal payload.\n\nThis approach is a great evasion technique because it avoids the execution of the sample\nin any environments except the ones where TH-239 operators decide to get in.\n\nFigure. Environment variable lookup\n\n\n-----\n\nFigure. Environment variable match (redacted)\n\n### A Closer Look to the Stub\n\nIn addition, this packed ELF is matching some suspicious functions usually found in\nbackdoors using the runtime linking techniques. Following are the functions with their\nrelative offset:\n\nFigure. Packed EFL\n\nimports\n\nThe presence of the dlopen and dlsym syscalls inside libdl.so.2 is a clear indicator that\nthis ELF uses a runtime linking mechanism by which hides all the dynamic symbols. The\n_dlopen() function loads a shared object into the calling process’s address space (the same_\nof LoadLibrary() in Windows). The symbol resolution is done by the dlsym() syscall\nwhich returns the address of the first occurrence of the symbol. Setting a breakpoint on\n_dlopen() we are able to know which libraries are loaded at runtime:_\n\n\n-----\n\nFigure. Libraries dynamically loaded by the stub\n\nThen, in the same way we dump all the symbol resolved at runtime with the dlsym()\nsyscall:\n\n\n-----\n\nFigure. Syscall invoked during the unpacking\n\nInspecting the new unpacked memory,we immediately noticed its structure with all the\nprogram headers and section headers, then we found all the loaded new segments\nmapped into Virtual Memory at specific offset:\n\n\n-----\n\nFigure. Unpacked memory sections\n\nThese LOADsegments contain unpacked payload: it has different size than and the\nnumber of program-headers and section-headers are also different. The unpacked version\nhave a lot of clear-text LOAD sections that was previously unpacked from memory, the\nfollowing image summarize the unpacked memory regions (the bar on the right):\n\n\n-----\n\nFigure. Segment difference\n\nInspecting all these unpacked regions (in red), we found some dictionaries used by the\nbackdoor for enumeration or brute force. This is very interesting because it shows us the\nreal capabilities and the magnitude of this Kill Chain. More details in the following\nsections.\n\n\n-----\n\nFigure. Wordlists and dictionaries inside the ELF binary\n\n## The APT Swiss Army Knife\n\nAt this point of the analysis, we want to provide an overview of the capabilities of this\nmalware sample. It is a complete toolset for reconnaissance, lateral movement,\nexploitation and post exploitation activities. When the toolset is launched, it shows the\ncomplete menu with all the possible commands.\n\n\n-----\n\nFigure. Malware tool help\n\nOne of the sneakiest commands we noticed is the “bleach” one, able to delete all btmp\nwtmp and btmp logs. The btmp log keeps track of failed login attempts; wtmp gives\nhistorical data of utmp and btmp provides the complete picture of users logins at which\nterminals, logouts, system events and current status of the system, system boot time (used\nby uptime) etc. It is also able to clean Syslog logs in /var/log/syslog, /var/log/messages,\n/var/log/secure and /var/log/auth.log or optionally all of them with the “-A” flag\n(utmp+wtmp+lastlog+syslog) which is the default.\n\nThere is also the possibility to apply the so-called “Clean Filters” to clean logs for specific\nusers or ip or according to date etc.\n```\n clean (filters): [-n <user>]  to filter by user  (can be set multiple times)\n|          [-t <tty>]   to filter by tty   (can be set multiple\ntimes)\n|          [-i <ip|host>] to filter by ip/host (can be set multiple\ntimes)\n|          [-p <pid>]   to filter by pid   (can be set multiple\ntimes)\n|          [-d <date>]  to filter by date  (can be set multiple\ntimes)\n|          [-g <str>]   to filter by string (can be set multiple times\n\n```\nIs clear that the usage of the “bleach” parameter during an intrusion results in hard times\nfor the DFIR team.\n\n\n-----\n\nFigure. Bleach parameter execution\n\nHowever the functionalities and tools embedded in this ELF binary are really wide and\nthis is exactly why we referenced the tool as an APT swiss army knife. Here we sum up a\nlist of the most interesting ones among the enlisting of all the available commands.\n```\nsendmail [ sun4me | demo | unixcat | nc110 | netcat | netcat-ssl | telnet |\ntraceroute | traceroute-tcp | traceroute-tcpfin | traceroute-udp | traceroute-icmp\n| traceroute-all | sctpscan | sdporn | onesixtyone | snmpgrab | tftpd | ciscopush\n| ciscown | ciscomg | HEAD | GET | ssleak | rmiexec | pogo | pogo2 | elogic | Cmd\n| backfire | netbackup | netrider | sniff | bleach | nfsshell | mikrotik-client |\nsid-force | ssh-user | sshock | ssh | arpmap | ricochet | mac2vendor | ip2country\n| ipgen | ipsort | ipcalc | range2class | crunch | words.pl | passgen | passcheck\n| getpass | decrypt-cisco | decrypt-vnc | decrypt-cvs | wmon | pmon | lemon | pty\n| exec | nsexec | nsexec2 | setns | dumpkcore | dumpmem | pcregrep | xxd | strings\n| sstrip | shred | md5sum | sha1sum | sha256sum | compress | uncompress | encrypt\n| decrypt | uuencode | uudecode | base64 | whois | whob | resolv | ahost | adig |\naxfr | asrv | aspf | periscope | scanip.sh | aliveips.sh | brutus.pl |\nenum4linux.pl | snmpcheck.pl | = | _ | . | -? ] [options] [args]         \nsendmail [ s4m | demo | ucat | nc110 | nc | ncs | tel | tr | trt | trf | tru | tri\n| tra | sctp | sd | sn | sg | tf | ccp | cco | ccg | HEAD | GET | ssleak | rmiexec\n| pogo | pogo2 | el | Cmd | bf | nb | nr | sni | clean | nfs | mikro | sid | sshu\n| ss | ssh | arp | rick | mac | ip2c | ipg | ips | ipc | r2c | crunch | words | lp\n| pcheck | gpass | dec-cisco | dec-vnc | dec-cvs | wmon | pmon | emon | pty | exec\n| nsexec | nsexec2 | setns | kcore | dmem | grep | xxd | str | strip | srm | md5 |\nsha1 | sha256 | comp | uncomp | enc | dec | uue | uud | b64 | whois | whob | res |\nhost | dig | axfr | asrv | aspf | scope | scanip | aliveips | brutus | e4l |\nsnmpcheck | = | _ | . | ? ] [options] [args]\n\n```\nThe amount of available commands is simply impressive: some are known system\nutilities, some others are offensive scripts, other ones known hacking tools and other ones\nmysterious, custom commands.To sum up, we noticed at least four categories of tools\nembedded in this single ELF binary:\n\n**Network and Enumeration Tools such asnetcat, unixcat, netcat-ssl, telnet,**\ntraceroute, traceroute-tcp, traceroute-tcpfin, traceroute-udp, traceroute-icmp |\ntraceroute-all, tftpd, HEAD, GET, sniff, nfsshell, ssh, ricochet,axfr,,whois, scanip,\nsctpscan, sdporn, rmiexec, arpmap, whois, who, ahost, resolv, adig, axfr, asrv, aspf,\nperiscope, scanip.sh, aliveips.sh, brutus.pl, enum4linux.pl, mikro, ss, sshu,\nonesixtyone, snmpgrab, snmpcheck, ciscopush, mikrotik-client.\n\n\n-----\n\n**Anti-Forensics tools such asbleach, clean.**\n**System Utilities such asmd5, sha1, mac2vendor, xxd, cmd, netbackup,**\nip2country, ipgen, ipsort, ipcalc, range2class, crunch, words.pl, passgen, passcheck,\ngetpass, wmon, pmon, pty, exec, nsexec, nsexec2, setns, dumpkcore, dumpmem,\npcregrep, strings, sstrip, shred, md5sum, sha1sum, sha256sum, compress,\nuncompress, encrypt, decrypt, uuencode, uudecode, base64.\n**Escalation and Exploitation tools like ssleak, decrypt-vpn, pogo, pogo2, sid-**\nforce, sshock, decrypt-cisco, decrypt-vnc, decrypt-cvs.\n\nThere are tools for enumeration such as arp, dns, active directory, whois, ip enumeration\nand so on, some network tools and utilities for supporting exploiting and enumerations\noperations, also some exploitation and decryption tools specifically for CISCO, VNC, CVS\nand Mikrotik systems.\n\nBut some of them require a little deep dive.\n\n### SShock\n\nSShock is a tool used to bruteforce SSH logins. In fact it is possible to specify an user list\n_(-u arg) and a password list (-p arg), as shown in the following figure:_\n\nFigure. SShock help file\n\nAnother interesting thing of the tool is the possibility (with the -E flag) to specify some\ninput file to upload and execute which will then be removed.\n\n### Lemon\n\nLemon is a very powerful monitoring utility which is capable of monitoring all system\nevents such as (fork, exec, exit, core etc) of specific processes or users. All monitored\nevents could be filtered with specific switches (-p, -c, -u). Below the tool’s help menu is\nshow:\n\n\n-----\n\nFigure. Lemon help file\n\nFor instance, it is possible to monitor all events related to specific user using the following\nswitches lemon -u <username> -e all, in this case we monitor all system events related to\nkali user:\n\nFigure. Lemon test run\n\nUsing this tool it is possible to monitor and track specific user’s activities on specific\nmachines (or multiple machines) in order to spot the presence of specific users in some\ntimeframe.\n\n### Ssleak\n\nSsleak is an utility to sniff SSL traffic. It is possible to specify a target and then dump all\npackets sent to and from in order to leak some information such as the server’s certificate,\nserver’s canonical names etc.\n\nFigure. SSLeak help file\n\n\n-----\n\nMoreover it is also possible to exploit Heartbleed Vulnerability (CVE-2014-0160) with\ncustom-forged heartbeat packets with a fake length with -s switch and print also the\nhexdump of such leak with -x switch.\n\nFigure. SSLeak test run\n\n### Backfire\n\nBackfire is a tool used to establish and manage connect-back (or reverse) shells. A reverse\nshell permits to establish a connection between the compromised host (pivot) and the\ntarget machine when the target machine is not directly accessible for several reasons. For\ninstance to perform maintenance tasks on hosts behind firewalls or NAT.\n\nAs, shown in the following screen, backfire provides the execution of such commands (-c\n_commands) through a connect-back connection that is possible to spawn with -S flag or_\nwith -s <commands>\n\n\n-----\n\nFigure. Backfire help file\n\n### Ricochet\n\nRicochet is a powerful utility for packet spoofing and FW ACL assessment. The tool can\nact as a client or a server. The client version permits to forge IP-PROTO/ICMP/UDP/TCP\npackets in order to test fw ACLs while the server is used to listen for replies coming from\nthe firewall. It is possible to use 2 different methods. One is called spoof (method #1) to\n_spoof packets and the other is rick (method#2) which stands for “ricochet” used also to_\nspoof the address and port of the outgoing requests:\n\nFigure. Ricochet help file\n\n## Conclusion\n\nThe versatility of the “STEELCORGI” tool used by TH-239 is really impressive: all such\ncapabilities embedded in a single, standalone, ready to deploy binary file, potentially\nenabling the attacker to establish a hidden communication channel, to recon internal\nnetwork and to step in remote endpoint abusing various techniques. Also, this sort of\n“swiss army knife” was also heavily protected in a way that could be activated only during\nan actual intrusion, because the activation key is inoculated into the compromises system\ndirectly by the malicious operators, at run time.\n\n\n-----\n\nAll these facts are reminding us how dangerous and slimy an advanced intruder could\nsneak into the company network: tackling such kinds of threats requires advanced\nintelligence and analysis capabilities.\n\n## Appendix\n\n Indicator of Compromise\n\nHash:\n\n0845835e18a3ed4057498250d30a11b1\n\nYara:\n\n\n-----\n\n```\nrule ELF_packed_STEELCORGI_backdoor_UNC1945{\n meta:\n  description = \"Yara Rule for packed ELF backdoor of UNC1945\"\n  author = \"Yoroi Malware Zlab\"\n  last_updated = \"2020_12_21\"\n  tlp = \"white\"\n  category = \"informational\"\nstrings:\n$s1={4? 88 47 3c c1 6c ?4 34 08 8a 54 ?? ?? 4? 88 57 3d c1 6c}\n$s2={0f b6 5? ?? 0f b6 4? ?? 4? c1 e2 18 4? c1 e0 10 4? }\n$s3={8a 03 84 c0 74 ?? 3c 3d 75 ?? 3c 3d 75 ?? c6 03 00 4? 8b 7d 00}\n$s4={01 c6 89 44 ?? ?? 8b 44 ?? ?? 31 f2 89 74 ?? ?? c1}\n$s5={ 4? 89 d8 4? 31 f2 4? c1 e0 13 4? 01 d7 4? }\ncondition:\n  uint32(0) == 0x464c457f and 3 of them\n}\nrule ELF_unpacked_STEELCORGI_backdoor_UNC1945{\n meta:\n  description = \"Yara Rule for unpacked ELF backdoor of UNC1945\"\n  author = \"Yoroi Malware Zlab\"\n  last_updated = \"2020_12_21\"\n  tlp = \"white\"\n  category = \"informational\"\nstrings:\n$s1=\"MCARC\"\n$s2=\"833fc0088ea41bc3331db60ae2.debug\"\n$s3=\"PORA1022\"\n$s4=\"server\"\n$s5=\"test\"\n$s6=\"no ejecutar git-update-server-info\"\n$s7=\"dlopen\"\n$s8=\"dlsym\"\n$s9=\"5d5c6da19e62263f67ca63f8bedeb6.debug\"\n$s10={72 69 6E 74 20 22 5B 56 5D 20 41 74 74 65 6D 70 74 69 6E 67 20 74 6F 20 67\n65 74 20 4F 53 20 69 6E 66 6F 20 77 69 74 68 20 63 6F 6D 6D 61 6E 64 3A 20 24 63\n6F 6D 6D 61 6E 64 5C 6E 22 20 69 66 20 24 76 65 72 62 6F 73 65 3B}\ncondition:\n all of them and #s4>50 and #s5>20\n}\n\n```\n_This blog post was authored by Luigi Martire, Antonio Pirozzi and Luca Mella of Yoroi_\n_Malware ZLAB_\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2021/2021.01.12.STEELCORGI/yoroi.company-Opening%20STEELCORGI%20A%20Sophisticated%20APT%20Swiss%20Army%20Knife.pdf"
+    ],
+    "report_names": [
+        "yoroi.company-Opening STEELCORGI A Sophisticated APT Swiss Army Knife"
+    ],
+    "threat_actors": [
+        {
+            "id": "ece64b74-f887-4d58-9004-2d1406d37337",
+            "created_at": "2022-10-25T16:07:23.794442Z",
+            "updated_at": "2025-03-27T02:02:09.981874Z",
+            "deleted_at": null,
+            "main_name": "LightBasin",
+            "aliases": [
+                "DecisiveArchitect",
+                "Luminal Panda",
+                "TH-239",
+                "UNC1945"
+            ],
+            "source_name": "ETDA:LightBasin",
+            "tools": [
+                "CordScan",
+                "EVILSUN",
+                "FRP",
+                "Fast Reverse Proxy",
+                "Impacket",
+                "LEMONSTICK",
+                "LOGBLEACH",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "OKSOLO",
+                "OPENSHACKLE",
+                "ProxyChains",
+                "Pupy",
+                "PupyRAT",
+                "SIGTRANslator",
+                "SLAPSTICK",
+                "SMBExec",
+                "STEELCORGI",
+                "Tiny SHell",
+                "pupy",
+                "tsh"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "31c0d0e1-f793-4374-90aa-138ea1daea50",
+            "created_at": "2023-11-30T02:00:07.29462Z",
+            "updated_at": "2025-03-27T02:00:03.256081Z",
+            "deleted_at": null,
+            "main_name": "LightBasin",
+            "aliases": [
+                "UNC1945",
+                "CL-CRI-0025"
+            ],
+            "source_name": "MISPGALAXY:LightBasin",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c39b0fe6-5642-4717-9a05-9e94265e3e3a",
+            "created_at": "2022-10-25T16:07:24.332084Z",
+            "updated_at": "2025-03-27T02:02:10.175452Z",
+            "deleted_at": null,
+            "main_name": "Tonto Team",
+            "aliases": [
+                "Bronze Huntley",
+                "CactusPete",
+                "Earth Akhlut",
+                "HartBeat",
+                "Karma Panda",
+                "LoneRanger",
+                "Operation Bitter Biscuit",
+                "TAG-74",
+                "Tonto Team"
+            ],
+            "source_name": "ETDA:Tonto Team",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "Bioazih",
+                "Bisonal",
+                "CONIME",
+                "Dexbia",
+                "Korlia",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "Mimikatz",
+                "POISONPLUG.SHADOW",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "XShellGhost"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716499,
+    "ts_updated_at": 1743041799,
+    "ts_creation_date": 1610592402,
+    "ts_modification_date": 1610592402,
+    "files": {
+        "pdf": "https://archive.orkl.eu/ec83db1b099ad2e211b9633f66ebed82f8bb93e5.pdf",
+        "text": "https://archive.orkl.eu/ec83db1b099ad2e211b9633f66ebed82f8bb93e5.txt",
+        "img": "https://archive.orkl.eu/ec83db1b099ad2e211b9633f66ebed82f8bb93e5.jpg"
+    }
+}

@@ -1,0 +1,206 @@
+{
+    "id": "51b990c6-35b8-4c10-8793-ef806b80f62c",
+    "created_at": "2022-10-25T16:48:18.864991Z",
+    "updated_at": "2025-03-27T02:16:26.171577Z",
+    "deleted_at": null,
+    "sha1_hash": "da36e8623013f441bc3dd841e695ceb1f03db496",
+    "title": "Operation Clandestine Wolf _ Adobe Flash Zero-Day In APT3 Phishing Campaign",
+    "authors": "FireEye",
+    "file_creation_date": "2015-07-05T13:46:38Z",
+    "file_modification_date": "2015-07-05T13:46:38Z",
+    "file_size": 284230,
+    "plain_text": "# APT3\n\n### The China-based threat group FireEye tracks as APT3, aka UPS, is responsible for this exploit and the activity identified in our previous blog post, Operation Clandestine Fox. This group is one of the more sophisticated threat groups that FireEye Threat Intelligence tracks, and they have a history of introducing new browser-based zero-day exploits (e.g., Internet Explorer, Firefox, and Adobe Flash Player). After successfully exploiting a target host, this group will quickly dump credentials, move laterally to additional hosts, and install custom backdoors. APT3â€™s command and control (CnC) infrastructure is difficult to track, as there is little overlap across campaigns.\n\n# Activity Overview\n\n### In the last several weeks, APT3 actors launched a large-scale phishing campaign against organizations in the following industries:\n\n Aerospace and Defense Construction and Engineering High Tech Telecommunications Transportation\n\n Upon clicking the URLs provided in the phishing emails, targets were redirected to a compromised server hosting JavaScript profiling scripts. Once a target host was profiled, victims downloaded a malicious Adobe Flash Player SWF file and an FLV file, detailed below. This ultimately resulted in a custom backdoor known as SHOTPUT, detected by FireEye as Backdoor.APT.CookieCutter, being delivered to the victimâ€™s system.\n\n The payload is obscured using xor encoding and appended to a valid GIF file.\n\n# Attack Vector\n\n### The phishing emails used by APT3 during this campaign were extremely generic in nature, almost appearing to be spam. An example email body:\n\n b $ 5 b h i l ifi d f bi h d i h h hi li k\n\n\n-----\n\n### but update frequently.\n\n Don't hesitate . . .>Go to Sale\n\n The string â€œ>Go to Saleâ€​ was a link that used the following URL structure:\n\n hxxp://<subdomain>.<legitdomain>.<TLD>/<directory>/<alphanumericID>.html\n\n# Exploit Details\n\n### The attack exploits an unpatched vulnerability in the way Adobe Flash Player parses Flash Video (FLV) files. The exploit uses common vector corruption techniques to bypass Address Space Layout Randomization (ASLR), and uses Return-Oriented Programming (ROP) to bypass Data Execution Prevention (DEP). A neat trick to their ROP technique makes it simpler to exploit and will evade some ROP detection techniques.\n\n Shellcode is stored in the packed Adobe Flash Player exploit file alongside a key used for its decryption. The payload is xor encoded and hidden inside an image.\n\n## Exploit Packaging\n\n### The Adobe Flash Player exploit is packed with a simple RC4 packer. The RC4 key and ciphertext are BinaryData blobs that the packer uses to decrypt the layer 2 Adobe Flash Player file. Once decrypted, layer 2 is executed with loader.loadBytes.\n\n## Vector Corruption\n\n### Layer 2 uses a classic Adobe Flash Player Vector corruption technique to develop its heap corruption vulnerability to a full relative read/write available to ActionScript3. In this technique, the attacker sprays Adobe Flash Player Vectors to the heap, and triggers a write vulnerability to change the size of one of the vectors. The attacker can then perform subsequent reads and writes to memory outside the intended boundaries of the corrupted Vector object from AS3. For more details on this technique, see Flash in 2015.\n\n Once the attacker has limited read/write access to memory, they choose to corrupt a second Vector to increase their access to a range of 0x3fffffff bytes. This second Vector is used for the remainder of the exploit.\n\n## Return-Oriented Programming\n\n### The attackers use a ROP chain to call kernel32!VirtualAlloc to mark their shellcode as executable before jumping to their shellcode.\n\n Instead of writing their ROP chain to the heap along with their shellcode and payload, they used a different technique. Usually, exploit developers will corrupt a built-in Adobe Flash Player object such as a Sound object. Instead, the attackers chose to define their own class in AS3 with a function that takes a lot of arguments:\n\n\n-----\n\n### }\n\n Then, the attackers can simply overwrite the function pointer with a gadget that adds to the stack pointer and returns to pivot to ROP. They have no need to identify the absolute address of the ROP chain and preserve it in a register for a typical xchg reg32, esp pivot. Additionally, storing the ROP chain on the stack will evade ROP detection mechanisms designed around detecting when the stack pointer points outside of a threadâ€™s stack region.\n\n this.customObj.victimFunction( 6f73b68b, // ret; (ROPsled) â€¦, 6f73b68a, //pop eax 1f140100, 6fd36da1, //call Kernel32!VirtualAlloc(0x1f140000, 0x10000, 0x1000, 0x40) 1f140000, // Address 00010000, // Size 00001000, // Type 00000040, // Protection = RWX 6f73b68b*9 // ret (ROPsled) 6fd36da7*2 // ret 6f73aff0 pop ecx 6fd36da7 6fd36da7 jmp [eax] â€¦ ) this.customObj.victimFunction pointer modified to: 00000000`6de533dc 5e     pop   rsi 00000000`6de533dd 83c448   add   esp,48h 00000000`6de533e0 c3     ret\n\n Lastly, the ROP chain has a ROPsled following the call to VirtualAlloc. This could just be an artifact of development, or it could be designed to bypass detection mechanisms that test for valid return addresses up to a limited depth at calls to VirtualAlloc.\n\n## Full Exploit Flow\n\n### 1.   Create a new Video object\n\n 2.   Fetch the payload\n\n 3.   Attach the video to a new NetStream\n\n 4.   Spray the heap with Adobe Flash Player Vectors\n\n     a.   Create a Vector containing 98688 Vectors containing 1022 uints\n\n     b.   Set the first two dwords in each Vector<uint> to 0x41414141, 0x42424242\n\n 5.   Create holes for the controlled FLV object\n\n\n-----\n\n### 6.   Spray custom class objects for future control transfer\n\n     a.   Define a new class CustomClass\n\n         i.   Define a function victimFunction with lots of arguments\n\n     b.   Create a Vector of 0x100 Vectors of 1007 references to an CustomClass instance\n\n 7.   Fetch and play the FLV exploit\n\n     a.   The FLV file will allocate an attacker controlled object in one of the holes from step 5\n\n     b.   The attacker controlled object will overwrite the length field of an adjacent vector\n\n 8.   Re-fill holes from step 5 with Vectors as in step 4\n\n 9.   Find the corrupted vector\n\n     a.   Search through Vectors from step 4\n\n     b.   Check the length of each Vector to find one that is abnormally large\n\n 10. Corrupt a second Vector (Vector2)\n\n     a.   Using the corrupted Vector from step 9 to read/write relative memory addresses\n\n         i.   Search memory for an adjacent vector\n\n         ii.   Overwrite the length field with 0x3fffffff\n\n         iii.   Verify that a corrupted vector with length 0x3fffffff now exists in the spray\n\n             1.   If not, undo corruption and attempt to corrupt the next vector\n\n 11. Decrypt shellcode and store it and the payload on the heap\n\n 12. Overwrite the CustomClass.victimFunction function pointer\n\n     a.   Find the sprayed CustomClass object instance references from step 6\n\n     b.   The new function is a form of â€œpivotâ€​ that transfers control to the attacker\n\n 13. Build ROP chain on the stack and call it\n\n     a.   Find ROP gadgets in memory using Vector2\n\n         i.   Including a call to kernel32!VirtualAlloc\n\n     b.   Call the corrupted CustomClass.victimFunction from step 6.a.i\n\n i A h f i h d f h ROP h i\n\n\n-----\n\n###         iii.   Corrupted vtable from step 12 calls a pivot\n\n             1.   The â€œpivotâ€​ just adds to to the stack pointer and returns because the ROP chain is on\n\n                 the stack\n\n 14. ROP chain calls shellcode\n\n     a.   Call kernel32!VirtualAlloc\n\n     b.   jmp to shellcode\n\n 15. Shellcode calls payload\n\n     a.   Shellcode searches memory for the payload, which is stored inside an image\n\n     b.   Shellcode decodes the payload by xoring each byte (that is not 0 or 0x17) with 0x17\n\n# Conclusion\n\n### Once APT3 has access to a target network, they work quickly and they are extremely proficient at enumerating and moving laterally to maintain their access. Additionally, this group uses zero-day exploits, continually updated custom backdoors, and throwaway CnC infrastructure, making it difficult to track them across campaigns.\n\n# Acknowledgements\n\n### Thank you to the following contributors to this blog!\n\n Â·   Joseph Obed, Ben Withnell, Kevin Zuk, Genwei Jiang, and Corbin Souffrant of FireEye\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "d63ae2b7-445f-460d-965d-2676dacdb6de",
+            "created_at": "2022-10-25T15:59:19.552139Z",
+            "updated_at": "2022-10-25T15:59:19.552139Z",
+            "deleted_at": null,
+            "name": "APTnotes",
+            "url": "https://github.com/aptnotes/data",
+            "description": "APTnotes data",
+            "reports": null
+        },
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://app.box.com/s/vxnua4o5c8u12xl4r7e5zkndpw65wz0m",
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2015/2015.06.26.operation-clandestine-wolf/OperationClandestineWolf.pdf"
+    ],
+    "report_names": [
+        "OperationClandestineWolf"
+    ],
+    "threat_actors": [
+        {
+            "id": "61c4ddc4-156b-4828-8570-0979da81f3d0",
+            "created_at": "2022-10-25T16:47:55.593828Z",
+            "updated_at": "2025-03-27T02:05:17.275161Z",
+            "deleted_at": null,
+            "main_name": "BRONZE MAYFAIR",
+            "aliases": [
+                "Gothic Panda ",
+                "TG-0110 ",
+                "APT3 "
+            ],
+            "source_name": "Secureworks:BRONZE MAYFAIR",
+            "tools": [
+                " HUC Proxy Malware (Htran)",
+                " Pirpi",
+                " SplitVPN",
+                " ctt",
+                " ctx",
+                "Cookiecutter"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "761d1fb2-60e3-46f0-9f1c-c8a9715967d4",
+            "created_at": "2023-01-06T13:46:38.269054Z",
+            "updated_at": "2025-03-27T02:00:02.789278Z",
+            "deleted_at": null,
+            "main_name": "APT3",
+            "aliases": [
+                "TG-0110",
+                "Group 6",
+                "Buckeye",
+                "Boyusec",
+                "BORON",
+                "BRONZE MAYFAIR",
+                "Red Sylvan",
+                "GOTHIC PANDA"
+            ],
+            "source_name": "MISPGALAXY:APT3",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "13354d3f-3f40-44ec-b42a-3cda18809005",
+            "created_at": "2022-10-25T15:50:23.275272Z",
+            "updated_at": "2025-03-27T02:00:55.418075Z",
+            "deleted_at": null,
+            "main_name": "APT3",
+            "aliases": [
+                "APT3",
+                "Gothic Panda",
+                "Pirpi",
+                "UPS Team",
+                "Buckeye",
+                "Threat Group-0110",
+                "TG-0110"
+            ],
+            "source_name": "MITRE:APT3",
+            "tools": [
+                "OSInfo",
+                "schtasks",
+                "PlugX",
+                "LaZagne",
+                "SHOTPUT",
+                "RemoteCMD"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "06f622cb-3a78-49cf-9a4c-a6007a69325f",
+            "created_at": "2022-10-25T16:07:23.315239Z",
+            "updated_at": "2025-03-27T02:02:09.733197Z",
+            "deleted_at": null,
+            "main_name": "APT 3",
+            "aliases": [
+                "APT 3",
+                "Bronze Mayfair",
+                "Buckeye",
+                "Gothic Panda",
+                "Group 6",
+                "Operation Clandestine Fox",
+                "Operation Clandestine Fox, Part Deux",
+                "Operation Clandestine Wolf",
+                "Operation Double Tap",
+                "Red Sylvan",
+                "TG-0110",
+                "UPS Team"
+            ],
+            "source_name": "ETDA:APT 3",
+            "tools": [
+                "APT3 Keylogger",
+                "Agent.dhwf",
+                "BKDR_HUPIGON",
+                "Backdoor.APT.CookieCutter",
+                "Badey",
+                "Bemstour",
+                "CookieCutter",
+                "Destroy RAT",
+                "DestroyRAT",
+                "DoublePulsar",
+                "EXL",
+                "EternalBlue",
+                "HTran",
+                "HUC Packet Transmit Tool",
+                "Hupigon",
+                "Hupigon RAT",
+                "Kaba",
+                "Korplug",
+                "LaZagne",
+                "MFC Huner",
+                "OSInfo",
+                "Pirpi",
+                "PlugX",
+                "RedDelta",
+                "RemoteCMD",
+                "SHOTPUT",
+                "Sogu",
+                "TIGERPLUG",
+                "TTCalc",
+                "TVT",
+                "Thoper",
+                "Xamtrav",
+                "remotecmd",
+                "shareip",
+                "w32times"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716498,
+    "ts_updated_at": 1743041786,
+    "ts_creation_date": 1436103998,
+    "ts_modification_date": 1436103998,
+    "files": {
+        "pdf": "https://archive.orkl.eu/da36e8623013f441bc3dd841e695ceb1f03db496.pdf",
+        "text": "https://archive.orkl.eu/da36e8623013f441bc3dd841e695ceb1f03db496.txt",
+        "img": "https://archive.orkl.eu/da36e8623013f441bc3dd841e695ceb1f03db496.jpg"
+    }
+}

@@ -1,0 +1,162 @@
+{
+    "id": "ffcd28f8-0365-4769-a5b2-f0085e1668be",
+    "created_at": "2023-01-12T15:09:06.614512Z",
+    "updated_at": "2025-03-27T02:05:30.185797Z",
+    "deleted_at": null,
+    "sha1_hash": "0eb53b9cdc1ac809e05fcde436f63c0eab6adbb4",
+    "title": "2017-11-10 - CCleaner Stage 2- In-Depth Analysis of the Payload",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:45:35Z",
+    "file_modification_date": "2022-05-28T19:45:35Z",
+    "file_size": 940796,
+    "plain_text": "# CCleaner Stage 2: In-Depth Analysis of the Payload\n\n**[crowdstrike.com/blog/in-depth-analysis-of-the-ccleaner-backdoor-stage-2-dropper-and-its-payload/](https://www.crowdstrike.com/blog/in-depth-analysis-of-the-ccleaner-backdoor-stage-2-dropper-and-its-payload/)**\n\nKaran Sood November 10, 2017\n\n## Overview\n\nRecently, CrowdStrike® analyzed the backdoor embedded in the legitimate PC cleaning utility CCleaner version\n[5.33, as reported in the blog post Protecting the Software Supply Chain: Deep Insights into the CCleaner Backdoor.](https://www.crowdstrike.com/blog/protecting-software-supply-chain-deep-insights-ccleaner-backdoor/)\nThis was an example of using an organization’s supply chain infrastructure as an infection vector, a trend that has\nbeen on the rise in 2017 as discussed in another recent post, Software Supply Chain Attacks on the Rise,\nUndermining Customer Trust. In addition, CrowdStrike Falcon® Intelligence™ reported on the backdoor previously\nand discussed the possibility of the infrastructure being tied to a Chinese nexus.\n\nAdditionally, CrowdStrike Falcon Intelligence also discussed the technical details of the Stage 1 and Stage 2\nbackdoors with analysis showing that the original backdoor was the first stage in a multi-stage infection chain, meant\nto download a dropper (Stage 2) that was only deployed to specific targets. Stage 2 drops either a 32-bit or 64-bit\nbinary, depending on the system architecture and is responsible for decrypting the actual payload embedded in a\nregistry key. This payload attains the C2 address via a variety of steps, and downloads an unknown binary which is\nStage 3.\n\nThis post provides an in-depth analysis of the Stage 2 dropper; the subsequent payload and the steps that are taken\nto calculate the C2 IP address in order to download the next stage binary.\n\n## Technical Analysis\n\n Stage 2 Dropper\n\nThe following information describes the Stage 2 dropper that pertains to the CCleaner embedded malware:\n\n**Size: 175616**\n\n**SHA256:   DC9B5E8AA6EC86DB8AF0A7AA897CA61DB3E5F3D2E0942E319074DB1AACCFDC83**\n\n**Compiled: Tue, Sep 12 2017, 8:44:58 — 32 Bit DLL**\n\n\n-----\n\nOnce executed, the dropper calls IsWow64Process to determine if it s being run in a 64 bit environment. Depending\non the result, it will drop a 32-bit or 64-bit binary on the system. The binary is embedded within the malware itself,\nand it is zlib compressed. The dropper will zlib inflate itself and drop onto the victim computer. The dropper also\nperforms system checks by accessing the USER_SHARED_DATA of its own process and querying the\n**NtMajorVersion value to determine if the system is running Windows XP. The output determines the location of the**\ndropped binary.\n\nIf XP x86:\n\nlocation is C:\\Windows\\System32\\spool\\prtprocs\\\\w32x86\\\\localspl.dll\n\nIf XP x64:\n\nlocation is C:\\Windows\\System32\\spool\\x64\\localspl.dll\n\nIf Windows 7 or higher:\n\nlocation is C:\\Windows\\System32\\TSMSISrv.dll\n\n## Dropped Binary Information\n\n### 32-bit\n\n**Full path on victim machine (Windows 7 or higher): C:\\Windows\\System32\\TSMSISrv.dll**\n\n**Full path on victim machine (Windows XP): C:\\Windows\\system32\\spool\\prtprocs\\w32x86\\localspl.dll**\n\n**Size: 173568**\n\n**SHA256: 07FB252D2E853A9B1B32F30EDE411F2EFBB9F01E4A7782DB5EACF3F55CF34902**\n\n**Compiled: Wed, Apr 22 2015, 18:20:39 — 32 Bit DLL**\n\n**Version: 2, 0, 4, 23**\n\n**File** **Description: VirtCDRDrv Module**\n\n**Internal** **Name: VirtCDRDrv**\n\n**Original** **Filename: VirtCDRDrv.dll**\n\n**Product** **Name: VirtCDRDrv Module**\n\n### 64-bit\n\n**Full path on victim machine (Windows 7 or higher): C:\\Windows\\System32\\TSMSISrv.dll**\n\n**Full path on victim machine (Windows XP): C:\\Windows\\system32\\spool\\prtprocs\\x64\\localspl.dll**\n\n**Size: 81408**\n\n**SHA256: 128ACA58BE325174F0220BD7CA6030E4E206B4378796E82DA460055733BB6F4F**\n\n**Compiled: Tue, Apr 19 2011, 0:09:20 — 64 Bit DLL**\n\n**Version: 2.2.0.65**\n\n**File** **Description: Symantec Extended File Attributes**\n\n**Internal** **Name: SymEFA**\n\n**Original** **Filename: EFACIi64.dll**\n\n**Product** **Name: EFA**\n\nIt is important to note that both TSMSiSrv.dll and localspl.dll are actually the names of legitimate Microsoft Windows\nlibraries. TSMSiSrv.dll’s official description is “Windows Installer Coordinator for Remote Desktop Session Host\nServer” and it is loaded by the service “SessionEnv” that is the Remote Desktop Configuration service. According to\nMSDN, localspl.dll is a “Local Print Provider” and handles all print jobs directed to printers that are managed from the\nlocal server. This file is loaded by the service “Spooler” that is used for printing services.\n\nAfter dropping the file, the dropper modifies its date/time stamp so that it matches that of\nC:\\Windows\\System32\\msvcrt.dll.\n\nNext, the dropper adds the following registry keys. (Note: This is specific to a 32-bit environment. Certain value such\nas file size will change if the malware is running in a 64-bit environment.)\n\n\n-----\n\nHKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\WbemPerf\\001 → 2b 31 00 00. This is a hardcoded\nvalue. This is the size in bytes of the next registry key, which contains an obfuscated PE.\nHKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\WbemPerf\\002 → The dropper inserts a data blob\nin this key. The following explains the structure of the blob:\n\n**Position** **Byte Size** **Content**\n\n**0** 4 Result of GetTickCount() * rand()\n\n4 4 Result of GetTickCount() * rand()\n\n8 0x3123 Data blob\n\nHKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\WbemPerf\\003 → 21 00 00 00. Hardcoded value.\nSize in bytes of the next registry key\nHKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\WbemPerf\\004 → Contains the following structure\n\n**Position** **Byte Size** **Content**\n\n0 4 Result of 0x5908EC83 ^ 0xF3289317 = 0xAA207F94\n\n4 4 Result of 0x40518AB1 ^ 0xF3289317 = 0xB37919A6\n\n8 4 Result of GetTickCount() * rand()\n\n12 4 Result of GetTickCount() * rand()\n\n16 4 Result of GetTickCount() * rand()\n\n20 1 0x90\n\n## Leveraging Legitimate Services\n\nThe dropper leverages an existing Microsoft Windows service to load the malware. Once the registries have been\nadded, the dropper calls a function to modify and restart an existing service. If executing in Windows 7 or higher, it\ncalls OpenServiceA on the existing service, “SessionEnv” — a service for Remote Desktop Configuration — and\nchanges its configuration by calling ChangeServiceConfigA with the following parameters:\n\nhService = Service Handle\nServiceType = SERVICE_KERNEL_DRIVER|SERVICE_FILE_SYSTEM_DRIVER|SERVICE_ADAPTER|\n\nSERVICE_RECOGNIZER_DRIVER|SERVICE_WIN32_OWN_PROCESS|SERVICE_WIN32_SHARE_PROCESS|\nSERVICE_INTERACTIVE_PROCESS|FFFFFEC0\nStartType = SERVICE_AUTO_START\nErrorControl = SERVICE_NO_CHANGE\nBinaryPathName = NULL\nLoadOrderGroup = NULL\npTagId = NULL\npDependencies = NULL\nServiceStartName = NULL\nPassword = NULL\nDisplayName = NULL\n\nThis ensures that the service will auto-start upon system reboot (i.e., a persistence mechanism). The dropper then\nrestarts the service, which invokes the legitimate windows library “SessEnv.dll” located in C:\\Windows\\system32. It is\nimportant to note that SessEnv.dll is loaded in the process svchost.exe. Analysis shows that it attempts to load the\nlegitimate library %SystemRoot%\\system32\\TSMSISrv.dll by calling LoadLibrary on it to call the functions\n_StartComponent, StopComponent, OnSessionChange, and Refresh as shown in the image below:_\n\n\n-----\n\nHowever, at this point in the execution, TSMSiSrv.dll is the name of the malicious binary created by the dropper;\ntherefore, restarting the SessionEnv service loads the malware instead. Similarly, if the Windows version is XP, the\nmalware takes the same steps on the service “Spooler.” Upon restart, the service invokes\nC:\\Windows\\system32\\spoolsv.exe, which then attempts to load the Windows library localspl.dll that is now the\nactual malware.\n\n## File Modifications\n\nAs mentioned earlier, Stage 2 drops either a 32-bit or 64-bit binary on the victim system. Similar to the Stage 1\ndropper, which was a modified version of the legitimate utility CCleaner, the 32-bit and 64-bit binaries are modified\nversions of VirtCDRDrv.dll (a module developed by Corel, Inc.) and EFACLi64.dll (a module developed by\nSymantec), respectively. However, it should be noted that unlike the trojanized version of CCleaner, these files are\nNOT signed.\n\n\n-----\n\n### VirtCDRDrv.dll 32 bit\n\nAnalysis shows that the __security_init_cookie function of the file has been modified. Normally this function is used\nas mitigation against buffer overflows; however, in this case, a few extra instructions have been added to the end of\nthe function to initialize a global variable. The image below displays the difference between the clean VirtCDRDrv.dll\n(labeled primary on the left), and the trojanized one on the right.\n\nThe primary difference is the set of instructions at the end of the __security_init_cookie function. Specifically, these\ninstructions insert a memory address in a global pointer; the memory address is the image base address + 0x1C22E,\ninserted in the global variable located at image base address + 0x2ACA4 as seen below.\n\n\n-----\n\nOnce the `__security_init_cookie function is done, the` `__DLLMainCRTStartup function is called, which then`\nmakes the call to the function located at the memory address that was inserted into the global variable. This function\nis responsible for the core functionality of the dropped file. It should be noted that the malicious function is called\nprior to the entry point of the binary being reached.\n\n### EFACIi64.dll 64-bit\n\nThe 32-bit binary and the 64-bit dropped file have been modified in the same manner. As seen in the image below,\nthe only difference in the `__security_init_cookie function between the legitimate utility (on the left) and the`\ntrojanized version is a jmp instruction at the end of the function.\n\nThis jmp instruction leads to the following instructions:\n\n\n-----\n\nThis inserts the memory address located at image base address + 0x12891 in the global variable located at image\nbase address +0x13CC0. Similar to the 32-bit binary, the malicious function at image base address + 0x12891 is\ncalled before the entry point is reached and is responsible for the core functionality of the malware.\n\n## Dropped Binary\n\nOnce loaded by the service, the binary reads the registries created earlier by the dropper. It allocates a block of\nmemory and reads the data blob from HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\WbemPerf\\002. In\naddition, it also reads the first 2 DWORDS from HKLM\\SOFTWARE\\Microsoft\\Windows\nNT\\CurrentVersion\\WbemPerf\\002, XORs them with the value 0x0xF3289317 and prepends them to the data blob.\nTogether, this structure forms a shellcode appended by obfuscated data.\n\n### Shellcode\n\nThe shellcode utilizes the following scheme, reproduced in Python, to deobfuscate the embedded data:\n\nindata = [0xb4, 0x28, 0x00, 0x00, 0xd8, 0x41, 0x00, 0x00, 0x5f, 0xe1, 0x60, 0x8b, 0x7d, 0x2a] #snippet of\nobfuscated data\n\noutdata = []\n\nkey = 0x5d4fc941\n\nfor i in range(0, len(indata)):\n\nkeymod = ((key * 0x343FD) & 0xffffffff) + 0x269EC3\n\nkey = keymod\n\nnkey = (keymod >> 0x10) & 0xff\n\noutdata.append(indata[i+8] ^ nkey)\n\nIt should be noted that the above is a modified version of the Windows function rand(). The decoded data is a set of\ninstructions to unpack yet another shellcode and a DLL in memory. The resultant DLL is the main payload of Stage 2\nand, similar to Stage 1, is missing the IMAGE_DOS_HEADER as a possible means to circumvent AV solutions that\nsearch for the MZ header in memory. The shellcode that is decoded alongside the DLL is responsible for resolving\nthe needed APIs and calling the OEP (Original Entry Point) of the DLL in memory.\n```\n0000000: 0000 0000 0000 0000 0000 0000 0000 0000 ................\n0000010: 0000 0000 0000 0000 0000 0000 0000 0000 ................\n0000020: 0000 0000 0000 0000 0000 0000 0000 0000 ................\n0000030: 0000 0000 0000 0000 0000 0000 d000 0000 ................\n0000040: 0000 0000 0000 0000 0000 0000 0000 0000 ................\n0000050: 0000 0000 0000 0000 0000 0000 0000 0000 ................\n0000060: 0000 0000 0000 0000 0000 0000 0000 0000 ................\n0000070: 0000 0000 0000 0000 0000 0000 0000 0000 ................\n0000080: 0000 0000 0000 0000 0000 0000 0000 0000 ................\n0000090: 0000 0000 0000 0000 0000 0000 0000 0000 ................\n00000a0: 0000 0000 0000 0000 0000 0000 0000 0000 ................\n00000b0: 0000 0000 0000 0000 0000 0000 0000 0000 ................\n00000c0: 0000 0000 0000 0000 0000 0000 0000 0000 ................\n00000d0: 5045 0000 4c01 0400 f09b b759 0000 0000 PE..L......Y....\n00000e0: 0000 0000 e000 0e21 0b01 0600 0026 0000 .......!.....&..\n00000f0: 0016 0000 0000 0000 0010 0000 0010 0000 ................\n0000100: 0040 0000 0000 0010 0010 0000 0002 0000 .@..............\n0000110: 0400 0000 0000 0000 0400 0000 0000 0000 ................\n0000120: 0070 0000 0004 0000 0000 0000 0200 0000 .p..............\n0000130: 0000 1000 0010 0000 0000 1000 0010 0000 ................\n0000140: 0000 0000 1000 0000 0000 0000 0000 0000 ................\n0000150: 5c41 0000 b400 0000 0000 0000 0000 0000 \\A..............\n0000160: 0000 0000 0000 0000 0000 0000 0000 0000 ................\n\n```\n\n-----\n\n```\n0000170: 0060 0000 2002 0000 0000 0000 0000 0000 . .. ...........\n0000180: 0000 0000 0000 0000 0000 0000 0000 0000 ................\n0000190: 0000 0000 0000 0000 0000 0000 0000 0000 ................\n00001a0: 0000 0000 0000 0000 0040 0000 5c01 0000 .........@..\\...\n00001b0: 0000 0000 0000 0000 0000 0000 0000 0000 ................\n00001c0: 0000 0000 0000 0000 2e74 6578 7400 0000 .........text…\n00001d0: 9025 0000 0010 0000 0026 0000 0004 0000 .%.......&......\n00001e0: 0000 0000 0000 0000 0000 0000 2000 0060 ............ ..`\n00001f0: 2e72 6461 7461 0000 0608 0000 0040 0000 .rdata.......@..\n0000200: 000a 0000 002a 0000 0000 0000 0000 0000 .....*..........\n0000210: 0000 0000 4000 0040 2e64 6174 6100 0000 ....@..@.data…\n0000220: 4406 0000 0050 0000 0006 0000 0034 0000 D....P.......4..\n0000230: 0000 0000 0000 0000 0000 0000 4000 00c0 ............@...\n0000240: 2e72 656c 6f63 0000 c202 0000 0060 0000 .reloc.......`..\n0000250: 0004 0000 003a 0000 0000 0000 0000 0000 .....:..........\n\n### Payload\n\n```\nUpon being loaded in memory, the payload creates a thread that performs the core functionality of Stage 2. It creates\nan event named Global\\KsecDDE and only commences execution if the event creation is successful. Analysis shows\nthat there are multiple encoded URLs embedded within the payload, and they are deobfuscated using the scheme\nreproduced in Python below:\n```\nindata = [0xec, 0x87, 0x10, 0x23, 0xf5, 0x6d, 0xf7, 0x9a, 0x35, 0x1e, 0x82, 0xd6, 0xbc, 0x5f,\n0x94] #indata = [0xe3, 0x96, 0x10, 0x7d, 0xe7,0x33, 0xb7, 0xd7, 0x3e, 0x12, 0xd8, 0xd0, 0xac,\n0x49, 0xba, 0x13, 0xd0, 0x40, 0xc5, 0xd2, 0x68, 0xf6, 0x37, 0x3a, 0x1d, 0xbb, 0xd6, 0xad, 0x97,\n0xcf, 0x88, 0xdc, 0xa3, 0x3a, 0x4d, 0x2e, 0xdb, 0x8d, 0xe3, 0xf8, 0xf4, 0x20, 0x38, 0x7c, 0xc3,\n0xe5, 0x69, 0xfb, 0x40, 0x40, 0xb5, 0x5e, 0x7a, 0xa5, 0x40, 0x7d, 0x4a, 0x6e, 0x85, 0x76, 0x9a,\n0xf0]\n#indata = [0xe3, 0x96, 0x10, 0x7d, 0xe7, 0x33, 0xb7, 0xd7, 0x3c, 0x15, 0x82, 0xcb, 0xbc, 0x4a,\n0xe6, 0x13, 0xd7, 0x3, 0x9d, 0xce, 0x7f, 0xf3, 0x35, 0x2b, 0x10, 0xf7, 0xd4, 0xbe, 0x9e, 0xcf,\n0x8c, 0x9d, 0xf0, 0x3c, 0x4d, 0x6b, 0x92, 0x9b, 0xe1, 0xfa, 0xa8, 0x1b, 0x22, 0x7a, 0x9a, 0xe7,\n0x72, 0xE5, 0x51, 0x43, 0xfd, 0x0c, 0x2c, 0x94, 0x72]\n\n```\n```\noutdata = []\n\n```\n```\n  keybyte = keymod & 0xff\n\n```\n\nFollowing are the decoded URLs:\n\nget.adoble[.]net\nhttps://en.search.wordpress[.]com/?src=organic&q=keepost\nhttps://github[.]com/search?q=joinlur&type=Uses&utf8=%E2%9C%93�\n\n[Before connecting to any of the above, the payload first attempts to connect to https://www.microsoft.com. If that](https://www.microsoft.com/)\n[fails, the payload then attempts to connect to http://update.microsoft.com. This is to perform a connectivity test to](http://update.microsoft.com/)\nensure that the victim computer is connected to the internet. The payload also ensures that the received data\ncontains the string “Microsoft” or “Internet Explorer”; apart from a connectivity test, this could also be seen as an anti\n\n-----\n\nsandbox technique. If the test passes, a global variable Connectivity_Flag is set to 1, after which the malware\nattempts to connect to either the WordPress or the Github URL. At the time of analysis, the Github URL was not\navailable.\n\nThe following is the data returned by the WordPress URL:\n\nIf the connection is a success, the malware parses the retrieved data for the string “ptoken=”. As the above image\nshows, the ptoken value is “000000006B48622B0000000000000000&”. The malware converts the string value to a\nlong integer value in base 16 by calling strtoul. The result is the DWORD 0x6B48622B, which is then XORd with the\nvalue 0x31415926 (value of Pi) to get the value 0x5A093B0D, which translates to the IP address 13.59.9.90.\n\nIf the payload fails to connect to both the Github and WordPress URLs, it will attempt to connect to get.adoble[.]com\nto calculate an IP address. It gets the hostent structure by calling gethostbyname on the domain, which then gives it\na NULL terminated list of IP addresses associated with the domain. The first 2 IP addresses will then be used to\ncalculate the IP address using the algorithm reproduced in Python below:\n```\nimport struct\nimport socket a1 = 0x659C2A88 # Addresses are returned in network byte order\na2 = 0x6B442ABF # These are just for example purposes def mod_record(rr):\n  rr1 = (((rr & 0xff000000) / 0x1000000) ^ (rr & 0xff)) * 0x1000000\n  rr2 = (((rr & 0xff0000) / 0x10000) ^ ((rr & 0xff00) / 0x100)) * 0x10000\n  rr3 = rr & 0xff00\n  rr4 = rr & 0xff\n  return (rr1 | rr2 | rr3 | rr4) newa1 = mod_record(a1)\nnewa2 = mod_record(a2)\nnewIP = (newa2 & 0xffff0000) | (newa1 >> 0x10) # newIP = 0xD46EEDB6\nprint socket.inet_ntoa(struct.pack(\"<L\", newIP)) # Output is 182.237.110.212\n\n```\nNext, the malware calculates a checksum of the victim computer name using the following algorithm:\n```\nimport struct compname = \"WIN-CHB5K9B5QOM\" #example of computer name\nchecksum = 0\nhss = compname.encode('hex')\nindata = []\ni = 0\ndef swap(d):\n  return struct.unpack(\"<I\", struct.pack(\">I\", d))[0]\nwhile 1:\n  idata = hss[i:i+8]\n  if len(idata) < 8:\n\n```\n\n-----\n\n```\n    numz 8 len(idata)\n    strz = '0' * numz\n    idata = idata + strz\n  indata.append(idata)\n  i += 8\n  if i >= len(hss):\n    break\nfor i in indata:\n  i_ = int(i, 16)\n  i_ = swap(i_)\n  i_ = (i_ * 0x5E1F1AE) & 0xffffffff\n  checksum = (checksum + i_) & 0xffffffff print hex(checksum)\n\n```\nThis checksum value is then added to the volume serial number of the victim computer. The LOWORD of the\nresultant DWORD is then added to the value 0x2DC6C0 to get a unique value. Next, the malware creates a socket\nand sets up the following packet to send to the newly calculated IP via a DNS query:\n\n**Type** **Value**\n\nTransaction ID LOWORD of the unique value calculated earlier using the checksum and volume serial number.\n\nFlags 0x100. Denotes that the message is a query.\n\nQuestions 0x1. Number of queries.\n\nQuery ds.download.windowsupdate.com\n\nType 0x1. Type A (Host Address)\n\nClass 0x0001. IN (Internet)\n\nFollowing is the actual UDP stream seen during analysis:\n```\n0000000: d47a 0100 0001 0000 0000 0000 0264 7308 .z...........ds.\n0000010: 646f 776e 6c6f 6164 0d77 696e 646f 7773 download.windows\n0000020: 7570 6461 7465 0363 6f6d 0000 0100 0100 update.com.....\n\n```\nAt the time of analysis, the IP address was not available; however, analysis shows that the malware performs the\nfollowing checks on the received response from the IP to ensure its authenticity.\n\nTransaction ID is 0xD47A (same as the query)\nTotal Answer RRs field is 4. Number of entries in the resource record list.\nThe 38th word is the value 0x06A4\nThe 48th word is the value 0x0A8C\n\n## Stage 3\n\nThe malware takes values from the response stream at various positions, and calculates the Stage 3 C2 in the\nfollowing manner:\n\nFirst octet → 59th byte ^ 62nd byte\nSecond octet → 76th byte ^ 78th byte\nThird octet → 93rd byte ^ 94th byte\nFourth octet → 110th byte\n\n\n-----\n\nOnce the 3rd stage C2 has been calculated, the malware calls out to it expecting to receive an obfuscated blob. The\nfirst DWORD of the blob is the CRC32 hash of the decoded blob. The blob is decoded using the same scheme that\nis used to decode the URLs, and the CRC32 hash of the decoded data is compared with the first DWORD of the\nreceived data to ensure its integrity. Analysis shows that the data is supposed to be yet another DLL, which is then\nloaded in memory and executed.\n\n## Recommendations\n\nCrowdStrike will notify you of any additional activity through the Falcon Intelligence™ detections. CrowdStrike\n[recommends blocking the IP and URLs mentioned in this blog post and the previous one to prevent any](https://www.crowdstrike.com/blog/protecting-software-supply-chain-deep-insights-ccleaner-backdoor/)\ncommunication to the server. In addition, CrowdStrike recommends only using the latest version of the Avast\nCCleaner software to ensure that the infection does not occur.\n\n[Learn more about the CrowdStrike Falcon Intelligence offerings, and read the white paper, “Threat Intelligence,](https://www.crowdstrike.com/products/falcon-intelligence/)\nCybersecurity’s Best Kept Secret.”\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2017/2017-11-10 - CCleaner Stage 2- In-Depth Analysis of the Payload.pdf"
+    ],
+    "report_names": [
+        "2017-11-10 - CCleaner Stage 2- In-Depth Analysis of the Payload.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536146,
+    "ts_updated_at": 1743041130,
+    "ts_creation_date": 1653767135,
+    "ts_modification_date": 1653767135,
+    "files": {
+        "pdf": "https://archive.orkl.eu/0eb53b9cdc1ac809e05fcde436f63c0eab6adbb4.pdf",
+        "text": "https://archive.orkl.eu/0eb53b9cdc1ac809e05fcde436f63c0eab6adbb4.txt",
+        "img": "https://archive.orkl.eu/0eb53b9cdc1ac809e05fcde436f63c0eab6adbb4.jpg"
+    }
+}

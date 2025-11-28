@@ -1,0 +1,77 @@
+{
+    "id": "a5d54f81-2d95-4598-9ea7-8648c79c0e06",
+    "created_at": "2023-01-12T14:59:29.469027Z",
+    "updated_at": "2025-03-27T02:05:54.822603Z",
+    "deleted_at": null,
+    "sha1_hash": "82c4d14dcb4051a408a4a8e4744edef29899ca2a",
+    "title": "2019-05-02 - Detricking TrickBot Loader",
+    "authors": "",
+    "file_creation_date": "2022-05-28T17:44:03Z",
+    "file_modification_date": "2022-05-28T17:44:03Z",
+    "file_size": 1667997,
+    "plain_text": "# Detricking TrickBot Loader | CERT Polska\n\n**cert.pl/en/news/single/detricking-trickbot-loader/**\n\nTrickBot (TrickLoader) is a modular financial malware that first surfaced in October in 2016 .1 Almost immediately researchers have\nnoticed similarities with a credential-stealer called Dyre. It is still believed that those two families might’ve been developed by the\nsame actor.\nBut in this article we will not focus on the core itself but rather the loader whose job is to decrypt the payload and execute it.\n\n\n### Samples analyzed\n\n**preloader b401a0c3a64c2e5a61070c2ae158d3fcf8ebbb51b33593323cd54bbe03d3de00**\n**loader 8d56f6816f24ec95524d6b434fc25f9aad24a27dbb67eab0106bbd7b4160dc75**\n**core-32b cbb5ea4210665c6a3743e2b7c5a29d10af21efddfbab310035c9a14336c71de3**\n**core-64b 028e29ef2543daa1729b6ac5bf0b2551dc9a4218a71a840972cdc50b23fe83c4**\n**core-64b-loader 52bc216a6de00151f32be2b87412b6e13efa5ba6039731680440d756515d3cb9**\n## Original binary\n\nWhile the binary has two consecutive loaders, the first one will be glossed over because of low level of complexity:\n\n\n-----\n\n_Original binary’s entry point, observed symbols were embedded in the binary_\n\n## Functions buffer\n\nThe first thing we notice after loading the RC4-decrypted payload from the previous stage is that IDA hasn’t automatically\nrecognized a single valid function.\n\n\n-----\n\nThe binary s entry point\n\nThis section’s permissions are also looking quite suspicious, because section needs to be readable, executable and writable.\n\nFunction that starts just after the chunks lengths’ last entry (begins at 0x40108C), is responsible for calculating the starting offset for\neach function (or binary chunk) and storing it into an array stored on stack.\n\n_Function used for calculating addresses_\n\nThe functions’ objective is pretty straight-forward:\n\nIterate over the null-terminated chunks lengths array\nIf a length is larger than or equal to 0xFFF0, fetch the full length from a second buffer located further in the data (+0xCDFA in\nthis sample)\nAdd the current function’s length to the accumulator\nPush the accumulator onto stack\nThe final array of pointers looks as follows (remember that since values are pushed onto stack, the pointers are reversed relatively\nto their position in the lengths array):\n\n\n-----\n\n_The pointer to the array is stored in EBP register and passed between almost all functions in the future_\n\n## Code encryption\n\nThe previously mentioned code encryption is done using a standard repeating xor cipher:\n\nThe xor key seems to be located around the base64-encoded strings:\n\n_In this sample, the key is equal to FE9A184E408139843FA99C45943D_\n\n## Detricking\n\nAll we really have to do is iterate over all functions, decrypt their body with xor and mark the functions.\n\n\n-----\n\n## Wrapper function\n\nAs seen in previous screenshots, all function calls are performed using a function wrapper that:\n\nAccepts index of the function to execute\nGrabs the function’s address from the global table\nDecrypts the function code\nCalls the decrypted function\nEncrypts the function code back again\n\n_Example function wrapper call_\n\n## Detricking\n\nIn order to simplify our analysis we’ll patch the binary and replace the wrapper calls with direct function calls.\n\nAlmost every wrapper call is exactly the same, which will be very helpful:\n\nXX is a single unsigned byte that determines the index of the wrapped function.\n\nYY YY YY YY is a 32-bit, relative, little-endian integer that marks the address of the wrapper function.\n\nOur plan is to patch the whole call blob to:\n\nwhere ZZ ZZ ZZ ZZ is the relative address of the wrapped function.\n\nTo do that, we’ll use an idapython script:\n\nBefore:\n\nAfter:\n\n## Imports\n\nAll imports are loaded into a static location in memory using a hash lookup:\n\n\n-----\n\n_Function used to calculate strings hash_\n\nC decompilation:\n\n_Function hash list_\n\n\n-----\n\n## Detricking\n\nWe can find the correct API function table using different methods but we are going to focus on doing it manually by looking for the\ncorrect function name.\n\nStart off by rewriting the hash function to Python:\n\n[We’ll also need a list of functions exported by windows DLLs. We’ve found that scraping http://www.win7dll.info/ actually works](http://www.win7dll.info/)\npretty well for that purpose.\n\nNow we need to iterate over all hashes and find a correct function name for each one:\n\nAll that’s left now is to create an IDA struct that contains the function names and set the global array to the proper type:\n\n_Before_\n\n_After_\n\nNow, it looks much better!\n\n## String encoding\n\n\nAll strings are encoded using base64 with a custom alphabet, it’s explained pretty well in several blog posts already\n\nThe custom charset is a permutation of the default base64 charset, e.g.\nJTQ2czLo5NfrsUjZFSkgOlYRB6yKhva/uA83d4GiteMwn17xmIEVX+qP0W9DbHCp.\n\n\n23\n\n\n-----\n\n_Function used to fetch a decrypted base64 string with a given index_\n\n## Detricking\n\nAfter de-wrapping the function calls, the assembly actually looks quite similar to the previous iteration (notice the nops that are\nresult of our earlier patches):\n\nWhich means we can reuse some of our previous code. But instead of patching the call instructions to mov instructions, we’re just\ngoing to add comments in assembly to annotate the original string:\n\n## Overview\n\nAfter applying all of the described anti-anti-analysis patches, we end up with a pretty decent-looking binary.\n\nMain function:\n\n\n-----\n\n## Anti debugging/sandbox checks\n\n DLL checks\n\nThe binary iterates over DLL names stored in strings and checks if any of them is present in the PEB InMemoryOrderModuleList\nlinked list:\n\nDLLs checked:\n\npstorec.dll\nvmcheck.dll\ndbghelp.dll\nwpespy.dll\napi_log.dll\nSbieDll.dll\nSxIn.dll\ndir_watch.dll\nSf2.dll\ncmdvrt32.dll\nsnxhk.dll\n## Antimalware services\n\nA series of checks is performed using QueryServiceStatusEx in order to detect any anti-malware services currently running on the\nsystem. If a service is detected, the loader tries to disable it accordingly:\n\nWinDefend\n\ncmd.exe /c sc stop WinDefend\ncmd.exe /c sc delete WinDefend\nTerminateProcess MsMpEng.exe\nTerminateProcess MSASCuiL.exe\nTerminateProcess MSASCui.exe\ncmd.exe /c powershell Set-MpPreference -DisableRealtimeMonitoring $true\nRegSetValue SOFTWARE\\Policies\\Microsoft\\Windows Defender DisableAntiSpyware\nRegSetValue SOFTWARE\\Microsoft\\Windows Defender Security Center\\Notifications DisableNotifications\nMBAMService\n\nControlService MBAMService SERVICE_CONTROL_STOP\nSAVService\n\nTerminateProcess SavService.exe\nTerminateProcess ALMon.exe\ncmd.exe /c sc stop SAVService\ncmd.exe /c sc delete SAVService\nChecks IEFO .4 key for\n‘MBAMService’,’SAVService’,’SavService.exe’,’ALMon.exe’,’SophosFS.exe’,’ALsvc.exe’,’Clean.exe’,’SAVAdminService.exe’\nand sets Debugger registry key to kjkghuguffykjhkj if a match is found\n## Loading binary\n\n\nThe binaries embedded in the loader are encrypted using the same xor cipher method as the functions, however they are also\ncompressed using MiniLZO 2.\n\nThe methods of executing the payload differ for 32 and 64-bit binaries. While the former is pretty straight-forward, the latter\nintegrated a more sophisticated code injection technique.\n\nFirstly, a new suspended process is created (in this sample with process name equal to “svchost”), then the execution transfers to a\ndynamically-generated shellcode that performs a switch from 32-bit compatibility mode to 64-bit using a trick called Heaven’s Gate .5\nFinally, the shellcode performs a call to the decrypted 64-bit helper shellcode which then finally jumps to the 64-bit core.\n\nThe included shellcode deassembles to\n\n## Modules\n\nAs of today, TrickBot is distributing following modules:\n\n**domainDll32.dll**\n\nbf50566d7631485a0eab73a9d029e87b096916dfbf07df4af2069fc6eb733183\n**importDll32.dll**\n\nf9ebf40d1228fa240c64d86037f2080588ed67867610aa159b80a553bc55edd7\n\n\n-----\n\n**injectDll32.dll**\n\na515f4f847e8d7b2eb46a855224c8f0e9906435546bb15785b6770f2143bc22a\n**mailsearcher32.dll**\n\n46706124d4c65111398296ea85b11c57abffbc903714b9f9f8618b80b49bb0f3\n**networkDll32.dll**\n\nc8c789296cc8219d27b32c78e595d3ad6ee1467d2f451f627ce96782a9ff0c5f\n**outlookDll32.dll**\n\n9a529b2b77c5c8128c4427066c28ca844ff8ebbd8c3b2da27b8ea129960f861b\n**pwgrab32.dll**\n\nfe0f269a1b248c919c4e36db2d7efd3b9624b46f567edd408c2520ec7ba1c9e4\n**shareDll32.dll**\n\naf5ee15f47226687816fc4b61956d78b48f62c43480f14df5115d7e751c3d13d\n**squlDll32.dll**\n\nb8b757c2a3e7ae5bb7d6da9a43877c951fb60dcb606cc925ab0f15cdf43d033b\n**systeminfo32.dll**\n\ndff1c7cddd77b1c644c60e6998b3369720c6a54ce015e0044bbbb65d2db556d5\n**tabDll32.dll**\n\n479aa1fa9f1a9af29ed010dbe3b080359508be7055488f2af1d4b10850fe4efc\n**wormDll32.dll**\n\n627a9eb14ecc290fe7fb574200517848e0a992896be68ec459dd263b30c8ca48\n## References\n\n1 [https://blog.malwarebytes.com/threat-analysis/2016/10/trick-bot-dyrezas-successor/](https://blog.malwarebytes.com/threat-analysis/2016/10/trick-bot-dyrezas-successor/)\n\n\n1 [https://sysopfb.github.io/malware/2018/04/16/trickbot-uacme.html](https://sysopfb.github.io/malware/2018/04/16/trickbot-uacme.html)\n\n2 [https://blog.malwarebytes.com/threat-analysis/malware-threat-analysis/2018/11/whats-new-trickbot-deobfuscating-elements/](https://blog.malwarebytes.com/threat-analysis/malware-threat-analysis/2018/11/whats-new-trickbot-deobfuscating-elements/)\n\n\n4 [https://blog.malwarebytes.com/101/2015/12/an-introduction-to-image-file-execution-options/](https://blog.malwarebytes.com/101/2015/12/an-introduction-to-image-file-execution-options/)\n\n5 [http://rce.co/knockin-on-heavens-gate-dynamic-processor-mode-switching/](http://rce.co/knockin-on-heavens-gate-dynamic-processor-mode-switching/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-05-02 - Detricking TrickBot Loader.pdf"
+    ],
+    "report_names": [
+        "2019-05-02 - Detricking TrickBot Loader.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "bf773c52-830b-46e3-aa61-58c82eb323ee",
+            "created_at": "2023-01-06T13:46:39.135077Z",
+            "updated_at": "2025-03-27T02:00:03.004808Z",
+            "deleted_at": null,
+            "main_name": "Nazar",
+            "aliases": [
+                "SIG37"
+            ],
+            "source_name": "MISPGALAXY:Nazar",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f3b19931-3751-4ece-a235-15b397951dc2",
+            "created_at": "2022-10-25T16:07:23.889537Z",
+            "updated_at": "2025-03-27T02:02:10.015565Z",
+            "deleted_at": null,
+            "main_name": "Nazar",
+            "aliases": [
+                "SIG37"
+            ],
+            "source_name": "ETDA:Nazar",
+            "tools": [
+                "Distribute.exe",
+                "EYService",
+                "GpUpdates.exe",
+                "Microolap Packet Sniffer",
+                "TCPDUMP for Windows"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535569,
+    "ts_updated_at": 1743041154,
+    "ts_creation_date": 1653759843,
+    "ts_modification_date": 1653759843,
+    "files": {
+        "pdf": "https://archive.orkl.eu/82c4d14dcb4051a408a4a8e4744edef29899ca2a.pdf",
+        "text": "https://archive.orkl.eu/82c4d14dcb4051a408a4a8e4744edef29899ca2a.txt",
+        "img": "https://archive.orkl.eu/82c4d14dcb4051a408a4a8e4744edef29899ca2a.jpg"
+    }
+}

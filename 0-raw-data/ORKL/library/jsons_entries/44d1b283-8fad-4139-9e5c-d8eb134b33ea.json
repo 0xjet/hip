@@ -1,0 +1,150 @@
+{
+    "id": "44d1b283-8fad-4139-9e5c-d8eb134b33ea",
+    "created_at": "2022-10-25T16:48:14.404585Z",
+    "updated_at": "2025-03-27T02:15:41.739555Z",
+    "deleted_at": null,
+    "sha1_hash": "8e156a0a92cb4ed04111ced57054bf79b491cea1",
+    "title": "",
+    "authors": "",
+    "file_creation_date": "2021-12-21T10:49:03Z",
+    "file_modification_date": "2021-12-21T10:49:03Z",
+    "file_size": 4336542,
+    "plain_text": "# New DarkHotel APT attack chain identified\n\n**[zscaler.com/blogs/security-research/new-darkhotel-apt-attack-chain-identified](https://www.zscaler.com/blogs/security-research/new-darkhotel-apt-attack-chain-identified)**\n\n## Summary\n\nIn November 2021, ThreatLabz identified a previously undocumented variant of an\nattack chain used by the South Korea-based Dark Hotel APT group. We also discovered\nnew activity on the command-and-control (C2) infrastructure previously associated with\nthis APT group. The new activity on their infrastructure aligns with the type of targets\nchosen by this threat actor in the past.\n\nIn this blog, we describe our new findings in detail, including technical analysis of the\nattack chain and its components as well as the C2 infrastructure analysis.\n\n## Threat attribution\n\nDarkHotel is an advanced persistent threat (APT) group based out of South Korea that\nhas been active since at least 2007. They are known to target senior business executives\nby uploading malicious code to their computers through infiltrated hotel WiFi networks,\nas well as through spear-phishing and P2P attacks.\n\nWe attribute this attack chain to the Dark Hotel APT group with a high level of\nconfidence due to the below reasons:\n\n**1. The multi-layer malicious document which drops a scriptlet post-exploitation.**\n\n**2. Filename of the dropped file system artifacts such as the scriptlet file -**\ngoogleofficechk.sct\n\n**3. The command-and-control (C2) commands are the same as earlier payloads used by**\nDark Hotel.\n\n**4. Timestamps of the dropped payloads are around the same timeframe when previously**\ndocumented Dark Hotel APT activity was observed.\n\n\n-----\n\n## Attack flow\n\nFigure 1 below illustrates the full attack chain.\n\n_Figure 1: Attack chain_\n\n## Technical analysis\n\nFor the purpose of technical analysis we will consider the document with MD5 hash:\n89ec1f32e1bbf794c41fa5f5bc6869c0\n\n**[+] Stage 1: Malicious document**\n\nThe first stage of this attack is a multi-layered malicious document which defines an\n[AltChunk element to load an embedded DOCX file. The embedded DOCX file defines](https://docs.microsoft.com/en-us/dotnet/api/documentformat.openxml.wordprocessing.altchunk?view=openxml-2.8.1)\nanother AltChunk element which loads an embedded malicious RTF file. Figure 2 below\n\n\n-----\n\nshows one of the defined AltChunk elements and its corresponding relationship.\n\n_Figure 2: AltChunk element and its corresponding relationship_\n\nThe malicious RTF file contains three OLE objects as shown in Figure 3\n\n\n-----\n\n_Figure 3: OLE objects present inside malicious RTF_\n\nWhen the RTF file is loaded, the three OLE objects are dropped in the %temp% directory\nwith the names “p”, “b” and “googleofficechk.sct”. Out of these three dropped files, the\nscriptlet file (googleofficechk.sct) is executed which is described in detail in the next\nsection.\n\n**[+] Stage-2: Scriptlet file**\n\n[Similar to what has been described previously by Antiy Labs, the first operation](https://www.antiy.cn/research/notice&report/research_report/20200522.html)\nperformed by the scriptlet file is to send a Base64 encoded list of running processes to\nthe configured C2 server. It sends a POST request to the URL “http://signingconfig[.]com/cta/key.php” with DATA “L=G641giQQOWUiXE&q={Base64 encoded list\nof running processes}”\n\nThe subsequent operations performed by this scriptlet file differ from what has been\nobserved in past attacks.\n\n\n-----\n\nThe scriptlet file in our case performs the following operations:\n\n**1. Checks if the directory “%LOCALAPPDATA%\\PeerDistRepub\\” exists else creates it.**\n\n**2. Checks for the presence of file “%LOCALAPPDATA%\\PeerDistRepub\\msrvcd32.exe”.**\nIf the file exists, then it doesn't perform further operations.\n\n**Note: This file check is likely performed to detect if the machine is already infected,**\nwhich also indicates that the threat actor used multiple variations while performing the\nattack.\n\n**3. Releases the IP addresses bound to all DHCP-enabled network adapters**\n\n**4. Copies the executable from “%temp%\\p” to**\n“%LOCALAPPDATA%\\PeerDistRepub\\qq3104.exe”\n\n**5. Copies the executable from “%temp%\\b” to**\n“%LOCALAPPDATA%\\PeerDistRepub\\qq2688.exe”\n\n**6. Creates a ZoneIdentifier ADS (Alternate Data Stream) corresponding to the files**\ncopied above with the following content:\n\nZoneTransfer\n\nZoneId=1\n\n**Note: The ZoneID=1 is written to create the false evidence that the file was downloaded**\nfrom the Intranet\n\n**7. Execute the binary “qq3104.exe” whose functionality is described in detail in the next**\nsection\n\n**8. Renew the IPv4 address for the network adapters**\n\nFigure 4 below shows the relevant scriptlet code\n\n\n-----\n\n_Figure 4: Scriptlet code_\n\n**[+] Stage-3: Dropped binaries**\n\n**# qq3104.exe**\n\nAs mentioned in the previous section, the binary qq3104.exe gets executed as part of the\noperations performed by the scriptlet file. This binary mainly performs three operations:\n\n**1. Spoofs the process related information in the PEB structure to pretend as explorer.exe**\n\n_Figure 5: Code snippet responsible for PEB modification_\n\n**2. Perform UAC bypass using elevation moniker against the vulnerable COM interfaces**\n{3E5FC7F9-9A51-4367-9063-A120244FBEC7} and {D2E7041B-2927-42fb-8E9F7CE93B6DC937}\n\n**3. Execute the binary qq2688.exe**\n\n**# qq2688.exe**\n\nThis binary on execution checks if there is any running process with the name\n“360Tray.exe” or “QQPCTray.exe” and does some firewall checks. These process names\ncorrespond to security software popularly used in China.\n\nThe main operation performed by the binary is to register a Windows service which also\nserves as a persistence mechanism.\n\nTo register the Windows service, the binary creates the registry key\n“HKEY_LOCAL_MACHINE\\\\SYSTEM\\\\CurrentControlSet\\\\services\\\\X” and\npopulates the service related registry values. Along with the service related registry\nvalues, two additional registry values are defined with the name “s” and “x” under the\nsame registry key.\n\nBased on the service registry values, it is an auto start service which executes VBScript\ncode using mshta.exe.\n\n\n-----\n\n_Figure 6: Code snippet responsible for registering the Windows service_\n\nThe VBScript code in turn executes an encoded PowerShell command which is shown in\nFigure 8 below\n\n_Figure 7: Decoded PowerShell command executed by VBScript code_\n\n**[+] Stage-4: PowerShell scripts**\n\nThe PowerShell command which is executed as part of the service execution reads,\ndecodes and executes the data stored under registry value\n“HKEY_LOCAL_MACHINE\\\\SYSTEM\\\\CurrentControlSet\\\\services\\\\X\\\\s”.\n\nThe decoded data is a PowerShell script which executes another PowerShell command.\nThe command is shown in Figure 9 below.\n\n\n-----\n\n_Figure 8: Decoded PowerShell command executed by PowerShell script_\n\nSimilar to the first PowerShell command it also reads, decodes and executes the data\nstored under registry value\n“HKEY_LOCAL_MACHINE\\\\SYSTEM\\\\CurrentControlSet\\\\services\\\\X\\\\x”.\n\nThe decoded data is an obfuscated PowerShell script which embeds an encoded .NET dll.\nThe .NET dll is loaded and executed in-memory from within the PowerShell script.\n\n**[+] Stage-5: .NET dll**\n\nThe .NET dll on analysis turns out to be the same downloader which is described in\nAntiy blog. The only changes are in the configured C2 servers and the parameters which\nare used as part of network requests.\n\nInformation about the C2 servers is provided in Indicators of compromise section while\nthe format for network requests is described below:\n\n**Request format for data exfiltration:**\n\n{C2 server URL}?im={MAC address}&mk=u&ltc={victim information}\n\nOR\n\n{C2 server URL}?xt={MAC address}&mk=u&ltc={victim information}\n\n**Request format for payload download:**\n\n{C2 server URL}?im={MAC address}&mk=d\n\nOR\n\n{C2 server URL}?xt={MAC address}&mk=d\n\n\n-----\n\n**[+] C2 infrastructure analysis**\n\nWe analyzed the C2 infrastructure related to the IP address of the server hosting the\ndomain - signing-config[.]com. This domain was configured in the stage-2 scriptlet\nfile and used to exfiltrate system information to the C2 server.\n\n**IP address = 23.111.184[.]119**\n\nLeveraging passive DNS data, we identified several domains hosted on the server with\nthe above IP address and noticed a pattern in the domain names. A lot of domains were\ncreated to spoof the names of organizations in China related to the government,\neducation, and political think tanks.\n\nBelow are a few examples summarized in a table:\n\n\n**Domain name**\n\n\n**Target**\n**spoofed**\n\n\nwww.onlinesurvey.register.moe.edu.cn[.]serviceneteasse.com Ministry of\nEducation,\nChina\n\nwww.preview.maiil.caict.ac.cn.coremailxt[.]serviceneteasse.com Political\nthink tanks\nof China\n\nwww.prevwdoc.mofcom.gov.cn.loginwebbauthh[.]serviceneteasse.com Beihang\nUniversity\nin China\n\nwww.compliance.maill.buaa.edu.cn.coremailxt[.]serviceneteasse.com Ministry of\ncommerce,\nChina\n\nwww.compliance.maill.hit.edu.cn[.]coremailxt.serviceneteasse.com Harbin\nInstitute of\nTechnology\n\nsecureattch.nudt.edu.cn[.]coremailxt.serviceneteasse.com National\nUniversity\nof Defence\nand\nTechnology\n\nIn addition to this, we also identified several newly registered domains on this server\nwhich are used to spoof cryptocurrency projects popularly used in China such as the\nDeeper network.\n\n\n-----\n\nThe domain, deepersbot[.]network was registered by the threat actor to spoof the\nlegitimate domain, deeper[.]network.\n\n_Figure 9: Phishing website_\n\nThe fake domain asks the users to validate their wallet on the main page and presents\nthem an option to choose from a wide variety of popularly used crypto currency wallets.\n\n_Figure 10: Wallet options provided on the phishing website_\n\n\n-----\n\nOnce the user chooses the wallet type, they will be redirected to a page which prompts\nthem to share their private key.\n\n_Figure 11: Page asking for user Private key information_\n\nIt uses one of the following 3 ways:\n\n**Phrase: A 12 or 24 word recovery phrase which can be used to restore the private key**\nand steal the funds.\n\n**JSON file: a password-protected JSON file which stores the encrypted private key**\n\n**Private key: The private key itself**\n\nThe table below summarizes the list of domains registered which use social engineering\nto steal the private keys of crypto currency wallets of the users:\n\n**Date registered** **Domain name**\n\n13th Nov 2021 dappconnectmainbott[.]org\n\n13th Nov 2021 deepersbot[.]network\n\n5th Nov 2021 www.walletauthenticatorbot[.]net\n\n2nd Nov 2021 dapp-connect[.]org\n\n## Zscaler Cloud Sandbox report\n\n\n-----\n\n_Figure 12: Zscaler Cloud Sandbox detection_\n\n## Indicators of compromise\n\n**[+] Hashes**\n\n**MD5** **Description**\n\n89ec1f32e1bbf794c41fa5f5bc6869c0 Document\n\n**[+] C2 Domains**\n\nsigning-config[.]com\n\nsvcstat[.]com\n\nrelay-server[.]com\n\n**[+] C2 URLs**\n\n**Component** **URL**\n\nScriptlet file http://signing-config[.]com/cta/key.php\n\n.NET backdoor http://svcstat[.]com/policy/v2.php?im=\n\nhttp://relay-server[.]com/mint/mvv.php?xt=\n\n\n-----\n\n**[+] Files system artifacts**\n\n**# Dropped binaries**\n\n%LOCALAPPDATA%\\PeerDistRepub\\qq3104.exe\n\n%LOCALAPPDATA%\\PeerDistRepub\\qq2688.exe\n\n%TEMP%\\p\n\n%TEMP%\\b\n\n**# Scriptlet file**\n\n%TEMP%\\googleofficechk.sct\n\n**[+] Registry artifacts**\n\n**Registry Key:**\nHKEY_LOCAL_MACHINE\\\\SYSTEM\\\\CurrentControlSet\\\\services\\\\X\n\n**Registry Values:**\n\nHKEY_LOCAL_MACHINE\\\\SYSTEM\\\\CurrentControlSet\\\\services\\\\X\\\\s\n\nHKEY_LOCAL_MACHINE\\\\SYSTEM\\\\CurrentControlSet\\\\services\\\\X\\\\x\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2021/2021.12.16.New_DarkHotel_APT/New%20DarkHotel%20APT%20attack%20chain%20identified%20_%20Zscaler.pdf"
+    ],
+    "report_names": [
+        "New DarkHotel APT attack chain identified _ Zscaler"
+    ],
+    "threat_actors": [
+        {
+            "id": "1dadf04e-d725-426f-9f6c-08c5be7da159",
+            "created_at": "2022-10-25T15:50:23.624538Z",
+            "updated_at": "2025-03-27T02:00:55.508759Z",
+            "deleted_at": null,
+            "main_name": "Darkhotel",
+            "aliases": [
+                "Darkhotel",
+                "DUBNIUM",
+                "Zigzag Hail"
+            ],
+            "source_name": "MITRE:Darkhotel",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "b13c19d6-247d-47ba-86ba-15a94accc179",
+            "created_at": "2024-05-01T02:03:08.149923Z",
+            "updated_at": "2025-03-27T02:05:17.422065Z",
+            "deleted_at": null,
+            "main_name": "TUNGSTEN BRIDGE",
+            "aliases": [
+                "DUBNIUM ",
+                "DarkHotel ",
+                "CTG-1948 "
+            ],
+            "source_name": "Secureworks:TUNGSTEN BRIDGE",
+            "tools": [
+                "Nemim"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "2b4eec94-7672-4bee-acb2-b857d0d26d12",
+            "created_at": "2023-01-06T13:46:38.272109Z",
+            "updated_at": "2025-03-27T02:00:02.790029Z",
+            "deleted_at": null,
+            "main_name": "DarkHotel",
+            "aliases": [
+                "DUBNIUM",
+                "Fallout Team",
+                "Luder",
+                "Tapaoux",
+                "Shadow Crane",
+                "APT-C-06",
+                "SIG25",
+                "Karba",
+                "Nemim",
+                "Nemin",
+                "G0012",
+                "ATK52",
+                "T-APT-02",
+                "TUNGSTEN BRIDGE",
+                "Zigzag Hail"
+            ],
+            "source_name": "MISPGALAXY:DarkHotel",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c0cedde3-5a9b-430f-9b77-e6568307205e",
+            "created_at": "2022-10-25T16:07:23.528994Z",
+            "updated_at": "2025-03-27T02:02:09.847683Z",
+            "deleted_at": null,
+            "main_name": "DarkHotel",
+            "aliases": [
+                "APT-C-06",
+                "ATK 52",
+                "CTG-1948",
+                "Dubnium",
+                "Fallout Team",
+                "Higaisa",
+                "Luder",
+                "Operation DarkHotel",
+                "Operation Daybreak",
+                "Operation Inexsmar",
+                "Operation PowerFall",
+                "Operation The Gh0st Remains the Same",
+                "SIG25",
+                "Shadow Crane",
+                "T-APT-02",
+                "Tungsten Bridge",
+                "Zigzag Hail"
+            ],
+            "source_name": "ETDA:DarkHotel",
+            "tools": [
+                "Asruex",
+                "DarkHotel",
+                "DmaUp3.exe",
+                "GreezeBackdoor",
+                "Karba",
+                "Nemain",
+                "Nemim",
+                "Ramsay",
+                "Retro",
+                "Tapaoux",
+                "Trojan.Win32.Karba.e",
+                "Virus.Win32.Pioneer.dx",
+                "igfxext.exe",
+                "msieckc.exe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716494,
+    "ts_updated_at": 1743041741,
+    "ts_creation_date": 1640083743,
+    "ts_modification_date": 1640083743,
+    "files": {
+        "pdf": "https://archive.orkl.eu/8e156a0a92cb4ed04111ced57054bf79b491cea1.pdf",
+        "text": "https://archive.orkl.eu/8e156a0a92cb4ed04111ced57054bf79b491cea1.txt",
+        "img": "https://archive.orkl.eu/8e156a0a92cb4ed04111ced57054bf79b491cea1.jpg"
+    }
+}

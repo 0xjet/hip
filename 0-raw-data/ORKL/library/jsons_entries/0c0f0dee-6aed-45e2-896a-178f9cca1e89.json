@@ -1,0 +1,91 @@
+{
+    "id": "0c0f0dee-6aed-45e2-896a-178f9cca1e89",
+    "created_at": "2023-01-12T14:59:14.714603Z",
+    "updated_at": "2025-03-27T02:12:42.738813Z",
+    "deleted_at": null,
+    "sha1_hash": "3ae6740d9153eb405a3c0c653e46f2058bab827c",
+    "title": "2021-02-22 - MassLogger v3- a .NET stealer with serious obfuscation",
+    "authors": "",
+    "file_creation_date": "2022-05-28T02:40:26Z",
+    "file_modification_date": "2022-05-28T02:40:26Z",
+    "file_size": 688862,
+    "plain_text": "# MassLogger v3: a .NET stealer with serious obfuscation\n\n**[decoded.avast.io/anhho/masslogger-v3-a-net-stealer-with-serious-obfuscation/](https://decoded.avast.io/anhho/masslogger-v3-a-net-stealer-with-serious-obfuscation/)**\n\nFebruary 22, 2021\n\nby [Anh HoFebruary 22, 20219 min read](https://decoded.avast.io/author/anhho/)\n\nForum Advertisement\nMassLogger is an information stealer, first sold in hacking forums around April 2020. The\nmalware author claims it to be the “most powerful logger and recovery tool” which costs $99\nUSD worth of Bitcoin for a lifetime license. MassLogger is highly configurable and gives its\nmalicious users many options for delivery, anti-detection and anti-analysis, and capabilities\nsuch as keylogging and password stealing from a wide variety of browsers and applications.\n\nAvast researchers have found that it is most commonly found in Turkey, Spain, Ukraine,\nChile, the United States, Brazil, the United Kingdom, Germany and Poland. Avast AV is\ndetecting this malware under “MSIL:MassLogger-*”. In addition, the latest variant of\nMassLogger will not run if it finds Avast or AVG AV present in the system.\n\n\n-----\n\n_Map illustrating the countries MassLogger has targeted from October 2020 to February_\n_2021_\n\n\n-----\n\nAdvertised\n\nFeatures\nThe malware author has an active Github directory where he shares the source code of\nmultiple malware features and packers for educational purposes. We are able to find many\nsimilarities between what is being used in the malware and some of his Github projects.\n\n[In August 2020, FireEye wrote an article explaining how to get past the anti-analysis tricks](https://www.fireeye.com/blog/threat-research/2020/08/bypassing-masslogger-anti-analysis-man-in-the-middle-approach.html)\n[used by MassLogger version 1.3. Recently Talos wrote on MassLogger version 3. In their](https://blog.talosintelligence.com/2021/02/masslogger-cred-exfil.html?m=1)\npost, they focus on the campaign and delivery of the malware. In this blog, we will provide\nthe last missing piece, a detailed analysis of the final payload’s obfuscation which includes\noperation codes and an interpreter as well as indirect calls to unassigned fields.\n\n## Analysis\n\nOur analysis is demonstrated with sample\n\nSHA256:\n2487B12F52B803F5D38B3BB9388B039BF4F58C4B5D192D50DA5FA047E9DB828B\n\n## Populate fields with methods at run-time\n\n\n-----\n\nScanning through the decompiled code, the majority of function calls are performed in an\nindirect manner where it tries to call uninitialized field values. As a result, the control flow of\nthe malware are totally hidden from static analysis\n\nPE\n\nEntry Point\n\nIndirect\n\ncall definition\n**Mo() is a wrapper function whose purpose is to call the 4th argument, in this case, vZ.kj.**\nInterestingly, vZ.kj is of field type instead of method type, and there is no trace of it being\nassigned. Revisiting the vZ declaration, we find out that it is just one of the many internal\nsealed classes whose structure consists of field values with no assigned references, a\ncaller function similar to Mo(), and an external “Invoke” function. In addition, they all call a\nfunction with token 0x060004D8 in the module initialization phase.\n\n[0x060004D8 is in charge of decrypting the 2KB embedded resource to build a dictionary](https://github.com/avast/ioc/blob/master/MassLogger/extras/DictionaryConstructor.cs)\nbetween field tokens and method tokens. The field vZ.kj mentioned above has token\n0x040001E2 which is mapped with method token 0x060001E0\n\n\n-----\n\nField-Method Dictionary\n\nOnce the dictionary is constructed, the function looks through all the fields with Static,\nNonPublic, or GetField flag in the module to find the corresponding method tokens. If the\ntoken belongs to a static method, it will be assigned directly to the field using\n**fieldInfo.SetValue()**\n\nIf the specified method is not declared as static, a wrapper for the intended method is\nconstructed then assigned to the field. This dynamically created method has an additional\nparameter of type System.Drawing.Imaging.ImageCodecInfo. The call to the intended\nfunction will be made through OpCodes.Callvirt or OpCodes.Call based on whether the\nfirst byte of the token is modified or not. For example, if the token is 0x46000361 in the\ndictionary, it will be converted back to the standard token 0x06000361, and\n**OpCodes.Callvirt will be used instead of OpCodes.Call.**\n\n[Assigning dynamic method to field](https://github.com/avast/ioc/blob/master/MassLogger/extras/SetField.cs)\n\nThese dynamic wrapper methods may cause additional overheads when debugging due to\nthe transfer to DynamicResolver.GetCodeInfo() method before the intended function is\nreached.\n\n## String Decryption\n\nAll strings used in the malware are encrypted and stored in the 23KB embedded resource.\n[The method token 0x060004DB acts as the string provider where it decrypts and stores the](https://github.com/avast/ioc/blob/master/MassLogger/extras/StringDecrypter.cs)\nstring table upon its first run. This method receives the offset of the required string, the first\nDWORD is read to determine the string length, then the string following after is returned.\n\n\n-----\n\nExample of how MassLogger decrypts its strings\n\n## Retrieving Operation Codes from Resource\n\nAfter the string decryption, the malware leads us to function 0x060001DF where the\nmalware reveals its secretive flow control in the form of operation codes. First, an array of\nobjects are deserialized from the 3rd 3KB embedded resource. These objects contain a list\nof operation codes and additional data that will be fed into an interpreter to perform tasks\nsuch as invoking a function, creating a new object, or modifying a List.\n\nEmbedded resource contains reading instructions and operation codes\nIn order for the object array to be deserialized, the malware first starts with initializing the\nfollowing structures:\n\n\n-----\n\nAn array of 255 bytes. The first byte in the resource indicates the next number of\nwords used to assign values to this array. The first byte in each word, ie 0x23 or 0x1B\nin the capsules, represent the index; while the second byte, ie 0x1 in the capsules,\nrepresents what read operations to use:\n\n0x1 = [Custom Binary Reader](https://github.com/avast/ioc/blob/master/MassLogger/extras/CustomBinaryReader.cs)\n0x2 = ReadInt64\n0x3 = ReadSingle\n0x4 = ReadDouble\n0x5 = Read an array of data\nList of strings. The following byte, 0x0 in the square, determines the size of the list. In\nthis case, no string will be needed\nAn array of objects to be deserialized. The next byte, 0x9 in the square, tells us the\nsize of the array. Each member of the array will be initialized to null and reconstructed\non the later step.\nAn array of offsets. This array has the same size as the object array and represents\nwhere the data associated with each object locates in the resource. Each entry of this\n[array will be filled in using CustomBinaryReader starting at the position after the 0x9](https://github.com/avast/ioc/blob/master/MassLogger/extras/CustomBinaryReader.cs)\nbyte.\n\nWhen the above structures are in place, a lengthy routine that resides in 0x060001DF will\nstart reconstructing a specified object from the array by reading the proper resource data.\nThe main purpose of this object is to form a list of operation codes and the needed\nparameters to perform them.\n\nOperation codes stored inside deserialized object\nThe first part is the operation code which ranges from 1 to 173, while the second part\nrepresents the operand. The interpreter for these operations locates inside method\n0x06000499 and consists of 157 unique handlers. This massive implementation is\nindicative of a commercial code protection tool, but we aren’t unable to find any further\ninformation at the moment.\n\n\n-----\n\nOperation code Interpreter\nThe meaning of important operation codes from the above example:\n\n154 : <method token>: invoke the specified method after reconstructing the needed\narguments and the receiver of the returned value.\n\n127 : <constructor method token>: create a new object after reconstructing the\nneeded arguments for the constructor and where the new object will be assigned to\n\n\n-----\n\n21 : <field Token>: get the value of the specified field, usually an encrypted config\nwhich is used by operation “166 : 0x60001C3” for decryption\n\n## Config Decryption\n\nA block of Base64 encoded strings can be found in the middle of the decrypted string table:\n\nDecrypted String Table\nThese are MassLogger encrypted config. First, each encrypted config is assigned to the\ncorresponding field in Module 0x02000044. Note that the module token is consistent across\nall MassLogger v3 samples that we looked at.\n\n\n-----\n\nNext, the config.Key is base64 decoded and used as the PBKDF2 password to derive a\n32bytes _key (decryption) and a 64 bytes _authKey (encryption). When the malware is\nready to read the config for usage, function 0x060001C4 from module 0x02000045 decrypts\neach config field with the following steps:\n\nBase64 decoded\nThe first 32 bytes are SHA256 checksum which is used to verify the integrity of the\nstring\nThe next 16 bytes are used as IV\nThe config is decrypted using AES with _key and IV from the previous step\n\nThe full config of this sample:\n[https://github.com/avast/ioc/blob/master/MassLogger/config.txt](https://github.com/avast/ioc/blob/master/MassLogger/config.txt)\n\n## Functionality\n\nDespite the variation of obfuscation technique in each version, MassLogger makes little\nchange in its functionality. Compared to the [analysis in June 2020, a check for Avast and](https://fr3d.hk/blog/masslogger-frankenstein-s-creation)\nAVG AV ( looking for AvastGUI and AVGUI processes) is added at the beginning of\nexecution. In addition, the malware has minimized the amount of fingerprints left on the\nsystem. The log data is no longer write to disk, and the “MassLogger” keyword has been\nremoved:\n\n\n-----\n\nComparison between version 1.3 and version 3.0 log data\n\n## Conclusion\n\nMassLogger is a versatile .NET information stealer with a complete list of features. The\nmalware employs heavy obfuscation techniques which we intend to describe in this article.\nAt the moment, we can’t confirm whether the malware is packed with a commercial crypter,\nbut its complexity may indicate so. We also illustrate how the configuration can be extracted\nwhich can help with identifying IOCs for a particular sample.\n\n## Indicators of Compromise\n\nThe full list of IoCs is available at:\n\n[https://github.com/avast/ioc/tree/master/MassLogger](https://github.com/avast/ioc/tree/master/MassLogger)\n\n[Tagged asanalysis,](https://decoded.avast.io/tag/analysis/) [malware,](https://decoded.avast.io/tag/malware/) [obfuscation,](https://decoded.avast.io/tag/obfuscation/) [PC,](https://decoded.avast.io/tag/pc/) [reversing,](https://decoded.avast.io/tag/reversing/) [stealer](https://decoded.avast.io/tag/stealer/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-02-22 - MassLogger v3- a .NET stealer with serious obfuscation.pdf"
+    ],
+    "report_names": [
+        "2021-02-22 - MassLogger v3- a .NET stealer with serious obfuscation.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "a7d4fe31-d92f-425a-ba8c-c70219f52fb8",
+            "created_at": "2022-10-25T15:50:23.466009Z",
+            "updated_at": "2025-03-27T02:00:55.477162Z",
+            "deleted_at": null,
+            "main_name": "Frankenstein",
+            "aliases": [
+                "Frankenstein"
+            ],
+            "source_name": "MITRE:Frankenstein",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "c3ef437d-e8fa-4250-9a99-89a403035ad2",
+            "created_at": "2022-10-25T16:07:24.406019Z",
+            "updated_at": "2025-03-27T02:02:10.210953Z",
+            "deleted_at": null,
+            "main_name": "WildPressure",
+            "aliases": [
+                "WilePressure"
+            ],
+            "source_name": "ETDA:WildPressure",
+            "tools": [
+                "Milum"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "56b3eb1d-6baf-4ee4-a098-ec0081280315",
+            "created_at": "2024-09-28T02:05:36.599884Z",
+            "updated_at": "2025-03-27T02:05:17.250078Z",
+            "deleted_at": null,
+            "main_name": "ALUMINUM THORN",
+            "aliases": [
+                "WIRTE ",
+                "Frankenstein "
+            ],
+            "source_name": "Secureworks:ALUMINUM THORN",
+            "tools": [
+                " Powershell Empire",
+                "FruityC2"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535554,
+    "ts_updated_at": 1743041562,
+    "ts_creation_date": 1653705626,
+    "ts_modification_date": 1653705626,
+    "files": {
+        "pdf": "https://archive.orkl.eu/3ae6740d9153eb405a3c0c653e46f2058bab827c.pdf",
+        "text": "https://archive.orkl.eu/3ae6740d9153eb405a3c0c653e46f2058bab827c.txt",
+        "img": "https://archive.orkl.eu/3ae6740d9153eb405a3c0c653e46f2058bab827c.jpg"
+    }
+}

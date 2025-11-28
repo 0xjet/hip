@@ -1,0 +1,64 @@
+{
+    "id": "2340d669-e17d-4e4d-8893-4c2dd241d253",
+    "created_at": "2023-01-12T15:00:17.266798Z",
+    "updated_at": "2025-03-27T02:09:30.225617Z",
+    "deleted_at": null,
+    "sha1_hash": "ea5c89c1eba644da6703b8c56b2667636bb6946e",
+    "title": "2020-04-10 - An In-depth Look at MailTo Ransomware, Part Three of Three",
+    "authors": "",
+    "file_creation_date": "2022-05-27T23:15:16Z",
+    "file_modification_date": "2022-05-27T23:15:16Z",
+    "file_size": 248676,
+    "plain_text": "# An In-depth Look at MailTo Ransomware, Part Three of Three\n\n**[trustwave.com/en-us/resources/blogs/spiderlabs-blog/an-in-depth-look-at-mailto-ransomware-part-three-of-three/](https://www.trustwave.com/en-us/resources/blogs/spiderlabs-blog/an-in-depth-look-at-mailto-ransomware-part-three-of-three/)**\n\n## Overview\n\n[In Part One of this series, we discussed how MailTo ransomware installs and configures](https://www.trustwave.com/en-us/resources/blogs/spiderlabs-blog/an-in-depth-look-at-mailto-ransomware-part-one-of-three/)\nitself on the victim's system and [in Part Two we discussed how the malware, executes and](https://www.trustwave.com/en-us/resources/blogs/spiderlabs-blog/an-in-depth-look-at-mailto-ransomware-part-two-of-three/)\ninjects itself into the system. In this post, we take a look at what makes ransomware\ndifferent than other malware and gives it its deadly bite, encryption.\n\n## Encryption\n\nJust before the encryption routine begins, the MailTo ransomware performs the following\ntasks:\n\nAdjusts token privileges to give itself “SeDebugPrivilege” and\n“SeImpersonatePrivilege”.\nCollects tokens of logged on users for use of impersonation\nScan system handle information for later use with removing processes/services from\nholding files from the ransomware.\n\nWe found that the ransomware uses this implementation of curve25519:\n\n\n-----\n\n[https://github.com/agl/curve25519-donna/blob/master/curve25519-donna.c](https://github.com/agl/curve25519-donna/blob/master/curve25519-donna.c)\n\nThis is implemented to create a key to be used with a ChaCha stream cipher to encrypt\nfiles. It is not possible to decrypt any encrypted files without the private key of the\nransomware owners.\n\nMailTo encrypts the following locations using a ChaCha stream cipher:\n\nLocal Disk Drives\nNetwork Shares\nHidden Network Shares (IPC$, Admin$)\n\nThe MailTo ransomware has three main threads that kick off the encryption, each thread\nhaving its own purpose. One of these threads is aimed at encrypting the local drive while\nthe other two are targeted towards encrypting shared network locations.\n\n**Encryption Thread 1**\n\nThe first thread created for the encryption process serves the roll of encrypting the local\ndisk drives via the API function “GetLogicalDriveStringsW”. This function will return a list of\ndrives and shared network locations. This routine will begin creating threads for every file\nand directory to encrypt on the found drives. It attempts to connect with the network\nlocations using the current user’s access token and via the API functions\n“WNetUseConntectionW” and “WNetAddConnection2W”.\n\n**Encryption Thread 2**\n\nThe second thread created will again perform “GetLogicalDriveStringsW” to get a list of\ndrives as well as shared network locations. In this thread, the drives are filtered for only\nnetwork drives. Before connecting to the network locations, the ransomware call\n“ImpersonateLoggedOnUser” in order to attempt to gain access to the network locations\nusing different access tokens collected from logged-in users.\n\n**Encryption Thread 3**\n\nThe third thread will act similar to the second created thread in terms of impersonating all\ncurrently logged on users but will collect shared network drives in a different manor.\n“GetNetShares” and “WNetEnumResourceW” are used to iterate over shared network\ndrives and paths. “GetNetShares” will also pick up hidden network shares such as “IPC$”\nand “Admin$”.\n\n**File Encryption**\n\nWhen it comes to encrypting an individual file, the ransomware is quite robust in ensuring\nthat it will encrypt that file. When we say this, we mean if a process or service has a hold on\na file that the ransomware wants to encrypt, the ransomware will kill that process or service\n\n\n-----\n\nin order to do so. If the ransomware does not have access to a file or network path, it will\niterate all duplicated access tokens of users logged onto the machine and use that token in\nan attempt to encrypt the file. If the ransomware was shut down and only partially encrypted\na file, but later executed again, it will check the last four bytes of the file for a CRC32 hash\nof their public ECC key. If the four bytes match the CRC32 hash of their public key, the\nransomware will know that the file was fully and successfully encrypted.\n\n## Finalization\n\n**Ransomware Note**\n\nWhen the MailTo ransomware has finished encrypting, it will open notepad with a\nransomware note.\n\nFigure 1 – Ransomware Note\n\n## Uninstallation\n\nAfter the ransomware note has been displayed, MailTo deletes the following entries from\nthe system if they exist:\n\nFiles\n\nProgram Files (x86)/<uniqueName>/< uniqueName.exe>\nProgram Files/< uniqueName >/< uniqueName.exe>\nC:\\Users\\<username>\\AppData\\Roaming\\<uniqueName>\\<uniqueName.exe>\n\n\n-----\n\nRegistry Keys\n\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Mircrosoft\\Windows\\CurrentVersion\\Run\nHKEY_CURRENT_USER\n\\SOFTWARE\\Mircrosoft\\Windows\\CurrentVersion\\Run\n\n**Shadow Copy Deletion**\n\nShadow copy deletion occurs after MailTo uninstalls itself from the system. “vssadmin.exe”\nis used with the following command for shadow copy deletion:\n\n“vssadmin.exe delete shadows /all /quiet”\n\nShadow copy deletion using this simple vssadmin command is typical of many ransomware.\nInterestingly, shadow copy deletion also occurs one additional time during the execution of\nthe injected entry point of Explorer.exe (2).\n\nFigure 26 – DeleteShadowCopies() call inside of Explorer.exe (2)\n\n## Conclusion\n\nThe MailTo ransomware is complex ransomware which effectively does its job of encrypting\nfiles. What makes MailTo tricky is its ability to leave no stone unturned when it comes to\nencrypting files. The ransomware has been designed in a careful way to ensure that its\nprivileges are exhausted to the fullest extent by enumerating every logical drive and\nnetwork share through impersonated user accounts. The ransomware also makes sure that\n\n\n-----\n\nit destroys any handles to files that are not its own. Even if a service or process is making\nchanges to a file, the ransomware will eliminate that process/service and encrypt the file.\nThe ransomware also sets up a persistent registry key and only removes it once the\nencryption has been complete.\n\nMailTo does its best to minimize its detection vectors by deleting itself, hiding its imports,\nand injecting into processes using stealthy techniques. MailTo avoids the use of suspicious\nWindows APIs as much as it can by using the undocumented windows functions and\nkeeping away from the Windows crypto API. Even though MailTo has its flaws such as with\nservice termination, this ransomware will successfully encrypt files on a system and\nmapped network drives without the possibility of decrypting them without the ransomware\nprivate key.\n\nMailTo is getting more and more popular, so stay safe and keep offline or unconnected\nbackups of your important data.\n\n## Full Series\n\n[An In-depth Look at MailTo Ransomware, Part One](https://www.trustwave.com/en-us/resources/blogs/spiderlabs-blog/an-in-depth-look-at-mailto-ransomware-part-one-of-three/)\n\n[An In-depth Look at MailTo Ransomware, Part Two](https://www.trustwave.com/en-us/resources/blogs/spiderlabs-blog/an-in-depth-look-at-mailto-ransomware-part-two-of-three/)\n\n**IOC**\n\nMailTo Sample SHA256:\n58e923ff158fb5aecd293b7a0e0d305296110b83c6e270786edcc4fea1c8404c\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-04-10 - An In-depth Look at MailTo Ransomware, Part Three of Three.pdf"
+    ],
+    "report_names": [
+        "2020-04-10 - An In-depth Look at MailTo Ransomware, Part Three of Three.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535617,
+    "ts_updated_at": 1743041370,
+    "ts_creation_date": 1653693316,
+    "ts_modification_date": 1653693316,
+    "files": {
+        "pdf": "https://archive.orkl.eu/ea5c89c1eba644da6703b8c56b2667636bb6946e.pdf",
+        "text": "https://archive.orkl.eu/ea5c89c1eba644da6703b8c56b2667636bb6946e.txt",
+        "img": "https://archive.orkl.eu/ea5c89c1eba644da6703b8c56b2667636bb6946e.jpg"
+    }
+}

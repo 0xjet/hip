@@ -1,0 +1,179 @@
+{
+    "id": "1755b1c2-fcdc-4d9c-a855-b995674fd11a",
+    "created_at": "2023-01-12T15:04:43.638557Z",
+    "updated_at": "2025-03-27T02:15:06.302284Z",
+    "deleted_at": null,
+    "sha1_hash": "3e9b353fcaaafee373af87d0c6b215ef53794881",
+    "title": "2017-06-30 - EternalPetya – yet another stolen piece in the package-",
+    "authors": "",
+    "file_creation_date": "2022-05-28T04:56:36Z",
+    "file_modification_date": "2022-05-28T04:56:36Z",
+    "file_size": 421950,
+    "plain_text": "# EternalPetya – yet another stolen piece in the package?\n\n**[blog.malwarebytes.com/threat-analysis/2017/06/eternalpetya-yet-another-stolen-piece-package/](https://blog.malwarebytes.com/threat-analysis/2017/06/eternalpetya-yet-another-stolen-piece-package/)**\n\nMalwarebytes Labs June 30, 2017\n\n[Since June 27th we have been investigating the outbreak of the new Petya-like malware](https://blog.malwarebytes.com/cybercrime/2017/06/petya-esque-ransomware-is-spreading-across-the-world/)\narmed with an infector similar to WannaCry. Since day one, various contradicting theories\nstarted popping up. Some believed that this malware is a rip-off of the original Petya, while\nothers think that it is another step in Petya’s evolution. However, those were just different\nopinions and none of them were backed up with enough evidence to hold solid. In this post,\nwe will try to fill this gap by making step-by-step comparisons of the current kernel and the\n[one on which it is based (Goldeneye Petya).](https://blog.malwarebytes.com/threat-analysis/2016/12/goldeneye-ransomware-the-petyamischa-combo-rebranded/)\n\nAnalyzed sample:\n\n## Why is it important to know whether or not the code was recompiled?\n\nAnswering this question and collecting enough evidence is crucial for further discussions on\nattribution. The source code of the original Petya has never been leaked publicly, so in case\nit was recompiled it proves that the original Petya’s author, Janus, is somehow linked to the\ncurrent outbreak (either this is his work or he has sold the code to another actor).\n\nIn this analysis, we hope to identify if this malware could have been recompiled from the\noriginal code, or it’s just a work of anyone with the appropriate skills to modify the readymade binary. Doing so would not entirely disprove Janus as the creator, but his\n\n\n-----\n\ninvolvement becomes less likely.\n\nAnyways, let’s take a look at the code.\n\n## Sectors\n\nLooking at the sectors, we can find that the layout of EternalPetya is identical to Goldeneye.\nFull comparison:\n\n**Petya kernel:**\n\nPetya Goldeneye: sector 1\nPetya Eternal: sector 1\n\n**Data sector:**\n\nPetya Goldeneye: 32\nPetya Eternal: 32\n\n**Verification sector:**\n\nPetya Goldeneye: 33\nPetya Eternal: 33\n\n**Original MBR (xored with 7)**\n\nPetya Goldeneye: 34\nPetya Eternal: 34\n\n## Hexadecimal comparison\n\nComparing both kernels at hexadecimal level, we can see tiny differences at various points.\nHowever, there are big portions of code that are identical in both.\n\nThe screenshots below show fragments of the (current) EternalPetya on the left, and\nGoldeneye on the right.\n\n\n-----\n\nIts interesting that, at some point, the layout of the same strings in the memory was shifted:\n\nAs mentioned, the data sector starts in both cases at the same offset. This sector stores the\nrandom Salsa20 key and nonce, which are generated per victim, and this is identical in both\ncases. However, in Goldeneye the victim ID is much longer, which is not surprising taking\ninto the account the fact that in the past it was supposed to be the encrypted backup of the\nSalsa key, and now it is just an arbitrary string, so it’s length doesn’t really matter.\n\n\n-----\n\n## The Bootloader\n\nThe first thing that struck me as different was the bootloader. Fragment of the hexdump (as\nbefore: EternalPetya on the left, and Goldeneye on the right.):\n\n\n-----\n\nFunctionality-wise, it is the same in both cases. It is supposed to read 32 (0x20) sectors from\nthe disk, starting from sector 1, and load them into memory at the address 0x8000. However,\nthe opcodes that are used in both cases to do the same operations are a bit different.\n\nThis is the old bootloader, used in Goldeneye:\n\nAnd this is the bootloader used in the EternalPetya version:\n\nMy first impression upon seeing this was that the code was recompiled with different settings,\nhowever, another possibility also exists. The total length of the different fragments are the\nsame – so, we cannot exclude the possibility that someone manually edited them inside the\npre-compiled binary.\n\n## Optimizations – and why it matters\n\nSo far we’ve seen some interesting changes, but they were not enough to prove or disprove\nwhether the code was recompiled. However, the breakthrough in the research may lie in the\n[interesting observation made by David Buchanan.](https://twitter.com/David3141593/status/880495627326640128)\n\n\n-----\n\nThe Salsa20 Key expansion was modified using a hexeditor, NOT by modifying the\n[source pic.twitter.com/Q06ZEle8k9](https://t.co/Q06ZEle8k9)\n\n[— David Buchanan (@David3141593) June 29, 2017](https://twitter.com/David3141593/status/880495627326640128)\n\nHis theory was based on compiler optimization, which ensures that the same character will\nnot need to be loaded into memory twice. We can see this rule applied in examining the code\nresponsible for storing a string in the memory. Inside of Goldeneye’s key expansion function,\nwe can find that this kind of optimization absolutely happens – every character is unique, no\ncharacter is loaded twice:\n\nBut in the corresponding fragment of the current kernel, we can find that this rule is broken.\nThe character ‘d’ repeats and optimization was not applied:\n\n\n-----\n\nIf the same code was generated by a compiler, this fragment would look identical to other\nrepeated characters:\n```\nmov al, 'd'\nmov [bp+var_B], al\nmov [bp+var_3], al\n\n```\nThis is a very strong argument against the theory of the code being recompiled. But anyway,\nlet’s continue the analysis and see if we can find even more evidence.\n\n## Closer look at the changes\n\nIn a [previous post I presented a fast comparison of the current kernel vs Goldeneye, done](https://blog.malwarebytes.com/threat-analysis/2017/06/eternalpetya-lost-salsa20-key/)\nwith the help of IDA plugin, BinDiff:\n\n\n-----\n\nWe can see that significant modifications have been made only in the functions related to\ndisplaying the information screen. Let’s check how exactly these changes have been\napplied.\n\n**main_info_screen (offset 0x8426):**\n\nChanges of the main_info_screen pointed out by the BinDiff (left: current, right: Goldeneye):\n\n\n-----\n\nAs we can see, the call to a function at 0x008848E was replaced with NOPs (No Operation).\nThis is a common practice used to remove an unwanted function in case of patching\ncompiled binaries. Yet, sometimes it can be also introduced by #Ifdefs. The rest of the code\nmatches the previous version, even using the same offsets. However, the addresses to the\ndisplayed strings are different in both binaries.\n\nThe unreferenced function is still present in the current binary:\n\n…and called in some other places of code:\n\nComparison to the Goldeneye’s call graph, it lacks one of the references, but the other ones\nare consistent:\n\n\n-----\n\n**sub_86E0 (offset 0x86E0):**\n\nThe second change is in another function, that is also a part of the information screen. It is\nnot referenced from any other place in the code:\n\nAs we can see, it is called at the beginning of the previously discussed function:\n\n\n-----\n\nIn the Goldeneye kernel, the corresponding function was the one responsible for printing the\nskull:\n\nThe first jump leads to the loop responsible for displaying the skull and waiting for the key to\nbe pressed by the user. Fragment of the code:\n\n\n-----\n\nLooking inside the EternalPetya code, we are almost sure that this function was patched\npost-compilation, rather than recompiled. The first jump, that was supposed to lead to the\nloop leads directly to the function end:\n\nThe original code is still in the binary, but it is never referenced (dead code).\n\n## Are the patches reversible?\n\n\n-----\n\nI thought as a finishing touch of this research it would be interesting to reverse the changes\nand bring the dead code back to life. As an input, I used the dumped code of:\n\n[EternalPetya kernel + bootloader (f3471d609077479891218b0f93a77ceb).](https://virustotal.com/en/file/b5d2ad3c7758f58aa329243af4ce4a906771a1a199210ed0c61f82d47edb3b1d/analysis/)\n\n[My version (reverse patch): (7957520271edf003742db63fc250c231).](https://virustotal.com/en/file/1b06b9b31543522b51304664641882c824b45fa70bce99538533eb4282246f8a/analysis/)\n\nIndeed, after applying the patches, we are back to seeing the same blinking screen, only the\nskull is gone (the corresponding strings has been overwritten):\n\nWatch Video At:\n\nhttps://youtu.be/I3gK3C_0zUs\n\n## Conclusions\n\nI think the presented evidence is enough to prove, that the code was not recompiled from the\noriginal source (in contrary to what I initially suspected). Thus, the involvement of the original\nPetya author, [Janus, seems unlikely. It seems in this case he was just chosen as a](https://twitter.com/JanusSecretary)\nscapegoat by some different actor.\n\nThe edits made in the code are well crafted – the person doing them was fluent in\nassembly and knew exactly what to change and why. Thus, it gave the first impression of\nvery neat and clean modifications, that could possibly be a result of code recompilation. Yet,\nafter doing a deeper analysis, we have identified numerous nuances that show otherwise.\n\nEternalPetya seems to be a patchwork made of code stolen from various sources. In addition\nto the modified version of the GoldenEye Petya kernel, we can find the leaked NSA exploits\nfrom the “Eternal” series as well as legitimate applications, such as PsExec.\n\n\n-----\n\nIt is common practice among unsophisticated actors (script-kiddies) to steal and repurpose\nsomeone else’s code. However, in this case, the composition was done well by a person or\nteam with good technical knowledge and careful execution. A possible reason for using so\nmany stolen elements, apart from saving actor’s time, could have been to throw off any\nobvious signs of attribution.\n\nThere are still many mysteries to solve about this malware which creates many theories that,\nuntil proven true, are nothing more than speculation.\n\n## Appendix\n\nRead also:\n\n[EternalPetya and the lost Salsa20 key](https://blog.malwarebytes.com/threat-analysis/2017/06/eternalpetya-lost-salsa20-key/)\n\nThis video cannot be displayed because your Functional Cookies are currently disabled.\n[To enable them, please visit our privacy policy and search for the Cookies section. Select](https://www.malwarebytes.com/privacy/#how-we-collect-information)\n_“Click Here” to open the Privacy Preference Center and select “Functional Cookies” in the_\nmenu. You can switch the tab back to “Active” or disable by moving the tab to “Inactive.”\nClick “Save Settings.”\n\n_This was a guest post written by Hasherezade, an independent researcher and programmer_\n_with a strong interest in InfoSec. She loves going in details about malware and sharing threat_\n_[information with the community. Check her out on Twitter @hasherezade and her personal](https://twitter.com/hasherezade)_\n_[blog: https://hshrzd.wordp](https://hshrzd.wordpress.com/)_\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2017/2017-06-30 - EternalPetya – yet another stolen piece in the package-.pdf"
+    ],
+    "report_names": [
+        "2017-06-30 - EternalPetya – yet another stolen piece in the package-.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "7ea1e0de-53b9-4059-802f-485884180701",
+            "created_at": "2022-10-25T16:07:24.04846Z",
+            "updated_at": "2025-03-27T02:02:10.090459Z",
+            "deleted_at": null,
+            "main_name": "Patchwork",
+            "aliases": [
+                "APT-C-09",
+                "ATK 11",
+                "Capricorn Organisation",
+                "Chinastrats",
+                "Dropping Elephant",
+                "Maha Grass",
+                "Quilted Tiger",
+                "TG-4410",
+                "Thirsty Gemini",
+                "Zinc Emerson"
+            ],
+            "source_name": "ETDA:Patchwork",
+            "tools": [
+                "AndroRAT",
+                "Artra Downloader",
+                "ArtraDownloader",
+                "AutoIt backdoor",
+                "BADNEWS",
+                "BIRDDOG",
+                "Bahamut",
+                "Bozok",
+                "Bozok RAT",
+                "Brute Ratel",
+                "Brute Ratel C4",
+                "CinaRAT",
+                "Crypta",
+                "ForeIT",
+                "JakyllHyde",
+                "Loki",
+                "Loki.Rat",
+                "LokiBot",
+                "LokiPWS",
+                "NDiskMonitor",
+                "Nadrac",
+                "PGoShell",
+                "PowerSploit",
+                "PubFantacy",
+                "Quasar RAT",
+                "QuasarRAT",
+                "Ragnatela",
+                "Ragnatela RAT",
+                "SocksBot",
+                "TINYTYPHON",
+                "Unknown Logger",
+                "WSCSPL",
+                "Yggdrasil"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "9c884c88-2c9f-49c5-856a-2383ad1d8ef8",
+            "created_at": "2024-05-01T02:03:08.152Z",
+            "updated_at": "2025-03-27T02:05:17.422887Z",
+            "deleted_at": null,
+            "main_name": "ZINC EMERSON",
+            "aliases": [
+                "Dropping Elephant ",
+                "EHDevel ",
+                "Manul ",
+                "Monsoon ",
+                "Operation Hangover ",
+                "Patchwork ",
+                "TG-4410 ",
+                "Viceroy Tiger ",
+                "Confucius "
+            ],
+            "source_name": "Secureworks:ZINC EMERSON",
+            "tools": [
+                " Hanove",
+                " Mac OS X KitM Spyware",
+                " Proyecto2",
+                " YTY Backdoor",
+                "Enlighten Infostealer"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "c81067e0-9dcb-4e3f-abb0-80126519c5b6",
+            "created_at": "2022-10-25T15:50:23.285448Z",
+            "updated_at": "2025-03-27T02:00:55.42906Z",
+            "deleted_at": null,
+            "main_name": "Patchwork",
+            "aliases": [
+                "Hangover Group",
+                "Dropping Elephant",
+                "Chinastrats",
+                "Operation Hangover"
+            ],
+            "source_name": "MITRE:Patchwork",
+            "tools": [
+                "NDiskMonitor",
+                "QuasarRAT",
+                "BackConfig",
+                "TINYTYPHON",
+                "AutoIt backdoor",
+                "PowerSploit",
+                "BADNEWS",
+                "Unknown Logger",
+                "Socksbot"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535883,
+    "ts_updated_at": 1743041706,
+    "ts_creation_date": 1653713796,
+    "ts_modification_date": 1653713796,
+    "files": {
+        "pdf": "https://archive.orkl.eu/3e9b353fcaaafee373af87d0c6b215ef53794881.pdf",
+        "text": "https://archive.orkl.eu/3e9b353fcaaafee373af87d0c6b215ef53794881.txt",
+        "img": "https://archive.orkl.eu/3e9b353fcaaafee373af87d0c6b215ef53794881.jpg"
+    }
+}

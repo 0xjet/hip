@@ -1,0 +1,62 @@
+{
+    "id": "722c9a6c-7b88-494b-aff7-3daeaa36c495",
+    "created_at": "2023-01-12T14:59:38.793768Z",
+    "updated_at": "2025-03-27T02:09:18.202363Z",
+    "deleted_at": null,
+    "sha1_hash": "0e2ee511c48e2b914d4c1dc5f481500090b01a0c",
+    "title": "2022-04-29 - Adventures in the land of BumbleBee – a new malicious loader",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:56:23Z",
+    "file_modification_date": "2022-05-28T19:56:23Z",
+    "file_size": 212781,
+    "plain_text": "# Adventures in the land of BumbleBee – a new malicious loader\n\n**[research.nccgroup.com/2022/04/29/adventures-in-the-land-of-bumblebee-a-new-malicious-loader/](https://research.nccgroup.com/2022/04/29/adventures-in-the-land-of-bumblebee-a-new-malicious-loader/)**\n\nApril 29, 2022\n\n**Authored by: Mike Stokkel, Nikolaos Totosis and Nikolaos Pantazopoulos**\n\n## tl;dr\n\nBUMBLEBEE is a new malicious loader that is being used by several threat actors and has\nbeen observed to download different malicious samples. The key points are:\n\nBUMBLEBEE is statically linked with the open-source libraries OpenSSL 1.1.0f, Boost\n(version 1.68). In addition, it is compiled using Visual Studio 2015.\nBUMBLEBEE uses a set of anti-analysis techniques. These are taken directly from the\nopen-source project [1].\nBUMBLEBEE has Rabbort.DLL embedded, using it for process injection.\nBUMBLEBEE has been observed to download and execute different malicious\npayloads such as Cobalt Strike beacons.\n\n## Introduction\n\nIn March 2022, Google’s Threat Analysis Group [2] published about a malware strain linked\nto Conti’s Initial Access Broker, known as BUMBLEBEE. BUMBLEBEE uses a comparable\nway of distribution that is overlapping with the typical BazarISO campaigns.\n\nIn the last months BUMBLEBEE, would use three different distribution methods:\n\n\n-----\n\nDistribution via ISO files, which are created either with StarBurn ISO or PowerISO\nsoftware, and are bundled along with a LNK file and the initial payload.\nDistribution via OneDrive links.\nEmail thread hijacking with password protected ZIPs\n\nBUMBLEBEE is currently under heavy development and has seen some small changes in\nthe last few weeks. For example, earlier samples of BUMBLEBEE used the user-agent\n‘bumblebee’ and no encryption was applied to the network data. However, this functionality\nhas changed, and recent samples use a hardcoded key as user-agent which is also acting\nas the RC4 key used for the entire network communication process.\n\n## Technical Analysis\n\nMost of the identified samples are protected with what appears to be a private crypter and\nhas only been used for BUMBLEBEE binaries so far. This crypter uses an export function\nwith name SetPath and has not implemented any obfuscation method yet (e.g. strings\nencryption).\n\nThe BUMBLEBEE payload starts off by performing a series of anti-analysis checks, which\nare taken directly from the open source Khasar project[1]. After these checks passed,\nBUMBLEBEE proceeds with the command-and-control communication to receive tasks to\nexecute.\n\n## Network Communication\n\nBUMBLEBEE’s implemented network communication procedure is quite simple and\nstraightforward. First, the loader picks an (command-and-control) IP address and sends a\nHTTPS GET request, which includes the following information in a JSON format (encrypted\nwith RC4):\n\n**Key** **Description**\n\nclient_id A MD5 hash of a UUID value taken by executing the WMI command\n_‘SELECT * FROM Win32_ComputerSystemProduct’._\n\ngroup_name A hardcoded value, which represents the group that the bot\n(compromised host) will be added.\n\nsys_version Windows OS version\n\nclient_version Default value that’s set to 1\n\nuser_name Username of the current user\n\ndomain_name Domain name taken by executing the WMI command ‘SELECT * FROM\n_Win32_ComputerSystem’._\n\n\n-----\n\ntask_state Set to 0 by default. Used only when the network commands ‘ins’ or ‘sdl’\nare executed.\n\ntask_id Set to 0 by default. Used only when the network commands ‘ins’ or ‘sdl’\nare executed.\n\nOnce the server receives the request, it replies with the following data in a JSON format:\n\n**Key** **Description**\n\nresponse_status Boolean value, which shows if the server correctly parsed the loader’s\nrequest. Set to 1 if successful.\n\ntasks Array containing all the tasks\n\ntask Task name\n\ntask_id ID of the received task, which is set by the operator(s).\n\ntask_data Data for the loader to execute in Base64 encoded format\n\nfile_entry_point Potentially represents an offset value. We have not observed this being\nused either in the binary’s code or during network communication (set\nto an empty string).\n\n## Tasks\n\nBased on the returned tasks from the command-and-control servers, BUMBLEBEE will\nexecute one of the tasks described below. For two of the tasks, shi and dij, BUMBLEBEE\nuses a list of predefined process images paths:\n\nC:\\Program Files\\Windows Photo Viewer\\ImagingDevices.exe\nC:\\Program Files\\Windows Mail\\wab.exe\nC:\\Program Files\\Windows Mail\\wabmig.exe\n\n\n**Task**\n**name**\n\n\n**Description**\n\n\nshi Injects task’s data into a new process. The processes images paths are\nembedded in the binary and a random selection is made\n\ndij Injects task’s data into a new process. The injection method defers from the\nmethod used in task ‘dij’. The processes images paths are embedded in the binary\n\n[1] and a random selection is made.\n\ndex Writes task’s data into a file named ‘wab.exe’ under the Windows in AppData\nfolder.\n\n\n-----\n\nsdl Deletes loader’s binary from disk.\n\nins Adds persistence to the compromised host.\n\nFor the persistence mechanism, BUMBLEBEE creates a new directory in the Windows\nAppData folder with the directory’s name being derived by the client_id MD5 value. Next,\nBUMBLEBEE copies itself to its new directory and creates a new VBS file with the following\ncontent:\n\n_Set objShell = CreateObject(“Wscript.Shell”)_\n\n_objShell.Run “rundll32.exe my_application_path, IternalJob”_\n\nLastly, it creates a scheduled task that has the following metadata (this can differ from\nsample to sample):\n\n1. Task name – Randomly generated. Up to 7 characters.\n2. Author – Asus\n3. Description – Video monitor\n4. Hidden from the UI: True\n5. Path: %WINDIR%\\\\System32\\\\wscript.exe VBS_Filepath\n\nSimilarly with the directory’ name, the new loader’s binary and VBS filenames are derived\nfrom the ‘client_id’ MD5 value too.\n\n## Additional Observations\n\nThis sub-section contains notes that were collected during the analysis phase and worth to\nbe mentioned too.\n\nThe first iterations of BUMBLEBEE were observed in September 2021 and were using\n“/get_load” as URI. Later, the samples started using “/gate“. On 19th of April, they\nswitched to “/gates“, replacing the previous URI.\nThe “/get_load” endpoint is still active on the recent infrastructure – this is probably\neither for backwards compatibility or ignored by the operator(s). Besides this, most of\nthe earlier samples using URI endpoint are uploaded from non-European countries.\nConsidering that BUMBLEBEE is actively being developed on, the operator(s) did not\nimplement a command to update the loader’s binary, resulting the loss of existing\ninfections.\nIt was found via server errors (during network requests and from external parties) that\nthe backend is written in Golang.\nAs mentioned above, every BUMBLEBEE binary has an embedded group tag.\nCurrently, we have observed the following group tags:\n\n\n-----\n\nVPS1GROUP ALLdll\n\nVPS2GROUP 1804RA\n\nVS2G 1904r\n\nVPS1 2004r\n\nSP1 1904l\n\nRA1104 25html\n\nLEG0704 2504r\n\nAL1204 2704r\n\nRAI1204\n\nAs additional payloads, NCC Group’s RIFT has observed mostly Cobalt Strike and\nMeterpeter being sent as tasks. However, third parties have confirmed the drop of\nSliver and Bokbot payloads.\nWhile analyzing NCC Group’s RIFT had a case where the command-and-control server\nsent the same Meterpeter PE file in two different tasks in the same request to be\nexecuted. This is probably an attempt to ensure execution of the downloaded payload\n(Figure 1). There were also cases where the server initially replied with a Cobalt Strike\nbeacon and then followed up with more than two additional payloads, both being\nMeterpeter.\n\nFigure\n\n1 – Duplicated received tasks\n\n\n-----\n\nIn one case, the downloaded Cobalt Strike beacon was executed in a sandbox\nenvironment and revealed the following commands were executed by the operator(s):\n\nnet group “domain admins” /domain\nipconfig /all\nnetstat -anop tcp\nexecution of Mimikatz\n\n## Indicators of Compromise\n\n**Type** **Description** **Value**\n\n\nIPv4 Meterpreter\ncommandand-control\nserver, linked\nto Group ID\n**2004r &**\n**25html**\n\nIPv4 Meterpreter\ncommandand-control\nserver, linked\nto Group ID\n**2004r &**\n**2504r**\n\nIPv4 Cobalt Strike\nserver, linked\nto Group ID\n**1904r**\n\nIPv4 Cobalt Strike\nserver, linked\nto Group ID\n**2004r**\n\nIPv4 Cobalt Strike\nserver, linked\nto Group ID\n**2504r &**\n**2704r**\n\n\n23.108.57[.]13\n\n130.0.236[.]214\n\n93.95.229[.]160\n\n141.98.80[.]175\n\n185.106.123[.]74\n\n\n-----\n\nIPv4 BUMBLEBEE\ncommandand-control\nservers\n\n## References\n\n\n103.175.16[.]45 103.175.16[.]46 104.168.236[.]99 108.62.118[.]236\n108.62.118[.]56 108.62.118[.]61 108.62.118[.]62 108.62.12[.]12\n116.202.251[.]3 138.201.190[.]52 142.234.157[.]93 142.91.3[.]109\n142.91.3[.]11 149.255.35[.]167 154.56.0[.]214 154.56.0[.]216\n168.119.62[.]39 172.241.27[.]146 172.241.29[.]169\n185.156.172[.]62 192.236.198[.]63 193.29.104[.]176\n199.195.254[.]17 199.80.55[.]44 209.141.59[.]96\n209.151.144[.]223 213.227.154[.]158 213.232.235[.]105\n23.106.160[.]120 23.106.160[.]39 23.227.198[.]217\n23.254.202[.]59 23.81.246[.]187 23.82.140[.]133 23.82.141[.]184\n23.82.19[.]208 23.83.133[.]1 23.83.133[.]182 23.83.133[.]216\n23.83.134[.]110 23.83.134[.]136 28.11.143[.]222 37.72.174[.]9\n45.11.19[.]224 45.140.146[.]244 45.140.146[.]30 45.147.229[.]177\n45.147.229[.]23 45.147.231[.]107 49.12.241[.]35 71.1.188[.]122\n79.110.52[.]191 85.239.53[.]25 89.222.221[.]14 89.44.9[.]135\n89.44.9[.]235 91.213.8[.]23 91.90.121[.]73\n\n\n\n[1] – [https://github.com/LordNoteworthy/al-khaser](https://github.com/LordNoteworthy/al-khaser)\n\n[2] – [https://blog.google/threat-analysis-group/exposing-initial-access-broker-ties-conti/](https://blog.google/threat-analysis-group/exposing-initial-access-broker-ties-conti/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-04-29 - Adventures in the land of BumbleBee – a new malicious loader.pdf"
+    ],
+    "report_names": [
+        "2022-04-29 - Adventures in the land of BumbleBee – a new malicious loader.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535578,
+    "ts_updated_at": 1743041358,
+    "ts_creation_date": 1653767783,
+    "ts_modification_date": 1653767783,
+    "files": {
+        "pdf": "https://archive.orkl.eu/0e2ee511c48e2b914d4c1dc5f481500090b01a0c.pdf",
+        "text": "https://archive.orkl.eu/0e2ee511c48e2b914d4c1dc5f481500090b01a0c.txt",
+        "img": "https://archive.orkl.eu/0e2ee511c48e2b914d4c1dc5f481500090b01a0c.jpg"
+    }
+}

@@ -1,0 +1,70 @@
+{
+    "id": "5327572e-0fff-4d8e-9c60-4a7e3270182b",
+    "created_at": "2023-01-12T15:06:35.757282Z",
+    "updated_at": "2025-03-27T02:16:39.949465Z",
+    "deleted_at": null,
+    "sha1_hash": "8b262fce6ff850a0c4fc30ee85ec91dd43b6b13a",
+    "title": "2022-10-04 - MSSQL, meet Maggie",
+    "authors": "",
+    "file_creation_date": "2022-10-23T12:55:56Z",
+    "file_modification_date": "2022-10-23T12:55:56Z",
+    "file_size": 271706,
+    "plain_text": "# MSSQL, meet Maggie. A novel backdoor for Microsoft SQL… | by DCSO CyTec Blog | Oct, 2022\n\n**[medium.com/@DCSO_CyTec/mssql-meet-maggie-898773df3b01](https://medium.com/@DCSO_CyTec/mssql-meet-maggie-898773df3b01)**\n\nDCSO CyTec Blog October 11, 2022\n\n[DCSO CyTec Blog](https://medium.com/@DCSO_CyTec?source=post_page-----898773df3b01--------------------------------)\n\nOct 4\n\n\n6 min read\n\n## MSSQL, meet Maggie\n\nHeatmap of Maggie backdoor user by country\nContinuing our monitoring of signed binaries, DCSO CyTec recently found a novel backdoor\nmalware targeting Microsoft SQL servers.\n\nThe malware comes in form of an “Extended Stored Procedure” DLL, a special type of\nextension used by Microsoft SQL servers. Once loaded into a server by an attacker, it is\ncontrolled solely using SQL queries and offers a variety of functionality to run commands,\ninteract with files and function as a network bridge head into the environment of the infected\nserver\n\n\n-----\n\nIn addition, the backdoor has capabilities to bruteforce logins to other MSSQL servers while\nadding a special hardcoded backdoor user in the case of successfully bruteforcing admin\nlogins. Based on this finding, we identified over 250 servers affected worldwide, with a clear\nfocus on the Asia-Pacific region.\n\nBased on artifacts found in the malware, DCSO CyTec calls this novel threat “Maggie”.\n\n_In our follow-up post “” we also provide practical tips on how to detect Maggie in your_\n_environment._\n\n_Blog authored by and_\n\n## Discovery\n\n[While looking for new threats, a file caught our attention. Detected as](https://www.virustotal.com/gui/file/f29a311d62c54bbb01f675db9864f4ab0b3483e6cfdd15a745d4943029dcdf14)\n```\nAPT_ShadowForce_Malware_ON_Nov17_1 by THOR and with a matching AV detection by\n\n```\nAhnLab-V3 as `Trojan/Win.ShadowForce.R472810 we decided to take a closer look.`\n\nTHOR detection on VirusTotal\nThe DLL file is signed by `DEEPSoft Co., Ltd. on 2022–04–12. According to its export`\ndirectory, the file calls itself `sqlmaggieAntiVirus_64.dll and only offers a single export`\ncalled `maggie .`\n\nDLL export in IDA\n\n## Extended Stored Procedures\n\nCloser inspection revealed this DLL to be an `Extended Stored Procedure .`\n\n[Extended Stored Procedures are a way to offer extended functionality to SQL queries for use](https://docs.microsoft.com/en-us/sql/relational-databases/extended-stored-procedures-reference/database-engine-extended-stored-procedures-reference?view=sql-server-ver16)\nin an MSSQL server, similar to the infamous [xp_cmdshell stored procedure, which allows](https://docs.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/xp-cmdshell-transact-sql?view=sql-server-ver16)\nSQL queries to run shell commands.\n\nESPs are common DLL files using a simplistic API. When executed, ESPs are passed a\nhandle to the client connection which allows them to fetch user-supplied arguments (via\n[srv_paramdata) and return unstructured data to the caller (via srv_sendmsg).](https://docs.microsoft.com/en-us/sql/relational-databases/extended-stored-procedures-reference/srv-paramdata-extended-stored-procedure-api?view=sql-server-ver16)\n\n_Maggie utilizes this message-passing interface to implement a fully functional backdoor_\ncontrolled only using SQL queries.\n\nIn order to install Maggie, an attacker has to be able to place an ESP file in a directory\naccessible by the MSSQL server, and has to have valid credentials to load the Maggie ESP\ninto the server. It is unclear how an actual attack with Maggie is performed in the real-world.\n\nAfter manually loading Maggie with\n\n\n-----\n\n```\nsp_addextendedproc maggie, <path to DLL> ;\n\n```\nan authenticated user could start to issue commands to the backdoor via SQL queries, e.g.\nto call the `whoami shell command:`\n```\n$ exec maggie 'Exec whoami';MSSQL Procedure 04/08/2022Execute Command: Exec\nwhoamiExecuting whoami Successfullynt service\\mssqlserver\n\n## Commands\n\n```\nOnce installed, Maggie offers a variety of commands to query for system information, interact\nwith files and folders, execute programs as well as various network-related functionality like\nenabling TermService, running a Socks5 proxy server or setting up port forwarding to make\n_Maggie act as a bridge head into the server’s network environment._\n\nThe full list of commands we have identified:\n\nList of commands available in Maggie\nCommands can take multiple arguments, separated by spaces. For some commands,\n_Maggie even includes usage instructions:_\n\nUsage instructions for SqlScan command\n\n## Maggie as a network bridge head\n\n_Maggie contains functionality for simple TCP redirection, allowing it to function as a network_\nbridge head from the Internet to any IP address reachable by the infected MSSQL server.\n\nWhen enabled, Maggie redirects any incoming connection (on any port the MSSQL server is\nlistening on) to a previously set IP and port, if the source IP address matches a userspecified IP mask. The implementation enables port reuse, making the redirection\ntransparent to authorized users, while any other connecting IP is able to use the server\nwithout any interference or knowledge of Maggie.\n\nFor this to work, `StartHook instructs Maggie to install network API hooks for the following`\nfunctions:\n\naccept\nAcceptEx\nWSAAccept\nsetsockopt\nCreateIoCompletionPort\n\nallowing Maggie to intercept connections before reaching the underlying services.\n\nThe redirection setup can be controlled using the SetClientData command with\n\n\n-----\n\n```\nSetClientData <allowed IP mask> <destination IP> <destination port>\n\n```\nin order to enable redirection for the given IP mask (can end with ‘*’ wildcard) to the specified\nIP and port.\n\nOnce finished, an attacker can simply disable the IP redirection feature using `StopHook`\nagain.\n\nIn addition, Maggie contains SOCKS5 proxy functionality for more complex network\noperations.\n\nDebug messages for SOCKS5 functionality\n\n## The unknown Exploit commands\n\n_Maggie’s command list includes four commands that suggest exploit usage:_\n```\nExploit AddUser Exploit Run Exploit Clone Exploit TS\n\n```\nIt appears that the actual implementation of all four exploit commands depends on a DLL not\nincluded with Maggie directly. Instead, the caller provides a DLL name as well as an\nadditional parameter when calling each function. We therefore assume the caller manually\nuploads the exploit DLL prior to issuing any exploit commands.\n\n_Maggie would then load the user-specified DLL, look for an export named either_\n```\nStartPrinter or ProcessCommand (depending on the exact command used) and pass\n\n```\nthe user-supplied argument.\n\nWe were not able to dig up any potential candidate DLLs Maggie might be referencing during\nour research so it’s unclear what specific exploit may be utilized here.\n\n## SQL bruteforcing and the curious Maggie backdoor user\n\n_Maggie’s command set also includes two commands that allow it to bruteforce logins to other_\nMSSQL servers:\n```\nSqlScanWinSockScan\n\n```\nTo start a bruteforce scan, the controller would have to specify a host, user and password list\nfile previously uploaded to the infected server, as well as an optional thread count. Maggie\nthen creates every combination of (host,user,pass) and attempts to log in via SQL using\nODBC, or a reimplementation only using basic socket functions in the case of\n```\nWinSockScan .\n\n```\nSuccessful logins are written to a hardcoded log file, which can be in one of two locations:\n\n\n-----\n\n```\nC:\\ProgramData\\success.dat<MAGGIE_LOCATION>\\success.dat\n\n```\n_Maggie then tries to determine if the bruteforced login has admin rights. In case it_\nsuccessfully bruteforced an admin user, Maggie proceeds with adding a hardcoded backdoor\nuser.\n\nBased on this finding, DCSO CyTec conducted a scan on publicly reachable MSSQL servers\nin order to determine how prevalent the identified backdoor user is.\n\nOut of approximately 600,000 scanned servers worldwide, we identified 285 servers infected\nwith Maggie’s backdoor user, spread over 42 countries.\n\nHeatmap of backdoor user by country\nThe distribution shows a clear focus on the Asia-Pacific region, with South Korea, India and\nVietnam as top 3 followed by China and Taiwan in the fourth and fifth place. Other countries\nappear to be incidental.\n\nPrevalence of backdoor user by country\nA logical next step would be to see if and how the affected servers are being utilized, which\nhowever goes beyond the scope of our analysis.\n\n## IoCs\n\n[As usual, you can find below IoCs in the form of a MISP event on our GitHub.](https://github.com/DCSO/Blog_CyTec/blob/main/mssql_meet_maggie/misp.event.json)\n```\nf29a311d62c54bbb01f675db9864f4ab0b3483e6cfdd15a745d4943029dcdf14a375ae44c8ecb158895356\n Mozilla/4.0\n(compatible)C:\\ProgramData\\Success.datSuccess.datFailure.datAccessControl.Dat\n\n## MITRE ATT&CK\n    Brute Force    Connection Proxy\n\n```\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-10-04 - MSSQL, meet Maggie.pdf"
+    ],
+    "report_names": [
+        "2022-10-04 - MSSQL, meet Maggie.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "2864e40a-f233-4618-ac61-b03760a41cbb",
+            "created_at": "2023-12-01T02:02:34.272108Z",
+            "updated_at": "2025-03-27T02:02:10.209072Z",
+            "deleted_at": null,
+            "main_name": "WildCard",
+            "aliases": [],
+            "source_name": "ETDA:WildCard",
+            "tools": [
+                "RustDown",
+                "SysJoker"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "256a6a2d-e8a2-4497-b399-628a7fad4b3e",
+            "created_at": "2023-11-30T02:00:07.299845Z",
+            "updated_at": "2025-03-27T02:00:03.257794Z",
+            "deleted_at": null,
+            "main_name": "WildCard",
+            "aliases": [],
+            "source_name": "MISPGALAXY:WildCard",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535995,
+    "ts_updated_at": 1743041799,
+    "ts_creation_date": 1666529756,
+    "ts_modification_date": 1666529756,
+    "files": {
+        "pdf": "https://archive.orkl.eu/8b262fce6ff850a0c4fc30ee85ec91dd43b6b13a.pdf",
+        "text": "https://archive.orkl.eu/8b262fce6ff850a0c4fc30ee85ec91dd43b6b13a.txt",
+        "img": "https://archive.orkl.eu/8b262fce6ff850a0c4fc30ee85ec91dd43b6b13a.jpg"
+    }
+}

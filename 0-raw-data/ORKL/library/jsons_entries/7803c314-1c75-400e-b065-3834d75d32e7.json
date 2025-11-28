@@ -1,0 +1,71 @@
+{
+    "id": "7803c314-1c75-400e-b065-3834d75d32e7",
+    "created_at": "2023-01-12T15:02:47.948081Z",
+    "updated_at": "2025-03-27T02:05:18.944362Z",
+    "deleted_at": null,
+    "sha1_hash": "488037a7385b01307f5a9db59a0525d637f81509",
+    "title": "2016-11-23 - Analysis- Ursnif - spying on your data since 2007",
+    "authors": "",
+    "file_creation_date": "2022-05-27T23:13:27Z",
+    "file_modification_date": "2022-05-27T23:13:27Z",
+    "file_size": 67995,
+    "plain_text": "# Analysis: Ursnif - spying on your data since 2007\n\n**[blog.gdatasoftware.com/2016/11/29325-analysis-ursnif-spying-on-your-data-since-2007](https://blog.gdatasoftware.com/2016/11/29325-analysis-ursnif-spying-on-your-data-since-2007)**\n\nA game of cat and mouse has been going on ever since the first ever malware started\ncirculating in the wild and the first Antivirus appeared on the market. Although it may seem\nthat brand new malware families appear on a daily basis, the truth looks somewhat different.\nA lot of the malware which is in circulation is a reiteration of something that has existed for\nquite some time. After all, malware development costs criminals time and money, and if they\ncan lower the cost by reusing something preexisting, they will do so. In this analysis we will\ntake a look as just such a case.\n\n## Infection vector\n\nAs in other previous cases, Ursnif can only be installed after initiating user interaction. The\nuser is asked to open an email attachment which looks like an Office document. The\ndocument claims that it can only be displayed properly if macros are enabled by the users.\nShould the user comply, a malicious VB script will be dropped in the %user temp% folder.\n\nEmail with a malicious attachment containing\n\nUrsnif\n\n## Looking at the script: Analysis prevention\n\nWhen running the macro, an encoded VB script is dropped. It is decoded automatically on\nexecution and downloads the actual executable payload. The script contains obfuscated VB\ncode with some garbage data added to confuse analysts. The executable payload is\nencrypted (1-byte XOR). The decryption is also done by the VB script. To further throw\nanalysts off its track, each sample of Ursnif is packed differently. In addition to this, the latest\nversions also have a mechanism which determines whether the executable is running in a\n\n\n-----\n\nvirtual machine. To check if this is the case, several system parameters are queried. In this\ncase, the hardware information of the disk drive is queried using SetupDiGetClassDevsA to\nopen a handle to device information set as well as two other APIs (SetupDiEnumDeviceInfo\nand SetupDiGetDeviceRegistryProperyA) .\n\nIf Ursnif finds itself running inside a virtual machine, it will just terminate and take no further\naction. The purpose of this is to hinder analysis - most analysts tend to use virtual machines\nfor their work.\n\nDecoded script from the email attachment\n\nUrsnif probing for hardware information to\n\ndetermine if it is running in a VM.\nTo top\n\n## C2 communications\n\n\n-----\n\nLike many types of malware, this one also communicates with a Command & Control (C2)\nserver. In order to make it more difficult to pinpoint those, the domain names are often\ngenerated locally as opposed to hard-coding them. Those domain names are calculated\nusing a Domain Generation Algorithm (DGA). What is remarkable about this malware exhibit\nis the way in which the domains are generated. As a 'data source' for its DGA it uses some\nwell-known websites and takes bits of text that are used to generate C2 domains.\n\nFun fact: the authors appear to have a sense of humor, too, albeit a twisted one; among the\ntexts used as data sources, there is one from Apple's website\n[(opensource.apple.com/source/Security/Security-29/SecureTransport/LICENSE.txt ) as well](http://opensource.apple.com/source/Security/Security-29/SecureTransport/LICENSE.txt))\nas RFC 1237 (Guidelines for OSI NSAP (Network Service Access Provider) Allocation in the\nInternet) from the IETF website.\n\n## Data exfiltration via HTTP POST\n\nUrsnif is capable of collecting a user’s system activity, including keystrokes, new connected\ndevices, running application, network traffic and browser activity. This data is written to a\ncompressed file (ZIP compression) and stored in the %user temp% folder. It is named as\n{random 4 hexadecimal char}.bin.\n\nThe C2 URL contains an \"/images\" section, followed by a blob of encoded data as well as an\nextension. The encoded data blob contains additional information such as bot ID (unique\nidentifier of the infected machine), the build version of the malware, the infected machine's\nOS version, its public IP, the name of the file about to be uploaded the server ID and the file\ntype. This information is encrypted using AES 256 with an additional layer of base64\nencoding. The locally stored and compressed data is then uploaded to the C2 server using\nHTTP POST.\n\nTo raise less suspicion, slashes are added at random; special characters are substituted with\ntheir equivalent hex value with an added underscore as a prefix. The URL then looks more or\nless legitimate, in case the C2 communication shows up in a log file.\n\n\n-----\n\nUrsnif communicating with its C2 server. The long\n\nURL with the encoded and encrypted data is visible at the top.\n\n## Persistence, Hooking & Processing of External Commands\n\nOnce installed, Ursnif attempts to inject its components into a running instance of\nexplorer.exe. Should this fail, it will start a new instance of svchost.exe and injects its\ncomponent into this process instead. Subsequently, it hooks the APIs of widely used\nbrowsers, in this case Chrome, Opera, Internet Explorer and Firefox. As soon as a user visits\na predetermined banking or payment website, Ursnif performs a web inject to steal any login\ncredentials. Monitored websites include (but are not limited to): *wellsfargo.com*,\n*.bankofamerica.com*, *paypal.com*, www.amazon.com/ap/signin*,\n*.americanexpress.com*, www.chase.com*, www.discover.com and online.cit*.com*\n\nUrsnif is also known to be able to accept and execute external commands it receives from its\nserver. Should Ursnif receive the command to perform the function LOAD_UPDATE, it will\nconvert the command to CRC hash \"0xA172B308\". This value is then compared against a\nlocal list of hashed commands and will only be executed (using named pipes) if the hash\nvalue matches the local list. This is to ensure that analysts cannot just blindly feed a list of\nfrequently used commands into a given payload to see which input triggers any reaction. The\ninfected machine in return will report the request status as well as the execution time back to\nthe C2 server.\n\n## Conclusion\n\nAs outlined earlier, criminals usually do not make attempts to reinvent the wheel. They stick\nwith what has been tried and tested before rather than develop something new from the\nground up. There are other examples for this as well, such as ransomware which is based on\nthe \"Hidden Tear\" source code that was originally intended to be used for educational\npurposes.\n\n\n-----\n\nUrsnif has been around for quite a while now. The first version appeared in 2007. Back then\nit was a competitor of the ZEuS banking malware. This goes to show that, at least in the\nworld of malware, \"old\" does not mean \"dead\" or \"inactive\", because Ursnif is quite the\nopposite. Its source code is available online. This makes it easier for online criminals to add\nnew features that suit their own needs. The reliance on well-known tools is pretty common\n[and even applies to modern APT scenarios.](https://www.gdata.de/blog/2016/11/koenig-im-eigenen-reich-3)\n\nG DATA customers are protected from this on multiple levels. Besides having signatures, our\nBankGuard technology reliably detects any attempts by malware to hook into a browser to\nsteal data. In addition to this, our Behavior Monitoring detects behavioral patterns which are\nassociated with malicious software.\n\n## IoC list\n\nIOC\n\nCampaign with password-protected word document:\n\nWord document file 62443895379ab934ad0621c8a2e084414862cd6daa4fa1d09370a6d3e5de3d9b\n\nDropped VBS 97d382d6eb5f2113dcbad702b43c648a34c9f2b516da27b0ce2cb2493e93171b\n\nPayload Gozi/URSNIF 9db26083ffe1e1c83f47464a047e46e579787bea2ae945fb865f5cc588b86229\n\nUnpacked sample 51f81493dd1c34c8909d65060b7e96e301e3ec38741660a1248fdc1203b543e8\n\n32 bit DLL module 668ac0ef90e0db8dd33020335f43505d1afce803b7e659d51e3be2bdcc933c5f\n\n64 bit DLL module –\n95921f6bde5e4d71fd4308822db46ce46b646d863037f89f236da7f0337c57d4\n\nOther campaign:\n\nWord document file 371a81358595c639eb290516d763e2c9cfa1dda1506b0deb37c46504d31a79ea\n\nDropped VBS 4d345043c03c09212abef68d84a82102d8409157b00bf89d9dc6f4b98238927e\n\nPayload Gozi/URSNIF 172f359baa478d80a9a8eccde0393e3fb8a58f0444a1b71d99d87c6a50855297\n\n\n-----\n\nUnpacked Sample 17af05823ed53b5e794c3a5696326454d8f91ad6af4f33e2ffa4b780bfd17d98\n\n32 bit DLL module –\n7d7f03e772c0c2117923d82b4fff5bc20d03a5fff04d0605e1a35a04dd8be34c\n\n64 bit DLL module –\ncfadd9b071c80f75eb1eedcce8e697a9ac31334abc919e286336acc01c3db089\n\nOther campaign:\n\n1 Stage JS Downloader –st\n9a44ff53471012328a3b167c149ed71c2e82b117de8f9463f5773b5b4f5cc7b6\n\n\n2nd Stage Downloader –\n827c1ce97229a99c9badfa79b144690c91314603f250696b80765ba8d9ad1423\n\n3 Stage Downloader –rd\nd8bf69b386e80f3e4cc8c4d612900a38ca5b0f661be89cfcb3a0fe4999a96bf4\n\nPayload Gozi/URSNIF –\n4f3926e686bfda88b28cd009d1a84396fc6e0bdc070a962f91da43fbde2a29c7\n\nUnpacked sample –\n672c3cd4eb8a5e4dc974c8f14a23f23f5863c5fb8cc1043c49771de715259dde\n\n32 bit DLL module –\n92e2cefcd7c334cad5b7eac0c2c79392a4e959317cdc993420395919e19d71c5\n\n64 bit DLL module –\n579f53c1eda4fd18fb5265f399c67238da740059ae300374ee234866cc92f32f\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2016/2016-11-23 - Analysis- Ursnif - spying on your data since 2007.pdf"
+    ],
+    "report_names": [
+        "2016-11-23 - Analysis- Ursnif - spying on your data since 2007.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "11f52079-26d3-4e06-8665-6a0b3efdc41c",
+            "created_at": "2022-10-25T16:07:23.736987Z",
+            "updated_at": "2025-03-27T02:02:09.954078Z",
+            "deleted_at": null,
+            "main_name": "InvisiMole",
+            "aliases": [
+                "UAC-0035"
+            ],
+            "source_name": "ETDA:InvisiMole",
+            "tools": [
+                "InvisiMole"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "12b5d602-4017-4a6f-a2a3-387a6e07a27b",
+            "created_at": "2023-01-06T13:46:39.095233Z",
+            "updated_at": "2025-03-27T02:00:02.995336Z",
+            "deleted_at": null,
+            "main_name": "InvisiMole",
+            "aliases": [],
+            "source_name": "MISPGALAXY:InvisiMole",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535767,
+    "ts_updated_at": 1743041118,
+    "ts_creation_date": 1653693207,
+    "ts_modification_date": 1653693207,
+    "files": {
+        "pdf": "https://archive.orkl.eu/488037a7385b01307f5a9db59a0525d637f81509.pdf",
+        "text": "https://archive.orkl.eu/488037a7385b01307f5a9db59a0525d637f81509.txt",
+        "img": "https://archive.orkl.eu/488037a7385b01307f5a9db59a0525d637f81509.jpg"
+    }
+}

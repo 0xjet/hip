@@ -1,0 +1,162 @@
+{
+    "id": "98f429c5-258d-4bad-b975-e375ee199761",
+    "created_at": "2023-01-12T15:01:13.583553Z",
+    "updated_at": "2025-03-27T02:05:59.589857Z",
+    "deleted_at": null,
+    "sha1_hash": "5e261f84ffab2f9a10e5cb66fe0f4f28d8cded09",
+    "title": "2022-09-21 - Technical Analysis of Crytox Ransomware",
+    "authors": "",
+    "file_creation_date": "2022-10-02T12:25:18Z",
+    "file_modification_date": "2022-10-02T12:25:18Z",
+    "file_size": 2317716,
+    "plain_text": "# Technical Analysis of Crytox Ransomware\n\n**[zscaler.com/blogs/security-research/technical-analysis-crytox-ransomware](https://www.zscaler.com/blogs/security-research/technical-analysis-crytox-ransomware)**\n\n## Key points\n\nCrytox is a ransomware family consisting of several stages of encrypted code that\nwas first observed in 2020\nThe ransomware encrypts local disks and network drives and leaves a ransom note\nwith a five day ultimatum, but does not exfiltrate data from the victim\nCrytox drops the uTox messenger application on the infected system that enables the\nvictim to communicate and negotiate with the threat actors\nCrytox uses AES-CBC with a per file 256-bit key that is protected with a locally\ngenerated RSA public key\nFile decryption may be possible via a known plaintext bruteforce attack\n\n## Summary\n\nThe threat actor using Crytox ransomware has been active since at least 2020, but has\nreceived significantly less attention than many other ransomware families. In September\n2021, the Netherlands-based company [RTL publicly acknowledged that they were](https://www.rtlnieuws.nl/nieuws/nederland/artikel/5255983/rtl-nederland-ransomware-aanval-cybercriminelen-losgeld)\ncompromised by the threat actor. The company paid Crytox 8,500 euros. Compared with\ncurrent ransom demands, this amount is relatively low. Unlike most ransomware groups, the\nCrytox threat actor does not perform double extortion attacks where data is both encrypted\nand held for ransom.\n\n\n-----\n\nThe modus operandi of the group is to encrypt files on connected drives along with network\ndrives, drop the [uTox messenger application and then display a ransom note to the victim](https://github.com/uTox/uTox)\nas shown in Figure 1.\n\nFigure 1. Crytox ransom note\n\nThe ransom demand period is set to five days to pressure the victim into paying as soon as\npossible\n\n## Technical analysis\n\nThe sample analyzed by ThreatLabz has the following SHA256 hash\n32eef267a1192a9a739ccaaae0266bc66707bb64768a764541ecb039a50cba67. In most\ncases, Crytox samples are packed with UPX. Once decompressed, a sample usually\nweighs in around 1.23MB because the whole uTox client is embedded inside the malware.\n\nCryptox uses different techniques to thwart static analysis including the following:\n\nAPI hashing\nEncrypted configurations\nEncrypted shellcode\nRemote thread injection\n\nSome parts of the malware look directly written in assembly. The most noteworthy thing is\nthe use of a [specific implementation of AES-CBC shown in Figure 2.](http://masm32.com/board/index.php?topic=2933.0)\n\n\n-----\n\nFigure 2. Crytox implementation of AES\n\nThe authors borrowed the AES code and modified some parts to meet their needs. They\neven added an alternative algorithm using Intel x86 AES instructions. Oddly enough, the\nauthors chose to only implement the Rijndael_Encrypt routine to both decrypt their config\nand encrypt files. This means that when they embedded their configurations, they used the\nAES decryption routine to encrypt them. The key used for decrypting the Crytox\nconfigurations are either the first or second block of 32 bytes of the AES lookup table Te1\nusing a NULL initialization vector (IV).\n\n## First-Stage\n\nThe malware encrypts the first-stage configuration using the aforementioned\nimplementation of AES-CBC. Here, the AES key is the first 32 bytes of the Te1 lookup table\n**a5c6636384f87c7c99ee77778df67b7b0dfff2f2bdd66b6bb1de6f6f5491c5c5 as shown in**\nFigure 3.\n\n\n-----\n\nFigure 3. Crytox first-stage configuration after decryption\n\nThis configuration contains the following information:\n\nA hardcoded 2048-bit RSA public key\nThe path to drop the uTox client application\nThe Run registry value for the ransom note to be displayed at startup\nThe process name to inject\nThe class registry key to store the malware's configuration\n\nAfter this configuration has been decrypted, the malware locally generates a 2048-bit RSA\nkey pair using the CryptGenKey function. The generated RSA private key is then\nencrypted five times using the hardcoded public key.\n\n\n-----\n\nUnder the sub-key HKCR\\.waiting\\shell\\open\\command\\, the ransomware stores the\nfollowing value-data pair shown in Table 1.\n\n**Value** **Data**\n\n\"en\" Generated RSA public key\n\n\"n\" Encrypted generated RSA private key\n\n\"\" C:\\Windows\\System32\\mshta.exe \"C:\\ReadMe.hta\"\n\nTable 1. Crytox registry configuration\n\nIn order to make sure the ransom note is displayed on startup, the registry value\n**open along with the data \"C:\\ReadMe.hta\" are created under**\n\n**HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run**\n\nOnce the Crytox configuration is stored, the code proceeds to locate a process to inject the\nsecond-stage. A remote thread is created to execute the first piece of shellcode.\n\n## Second-Stage\n\nThis stage decrypts a second configuration using AES-CBC with the following key\n5060303003020101a9ce67677d562b2b19e7fefe62b5d7d7e64dabab9aec7676 (which is\nthe second block of 32 bytes from the lookup table Te1). According to this decrypted\nconfiguration, the shellcode executes a batch file to delete shadow copies and remove\nevents from the logs. Essentially the following commands are run::\n\n**for /F \"tokens=*\" %%1 in ('wevtutil.exe el') DO wevtutil.exe cl \"%%1\"**\n\n**vssadmin.exe Delete Shadows /All /Quiet**\n\n**diskshadow.exe /s ../pghdn.txt**\n\nThe file pghdn.txt contains the line \"delete shadows all\".\n\nGiven the following hashing algorithm, the second-stage searches for the process ID (pid)\nof the process for which the hash of its name corresponds to 0xDCF164CD (explorer.exe)\nor 0x561F1820 (svchost.exe).\n\n**name = process_name + \"\\x00\"**\n\n**hash = 0**\n\n**for c in name.upper():**\n\n**hash = ROTR32(hash, 0xD) + ord(c)**\n\n\n-----\n\nInside a new thread, the shellcode creates a mutex by concatenating a hardcoded 4-letter\nword (e.g., \"CSWS\") with some random characters based on the pid of the targeted process\nas shown in Figure 4.\n\nFigure 4. Crytox mutex creation\n\nThe thread then decrypts the content from the resource section of the original malware\nusing the same algorithm and key as for the second configuration. This resource contains\nanother shellcode, which is the final stage. This shellcode is injected inside the targeted\nremote process.\n\n## Third and Final Stage\n\nUsing the same encryption algorithm, with the first 32-bytes of the Te1 lookup table as the\nAES key, this final stage decrypts the main configuration containing the following\ninformation:\n\nA seed for generating the file encryption key\nAn .hta formatted ransom note\nA simple regular expression for listing all files on the system\nThe encrypted file extension (e.g., YOUR ID.waiting)\nPrivileges to remove (SeBackupPrivilege, SeRestorePrivilege)\n\nFirst, the code tries to retrieve the configuration that the first stage stored in the registry\nhive. If this configuration doesn't exist, Crytox will create it. The code proceeds to set a\n_countdown variable in the ransom note followed by replacing the string YOUR ID in the_\n\n\n-----\n\nransom note template. The latter value is replaced with a unique victim ID that is generated\nby the following pseudo-algorithm based on the encrypted locally generated RSA private\nkey:\n\nFigure 5. Crytox victim ID generation algorithm\n\nBefore encrypting any files, the malware removes the SeBackupPrivilege and\nSeRestorePrivilege privileges. Using the functions WNetOpenEnumW and\n**WNetEnumResourceW, the malware retrieves connected drives and for each drive found,**\na thread is created to encrypt files. The same process is applied for every logical drive\nusing the function GetLogicalDrives. The malware then waits for a lock to be released\nbefore calling the ShChangeNotify function in order to change the icon and file association\nand to display the ransom note to the victim.\n\n## File encryption\n\nThe algorithm to discover all the files is relatively standard and relies on a recursive\napproach. The Windows directory is excluded from the search along with the ransom note\nand files with the .waiting extension. In addition, Crytox will only encrypt files that are larger\nthan 16 bytes, which is the size of a block for AES. If the size of a file is not an exact\nmultiple of 16 bytes, the malware will not pad and encrypt the last block of data. For large\nfiles, only the first 1,048,576 (0x100000) bytes are read and encrypted to optimize\nencryption speed.\n\nFor each file, a new 256-bit AES key is generated and the content of the file is encrypted\nusing AES-CBC. Crytox then creates the following structure in Figure 6.\n\n\n-----\n\nFigure 6. Cryptox cipher footer structure\n\nThe **[BLOBHEADER structure is set like this:](https://docs.microsoft.com/en-us/windows/win32/api/wincrypt/ns-wincrypt-publickeystruc)**\n\n.bType = PLAINTEXTKEYBLOB\n\n.bVersion = CUR_BLOB_VERSION\n\n.aiKeyAlg = CALG_AES_256\n\nSince the structure is not initialized, the padding structure is filled with random data.\n\nThis structure is encrypted with the locally generated RSA public key. The resulting cipher is\nconcatenated to the end of the encrypted file followed by the encrypted generated RSA\nprivate key. The encrypted file is renamed by appending YOUR ID.waiting to the original\nfilename with YOUR ID replaced by the victim ID computed as described previously.\n\nA ransom note is written to every directory after encrypting all files that are present. A\nprocess flow chart for Crytox is illustrated in Figure 7.\n\n\n-----\n\nFigure 7. Process flowchart for Cryptox encryption\n\n## Key Generation Algorithm and Weakness\n\nAs stated previously, a 256-bit AES key is generated for each file that is encrypted.\n\nThe following algorithm in Figure 8 is used for the key generation.\n\n\n-----\n\nFigure 8. Crytox key generation algorithm\n\nThe custom pseudo random key generator functions relies on the variables below:\n\nA seed value determined by calling GetTickCount\nA 64-bit integer config_t.random_generated initially set to 0\nA 32-bit integer constant config_t.config_seed\n\nThe last value is stored inside the malware's configuration. This value has been the same\nacross samples analyzed by ThreatLabz. The only unknown value necessary to determine\nthe AES key is the value of GetTickCount at the time of encryption. However, if some\nplaintext of a file is known, efforts to bruteforce the AES key are feasible.\n\nBased on file magic values, one can divise a bruteforce program with the following logic:\n\n1. Set a counter to 0\n2. Let the random generator create a key with the counter as the rotating seed\n3. Decrypt the first block of the encrypted file\n4. Compare a known magic value with the decrypted data\n5. If the value matches, the initial value of GetTickCount and the key have been\n\nsuccessfully identified. Else, increment counter and loop back to 2.\n\nFigure 8 shows an bruteforce program running on a machine with 16 logic cores. Here, the\nencrypted file was dotnet-sdk-3.1.416-win-x64.exe (SHA1:\n83A53E8770EDD38EDDD37DED63CEF2253FC16979) and the known plaintext was the\nWindows PE (MZ) file header 4D5A9000.\n\n\n-----\n\nFigure 9. Cryptox example bruteforce key recovery\n\nThe method relies on knowing a part of the plaintext at a specific offset. Thus, only specific\nfile types may be decrypted. Because the seed is based on GetTickCount, if one has\naccess to the master file table (MFT) and is able to locate and decrypt the first and last file\nencrypted, then the range of GetTickCount values can be deduced. Therefore, the\nbruteforce range can be greatly reduced to decrypt all files.\n\n## Conclusion\n\nCrytox exposes some interesting features to hinder static analysis by self-decrypting itself\nseveral times, injecting shellcode inside different processes, encrypting its configurations\nand using API hashing. The main file encryption logic of Crytox is standard using a unique\nAES key per file that is protected with RSA. However, the author(s) chose to rely on a weak\nrandom generator to create new AES keys. Using a 32-bit integer as the seed is not\nsufficient with today's computational power.\n\nRansomware families have a lot in common due to their shared goals and most use secure\nencryption schemes. However, there may still be implementation weaknesses that enable\nfile decryption without having access to a private key. The bruteforce methods described in\nthis blog could be reused for similar scenarios.\n\n## Cloud Sandbox Detection\n\n\n-----\n\nIn addition to sandbox detections, Zscaler s multilayered cloud security platform detects\nindicators related to the campaign with the following threat name:\n\n[Win64.Ransom.Crytox](https://threatlibrary.zscaler.com/threats/5c75f751-856d-4026-bd4c-6af8862481c2)\n\n## Indicators of Compromise\n\n Hashes\n\n1c0bf0c2e7d0c34ec038a8b717bb19d9c4cf3382ada1412f055a9786d3069d78\n2115c4c859d497eec163ca33798c389649543d8a6e4db5806a791c6186722b71\n307c83924e90f4627f08c2f744cf51f18ec6e246687282a0c1794369ff084f42\n3764200cfa673e8796e7c955454b57c20852c2a7931fb9f632ef89d267bbd4c8\n6d4e75bc0cc095fef94b9d98a4e94ce9145890b435012b5624aa73621ba6e312\n79aff06385c16a98594c6fd314c572bfbe07fbe923f30a627e9b86ac3ab7c071\n8ee4a58699ecf02dca516dc6b5b72d93fd9968f672b2be6f8920dfec027d7815\nc5550f44332750552921cb5d685ccfbeefa2ab4b03aed8c51c5db52bbe2ff5d4\nd60dc6965f6d68a3e7c82d42e90bfda7ad3c5874d2c59a66df6212aef027b455\n\n## Files written\n\n**C:\\ReadMe.hta**\nFiles with \".waiting\" extension\n\n## Registry keys\n\n**HKCR\\.waiting\\shell\\open\\command**\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-09-21 - Technical Analysis of Crytox Ransomware.pdf"
+    ],
+    "report_names": [
+        "2022-09-21 - Technical Analysis of Crytox Ransomware.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535673,
+    "ts_updated_at": 1743041159,
+    "ts_creation_date": 1664713518,
+    "ts_modification_date": 1664713518,
+    "files": {
+        "pdf": "https://archive.orkl.eu/5e261f84ffab2f9a10e5cb66fe0f4f28d8cded09.pdf",
+        "text": "https://archive.orkl.eu/5e261f84ffab2f9a10e5cb66fe0f4f28d8cded09.txt",
+        "img": "https://archive.orkl.eu/5e261f84ffab2f9a10e5cb66fe0f4f28d8cded09.jpg"
+    }
+}

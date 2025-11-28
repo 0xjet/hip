@@ -1,0 +1,64 @@
+{
+    "id": "a5b020c8-9838-455c-b1be-ce4541fe7ebe",
+    "created_at": "2023-01-12T15:10:03.701312Z",
+    "updated_at": "2025-03-27T02:09:29.989357Z",
+    "deleted_at": null,
+    "sha1_hash": "70a7e8d8d6242640c05d0e3feab822e30f72186d",
+    "title": "2022-10-11 - Tracking down Maggie",
+    "authors": "",
+    "file_creation_date": "2022-11-28T18:57:05Z",
+    "file_modification_date": "2022-11-28T18:57:05Z",
+    "file_size": 229800,
+    "plain_text": "# Tracking down Maggie\n\n**[medium.com/@DCSO_CyTec/tracking-down-maggie-4d889872513d](https://medium.com/@DCSO_CyTec/tracking-down-maggie-4d889872513d)**\n\nDCSO CyTec Blog October 13, 2022\n\n[DCSO CyTec Blog](https://medium.com/@DCSO_CyTec?source=post_page-----4d889872513d--------------------------------)\n\nOct 11\n\n\n7 min read\n\n[In our recent blog post “MSSQL, meet Maggie” we shared our research on a novel backdoor](https://medium.com/@DCSO_CyTec/mssql-meet-maggie-898773df3b01)\nmalware targeting Microsoft SQL servers that DCSO CyTec refers to as “Maggie“.\n\nTracking Down “Maggie”\n_Maggie can be summarised as malware that comes in form of an “Extended Stored_\nProcedure” DLL, a special type of extension used by Microsoft SQL servers. Once loaded\ninto a server by an attacker, it is controlled solely using SQL queries and offers a variety of\nfunctionality to run commands, interact with files and function as a network bridge head into\nthe environment of the infected server.\n\n\n-----\n\nIn this blog post DCSO s Incident Response Team (DIRT) aims to provide security teams\nwith some insights on how to detect this novel threat in their environment.\n\n_Blog authored by, and_\n\n## Am I affected?\n\nThe first question that probably jumped into the minds of the majority of our readers after\nreading our blog post “MSSQL, meet Maggie” was “Are my Microsoft SQL servers affected\nby this threat?”.\n\nThere are multiple ways of identifying the presence of this threat in your environment. A good\nstarting point for Microsoft SQL administrators is to review the “Extended Stored Procedures”\n(ESP) installed on their Microsoft SQL servers. One way of doing that is to use a “System\nStored Procedures” called `sp_helpextendedproc . By specifying the name of the ESP it is`\npossible to quickly check if the Microsoft SQL server is affected as shown in the following\nfigure. If the SQL query does not return any results this means there is no ESP with the\nname “maggie”.\n\nUsing sp_helpextendedproc to check the presence of Maggie\nAnother way of verifying if a Microsoft SQL server has been backdoored by this threat actor\nis to check the application log. When a ESP is executed, the event id `8128 is logged in the`\napplication log of the system as can be seen in the figure below.\n\nExecution of the extended stored procedure “maggie”\nFurthermore, the application log can easily be searched with the help of the following\nPowerShell one-liner. The presented one-liner can also be used in combination with the\nPowerShell Cmdlet Invoke-Command to search application logs across multiple systems.\n```\nGet-EventLog -LogName Application -Source MSSQLSERVER | Where-Object {($_.EventID -eq\n8128) -and ($_.Message -like '*maggie*')}\n\n```\nIf the Microsoft SQL server is affected by this threat the PowerShell one-liner will return\noutput similar to the one presented in the figure below.\n\nPowerShell one-liner output for affected MSSQL server\nIn addition to event id `8128 the usage of the ESP will generate the event` `33090 that`\nprovides information about the ESP DLLs that were recently loaded into the memory of the\nMicrosoft SQL server process `sqlservr.exe .`\n\nOnce the presence of the ESP named “maggie” has been confirmed by using one of the\nmethods described above, it is recommended to check if the threat actor was able to create\na backdoor database user in the Microsoft SQL server. This can be accomplished with the\nSQL query presented below:\n\n\n-----\n\n```\nselect sp.name,    sp.type_desc,    sp.create_date,    sp.modify_date,   \ncase when sp.is_disabled = 1 then ‘Disabled’      else ‘Enabled’ end as\nstatusfrom sys.server_principals sp order by sp.create_date DESC\n\n```\nAs described in our previous blog post one of the first things that Maggie does after\nsuccessfully bruteforcing its way into a Microsoft SQL server is to check if the current\ndatabase user has the administrative role assigned, if this is the case a backdoor database\nuser is created. The SQL query above will show the most recently added users accounts. It\nis recommended to verify if the presented accounts are legitimate.\n\n## Identifying malicious ESPs\n\nAfter the publication of our Maggie research it is safe to assume that the use of ESPs as a\nbackdoor mechanism will increase among threat actors targeting Microsoft SQL servers.\nMoreover, it can be assumed that the threat actors behind Maggie will take the necessary\nsteps to change their backdoor to make it harder for defenders to detect it. Because of that a\nmore generic detection approach is needed to identify malicious ESPs.\n\nOne way of accomplishing this goal is to build a baseline of ESPs present in a Microsoft SQL\nserver and then to monitor the application log for outliers with the help of event ids `8128`\nand `33090 . In order to fine-tune detection rules additional criteria can be added e.g., the`\npath of the ESP. Under normal circumstances ESP are located in `C:\\Program`\n```\nFiles\\Microsoft SQL Server\\MSSQL14.MSSQLSERVER\\MSSQL\\Binn, which is not always\n\n```\nthe case for malicious ESPs.\n\nMalicious ESP DLL loaded into sqlservr.exe\n[Furthermore, tools like Sysmon from Windows Sysinternals can provide added visibility that](https://learn.microsoft.com/en-us/sysinternals/downloads/sysmon)\ncan help to detect malicious ESPs. For example event id `7 (Image loaded) can be`\nleveraged to identify newly loaded ESP DLLs:\n\nESP DLLs loaded into `sqlservr.exe`\nIn addition to Sysmon event id `7, Sysmon process creation events can be used to detect`\nprocesses spawned by the malicious ESP. In the following example the malicious ESP\n```\nExtendedProcedure.DLL is used to execute the whoami.exe application to find out the\n\n```\ncurrent user context:\n```\n$ exec maggie 'Exec whoami';MSSQL Procedure 12/08/2021Execute Command: Exec whoamint\nservice\\mssqlserver\n\n```\nAfter running the command above the following process creation event is logged by Sysmon.\nAs presented in the figure below the `ParentImage of the` `whoami.exe application is the`\nMicrosoft SQL server process `sqlservr.exe` which should ring a bell for the seasoned\ndefender.\n\nSysmon process creation event\n\n\n-----\n\nFor organisations that use Microsoft SQL servers but are lacking a SIEM solution a good\npractice might be to occasionally check which ESPs are installed on their Microsoft SQL\nservers. This can be done by running the “System Stored Procedure” called\n```\nsp_helpextendedproc without specifying any parameters as shown in the following figure:\n\n```\nListing installed ESPs\nWhen reviewing the installed ESPs Microsoft SQL administrators should focus on ESPs that\nare not part of their baseline. Another indicator of a malicious ESP might be the path in which\nthe ESP DLL is located. Under normal circumstances ESPs are placed under `C:\\Program`\n```\nFiles\\Microsoft SQL Server\\MSSQL14.MSSQLSERVER\\MSSQL\\Binn . In the example\n\n```\nabove the malicious ESP was placed under `C:\\ProgramData to avoid detection.`\n\n## Mitigation\n\nOne of the ways that Maggie can compromise Microsoft SQL servers is by using its SQL\nbruteforce functionality. In order to thwart bruteforce attempts, it is highly recommend to use\nstrong passwords for Microsoft SQL accounts and to enforce a strong password policy.\nAdditionally, the Microsoft SQL database port (default: `1433 ) should never be exposed to`\nthe Internet. It is sufficient when the front-end tier systems can reach the Microsoft SQL\ndatabase.\n\nYou can find additional information about securing Microsoft SQL servers at the vendors web\nsite under [Securing SQL Server.](https://learn.microsoft.com/en-us/sql/relational-databases/security/securing-sql-server?view=sql-server-ver16)\n\n## YARA\n```\nimport \"pe\"\nrule maggie_backdoor{  meta:    description = \"Detect MSSQL extended stored\nprocedure backdoor Maggie files\"    author = \"Johann Aydinbas, TEC / DCSO CyTec\" \nreference = \"\"  strings:    $ = \"Account Owner Not Found For The SID\"    $\n= \"Call SO_UPDATE_ACCEPT_CONTEXT To Get IP\"    $ = \"Socks5 Stopped Failure\"   \n$ = \"It Has Been Hooked\"    $ = \"AllowedIP IP Port\"    $ = \"Wait 5 To 10\nSeconds For TS Taking Effect\"    $ = \"\\\\Binn\\\\sqlservr.exe\"    $ = \"HostList\nUserList PassList\"    $ = \"opends60.dll\"    $ = \"WinSockScan\"    $ =\n\"ResetClientData\"    $ = \"ViewClientData\"    $ = \"ElevateTS\"  condition:  \npe.is_pe and     8 of them}\n\n SIGMA\n\n```\n\n-----\n\n```\ntitle: MSSQL Extended Stored Procedure Backdoor Maggieid: 711ab2fe c9ba 4746 8840\n5228a58c3cb8description: This rule detects the execution of the extended storage\nprocedure backdoor named Maggie in the context of Microsoft SQL servertags:  attack.persistence  - attack.t1546status: experimentaldate: 2022/10/09modified:\n2022/10/09references:  - author: Denis Szadkowski, DIRT / DCSO CyTeclogsource:  \nproduct: windows  service: applicationdetection:  selection:    \nProvider_Name: 'MSSQLSERVER'    EventID: 8128    Message|contains: 'maggie' \ncondition: selectionfalsepositives:  - Legitimate extended stored procedures named\nmaggielevel: high\n\n```\n[win_mssql_sp_maggie.yml](https://github.com/DCSO/sigma/blob/rule_mssql_maggie/rules/windows/builtin/application/win_mssql_sp_maggie.yml)\n\n## Are you affected?\n\nAre you one of the organisations affected by this novel Microsoft SQL server backdoor? We\nwould like to hear from you! If desired, we can help your organisation to investigate and to\nrespond to this threat.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-10-11 - Tracking down Maggie.pdf"
+    ],
+    "report_names": [
+        "2022-10-11 - Tracking down Maggie.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536203,
+    "ts_updated_at": 1743041369,
+    "ts_creation_date": 1669661825,
+    "ts_modification_date": 1669661825,
+    "files": {
+        "pdf": "https://archive.orkl.eu/70a7e8d8d6242640c05d0e3feab822e30f72186d.pdf",
+        "text": "https://archive.orkl.eu/70a7e8d8d6242640c05d0e3feab822e30f72186d.txt",
+        "img": "https://archive.orkl.eu/70a7e8d8d6242640c05d0e3feab822e30f72186d.jpg"
+    }
+}

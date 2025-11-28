@@ -1,0 +1,218 @@
+{
+    "id": "49fb3745-fa09-41d2-88e1-34a6f484b8a4",
+    "created_at": "2023-06-05T02:07:20.648968Z",
+    "updated_at": "2025-03-27T02:16:17.026473Z",
+    "deleted_at": null,
+    "sha1_hash": "7cab2829ad24668679f493ee3900a2595c20aeaf",
+    "title": "2023-05-02 - Attack on Security Titans- Earth Longzhi Returns With New Tricks",
+    "authors": "",
+    "file_creation_date": "2023-06-04T12:26:14Z",
+    "file_modification_date": "2023-06-04T12:26:14Z",
+    "file_size": 2641079,
+    "plain_text": "# Attack on Security Titans: Earth Longzhi Returns With New Tricks\n\n**[trendmicro.com/en_us/research/23/e/attack-on-security-titans-earth-longzhi-returns-with-new-tricks.html](https://www.trendmicro.com/en_us/research/23/e/attack-on-security-titans-earth-longzhi-returns-with-new-tricks.html)**\n\nAPT & Targeted Attacks\n\n\nMay 2, 2023\n\n\nAfter months of dormancy, Earth Longzhi, a subgroup of advanced persistent threat (APT) group APT41, has reemerged\nusing new techniques in its infection routine. This blog entry forewarns readers of Earth Longzhi’s resilience as a\nnoteworthy threat.\n\nBy: Ted Lee, Hara Hiroaki\nMay 02, 2023\nRead time: ( words)\n\n[We discovered a new campaign by Earth Longzhi (a subgroup of APT41) that targets organizations based in Taiwan,](https://www.trendmicro.com/en_us/research/22/k/hack-the-real-box-apt41-new-subgroup-earth-longzhi.html)\nThailand, the Philippines, and Fiji. This recent campaign, which follows months of dormancy, abuses a Windows\nDefender executable to perform DLL sideloading while also exploiting a vulnerable driver, zamguard64.sys, to disable\nsecurity products installed on the hosts via a bring-your-own-vulnerable-driver (BYOVD) attack. We also found that Earth\nLongzhi uses a new way to disable security products, a technique we’ve dubbed “stack rumbling” via Image File\nExecution Options (IFEO), which is a new denial-of-service (DoS) technique.\n\nIn addition, we’ve noticed that this campaign installs drivers as kernel-level services by using Microsoft Remote\nProcedure Call (RPC) instead of using general Windows application programming interfaces (APIs). This is a stealthy\nway to evade typical API monitoring. We also found some interesting samples in our investigation that contained\ninformation not only on Earth Longzhi’s potential targets, but also techniques for possible use in future campaigns. This\nblog entry seeks to forewarn readers that Earth Longzhi remains active and continues to improve its tactics, techniques,\nand procedures (TTPs).\n\n## Attack vectors\n\nEarth Longzhi’s new campaign samples showed a tendency to exploit public-facing applications, Internet Information\n[Services (IIS) servers, and Microsoft Exchange servers to install Behinder, a well-known web shell, rather than send](https://github.com/rebeyond/Behinder)\npieces of document-based malware through email. As seen in this campaign, Behinder proved to be a powerful web shell\nvariant that can support multiple backdoor functions, including file operation, remote command execution (RCE),\ninteractive shell, and Socks5 proxy.\n\nMalicious actors use this web shell to discover intranet information and deploy other pieces of malware and hacking\ntools on a compromised machine.\n\n\n-----\n\nFigure 1. Infection routine used by Earth Longzhi\n\n## New tricks for DLL sideloading\n\nIn the group’s new campaign, the malware was launched through legitimate Windows Defender binaries, MpDlpCmd.exe\nand MpCmdRun.exe, instead of using document-based samples. The malware was disguised as a legitimate DLL,\n_MpClient.dll and was loaded by Microsoft Defender’s binaries. Our investigation showed two different types of malware_\n[that were launched through this technique: One is a new variant of Croxloader, and the other is a tool that can disable](https://www.trendmicro.com/vinfo/us/threat-encyclopedia/malware/Trojan.Win64.CROXLOADER.ZTKC/)\nsecurity products, which we dubbed “SPHijacker.”\n\n\n-----\n\nFigure 2. Legitimate files used for DLL\n\nsideloading\n\n### New Croxloader variant\n\nEarth Longzhi’s new campaign launched Windows Defender binaries as a system service. The new Croxloader variant,\ndisguised as MpClient.dll, was subsequently loaded. Once launched, Croxloader reads the payload named MpClient.bin\nand decrypts its content. The new variant is almost identical to the older ones, except that it uses a different decryption\nalgorithm. The algorithm used in the original variant is (SUB 0xA) XOR 0xCC, while the algorithm for the new variant is\n_(ADD 0x70) XOR 0xDD. The final payload is identified as a Cobalt Strike beacon, which we detected as_\nBackdoor.Win64.COBEACON.ZYKB.\n\n\n-----\n\nFigure 3. Earth Longzhi’s malware execution chain\n\nFigure 4. Disguised as “MPClient.dll,” the loaded new Croxloader variant reads the encrypted payload, “MpClient.bin,”\nand decrypts the content.\n\nFigure 5. Modified XOR algorithm\n\n### SPHijacker\n\n\n-----\n\nSPHijacker, a new tool designed to disable security products, adopts two approaches to achieve this purpose. One\napproach terminates the security product process by using a vulnerable driver, zamguard64.sys, published by Zemana\n[(vulnerability designated as CVE-2018-5713). Meanwhile, another approach disables process launching by using a new](https://nvd.nist.gov/vuln/detail/CVE-2018-5713)\ntechnique that we named stack rumbling, which we will discuss in detail in succeeding paragraphs. Notably, this is the\nfirst time we’ve seen such a technique being used in the wild.\n\n**Technical analysis**\n\nBased on our analysis, the mmmm.sys file (originally named Zamguard64.sys) is decrypted and dropped, after which it is\nregistered as a service. It then creates and starts the service through RPC as opposed to calling general Windows APIs\nto set up the service, as shown in Figure 6. We reckon that such a technique enables malicious actors to evade API call\nmonitoring.\n\nFigure 6. Code showing service started via RPC\nOnce the service successfully starts running, SPHijacker proceeds to open the handle to the device named\n_\\\\.\\ZemanaAntiMalware to access the running driver. It then begins terminating the processes of security products based_\non a predefined list. We detail the workflow of the operation here:\n\n1. It sends input-and-output control (IOCTL) code 0x80002010 to register the process by its process ID (PID), as\n\ntrusted by the driver, as seen in Figure 7.\n2. It conducts process discovery and collects the PID of targeted processes if they are running.\n3. It sends IOCTL code 0x80002048 to terminate targeted processes by calling ZwOpenProcess and\n\n_ZwTerminateProcess, as seen in Figure 8._\n\n\n-----\n\nFigure 7. IOCTL codes sent to register and terminate processes\n\nFigure 8. The handler function of “0x80002048” defined in “zamguard64.sys”\nWe listed the targeted processes for termination here. Note that many of these processes are for various security\nproducts:\n\n_360rp.exe_\n_360rps.exe_\n_360Safe.exe_\n_360sd.exe_\n_360tray.exe_\n_360Tray.exe_\n\n\n-----\n\n_Aliyun_assist_service.exe_\n_AliYunDun.exe_\n_AliYunDunUpdate.exe_\n_cyserver.exe_\n_cytray.exe_\n_MpcmdRun.exe_\n_MsMpEng.exe_\n_NisSrv.exe_\n_SecurityHealthSystray.exe_\n_tlaworker.exe_\n_yunsuo_agent_daemon.exe_\n_Yunsuo_agent_service.exeZhuDongFangYu.exe_\n\nOnce the process termination is completed, SPHijacker disables process execution by forcefully causing the targeted\napplications to crash upon launching, a technique we referred to earlier as stack rumbling. This technique is a type of\nDoS attack that abuses undocumented MinimumStackCommitInBytes values in the IFEO registry key via the following\nsteps:\n\n1. Modifying the registry HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\\n\n_{target process name}._\n2. Creating a new value, MinimumStackCommitInBytes, with 0x88888888 as its data. Any value deemed large\n\nenough is acceptable.\n3. Waiting for the next process launch to take place. It’s important to note that this depends on whether the targeted\n\nprocess is antivirus-related. There is usually a need to wait for the operating system to reboot.\n4. Once the targeted process is launched, it will soon crash due to stack overflow.\n\nFigure 9. An example of how disabling “360Tray.exe” is done by modifying the IFEO registry\nHere’s the full list of targeted processes:\n\n_360rps.exe_\n_360Safe.exe_\n_360sd.exe_\n_360sdrun.exe_\n_360tray.exe_\n_360Tray.exe_\n_aliyun_assist_service.exe_\n_AliYunDun.exe_\n_AliYunDunUpdate.exe_\n_CNTAoSMgr.exe_\n_cyserver.exe_\n_cytray.exe_\n_mcafee-security.exe_\n_mcafee-security-ft.exe_\n_MpCmdRun.exe_\n_MsMpEng.exe_\n_NisSrv.exe_\n\n\n-----\n\n_NTRTScan.exe_\n_qmbsrv.exe_\n_QQPCRTP.exe_\n_QQPCTray.exe_\n_SecurityHealthSystray.exe_\n_tlaworker.exe_\n_TmCCSF.exe_\n_tmlisten.exe_\n_TmListen.exe_\n_yunsuo_agent_daemon.exe_\n_yunsuo_agent_service.exe_\n_ZhuDongFangYu.exe_\n\nAs a result of stack rumbling via IFEO, the targeted process failed to start with the exit code 0xC0000017, despite the\nprocess requiring high privilege. The exit code means “Status No Memory.”\n\nFigure 10. An example of a\n\n“notepad.exe” file that failed upon execution\nIFEO registry has been known to contain various options for process creation. While it can be used to attach a debugger\nto an executable file, it can also be used to interrupt the process execution flow, a method known as IFEO injection. We\ncouldn't find a complete documentation of MinimumStackCommitInBytes in any online resource. The IFEO values will be\nloaded upon process initialization by ntdll!LdrpInitializeExecutionOptions. Now, let us reverse ntdll.dll.\n\n\n-----\n\nFigure 11. Pseudocode of “ntdll!LdrpInitializeExecutionOptions”\nThe pseudocode ntdll!LdrpInitializeExecutionOptions updates PEB->MinimumStackCommit with the value of\n_MinimumStackCommitInBytes in the IFEO registry. It should be noted that Microsoft also doesn't provide documentation_\non PEB->MinimumStackCommit. Let's debug the target process to identify how this value will be used.\n\nUpon execution of the stack rumbling-affected process, a debugger catches a stack overflow exception in\n_ntdll!LdrpTouchThreadStack._\n\n\n-----\n\nFigure 12. Image\n\nshows WinDbg catching a stack overflow exception in a running process\nUpon reversing ntdll!LdrpTouchThreadStack, we found that it receives PEB->MinimumStackCommit as an argument,\nwhich was updated in ntdll!LdrpInitializeExecutionOptions.\n\nFigure 13. Image shows “ntdll!LdrpTouchThreadStack” receiving “PEB->MinimumStackCommit”\nThe given value will be used to define the size of stack to commit upon initializing the stack of the main thread.\nTherefore, if the value in PEB->MinimumStackCommit is large enough to touch beyond a stack region, the Windows\noperating system triggers stack overflow. But the exception handler catches the exception overflow, which returns\n_STATUS_NO_MEMORY (=0xC0000017) as a result of ntdll!LdrpTouchThreadStack._\n\n\n-----\n\nFigure 14. Disassemble\n\nresult of “ntdll!LdrpTouchThreadStack”\nIf ntdll!LdrpTouchThreadStack returns any error, ntdll.dll will invoke ZwTerminateProcess with the given error code, which\nwould be STATUS_NO_MEMORY (=0xC0000017) in this case.\n\n\n-----\n\nFigure 15. Snippet of pseudocode in “ntdll.dll”\nAs a result, we found that the value of MinimumStackCommitInBytes associated with a specific process in the IFEO\nregistry key will be used to define the minimum size of stack to commit in initializing the main thread. If the stack size is\ntoo large, it will trigger a stack overflow exception and terminate the current process. This is how stack rumbling via IFEO\nworks.\n\n## Other notable threat-hunting findings\n\nDuring threat hunting, we found related samples on a third-party malware scanning service provider and started tracking\nthe samples as Roxwrapper. Roxwrapper is disguised as a normal DLL file, srpapi.dll, and works as a dropper. We\nchecked Roxwrapper’s embedded content and found Bigpipeloader as one of the embedded components used in its\nprevious campaign. Bigpipeloader was previously used in past Earth Longzhi-related samples. Roxwrapper’s more\ncomplicated encryption suggests that the attackers might still be testing it to see if it can better evade security products.\n\nTable 1 shows all the components dropped by Roxwrapper and their corresponding descriptions:\n\n**Dropped file names** **Description**\n\n\n_Tambahan TP MENLU-DUBES AS revDIR.docx_\n_(Tong hop bao cao giao ban Khoi.docx)_\n\n\nEmbedded decoy documents\n\n\n_ap.dll_ The SSP module loader through RPC, which is implemented based\non the proof of concept\n\n_apssp.dll_ A security service provider (SSP) module for credential dumping\n\n_dwm.exe_ A privilege escalation tool based on a proof of concept\n\n_dllhost.exe_ A type of malware used to collect and upload user data. It is also\nused to download more payloads from remote servers.\n\n\n-----\n\n_StartMenuExperienceHost.exe_ [Bigpipeloader, which we introduced in our previous Earth Longzhi](https://www.trendmicro.com/en_us/research/22/k/hack-the-real-box-apt41-new-subgroup-earth-longzhi.html#:~:text=Decoy%20document-,BigpipeLoader,-Aug%202021%20onward)\n[report](https://www.trendmicro.com/en_us/research/22/k/hack-the-real-box-apt41-new-subgroup-earth-longzhi.html)\n\nTable 1. List of components dropped by Roxwrapper\n\nAlthough Roxwrapper is not in the DLL file samples used in the actual incidents, this information is nonetheless\nnoteworthy because it can be indicative of Earth Longzhi’s potential targets. Also, the information points to a new\ncomponent, dwm.exe, which is a new privilege escalation tool that abuses Task Scheduler.\n\n### Embedded documents\n\nWe found some decoy documents written in Vietnamese and Indonesian, as seen in Figures 16 and 17. Based on these\ndecoy documents, it can be inferred that the threat actors were keen on targeting users in Vietnam and Indonesia for its\nnext wave of attacks.\n\nFigure 16. Snippet of a decoy document written in Vietnamese\n\n\n-----\n\nFigure 17. Snippet of a decoy document written in Indonesian\n\n### Privilege escalation by abusing task scheduler\n\nAnother notable component that we found in our threat hunting is dwm.exe, a new tool used for privilege escalation. It is\n[implemented based on an open-source proof of concept on GitHub. First, dwm.exe replaces the image path name and](https://github.com/zcgonvh/TaskSchedulerMisc/blob/master/schuac.cs)\nthe command-line information with C:\\Windows\\explorer.exe for defense evasion. Then, the Component Object Model\n(COM) object, IElevatedFactoryServer, is used to bypass the Windows User Account Control (UAC) mechanism and\nregister the given payload as a scheduled task with the highest privilege. This approach enables the specified binary to\nbe launched with system privileges. This is the first time that we’ve seen Earth Longzhi actors use this relatively new\ntechnique in its operations.\n\n\n-----\n\nFigure 18. Code for changing image path and command-line information\n\nFigure 19. Command to bypass UAC through COM object, “IElevatedFactoryServer”\nAs shown in Figure 20, the created scheduled task was set up with system privileges and disguised as a legitimate\nGoogle Update scheduled task. The specified payload, dllhost.exe, is a downloader used to retrieve more payload from\nthe remote server.\n\n\n-----\n\nFigure 20. XML file for scheduled task created by “dwm.exe”\n\n## Profile of Earth Longzhi’s recent targets\n\n\n-----\n\nA closer look at the samples we ve gathered reveals that the group s new campaign is aimed at the Philippines, Thailand,\nTaiwan, and Fiji. Government, healthcare, technology, and manufacturing comprise the affected industries. Organizations\nin the Philippines, Thailand, and Taiwan had already been among Earth Longzhi’s previous targets, while the attacks on\nFiji-based firms were the first we’ve seen in our monitoring of the group. Based on the document embedded in the\nsamples that we saw, Vietnam and Indonesia are possibly the group’s next targeted countries.\n\nFigure 21.\n\nGeographic distribution of Earth Longzhi’s targets in its latest campaign and potential targets for future campaigns\n\n## Conclusion\n\n[In the fourth quarter of 2022, we discovered a new subgroup of APT41 that we tracked as Earth Longzhi. In the process,](https://www.trendmicro.com/en_us/research/22/k/hack-the-real-box-apt41-new-subgroup-earth-longzhi.html)\n[we revealed two different campaigns that took place from 2020 to 2022. This follow-up article to our previous report aims](https://www.trendmicro.com/en_us/research/22/k/hack-the-real-box-apt41-new-subgroup-earth-longzhi.html)\nto flag readers that Earth Longzhi remains in circulation and is expected to improve its TTPs. Here, we revealed that the\ncampaign deployed a fake mpclient.dll, launched through signed Windows Defender binaries, to decrease its risk of\nexposure. To evade and disable security products, Earth Longzhi adopted the following approaches:\n\n\n-----\n\n1. It used Microsoft Windows RPC to create a system service instead of standard Windows APIs.\n2. It terminated running security products via a vulnerable driver, zamguard64.sys, which is essentially a BYOVD\n\nattack.\n3. It modified IFEO registries to restrict the execution of security products.\n\nWe also shared some interesting threat-hunting findings. Although the samples that we’ve collected resemble testing\nfiles, they can still be useful because they contain information on Earth Longzhi’s potential targets and new techniques\nthat it might employ in the future. From the embedded documents that we’ve collected, we can infer that Vietnam and\nIndonesia are the countries that they will likely aim at next. Notably, the group’s possible abuse of Task Scheduler to\nescalate privileges for persistence is a new technique that it might use in future campaigns.\n\nAnother noteworthy insight is that the threat actors showed an inclination for using open-source projects to implement\ntheir own tools. There is evidence to suggest that the group spruces up its toolset during periods of inactivity. With this\nknowledge in mind, organizations should stay vigilant against the continuous development of new stealthy schemes by\ncybercriminals.\n\nMITRE\n\n**Tactics** **Techniques**\n\nCredential Access T1003.001 - OS Credential Dumping: LSASS\nMemory\n\nExecution T1569.002 - System Services: Service\nExecution\n\nDefense Evasion T1574.002 - Hijack Execution Flow: DLL SideLoading\n\nT1140 - Deobfuscate/Decode Files or Information\n\nT1070.004 - Indicator Removal: File Deletion\n\nT1036.005 - Match Legitimate Name or Location\n\nPersistence T1053.005 - Scheduled Task\n\nPrivelege Escalation T1548.002 - Bypass User Account Control\n\nT1068 - Exploitation for Privilege Escalation\n\nT1546.012 - Event Triggered Execution: Image File Execution\nOptions Injection\n\nIndicators of compromise (IOCs)\n\n**SHA256** **Detections**\n\n7910478d53ab5721208647709ef81f503ce123375914cd504b9524577057f0ec Rootkit.Win64.SPHIJACKER.ZYKB\n\nebf461be88903ffc19363434944ad31e36ef900b644efa31cde84ff99f3d6aed Trojan.Win64.CROXLOADER.ZYJL\n\n21ffa168a60f0edcbc5190d46a096f0d9708512848b88a50449b7a8eb19a91ed Trojan.Win64.CROXLOADER.ZTKC\n\n942b93529c45f27cdbd9bbcc884a362438624b8ca6b721d51036ddaebc750d8e Trojan.Win64.CROXLOADER.ZTKC\n\n75a51d1f1dd26501e02907117f0f4dd91469c7dd30d73a715f52785ea3ae93c8 Backdoor.Win64.COBEACON.ZYKB\n\n4399c5d9745fa2f83bd1223237bdabbfc84c9c77bacc500beb25f8ba9df30379 Backdoor.Win64.COBEACON.ZYJL.enc\n\n8327cd200cf963ada4d2cde942a82bbed158c008e689857853262fcda91d14a4 Backdoor.Win64.COBEACON.SMTHA\n\n9eceba551baafe79b45d412c5347a3d2a07de00cc23923b7dee1616dee087905 Trojan.Win32.ROXWRAPPER.ZYJL\n\n\n-----\n\n630bb985d2df8e539e35f2da696096e431b3274428f80bb6601bbf4b1d45f71e Trojan.Win32.ROXWRAPPER.ZYJL\n\nef8e658cd71c3af7c77ab21d2347c7d41764a68141551938b885da41971dd733 HackTool.Win64.TaskSchUAC.ZYJL\n\ne654ecc10ce3df9f33d1e7c86c704cfdc9cf6c6f49aa11af2826cbc4b659e97c Trojan.MSIL.DULLDOWN.ZTKA\n\n16887b36f87a08a12fe3b72d0bf6594c3ad5e6914d26bff5e32c9b44acfec040 HackTool.Win64.MIMIKATZ.ZYKA\n\n39de0389d3186234e544b449e20e48bd9043995ebf54f8c6b33ef3a4791b6537 HackTool.Win64.MIMIKATZ.ZYKA\n\n**Domain/IP** **Description**\n\n194.31.53[.]128 C&C\n\n198.13.47[.]158 C&C\n\n207.148.115[.]125 C&C\n\n64.227.164[.]34 C&C\n\nevnpowerspeedtest[.]com C&C\n\nwww.updateforhours[.]com C&C\n\ndns.eudnslog[.]com C&C\n\nasis.downloadwindowsupdate[.]co C&C\n\n194.31.53[.]128 Download site\n\n198.13.47[.]158 Download site\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2023/2023-05-02 - Attack on Security Titans- Earth Longzhi Returns With New Tricks.pdf"
+    ],
+    "report_names": [
+        "2023-05-02 - Attack on Security Titans- Earth Longzhi Returns With New Tricks.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "5b317799-01c0-48fa-aee2-31a738116771",
+            "created_at": "2022-11-20T02:02:37.746719Z",
+            "updated_at": "2025-03-27T02:02:09.755811Z",
+            "deleted_at": null,
+            "main_name": "Earth Longzhi",
+            "aliases": [
+                "Earth Longzhi"
+            ],
+            "source_name": "ETDA:Earth Longzhi",
+            "tools": [
+                "Agentemis",
+                "BigpipeLoader",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "CroxLoader",
+                "MultiPipeLoader",
+                "OutLoader",
+                "Symatic Loader",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d196cb29-a861-4838-b157-a31ac92c6fb1",
+            "created_at": "2023-11-04T02:00:07.66699Z",
+            "updated_at": "2025-03-27T02:00:03.151446Z",
+            "deleted_at": null,
+            "main_name": "Earth Longzhi",
+            "aliases": [
+                "SnakeCharmer"
+            ],
+            "source_name": "MISPGALAXY:Earth Longzhi",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "4c68ccd0-caba-4189-9ead-86ac4c2d9b70",
+            "created_at": "2024-05-01T02:03:07.930196Z",
+            "updated_at": "2025-03-27T02:05:17.251237Z",
+            "deleted_at": null,
+            "main_name": "BRONZE ATLAS",
+            "aliases": [
+                "Axiom",
+                "BARIUM ",
+                "Blackfly ",
+                "CTG-2633",
+                "GREF",
+                "Group 72 ",
+                "Red Kelpie ",
+                "TG-2633 ",
+                "Wicked Panda ",
+                "Winnti",
+                "APT41 "
+            ],
+            "source_name": "Secureworks:BRONZE ATLAS",
+            "tools": [
+                " CCleaner v5.33 backdoor",
+                " ChinaChopper",
+                " Cobalt Strike",
+                " Dicey MSDN",
+                " ForkPlayground",
+                " HUC Proxy Malware (Htran)",
+                " Mimikatz",
+                " PipeMon",
+                " PlugX",
+                " PortReuse",
+                " Powershell Empire",
+                " RCMD",
+                " RbDoor",
+                " SPEEDBOAT",
+                " ShadowPad",
+                " Sidewalk",
+                " Speculoos",
+                " TeamViewer",
+                " Winnkit",
+                " Winnti",
+                " reg save",
+                " vssadmin",
+                "Acehash"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "4d5f939b-aea9-4a0e-8bff-003079a261ea",
+            "created_at": "2023-01-06T13:46:39.04841Z",
+            "updated_at": "2025-03-27T02:00:02.985296Z",
+            "deleted_at": null,
+            "main_name": "APT41",
+            "aliases": [
+                "G0096",
+                "Grayfly",
+                "BARIUM",
+                "BRONZE ATLAS",
+                "BRONZE EXPORT",
+                "Red Kelpie",
+                "HOODOO",
+                "Brass Typhoon",
+                "TA415",
+                "WICKED SPIDER",
+                "WICKED PANDA",
+                "G0044",
+                "Earth Baku"
+            ],
+            "source_name": "MISPGALAXY:APT41",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "e698860d-57e8-4780-b7c3-41e5a8314ec0",
+            "created_at": "2022-10-25T15:50:23.287929Z",
+            "updated_at": "2025-03-27T02:00:55.43005Z",
+            "deleted_at": null,
+            "main_name": "APT41",
+            "aliases": [
+                "APT41",
+                "Wicked Panda",
+                "Brass Typhoon",
+                "BARIUM"
+            ],
+            "source_name": "MITRE:APT41",
+            "tools": [
+                "ASPXSpy",
+                "BITSAdmin",
+                "PlugX",
+                "Impacket",
+                "gh0st RAT",
+                "netstat",
+                "PowerSploit",
+                "ZxShell",
+                "KEYPLUG",
+                "ipconfig",
+                "sqlmap",
+                "China Chopper",
+                "ShadowPad",
+                "MESSAGETAP",
+                "Mimikatz",
+                "certutil",
+                "njRAT",
+                "Cobalt Strike",
+                "pwdump",
+                "BLACKCOFFEE",
+                "ROCKBOOT",
+                "dsquery",
+                "Winnti for Linux",
+                "DUSTTRAP",
+                "Derusbi",
+                "ftp"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1685930840,
+    "ts_updated_at": 1743041777,
+    "ts_creation_date": 1685881574,
+    "ts_modification_date": 1685881574,
+    "files": {
+        "pdf": "https://archive.orkl.eu/7cab2829ad24668679f493ee3900a2595c20aeaf.pdf",
+        "text": "https://archive.orkl.eu/7cab2829ad24668679f493ee3900a2595c20aeaf.txt",
+        "img": "https://archive.orkl.eu/7cab2829ad24668679f493ee3900a2595c20aeaf.jpg"
+    }
+}

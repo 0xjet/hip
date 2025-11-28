@@ -1,0 +1,42 @@
+{
+    "id": "5d5eb484-d08c-4628-9ff8-6cdc099ca0b5",
+    "created_at": "2023-01-12T15:04:30.113284Z",
+    "updated_at": "2025-03-27T02:06:00.808301Z",
+    "deleted_at": null,
+    "sha1_hash": "f3dedf446f707bbf71c0d141423611a138fa8b1b",
+    "title": "2020-07-07 - Breaking EvilQuest - Reversing A Custom macOS Ransomware File Encryption Routine",
+    "authors": "",
+    "file_creation_date": "2022-05-28T17:58:03Z",
+    "file_modification_date": "2022-05-28T17:58:03Z",
+    "file_size": 1254162,
+    "plain_text": "# Breaking EvilQuest | Reversing A Custom macOS Ransomware File Encryption Routine\n\n**[labs.sentinelone.com/breaking-evilquest-reversing-a-custom-macos-ransomware-file-encryption-routine/](https://labs.sentinelone.com/breaking-evilquest-reversing-a-custom-macos-ransomware-file-encryption-routine/)**\n\nJason Reaves\n\n## Executive Summary\n\nA new macOS ransomware threat uses a custom file encryption routine\nThe routine appears to be partly based on RC2 rather than public key encryption\nSentinelLabs has released a public decryptor for use with “EvilQuest” encrypted files\n\n## Background\n\nResearchers recently uncovered a new macOS malware threat[1], initially dubbed ‘EvilQuest’\nand later ‘ThiefQuest'[2]. The malware exhibits multiple behaviors, including file encryption,\ndata exfiltration and keylogging[3].\n\nOf particular interest from a research perspective is the custom encryption routine. A cursory\ninspection of the malware code suggests that it is not related to public key encryption. At\nleast part of it uses a table normally associated with RC2. The possible usage of RC2 and\ntime-based seeds for file encryption led me to look deeper at the code, which allowed me to\nunderstand how to break the malware’s encryption routine. As a result, our team created a\ndecryptor for public use.\n\n\n-----\n\n## Uncarving the Encryption Routine\n\nAs mentioned in other reports[4], the function responsible for file encryption is labelled\ninternally as carve_target.\n\nBefore encrypting the file, the function checks whether the file is already encrypted by\ncomparing the last 4 bytes of the file to a hardcoded DWORD value.\n\nIf the test fails, then file encryption begins by generating a 128 byte key and calling the\n**tpcrypt function, which basically ends up calling generate_xkey. This function is the key**\nexpansion portion followed by tp_encrypt, which takes the expanded key and uses it to\nencrypt the data.\n\n\n-----\n\nFollowing this, the key will then be encoded, using time as a seed. A DWORD value will be\ngenerated and utilized.\n\nThe encoding routine is simply a ROL-based XOR loop:\n\n\n-----\n\nAt this point, we can see that something interesting happens, and I am unsure if it is\nintentional by the developer or not. The key generated is 128 bytes, as we previously\nmentioned.\n\nThe calculations then used for encoding the key end up performing the loop 4 extra times,\nproducing 132 bytes.\n\n\n-----\n\nThis means that the clear text key used for encoding the file encryption key ends up being\nappended to the encoded file encryption key. Taking a look at a completely encrypted file\nshows that a block of data has been appended to it.\n\n## Reversing the File Encryption\n\nFortunately, we don’t have to reverse that much as the actor has left the decryption function,\n**uncarve_target, in the code. This function takes two parameters: a file location and a seed**\nvalue that will be used to decode the onboard file key.\n\nAfter checking if the file is an encrypted file by examining the last 4 bytes, the function begins\nreading a structure of data from the end of the file.\n\n\n-----\n\nFollowing the code execution, we can statically rebuild a version of what this structure might\nlook like:\n```\nstruct data\n{\nenc blob[size+12]\nlong long size\nint marker\n}\nstruct enc\n{\nlong long val\nint val2                   // 3rd param to eip_key\nlong long val3                // 1st param to eip_key\nchar encoded_blob[4 - val % 4 + val]     // for 0x80 this is 132\n}\n\n```\n\n-----\n\nThe encoded file key will then be decrypted and checked using the two values from the\nstructure and the other seed value passed to uncarve_target. The file key will be decrypted\nby eip_decrypt, which is the encrypt-in-place decrypt routine.\n\nThe function eip_key will take the two DWORD values and the seed argument to generate\nthe XOR key to decode the filekey.\n\nNext, the file is set to the beginning and then a temporary file is opened for writing.\n\n\n-----\n\nThe file is then read into an allocated buffer and the key and encoded file data are passed to\n**tpdcrypt.**\n\nAs before, we have a key expansion followed this time by a call to tp_decrypt.\n\n\n-----\n\nA glance inside the key expansion function shows a reference to a hardcoded table which\nmatches RC2 code that can be found online.\n\nSo now we have enough information to recover the file key:\n\n\n-----\n\n```\nimport struct\nimport sys\nrol = lambda val, r_bits, max_bits=32: \n(val << r_bits%max_bits) & (2**max_bits-1) | ((val & (2**max_bits-1)) >> (max_bits(r_bits%max_bits)))\ndata = open(sys.argv[1], 'rb').read()\ntest = data[-4:]\nif test != 'xbexbaxbexdd':\n print(\"Unknown version\")\n sys.exit(-1)\nappend_length = struct.unpack_from('<I', data[-12:])[0]\nappend_struct = data[-(append_length+12):]\nkeySize = struct.unpack_from('<I', append_struct)[0]\nif keySize != 0x80:\n print(\"Weird key?\")\n sys.exit(-1)\nencoded_data = append_struct[20:20+132]\nxorkey = struct.unpack_from('<I', encoded_data[-4:])[0]\ndef decode(blob, key):\n out = \"\"\n for i in range(len(blob)/4):\n     temp = struct.unpack_from('<I', blob[i*4:])[0]\n     temp ^= key\n     key = rol(key, 1)\n     out += struct.pack('<I', temp)\n return out[:0x80]\ntemp = decode(encoded_data, xorkey)\nprint(temp)\n\n```\nAttempting to RC2 decrypt the data, however, only seems to work partially at this time using\nRC2 routines in both Python and Golang libraries. Further analysis will be needed to verify\nwhat is different.\n\nHowever, for the purpose of decrypting victim files, we need only take the file key and call the\n**tp_decrypt function that is located inside the malware itself instead. Dumping the assembly**\nfor this function and building it into a shared object to be executed using the recovered file\nkey appears to work correctly.\n\n[Using this method, SentinelLabs created a public decryptor which is available here (this tool](https://s1.ai/decryptor)\nis released under the MIT software license).\n\n\n-----\n\n## Sample\n\n**SHA-1: 178b29ba691eea7f366a40771635dd57d8e8f7e8**\n**SHA-256: f409b059205d9a7700d45022dad179f889f18c58c7a284673975271f6af41794**\n\n## References\n\n1: [https://twitter.com/dineshdina04/status/1277668001538433025](https://twitter.com/dineshdina04/status/1277668001538433025)\n\n2: https://www.bleepingcomputer.com/news/security/thiefquest-ransomware-is-a-file-stealingmac-wiper-in-disguise/\n\n3: https://blog.malwarebytes.com/mac/2020/06/new-mac-ransomware-spreading-throughpiracy/\n\n4: [https://objective-see.com/blog/blog_0x59.html](https://objective-see.com/blog/blog_0x59.html)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-07-07 - Breaking EvilQuest - Reversing A Custom macOS Ransomware File Encryption Routine.pdf"
+    ],
+    "report_names": [
+        "2020-07-07 - Breaking EvilQuest - Reversing A Custom macOS Ransomware File Encryption Routine.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673535870,
+    "ts_updated_at": 1743041160,
+    "ts_creation_date": 1653760683,
+    "ts_modification_date": 1653760683,
+    "files": {
+        "pdf": "https://archive.orkl.eu/f3dedf446f707bbf71c0d141423611a138fa8b1b.pdf",
+        "text": "https://archive.orkl.eu/f3dedf446f707bbf71c0d141423611a138fa8b1b.txt",
+        "img": "https://archive.orkl.eu/f3dedf446f707bbf71c0d141423611a138fa8b1b.jpg"
+    }
+}

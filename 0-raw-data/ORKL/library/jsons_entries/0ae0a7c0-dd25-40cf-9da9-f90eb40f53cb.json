@@ -1,0 +1,83 @@
+{
+    "id": "0ae0a7c0-dd25-40cf-9da9-f90eb40f53cb",
+    "created_at": "2023-01-12T14:59:52.663185Z",
+    "updated_at": "2025-03-27T02:09:30.332946Z",
+    "deleted_at": null,
+    "sha1_hash": "515295c2e443e0ef14b002516d77183e99f6f3ad",
+    "title": "2021-04-05 - CruLoader Analysis",
+    "authors": "",
+    "file_creation_date": "2022-05-25T14:31:10Z",
+    "file_modification_date": "2022-05-25T14:31:10Z",
+    "file_size": 474133,
+    "plain_text": "# CruLoader Analysis\n\n**4rchib4ld.github.io/malwareanalysis/CruLoader**\n\nApril 5, 2021 6 minute read\n\n\nApril 5, 2021\n\n\n[For the Zero2Auto course, @0verflow and @VKIntel developed a sample to test our skills.](https://twitter.com/0verfl0w_)\nThis write-up will be my analysis of this brand new sample !\n\nNow let’s set the context :\n\nHi there,\n\nDuring an ongoing investigation, one of our IR team members managed to locate an unknown\nsample on an infected machine belonging to one of our clients. We cannot pass that sample onto\nyou currently as we are still analyzing it to determine what data was exfiltrated. However, one\nof our backend analysts developed a YARA rule based on the malware packer, and we were\nable to locate a similar binary that seemed to be an earlier version of the sample we’re dealing\nwith. Would you be able to take a look at it? We’re all hands on deck here, dealing with this\nsituation, and so we are unable to take a look at it ourselves.\n\nWe’re not too sure how much the binary has changed, though developing some automation\ntools might be a good idea, in case the threat actors behind it start utilizing something like\nCutwail to push their samples.\n\nI have uploaded the sample alongside this email.\n\nThanks, and Good Luck!\n\n## 1st stage\n\nOK so first we got a zip, containing a PE File. Let’s do some statically analysis to see what we\nare dealing with :\n\n\n-----\n\nFrom what I can see, this is a 32bits PE File, containing a unknown resource in RCDATA.\n\nLet’s load IDA to see what’s going on :\n\n\n-----\n\nDon’t want the malware analyst to see what library you use ? Introducing : String\n_Obfuscation. Luckily for us, the routine is fairly basic. It’s a ROT13 algorithm with a custom_\nalphabet :\n\n\n-----\n\nDoing the same in python in order to have the good names :\n```\nimport string\ndict = string.ascii_letters + '01234567890./='\nl_encr = [\".5ea5/QPY4//\", \"pe51g5Ceb35ffn\", \"I9egh1/n//b3\", \"t5gG8e514pbag5kg\",\n\"E514Ceb35ffz5=bel\", \"Je9g5Ceb35ffz5=bel\", \"I9egh1/n//b3rk\", \"F5gG8e514pbag5kg\",\n\"E5fh=5G8e514\", \"s9a4E5fbhe35n\", \"yb14E5fbhe35\", \"F9m5b6E5fbhe35\", \"yb3.E5fbhe35\"]\nfor encr in l_encr:\n     decr = \"\"\n     for char in encr:\n          pos = dict.find(char)\n          decr += dict[(pos+13)%len(dict)]\n     print(f\"Encr : {encr} --> {decr}\")\n\n```\nRemember the unknown resource in RCDATA we talk earlier ? It’s time for it to rise and\nshine. Once the resource is loaded can you see what’s waiting for us next ? I let you 1min :\n\n\n-----\n\nYou got it right, it’s RC4 ! It’s pretty easy to spot with the The key begins at the 12th bytes of\nthe data and is 16bytes long. Once the resource is decrypted, a new process of itself is created\nin a suspended state :\n\n\n-----\n\n-----\n\nThe decrypted executable is written to memory and execution of the process created is\nresume :\n\n\n-----\n\n[In case you didn’t spotted it, it’s a classical case of Process Hollowing](https://attack.mitre.org/techniques/T1055/012/)\n\nThere is now a brand new executable to analyze !\n\n## 2nd Stage\n\nThis part is a little more complicated then the one before. It’s relying heavily on CRC32\nhashing for all sort of things like :\n\n\n-----\n\nCheck if it s running in svchost :\n\nCheck any blacklisted processes\n\nLooping through all running processes, hashing their names and comparing it to\na harcoded array. Blacklisted processes are : “wireshark.exe”, “x32dbg.exe”,\n“x64dbg.exe” and “ProcessHacker.exe”\nLoad API calls\n\nThis one is a little bit more tricky. There is a function that take a CRC32 hash as a parameter.\nThe hash is matching the wanted API call. 0x8436F795 is corresponding to\n```\nIsDebuggerPresent() for example.\n\n```\nBut there is a lot of call to this functions… And a lot of APIs in kernel32.dll, ntdll.dll and\nwininet.dll… So if it’s not fun to do, let’s have a script doing it for us ! I made a IDA script\n[(available here) that resolve all API calls, the job is way easier now !](https://github.com/4rchib4ld/CruLoader/blob/main/idaDeobfuscateApiCalls.py)\n\n\n-----\n\nImportant strings are encrypted with rol 4 + a 1byte XOR Key. The following CyberChief\n[recipe can be used to decrypt them](https://gchq.github.io/CyberChef/#recipe=From_Hex('Auto')Rotate_left(4,false)XOR(%7B'option':'Hex','string':''%7D,'Standard',false))\n\nWith all theses API Calls, our beloved sample will now create a new svchost process :\n\n\n-----\n\nAnd a new thread inside of it :\n\nThe trouble with execution passed with\n```\nCreateRemoteThread is that the thread\n\n```\ndoesn’t exist yet, and you won’t be fast\nenough to intercept it. My tip is to set a\nbreakpoint on the entrypoint of the thread\n(the `ebx value here). When the thread run,`\nthe debugger will stop exactly here.\n\nThere is now a brand new executable to\nanalyze ! (I’m lying, it’s the 2nd stage but\n_with another entrypoint)_\n\n## 3rd Stage\n\n\n-----\n\nThis stage is all about the internet. It decrypt the config URL (more on that latter on), fetch it\n(it contains another URL), fetch the second URL but this one is a `.jpg so it saves it under`\n```\nC:\\Users\\USER\\AppData\\Local\\Temp\\cruloader\\output.jpg .\n\n```\nThe custom UserAgent ‘cruloader’ could be used for detection\n\nWhen everything is done, a new svchost process is created (yes, again) the `output.jpg is`\ndecoded and written to the new process memory. Injection is done with `ResumeThread`\n\n## 4th stage\n\nHere we are. I promess this is the final stage. The final function is the hardest :\n\n\n-----\n\nI made a flowchart of everything we saw. I feel like it helps to understand what is going on :\n\nI tried to keep it simple\n\n\n-----\n\n-----\n\nAnd that s it ! Oh wait… The IR guy wanted some kind of automation isn t it ? Let s give him\nwhat he wants !\n\n## Let’s extract that config\n\nCan all of this hardwork be automated and take like 3secondes ? Sadly for me… It can, so I\ndid it. First the objective : recover the first URL. Not the 2nd because you should not\n**reach out to unknown server without proper protection (TOR, VPN, proxy, public**\nWIFI… WHATEVER). Even if this is 100% safe (a reddit URL), I prefer to always keep this\nroutine. A couple of problems :\n\nThe 2nd stage is RC4 encrypted but we know the location and where the key is.\nThere is no way (to my understanding) to predict the offset of the data we want\nEvery string is encrypted with a different XOR key (but is always 1byte)\nRotate Left is always 4, but can be 2 or 5 in another sample\n\nSooooooo how I did it ?\n\nEven if this is just fiction, I wanted to have something that would work for any similar\nsample, so the bruteforce is kinda big.\n\nFirst the RC4 key and data is recovered from the 1st stage :\n```\npe = pefile.PE(file)\nfor entry in pe.DIRECTORY_ENTRY_RESOURCE.entries:\n     if str(entry.name) == \"RC_DATA\" or \"RCData\":\n          new_dirs = entry.directory\n          for res in newdirs.entries:\n              data_rva = res.directory.entries[0].data.struct.OffsetToData\n              size = res.directory.entries[0].data.struct.Size\n              data = pe.get_memory_mapped_image()[data_rva:data_rva+size]\n              key = data[12:27]\n              return rc4_decrypt(key, data[28:])\n\n```\nAnd I dumped of ALL of the `.rdata section of the 2nd stage and bruteforced it with`\nRotateLeft and XOR key until I find an URL.\n```\nfor rotAmount in range(1,10): #Bruteforce the ROT amount\n     rotated = rot(data, rotAmount)\n     for xorKey in range(300): # Bruteforce the XOR key\n          result = \"\"\n          for b in rotated:\n              result += chr(b ^ xorKey)\n          if \"http\" in result:\n              pattern = \"https?://(www.)?[-a-zA-Z0-9@:%._+~#=]{1,256}.[azA-Z0-9()]{1,6}b([-a-zA-Z0-9()@:%_+.~#?&//=]*)?\" #hope you like my tiny regex\n              config = re.search(pattern, result)\n\n```\n\n-----\n\nThat’s might not be the most efficient way to do it, but still faster than opening IDA/x64dbg\n[to check for the correct offset. The full code is available here](https://github.com/4rchib4ld/CruLoader)\n\nNow the IR guy got everything he wanted !\n\n## Case solved\n\nAnd that’s it, we solved all of the mysteries behind CruLoader. I hope you liked this post and\nhad fun reading it. I tried not to put too many screenshots as otherwise the post would look\nlike a gallery and I don’t think this is enjoyable. Also most of the time I put IDA pseudocode\nbecause they are smaller than the graph view in Assembly but I prefer working with assembly\n(yeah I’m doing this just for you).\n\nLet me know if you find that something can be enhanced (I’m sure it can).\n\nThanks again [@0verflow and @VKIntel for this cool sample](https://twitter.com/0verfl0w_)\n\nSee you soon for another case !\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-04-05 - CruLoader Analysis.pdf"
+    ],
+    "report_names": [
+        "2021-04-05 - CruLoader Analysis.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "5d2bd376-fcdc-4c6a-bc2c-17ebbb5b81a4",
+            "created_at": "2022-10-25T16:07:23.667223Z",
+            "updated_at": "2025-03-27T02:02:09.916086Z",
+            "deleted_at": null,
+            "main_name": "GCHQ",
+            "aliases": [
+                "Government Communications Headquarters",
+                "Operation Socialist"
+            ],
+            "source_name": "ETDA:GCHQ",
+            "tools": [
+                "Prax",
+                "Regin",
+                "WarriorPride"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535592,
+    "ts_updated_at": 1743041370,
+    "ts_creation_date": 1653489070,
+    "ts_modification_date": 1653489070,
+    "files": {
+        "pdf": "https://archive.orkl.eu/515295c2e443e0ef14b002516d77183e99f6f3ad.pdf",
+        "text": "https://archive.orkl.eu/515295c2e443e0ef14b002516d77183e99f6f3ad.txt",
+        "img": "https://archive.orkl.eu/515295c2e443e0ef14b002516d77183e99f6f3ad.jpg"
+    }
+}

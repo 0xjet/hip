@@ -1,0 +1,140 @@
+{
+    "id": "4d8f4cd5-bc1b-4ba2-9a85-0c81fd9f9ceb",
+    "created_at": "2023-01-12T15:02:33.010978Z",
+    "updated_at": "2025-03-27T02:14:06.346949Z",
+    "deleted_at": null,
+    "sha1_hash": "f284196c4b323c6120c6623a9d49b12b056c1be0",
+    "title": "2021-08-05 - When Dridex and Cobalt Strike give you Grief",
+    "authors": "",
+    "file_creation_date": "2022-05-28T05:06:41Z",
+    "file_modification_date": "2022-05-28T05:06:41Z",
+    "file_size": 726839,
+    "plain_text": "# See what it's like to have a partner in the fight.\n\n**redcanary.com/blog/grief-ransomware/**\n\n[Grief is a combination ransomware-extortion threat that first emerged in May 2021. The](https://www.zscaler.com/blogs/security-research/doppelpaymer-continues-cause-grief-through-rebranding)\ngroup behind Grief maintains a public leak site where it posts stolen victim data. Despite the\nhandful of attacks publicly attributed to Grief, there’s been very little technical intelligence\npublished about the ransomware and the precursor behaviors that precede it.\n\nRed Canary’s visibility into this threat has been limited, but—through a series of short-term\nincident response engagements—we’ve noticed certain conspicuous patterns in the\nmalicious activities leading right up to the point of encryption. We haven’t seen the initial\ninfection vectors nor—importantly—the actual process of files getting encrypted. However,\nwe’ve seen the aftermath of the encryption and many of the behaviors that come before it.\nWe also performed dynamic analysis on a Grief sample in order to get a better idea of what\nhappens during the encryption process.\n\nIn this report, we’re going to share technical intelligence on how we’ve detected precursor\nactivity and helped customers respond to Grief outbreaks over the last couple months.\n\n## The link between Dridex and Grief\n\nGrief often turns up in environments where there’s been a [Dridex infection and in which](https://redcanary.com/threat-detection-report/threats/dridex/)\n[there’s evidence of the post-exploitation tool Cobalt Strike. Though we were unable to](https://redcanary.com/threat-detection-report/threats/cobalt-strike/)\ndefinitively determine that Grief originated from Dridex and Cobalt Strike in the\n\n\n-----\n\nenvironments we examined, we assess it s likely that these environments were initially\ncompromised via a Dridex infection and that the adversaries, in turn, leveraged Cobalt\nStrike and subsequently deployed Grief. This assessment is at least partially validated by\n[Dell SecureWorks, which has also observed a relationship between Dridex, Cobalt Strike,](https://www.secureworks.com/research/threat-profiles/gold-heron)\nand Grief. Just a few days ago, [Zscaler published a report compellingly arguing that Grief is](https://www.zscaler.com/blogs/security-research/doppelpaymer-continues-cause-grief-through-rebranding)\na rebranded version of the now inactive DoppelPaymer ransomware. This is important\nbecause DoppelPaymer has been a second-stage payload delivered after Dridex many\ntimes in the past, which further supports the idea that the Dridex activity we saw is related\nto Grief.\n\nWe published numerous strategies for detecting Dridex and Cobalt Strike in the 2021\nThreat Detection Report. Those detection strategies continue to hold up, and, as you’ll see\nbelow, many of them helped us detect and respond to Grief incidents with our incident\nresponse partners.\n\n**Dridex**\n\n[We’ve observed adversaries leveraging DLL Search Order Hijacking (T1574.001 Hijack](https://redcanary.com/threat-detection-report/techniques/dll-search-order-hijacking/)\nExecution Flow: DLL Search Order Hijacking) when deploying Dridex in the leadup to a\nGrief infection. In general, this technique involves adversaries relocating native system\nbinaries and executing them from a non-standard directory such as `appdata\\roaming . In`\ncases where Dridex preceded Grief, we’ve seen adversaries relocate the system\ninformation binary ( msinfo32.exe ) to the `appdata\\roaming directory in order to load a`\nmalicious dynamic link library (DLL) into memory.\n\nThe following image represents a timeline of events on a single endpoint that illustrates\nwhat this behavior looks like in telemetry:\n\n\n-----\n\nFigure 1\nAs you can see, the Task Scheduler Engine ( taskeng.exe ) spawns the relocated version\nof `msinfo32.exe in the` `appdata\\roaming directory. From there,` `msinfo32.exe loads`\na malicious DLL from the `appdata\\roaming directory that masquerades as a legitimate`\n[DLL ( mfc42u.dll ). (T1036.005 Masquerading: Match Legitimate Name or Location)](https://attack.mitre.org/techniques/T1574/001/)\n\n### Detection opportunity 1\n\nAs observed in the above telemetry, `msinfo32.exe is executing without a corresponding`\ncommand line, which gives us our first detection opportunity. Look for a parent process that\nappears to be `taskeng.exe running in conjunction with a process path that includes`\n```\nusers and appdata/roaming but without any corresponding command-line arguments.\n\n```\nFollowing that malicious DLL load, a cascade of different signed executables—almost\nalways spawning from `explorer.exe —launch from the` `appdata\\roaming directory and`\nload additional DLLs. Despite being named for legitimate DLLs, they too are malicious. In\nsome cases, we’ve seen control panel (CPL) files instead of DLLs, but they serve the same\nfunctional purpose. The following image illustrates what this behavior looks like in endpoint\ntelemetry, with the legitimate Windows dialer process ( dialer.exe ) loading a malicious\nDLL that’s been named to look like the telephony API client DLL ( tapi32.dll ).\n\n\n-----\n\n### Detection opportunity 2\n\nLook for any processes executing from a non-standard directory or process path.\n\nFollowing the example in Figure 2 above, you can look for the execution of a process that is\n```\ndialer.exe from an non-standard process path.* Standard process paths may vary from\n\n```\none binary to another, but `dialer.exe usually exists in` `windows\\system32,`\n```\nwindows\\syswow64, or windows\\sysarm32 directories.\n\n```\n_*Note: This is easier said than done because you need to understand native Windows_\n_binaries and the file or process paths from which they are supposed to execute. Lucky for_\n_[us, our colleague Shane Welcher and](https://redcanary.com/authors/shane-welcher/)_ _[Michael Haag from Splunk already did the hard work](https://twitter.com/M_haggis)_\n_of cataloguing the expected file path for every System32 binary (as well as other process_\n_[metadata like internal binary names), on display in an article we published in early June.](https://redcanary.com/blog/system32-binaries/)_\n_We consider that a foundational resource for anyone looking to bolster their coverage_\n_against_ _[DLL Search Order Hijacking and](https://redcanary.com/threat-detection-report/techniques/dll-search-order-hijacking/)_ _[Masquerading, because it can help you develop](https://redcanary.com/threat-detection-report/techniques/masquerading/)_\n_methods for reliably detecting when binaries execute from non-standard file paths or_\n_directories or with unexpected file names. While it’s not tailored specifically to catch Dridex_\n_or other Grief-related activity, it will almost certainly help you develop better depth of_\n_coverage._\n\nSome of the other binaries executing from non-standard directories include:\n\n```\nsystempropertieshardware.exe\n\n```\n\n-----\n\nThe malicious DLLs and CPLs loaded by the above binaries include but aren t limited to the\nfollowing names:\n```\nmfc42u.dll\nsysdm.cpl\nwtsapi32.dll\nversion.dll\ntapi32.dll\ndpx.dll\n\n```\n**Cobalt Strike**\n\nCobalt Strike is one of the most common pre-ransomware payloads we observe, and it\n[frequently follows malware families like Qbot,](https://redcanary.com/threat-detection-report/threats/qbot/) [IcedID, or in this case, Dridex. In cases where](https://redcanary.com/threat-detection-report/threats/icedid/)\n[Cobalt Strike precedes Grief, we’ve observed the Windows Service Host ( svchost.exe )](https://redcanary.com/threat-detection-report/techniques/windows-service/)\nexecuting without any commands in the command line. Under normal circumstances, you’d\nalways expect to see `svchost.exe with a command line that includes the` `-k command`\nand specifies a service group. As you can see in the following image, our detection included\n[neither. This is likely the result of a Cobalt Strike Beacon injecting code into](https://redcanary.com/threat-detection-report/techniques/process-injection/) `svchost.exe`\n[(T1055 Process Injection).](https://attack.mitre.org/techniques/T1055/)\n\nFigure 3\nWhile we observed the adversary injecting into `svchost.exe in this particular instance,`\nCobalt Strike often targets a variety of other system binaries for injection. From a high level,\na Cobalt Strike Beacon injects code into memory by manipulating the memory space of a\nnative Windows binary. When examining the telemetry associated with this behavior, we\ngenerally observe that the manipulated binaries execute without any corresponding\ncommand-line arguments. Importantly, if you take a step back and analyze what is normal\nactivity for many of the system binaries abused by Cobalt Strike Beacons, it is not normal\nfor them to execute without corresponding command lines.\n\n### Detection opportunity 3\n\n\n-----\n\nSince it s abnormal, alerting on the following processes when they execute without a\ncommand-line argument can be a good way to detect Cobalt Strike, whether it’s delivering\nGrief or serving some other malicious purpose:\n```\nrundll32.exe\nwerfault.exe\nsearchprotocolhost.exe\ngpupdate.exe\nregsvr32.exe\nsvchost.exe\nmsiexec.exe\n\n```\nTo narrow this down even more, you can look for a process that appears to be one of these\nbinaries executing without any corresponding command-line arguments and making an\nexternal network connection. You can see an example of this in Figure 3 for `svchost.exe .`\n\n**Bonus malicious behavior**\n\nDuring one of these intrusions, we also observed the Windows Print Spooler (`spoolsv.exe’)\nmaking an external network connection. While we aren’t able to associate this behavior with\na specific threat (though we suspect it is related to Dridex), it’s nonetheless suspicious—\nand has helped us detect a variety of suspicious and malicious behaviors.\n\n### Detection opportunity 4\n\nYou can reliably detect this by looking for a process that is `explorer.exe spawning`\n```\nspoolsv.exe along with an external network connection.\n\n## Grief counseling\n\n```\nAll of this precursor activity leads up to the point where the Grief ransomware starts\ngathering permissions and encrypting files. We have not had great visibility into how Grief\nperforms encryption, but we do have good insight into the activity directly preceding file\nencryption.\n\n**Getting permission**\n\nIn addition to the Dridex and Cobalt Strike activity that we assess is related to Grief, we\n[observed the Windows DLL Host ( rundll32.exe ) loading a malicious DLL (T1218.011](https://redcanary.com/threat-detection-report/techniques/rundll32/)\nSigned Binary Proxy Execution: Rundll32). That DLL is arbitrarily named and performs a\nvariety of functions. Based on dynamic analysis and process lineage, we assess that this\nDLL:\n\ncreated processes\n\n\n-----\n\nwrote registry values\nencrypted file contents\nmodified Windows Services\nmodified Windows boot options\nmodified Windows Defender settings\nmodified Windows filesystem permissions\n\nIn the Dridex section above, we described how the adversary used relocated executables to\nload malicious DLLs with legitimate names, thereby subverting the proper DLL search order\n[in a technique known as DLL Search Order Hijacking. Here, the adversary is using](https://redcanary.com/threat-detection-report/techniques/dll-search-order-hijacking/)\n```\nrundll32.exe exactly as intended: to load and launch an arbitrary DLL. Of course, the\n\n```\nDLL itself is malicious and kicks off a series of malicious events.\n\nIn the following image, you can see `rundll32.exe running from the proper directory and`\nloading a randomly named DLL, `sbtbku~1.dll . In fact, the telemetry includes two DLLs.`\nThe payload is housed within the first DLL, `sbtbku~1.dll . The purpose of anything`\nbeyond the `DllRegisterServer function in the below command line is currently an`\nintelligence gap, as we’re unsure the purpose it serves for the adversary. Note that when\nwe removed either alphanumeric string ( -B5S8CD or `iUcicPOiYXwBS54S ) or the trailing`\nDLL ( abc.dll ) at the end of this command line, the malicious payload would not execute.\n[If you have more info on this to help fill our gap, we’d love to hear from you!](http://10.10.0.46/mailto:intel@redcanary.com)\n\n_Note: We renamed the above DLLs and strings because their names are arbitrary and_\n_some of them are unique to each affected endpoint. We have not determined why this is the_\n_case, but the DLL and random string in the front half of the command line_\n_( SBmceio\\sbtbku~1.dll and_ `-B5S8CD ) changed from one endpoint to the next while`\n_the trailing DLL and random alphanumeric string ( abc.dll and_ `iUcicPOiYXwBS54S )`\n_remained constant._\n\nFigure 4\n\n\n-----\n\n### Detection opportunity 5\n\nAs is illustrated in Figure 4, one way to detect Grief is by looking for the execution of a\nprocess that appears to be `rundll32.exe executing with` `DllRegisterServer in the`\ncommand line. This particular analytic is applicable to a wide variety of threats, including\nQbot.\n\nSimilarly, you may also be able to detect this and other malicious activity by alerting on\ncommand lines that include `DllRegisterServer and follow-on arguments, as is`\nillustrated in Figure 4 and further below in Figure 7. The `DllRegisterServer function, by`\ndesign, is [not supposed to implement parameters.](https://docs.microsoft.com/en-us/windows/win32/api/olectl/nf-olectl-dllregisterserver%20Show%20less)\n\nThe first DLL in Figure 4 ( sbtbku~1.dll ) initiates multiple actions to facilitate encryption\nor manipulate backups. It launches a `takeown.exe command that allows an administrator`\nto take ownership of files relating to a backup, recovery, and data protection software called\nVeritas. It also launches an `icacls.exe command that resets access permissions for the`\nsame files (T1222.001 File and Directory Permissions Modification: Windows File and\nDirectory Permissions Modification). As the following image shows, `takeown.exe and`\n```\nicacls.exe spawn as children of rundll32.exe because Rundll32 launched\nsbtbku~1.dll .\n\n```\nFigure 5\nLast but certainly not least, `sbtbku~1.dll launches the Boot Configuration Data Editor`\n( bcdedit.exe ) and uses it to set the default safeboot configuration for minimal\nfunctionality (preventing victims from accessing the internet, among other things) and to\n[disable Windows recovery (T1490 Inhibit System Recovery).](https://attack.mitre.org/techniques/T1490/)\n\n\n-----\n\nFigure 6\n\n### Detection opportunity 6\n\nThe detection opportunity illustrated in Figure 6 is helpful for rooting out adversaries\nattempting to reconfigure Windows recovery settings. You can detect this by looking for a\nprocess that is `bcdedit.exe spawning from a parent of` `rundll32.exe along with a`\ncommand line containing “recoveryenabled” and ” no”.\n\n**Leaving a note**\n\nInterestingly, `sbtbku~1.dll also modified the Windows` `LegalNoticeCaption and`\n\n`LegalNoticeText` [registry keys (T1112 Modify Registry), enabling them to display a](https://redcanary.com/blog/windows-registry-attacks-threat-detection/)\nransom message customized to each victim environment immediately at logon.\n\n\n-----\n\nFigure 7\nThe following image (Figure 8) shows how the manipulated Windows\n```\nLegalNoticeCaption and LegalNoticeText registry keys displayed a ransom\n\n```\nmessage customized to each victim environment. Under normal circumstances, these are\nthe registry keys that IT administrators often use to display legal warnings at bootup on\ncorporate-owned computers (e.g., “This computer is property of [company name].\nEverything is monitored.”).\n\n\n-----\n\nFigure 8\n\n## Additional observations\n\nWe received a sample of Grief from a third-party incident response partner and confirmed it\nwas in fact Grief ransomware based on the `.payorgrief file extension, the fact that the`\nransom linked to a known Grief TOR site, and the graphic in the ransom note. Our dynamic\nanalysis of this sample helped us confirm much of the analysis above, along with the\nfollowing additional observations:\n\n[1. Ransomware usually deletes shadow copies (T1490 Inhibit System Recovery), but we](https://redcanary.com/blog/its-all-fun-and-games-until-ransomware-deletes-the-shadow-copies/)\n\ndid not observe Grief doing this. This could be because Grief was designed for the\noperator to manually delete shadow copies, or for some other reason. This is\nsignificant because if a victim has shadow copies enabled on a machine, they may be\nable to restore lost data. If you can confirm that you have observed shadow copy\n[deletion in Grief incidents, please reach out to us.](http://10.10.0.46/mailto:intel@redcanary.com)\n\n\n-----\n\n2. The Grief sample manipulated Windows Defender using Windows Registry\n\nmodifications. We often observe malware issuing PowerShell commands to disable or\nmodify Defender. In this case, Grief set the `Policies\\Microsoft\\Windows`\n```\n   Defender\\Real-Time\n   Protection\\LocalSettingOverrideDisableRealtimeMonitoring and\n    Policies\\Microsoft\\Windows Defender\\DisableAntiSpyware keys (T1562\n\n```\nImpair Defenses). These changes would intentionally counteract settings applied by\nadministrators via Group Policy Objects.\n3. Grief setting the system to boot from safe mode with minimal services available and\n\nno network connectivity is noteworthy because very few ransomware families do this.\n4. Grief has a peculiar way of setting itself up for persistence. It modifies a legitimate\n\nWindows Service configuration to run the malware. Grief selects a legitimate Windows\nService and replaces the `ImagePath registry value of the service’s configuration to`\nexecute the ransomware again at the next boot (T1543.003 Create or Modify System\nProcess: Windows Service). This ensures that the next time the system starts, Grief\nruns again and returns the system to safe mode.\n\n**A note about indicators**\n\nMany teams include indicators of compromise in their blog posts. We have chosen to focus\non behavioral detection opportunities instead, as we find these much more durable than\nsharing hash values that change quickly. Additionally, the hash value of the Grief sample we\nanalyzed is specific to a single victim (as were many of the file names and IP addresses\nassociated with the threat), meaning it will not be useful for future detection. The same is\ntrue for Dridex, as hashes change between victims. In the interest of helping researchers\ndiscover similar samples to ours, we do want to disclose the import table hash of the Grief\nsample:\n```\n E1433a76b58c119fa5508912c531e476\n\n```\n_[Huge thanks to Detection Engineer Dan Cotton for his contributions to this research.](https://redcanary.com/authors/dan-cotton/)_\n\nLook familiar? Get in touch!\n\nIf you've encountered anything resembling Grief ransomware in your environment, let us\nknow!\n\nRelated Articles\n\nDetection and response\n\n### ChromeLoader: a pushy malvertiser\n\n\n-----\n\nDetection and response\n\n### Intelligence Insights: May 2022\n\nDetection and response\n\n### The Goot cause: Detecting Gootloader and its follow-on activity\n\nDetection and response\n\n### Marshmallows & Kerberoasting\n\n**Subscribe to our blog**\n\nOur website uses cookies to provide you with a better browsing experience. More\n[information can be found in our Privacy Policy.](https://redcanary.com/privacy-policy)\n\nX\n\n**Privacy Overview**\n\nThis website uses cookies to improve your experience while you navigate through the\nwebsite. Out of these cookies, the cookies that are categorized as necessary are stored on\nyour browser as they are essential for the working of basic functionalities of the website. We\nalso use third-party cookies that help us analyze and understand how you use this website.\nThese cookies will be stored in your browser only with your consent. You also have the\noption to opt-out of these cookies. But opting out of some of these cookies may have an\neffect on your browsing experience.\n\nNecessary cookies are absolutely essential for the website to function properly. This category\nonly includes cookies that ensures basic functionalities and security features of the website.\nThese cookies do not store any personal information.\n\nAny cookies that may not be particularly necessary for the website to function and is used\nspecifically to collect user personal data via analytics, ads, other embedded contents are\ntermed as non-necessary cookies. It is mandatory to procure user consent prior to running\nthese cookies on your website.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-08-05 - When Dridex and Cobalt Strike give you Grief.pdf"
+    ],
+    "report_names": [
+        "2021-08-05 - When Dridex and Cobalt Strike give you Grief.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d555c5da-abe4-42aa-a8cf-77b68905891a",
+            "created_at": "2022-10-25T16:07:23.548385Z",
+            "updated_at": "2025-03-27T02:02:09.857957Z",
+            "deleted_at": null,
+            "main_name": "Doppel Spider",
+            "aliases": [
+                "Gold Heron",
+                "Grief Group"
+            ],
+            "source_name": "ETDA:Doppel Spider",
+            "tools": [
+                "Agentemis",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "DoppelPaymer",
+                "Pay OR Grief",
+                "Pay or Grief",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "a0d0e1ef-3562-40a8-a021-321db92644d9",
+            "created_at": "2023-01-06T13:46:39.104046Z",
+            "updated_at": "2025-03-27T02:00:02.997473Z",
+            "deleted_at": null,
+            "main_name": "DOPPEL SPIDER",
+            "aliases": [
+                "GOLD HERON"
+            ],
+            "source_name": "MISPGALAXY:DOPPEL SPIDER",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "ccd0f6b5-6d20-4d28-9796-88ab6deb4087",
+            "created_at": "2024-06-19T02:03:08.067518Z",
+            "updated_at": "2025-03-27T02:05:17.375595Z",
+            "deleted_at": null,
+            "main_name": "GOLD HERON",
+            "aliases": [
+                "Doppel Spider "
+            ],
+            "source_name": "Secureworks:GOLD HERON",
+            "tools": [
+                " DoppelPaymer",
+                " Dridex",
+                " Grief",
+                " Powershell Empire",
+                "Cobalt Strike"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535753,
+    "ts_updated_at": 1743041646,
+    "ts_creation_date": 1653714401,
+    "ts_modification_date": 1653714401,
+    "files": {
+        "pdf": "https://archive.orkl.eu/f284196c4b323c6120c6623a9d49b12b056c1be0.pdf",
+        "text": "https://archive.orkl.eu/f284196c4b323c6120c6623a9d49b12b056c1be0.txt",
+        "img": "https://archive.orkl.eu/f284196c4b323c6120c6623a9d49b12b056c1be0.jpg"
+    }
+}

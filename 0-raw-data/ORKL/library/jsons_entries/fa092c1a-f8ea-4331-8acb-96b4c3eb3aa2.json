@@ -1,0 +1,156 @@
+{
+    "id": "fa092c1a-f8ea-4331-8acb-96b4c3eb3aa2",
+    "created_at": "2022-10-25T16:48:10.947511Z",
+    "updated_at": "2025-03-27T02:16:04.368911Z",
+    "deleted_at": null,
+    "sha1_hash": "f7b0f598b3b294086661de8ff38a25cffd626845",
+    "title": "",
+    "authors": "",
+    "file_creation_date": "2017-11-03T07:05:04Z",
+    "file_modification_date": "2017-11-03T07:05:04Z",
+    "file_size": 654043,
+    "plain_text": "| [UK](http://www.pwc.co.uk/)\n\n# The KeyBoys are back in town\n\n_02/11/17_\n\nIn this blog post, we detail our analysis of a recent campaign that we attribute, with high confidence, to KeyBoy, a threat actor believed to be based in or\noperating from China. KeyBoy has been most recently reported on by [CitizenLab in 2016, and now appears to have returned.](https://citizenlab.ca/2016/11/parliament-keyboy/)\n\n## Analysis\n\nOur analysis starts with a Microsoft Word document named 2017 Q4 Work Plan.docx (with a hash of 292843976600e8ad2130224d70356bfc), which was\ncreated on 2017­10­11 by a user called “Admin’’, and first uploaded to VirusTotal, a website and file scanning service, on the same day, by a user in South\nAfrica.\n\n[Curiously, the Word document does not contain any macros, or even an exploit. Rather, it uses a technique recently reported on by SensePost, which allows an](https://sensepost.com/blog/2017/macro-less-code-exec-in-msword/)\nattacker to craft a specifically created Microsoft Word document, which uses the Dynamic Data Exchange (DDE) protocol. DDE traditionally allows for the\nsending of messages between applications that share data, for example from Word to Excel or vice versa. In the case reported on by SensePost, this allowed\nfor the fetching or downloading of remote payloads, using PowerShell for example.\n\nFigure 1 – Word Error\n\nOnce we extract the initial document, using 7­zip for example, we can observe the usual structure, and inside, a file called document.xml is of interest. In this\nXML, a remote payload, in this case a DLL, will be downloaded using PowerShell, moved to the user’s temporary folder, and run using rundll32.exe, starting in\nthe HOK function or export. Figure 2 shows the relevant part in our XML file.\n\nFigure 2 ­ Download and payload execution\n\nThis debug.dll is a PE32 binary file with the following properties:\n\n##### md5 hash: 64b2ac701a0d67da134e13b2efc46900\n\n sha1 hash: 1bb516d70591a5a0eb55ee71f9f38597f3640b14\n\n sha256 hash: f3f55c3df39b85d934121355bed439b53501f996e9b39d4abed14c7fe8081d92\n\n size: 531,456 bytes\n\n internal DLL name: InstallClient.dll\n\n compiler: Microsoft\n\n linker: Microsoft Linker(14.0)[DLL32]\n\n compilation time: 2017­07­06 08:50:10\n\nThis DLL serves as a dropper for the actual payload, and as such the internal name of ‘InstallClient’ is an apt choice by the threat actor. Developing a Yara rule\nfor the simple dropper DLL, yielded several new binaries:\n\n1dbbdd99cb8d7089ab31efb5dcf09706\n5708e0320879de6f9ac928046b1e4f4e\na6903d93f9d6f328bcfe3e196fd8c78b\ncf6f333f99ee6342d6735ac2f6a37c1e\nac9b8c82651eafff9a3bbe7c69d69447\nd6ddecdb823de235dd650c0f7a2f3d8f\n\n\n-----\n\n[The DLL starts in the function named Insys, which performs some simple checks, for example, if the current user account is an administrator, and will |](http://www.pwc.co.uk/) [UK](http://www.pwc.co.uk/)\nsubsequently call the function named SSSS, which is the main function.\n\nA substantial amount of actions will follow according to what’s defined in the SSSS function, as follows:\n\n##### Prepare target DLL, in this case rasauto.dll, for replacement in C:\\Windows\\System32;\n\n Stop the service belonging to the target DLL, and use the takeown and icacls commands to gain full permissions for the system service DLL;\n\n Disable Windows File Protection, which normally prevents software or users from replacing critical Windows files;\n\n Suppress any error messages from Windows from popping up on boot;\n\n Copy the target DLL, rasauto.dll, to a new file named rasauto32.dll;\n\n Replace the target DLL with the malware’s DLL, which is time­stomped in order to evade detection;\n\n Start the now malicious service using net.exe and net1.exe; and,\n\n Create configuration and keylogs in C:\\Windows\\system32, using an uncommon extension, in this case .tsp, and additionally create a folder in C:\\Programdata for the purpose of screen captures.\n\nThe malware will also, in some observed cases, output debug or error messages in a newly created file in the user’s Application Data folder as DebugLog.TXT,\nfor example:\n\n\\AppData\\Roaming\\Microsoft\\Windows\\Cookies\\DebugLog.TXT\n\nThen, the original dropper DLL will then be deleted, using a simple batch file that runs in a loop. In Figures 3 to 5, the target DLL, the original and new DLL, as\nwell as the full process flow are shown.\n\nFigure 3 ­ Target DLL, config and keylog file built dynamically on the stack\n\nFigure 4 ­ Real and fake rasauto.dll (rasauto32.dll is the real or original DLL)\n\nFigure 5 ­ Complete process flow\n\nWhile visually there is apparently no difference, due to the malware being time­stomped (altering the created and modified dates of a file or folder), we can\nhowever observe a few subtle differences in the real and malicious binary.\n\n\n-----\n\n| [UK](http://www.pwc.co.uk/)\n\nFigure 6 ­ Subtle differences\n\nAs can be seen in Figure 6, the fake DLL has a different link date, some minor spelling mistakes, and does not include the build in the file version details. As\nthe malware also disables Windows File Protection and thus any pop­ups, it may not be immediately obvious to system administrators that a legitimate DLL\nwas actually replaced. The following commands are issued in order to achieve persistence:\n\n##### reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\" /v SFCDisable /t REG_DWORD /d 4 /f\n\n reg add \"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Windows\" /v NoPopUpsOnBoot /t REG_DWORD /d 1 /f\n\nTaking a look at the Windows registry for our service, RasAuto, short for Remote Access Auto Connection Manager and historically used for connecting dial­up\nmodems to the internet for example, reveals no specific additional modifications.\n\nDllhost.exe is additionally seen to call back or phone home to a hardcoded range of C2 servers, on ports 53, 80, and 443.\n\nFigure 7 ­ Dllhost connecting to a remote address\n\nDllhost usually has no need to connect to the internet or WAN, and as such it is a possible indicator of malicious activity.\n\nAttaching a debugger to dllhost.exe, reveals the keylogger files and configuration, replaced DLL file, as well as another folder, which is likely used to store\nscreenshots and other data. Another ASCII string can be discovered in the DLL’s config, MDDEFGEGETGIZ, which likely pertains to the specific KeyBoy\ncampaign, or target.\n\nFigure 8 ­ ASCII dump\n\nThe malware leveraged by KeyBoy has a plethora of functionality, including, but not limited to:\n\n##### Screen grabbing/taking screenshots;\n\n Determine public or WAN IP address (using a public IP service), likely for determining a suited target;\n\n Gather extended system information, such as information about the operating system, disks, memory and so on;\n\n A ‘file browser’ or explorer;\n\n Shutdown and reboot commands (in addition to the point below);\n\n\n-----\n\n##### Usage of custom SSL libraries for masquerading C2 traffic.\n\n| [UK](http://www.pwc.co.uk/)\n\nInterestingly enough, the malware developers left several unique debug messages, for example:\n\n##### GetScreenCmd from file:%s\n\n Take Screen Error,May no user login!\n\n Take Screen Error,service dll not exists\n\nEarlier, we mentioned the threat actor uses custom SSL libraries to communicate to the C2. While we have been unable to observe this behavior in any traffic\nlogs, we were able to extract a certificate, which can be found in Appendix B. Converting this certificate to the DER format, we find strings pointing to\njessma.org, and an email address, ldcsaa@21cn.com. These belong to projects by a Chinese developer, where one of the tools or libraries is named HP­\nSocket, which is a ‘High Performance TCP/UDP Socket Component’.\n\nAdditionally, said library sported an interesting debug path:\n\nD:\\Work\\VS\\Horse\\TSSL\\TSSL_v0.3.1_20170722\\TClient\\Release\\TClient.pdb\n\nIn addition to writing a Yara rule for the dropper DLL and finding additional samples as mentioned above, we repeated the same process for the payload DLL.\nIn Table 1 below, you may find other payloads, with their related and fake, or replaced Windows DLL or service.\n\n**Hash** **Impersonated DLL** **Impersonated service**\n\na55b0c98ac3965067d0270a95e60e87e ikeext.dll IKE and AuthIP IPsec Keying Modules\n\n2e04cdf98aead9dd9a5210d7e601cca7 rasauto.dll Remote Access Auto Connection Manager\n\nd6ddecdb823de235dd650c0f7a2f3d8f rasauto.dll Remote Access Auto Connection Manager\n\n1dbbdd99cb8d7089ab31efb5dcf09706 sinet.dll Unknown\n\n581ddf0208038a90f8bc2cdc75833425 sinet.dll Unknown\n\nTable 1 ­ Impersonated DLLs\n\n[Sinet.dll may relate to SPlayer, a popular video player in China.](https://github.com/tomasen/splayer)\n\n## Related samples\n\nHunting further, we have discovered similar samples to the ones described above, with additional interesting debug paths:\n\n**Hash** **Debug path**\n\n7d39cef34bdc751e9cf9d46d2f0bef95 D:\\work\\vs\\UsbFerry_v2\\bin\\UsbFerry.pdb\n\n29e44cfa7bcde079e9c7afb23ca8ef86 E:\\Work\\VS Project\\cyassl­3.3.0\\out\\SSLClient_x64.pdb\n\nTable 2 ­ Other debug paths\n\nBoth samples include references to a “work” folder, and a “VS” or “VS Project”. The latter likely points to a Visual Studio project short name, or VS. While the\nconnection initially seems rather weak, it did hit the same Yara rule as mentioned before and the sample with hash 29e44cfa7bcde079e9c7afb23ca8ef86\n[additionally includes an SSL certificate, which, when converted, points to another custom SSL library, called WolfSSL, which is a “a small, fast, portable](https://github.com/wolfSSL/wolfssl)\n\nimplementation of TLS/SSL for embedded devices to the cloud”. The same hash or binary also includes what we assess to be a campaign name or KeyBoy\nversion identifier, which is weblogic20170727.\n\nAnother sample which hit our Yara rule is 7aea7486e3a7a839f49ebc61f1680ba3, which was first uploaded to VirusTotal on 2017­08­25. This sample appears\nto be an older variant of KeyBoy, as there are several plain­text strings present, which are consistent with CitizenLab’s report referenced in the introduction.\n\nAll samples (hashes) and other indicators are provided in Appendix A.\n\n## Infrastructure\n\nWe have mapped out the complete infrastructure that we have discovered, using Maltego, as shown in Figure 9.\n\n\n-----\n\n| [UK](http://www.pwc.co.uk/)\n\nFigure 9 ­ C2 graphing\n\nThere was some overlap with the samples and infrastructure, and one email address appears to jump out, which is linked to several domains:\n657603405@qq[.]com. This email address does not appear to have been observed before.\n\nOne other relevant point to note in regards to the infrastructure, is the use of dates, likely relating to campaign names, as part of the C2 servers. Examples\ninclude:\n\n##### Weblogic727.xxuz[.]com (2017­07­27 campaign); and,\n\n Weblogic1709.zzux[.]com (2017­09­17 campaign).\n\nAll C2’s are provided in Appendix A.\n\n## Conclusion\n\nIn this report, we have analysed what we assess with high confidence, to be (part of) the latest KeyBoy campaign, a threat actor that has been active for\nseveral years, and displays at least a medium level of technical and operational know­how.\n\nSeveral connections can be made to CitizenLab’s report from 2016, such as the continued usage of fake services and related DLLs, powerful capabilities,\nseveral exports and strings present in the (sometimes decrypted) DLLs, as well as campaign or version identifiers which are reminiscent and consistent with\nearlier reported identifiers.\n\nWhile we do not have a clear visibility of targeting, it does appear that this latest campaign targets at least some Western organisations, likely for corporate\nespionage purposes. Organisations can refer to Appendix A, in order to search of any possible indicators of compromise. Additionally, organisations may wish\nto disable default administrator credentials, which will prevent unauthorised services to be installed.\n\n## Further Information\n\nClients who are part of our threat intelligence subscription services, can refer to our latest report CTO­TIB­20171019­01A ­ KeyBoy's new toys, which includes\nmore information as well as ruling in order to detect KeyBoy’s latest campaign. If you would like more information on any of the threats discussed in this alert,\n[or you suspect you may be compromised, please feel free to get in touch, by emailing threatintelligence@uk.pwc.com.](mailto:threatintelligence@uk.pwc.com)\n\n## Appendix\n\nAppendix A Appendix B\n\n### Indicators\n\n**Indicator** **Type**\n\n101.200.135.85 IP address\n\n103.215.81.196 IP address\n\n103.215.83.193 IP address\n\n103.86.86.177 IP address\n\n118.163.165.20 IP address\n\n142.4.34.92 IP address\n\n144.48.8.68 IP address\n\n174.139.29.6 IP address\n\n\n180 101 169\n\n\n-----\n\n47.89.58.141 IP address\n\n| [UK](http://www.pwc.co.uk/)\n\nhttp://213.183.51[.]187/debug.dll URI\n\ndumblamb.zzux.com Domain\n\nfoxsay.mefound.com Domain\n\ngreentree.yourtrap.com Domain\n\nkawayi.zzux.com Domain\n\nmianliu.party Domain\n\nmianliu.video Domain\n\nmir2dun.cn Domain\n\nweblogic.ddns.mobi Domain\n\nweblogic.xxuz.com Domain\n\nweblogic1709.justdied.com Domain\n\nweblogic1709.my03.com Domain\n\nweblogic1709.zzux.com Domain\n\nweblogic727.2waky.com Domain\n\nweblogic727.dumb1.com Domain\n\nwww.yierzhi.com Domain\n\nxiaomayun.online Domain\n\nyunmian.loan Domain\n\nyunmian.party Domain\n\nyunmian.video Domain\n\nyunnian.online Domain\n\nyunnian.top Domain\n\n657603405@qq.com Email address\n\nsensr9.dat Filename\n\nsensr3.dat Filename\n\nnetis9.tsp Filename\n\nnetis3.tsp Filename\n\n52d11a0a5142f0b37aa2d288321ba099 Hash (MD5)\n\n581ddf0208038a90f8bc2cdc75833425 Hash (MD5)\n\n64b2ac701a0d67da134e13b2efc46900 Hash (MD5)\n\n1dbbdd99cb8d7089ab31efb5dcf09706 Hash (MD5)\n\n7aea7486e3a7a839f49ebc61f1680ba3 Hash (MD5)\n\na55b0c98ac3965067d0270a95e60e87e Hash (MD5)\n\n7d39cef34bdc751e9cf9d46d2f0bef95 Hash (MD5)\n\n5708e0320879de6f9ac928046b1e4f4e Hash (MD5)\n\na6903d93f9d6f328bcfe3e196fd8c78b Hash (MD5)\n\n292843976600e8ad2130224d70356bfc Hash (MD5)\n\n2e04cdf98aead9dd9a5210d7e601cca7 Hash (MD5)\n\ncf6f333f99ee6342d6735ac2f6a37c1e Hash (MD5)\n\nac9b8c82651eafff9a3bbe7c69d69447 Hash (MD5)\n\n29e44cfa7bcde079e9c7afb23ca8ef86 Hash (MD5)\n\nd6ddecdb823de235dd650c0f7a2f3d8f Hash (MD5)\n\n42c63de7dac16366dfea14fa9ddac3cd Hash (MD5)\n\nf21e3b927d269b0622d94c55db9d2808758379aa413c10971fa745cd6e0503c0 Hash (SHA­256)\n\nf15d2e9deaeb495fe8a62c05993b9f69bf07331910ed2483e1bab7d31d30231b Hash (SHA­256)\n\nf3f55c3df39b85d934121355bed439b53501f996e9b39d4abed14c7fe8081d92 Hash (SHA­256)\n\n750f4a9ae44438bf053ffb344b959000ea624d1964306e4b3806250f4de94bc8 Hash (SHA­256)\n\n12dfb83a3866c93cd1c08652ed0a16a492777355985a973ef50973896795eb34 Hash (SHA­256)\n\n5d0aef905c9f8f74bb82eba89c11ec5b27d35e560b5cacf81087fca0775a8bfa Hash (SHA­256)\n\nb4535aa71da630992392c3c202d59274ce49a3fe4f1ac01d7434f1dceeda47e5 Hash (SHA­256)\n\n34f740e5d845710ede1d942560f503e117600bcc7c5c17e03c09bfc66556196c Hash (SHA­256)\n\na6e9951583073ab2598680b17b8b99bab280d6dca86906243bafaf3febdf1565 Hash (SHA­256)\n\nd5c27308f50a9c6d8ccd01269ca09a7a13e1615945b8047c4e55c610718e317e Hash (SHA­256)\n\nb5782f67054df36c49d9394c12c8bbbca69bfd0f9ccdcf934bc402c6881eca66 Hash (SHA­256)\n\n1d716cee0f318ee14d7c3b946a4626a1afe6bb47f69668065e00e099be362e22 Hash (SHA­256)\n\n0f9a7efcd3a2b1441834dae7b43cd8d48b4fc1daeb2c081f908ac5a1369de753 Hash (SHA­256)\n\n97fa07a035f7b9ad9cc5c7fd3a5df4b8692e748ca5c40067446632f9a3c25952 Hash (SHA­256)\n\nfc84856814307a475300d2a44e8d15635dedd02dc09a088a47d1db03bc309925 Hash (SHA­256)\n\n842cb2bed58459445cd4c6f22acf4b6f77f8b93c9ce202aa54539c1d2b0d45c1 Hash (SHA­256)\n\n#### Contact us\n\n**Bart Parys**\nThreat Intelligence Analyst\n[Email](javascript:void(0);)\n\n\n-----\n\n[© 2015­2017 PwC. All rights reserved. PwC refers to the PwC network and/or one or more of its member firms, each of which is a separate legal entity. Please see www.pwc.com/structure for further details.](http://www.pwc.com/structure)\n\n| [UK](http://www.pwc.co.uk/)\n\n\n-----\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2017/2017.11.02.KeyBoys_are_back/The%20KeyBoys%20are%20back%20in%20town.pdf"
+    ],
+    "report_names": [
+        "The KeyBoys are back in town"
+    ],
+    "threat_actors": [
+        {
+            "id": "f74e4fe6-6281-45e7-8866-0ff4316381cc",
+            "created_at": "2024-05-01T02:03:07.959101Z",
+            "updated_at": "2025-03-27T02:05:17.270819Z",
+            "deleted_at": null,
+            "main_name": "BRONZE HOBART",
+            "aliases": [
+                "Pirate Panda ",
+                "Tropic Trooper ",
+                "KeyBoy "
+            ],
+            "source_name": "Secureworks:BRONZE HOBART",
+            "tools": [
+                " KeyBoy",
+                " Pfine",
+                "DSNGInstaller"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "61ea51ed-a419-4b05-9241-5ab0dbba25fc",
+            "created_at": "2023-01-06T13:46:38.354607Z",
+            "updated_at": "2025-03-27T02:00:02.81258Z",
+            "deleted_at": null,
+            "main_name": "APT23",
+            "aliases": [
+                "KeyBoy",
+                "Tropic Trooper",
+                "BRONZE HOBART",
+                "G0081",
+                "Red Orthrus",
+                "Earth Centaur",
+                "PIRATE PANDA"
+            ],
+            "source_name": "MISPGALAXY:APT23",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "bef7800a-a08f-4e21-b65c-4279c851e572",
+            "created_at": "2022-10-25T15:50:23.409336Z",
+            "updated_at": "2025-03-27T02:00:55.463048Z",
+            "deleted_at": null,
+            "main_name": "Tropic Trooper",
+            "aliases": [
+                "Tropic Trooper",
+                "Pirate Panda",
+                "KeyBoy"
+            ],
+            "source_name": "MITRE:Tropic Trooper",
+            "tools": [
+                "USBferry",
+                "ShadowPad",
+                "PoisonIvy",
+                "BITSAdmin",
+                "YAHOYAH",
+                "KeyBoy"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "578f8e62-2bb4-4ce4-a8b7-6c868fa29724",
+            "created_at": "2022-10-25T16:07:24.344358Z",
+            "updated_at": "2025-03-27T02:02:10.182282Z",
+            "deleted_at": null,
+            "main_name": "Tropic Trooper",
+            "aliases": [
+                "APT 23",
+                "Bronze Hobart",
+                "Earth Centaur",
+                "KeyBoy",
+                "Operation Tropic Trooper",
+                "Pirate Panda",
+                "Tropic Trooper"
+            ],
+            "source_name": "ETDA:Tropic Trooper",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "ByPassGodzilla",
+                "CHINACHOPPER",
+                "CREDRIVER",
+                "China Chopper",
+                "Chymine",
+                "Darkmoon",
+                "Gen:Trojan.Heur.PT",
+                "KeyBoy",
+                "Neo-reGeorg",
+                "PCShare",
+                "POISONPLUG.SHADOW",
+                "Poison Ivy",
+                "RoyalRoad",
+                "SPIVY",
+                "ShadowPad Winnti",
+                "SinoChopper",
+                "Swor",
+                "TSSL",
+                "USBferry",
+                "W32/Seeav",
+                "Winsloader",
+                "XShellGhost",
+                "Yahoyah",
+                "fscan",
+                "pivy",
+                "poisonivy"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716490,
+    "ts_updated_at": 1743041764,
+    "ts_creation_date": 1509692704,
+    "ts_modification_date": 1509692704,
+    "files": {
+        "pdf": "https://archive.orkl.eu/f7b0f598b3b294086661de8ff38a25cffd626845.pdf",
+        "text": "https://archive.orkl.eu/f7b0f598b3b294086661de8ff38a25cffd626845.txt",
+        "img": "https://archive.orkl.eu/f7b0f598b3b294086661de8ff38a25cffd626845.jpg"
+    }
+}

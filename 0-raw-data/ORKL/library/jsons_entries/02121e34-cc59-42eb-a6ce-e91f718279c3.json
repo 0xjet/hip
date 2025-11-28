@@ -1,0 +1,67 @@
+{
+    "id": "02121e34-cc59-42eb-a6ce-e91f718279c3",
+    "created_at": "2023-05-06T02:08:59.898863Z",
+    "updated_at": "2025-03-27T02:08:40.192761Z",
+    "deleted_at": null,
+    "sha1_hash": "49ca93f6d6f3ccfa98912309141d0117e4ffed49",
+    "title": "2021-06-01 - PE Reflection- The King is Dead, Long Live the King",
+    "authors": "",
+    "file_creation_date": "2023-05-05T02:08:46Z",
+    "file_modification_date": "2023-05-05T02:08:46Z",
+    "file_size": 461863,
+    "plain_text": "# PE Reflection: The King is Dead, Long Live the King\n\n**[bruteratel.com/research/feature-update/2021/06/01/PE-Reflection-Long-Live-The-King/](https://bruteratel.com/research/feature-update/2021/06/01/PE-Reflection-Long-Live-The-King/)**\n\nChetan Nayak June 1, 2021\n\nReflective DLL injection remains one of the most used techniques for post-exploitation and to\nget your code executed during initial access. The initial release of reflective DLLs by Stephen\nFewer provided a great base for a lot of offensive devs to build their tools which can be\nexecuted in memory. Later came in PowerShell and C# reflection which use CLR DLLs to\nexecute managed byte code in memory. C# and PowerShell reflection are both subject to\nAMSI scan which perform string based detections on the byte code, which is not a lot\ndifferent from your usual Yara rule detection. Reflective DLLs however provide a different\ngateway which at a lower level allows you to customize how the payload gets executed in\nmemory. Most EDRs in the past 3-4 years have upgraded their capabilities to detect the\ndefault process injection techniques which utilize Stephen Fewer’s [reflective loader along](https://github.com/stephenfewer/ReflectiveDLLInjection/blob/master/dll/src/ReflectiveLoader.c)\nwith his Remote Process Execution technique using the CreateRemoteThread API.\n\nTo keep the detection false postivies to a minimum, most EDRs hook VirtualAlloc,\nVirtualALlocEx, WriteProcessMemory, CreateRemoteThread, QueueUserAPC,\nMapViewOfSection and a few more to hunt for consecutive API calls and known malicious\nstring scans in the RWX memory regions. But in the end, these are legitimate windows APIs,\nand it becomes hard to categorize every such API call as malicious since it might lead to a\nlot of false positives. Thus EDRs end up scanning the newly created Executable memory\nblock in the remote process which has PAGE_EXECUTE_READWRITE permissions.\nAttackers realized this and started changing the memory permission to\nPAGE_EXECUTE_READ for reflective DLLs and PAGE_EXECUTE for shellcode injections.\nBut this still leaves out a possibility of detection because of the new RWX artefact which get’s\ncreated by the loader after the injection.\n\nThe below image shows the default injection of Stephen Fewer with RWX modified to RX.\nYou can see that even if you configure RX, the loader of Stephen Fewer still calls VitualAlloc\nwith RWX, WriteProcessmemory after re-basing the PE and then calls the DllMain function\nas a function pointer.\n\n\n-----\n\n[The above logic can be verified from this line of Stephen fewer’s loader. This basically](https://github.com/stephenfewer/ReflectiveDLLInjection/blob/master/dll/src/ReflectiveLoader.c#L271)\nmeans that even if you allocate RX as the region for your initial loader code, your loader\nwhen executed, will rebase itself to a new region with VirtualAlloc(RWX), load all the PE\nSections and then call the DllMain entrypoint. Any EDR which hooks\nVirtualAlloc/VirtualAllocEx can scan the process memory for this RWX section, and it can\nquickly identify that this is an injected DLL and quickly block it from it’s execution. Most\npayloads including the ones from Metasploit and other C2s do not provide any functionality\nfor this section to be modified. Now, if you try to modify [this part of the code and replace the](https://github.com/stephenfewer/ReflectiveDLLInjection/blob/master/dll/src/ReflectiveLoader.c#L271)\nRWX with first RW and then RX, then the dllmain execution will crash returning you an\nACCESS_VIOLATION error. This is because several different sections of the PE, require\ndifferent types of permissions. If you provide RWX to every PE section, it will work, but if you\nprovide only RX, then it won’t work because some PE sections require you to have the\nsection as writable. If the section isn’t writable, the DllMain won’t be able to write any static\nvariables to the required section or erase or reallocate new data in those parts of the section.\n\nHowever, those of you who have spent time reversing the DoublePulsar userland shellcode\nlike me, would have noticed that these payloads tend to reallocate the PE file a bit more than\nStephen Fewer’s default reflective loader. So, unlike Stephen’s loader which allocates the\nwhole memory block to a single page of memory using VirtualAllocEx, we can simply\ndistribute the sections of PE to different locations. Each of these sections will have different\npermissions. So basically, before we copy the PE sections to the new rebased-address, we\n[will validate the IMAGE_SECTION_HEADER’s Characteristics attribute with the respective](https://docs.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-image_section_header)\npermissions using the ‘AND’ operation which will check the binary bit if set or not, and then\nwe will allocate every piece of the PE section to a new page in memory. By doing this, every\npage will have its own permission and we will never require a full RWX region. We can split\neach section as follows.\n\n\n-----\n\n```\nnumberOfSections ((PIMAGE_NT_HEADERS)pOldNtHeader) >FileHeader.NumberOfSections;\n\npSectionHeader = ((ULONG_PTR) & ((PIMAGE_NT_HEADERS)pOldNtHeader)->OptionalHeader +\n((PIMAGE_NT_HEADERS)pOldNtHeader)->FileHeader.SizeOfOptionalHeader);\n\nwhile (numberOfSections--) {\n\n  void* thisSectionVA = (void*) (dllNewBaseAddress +\n((PIMAGE_SECTION_HEADER)pSectionHeader)->VirtualAddress);\n\n  ULONG_PTR thisSectionVirtualSize = ((PIMAGE_SECTION_HEADER)pSectionHeader)>Misc.VirtualSize;\n\n  DWORD ulPermissions = 0;\n\n  if (((PIMAGE_SECTION_HEADER)pSectionHeader)->Characteristics &\nIMAGE_SCN_MEM_WRITE) {\n\n    ulPermissions = PAGE_WRITECOPY;\n\n  }\n\n  if (((PIMAGE_SECTION_HEADER)pSectionHeader)->Characteristics &\nIMAGE_SCN_MEM_READ) {\n\n    ulPermissions = PAGE_READONLY;\n\n  }\n\n  if ((((PIMAGE_SECTION_HEADER)pSectionHeader)->Characteristics &\nIMAGE_SCN_MEM_WRITE) && (((PIMAGE_SECTION_HEADER)pSectionHeader)->Characteristics &\nIMAGE_SCN_MEM_READ)) {\n\n    ulPermissions = PAGE_READWRITE;\n\n  }\n\n  if (((PIMAGE_SECTION_HEADER)pSectionHeader)->Characteristics &\nIMAGE_SCN_MEM_EXECUTE) {\n\n    ulPermissions = PAGE_EXECUTE;\n\n  }\n\n  if ((((PIMAGE_SECTION_HEADER)pSectionHeader)->Characteristics &\nIMAGE_SCN_MEM_EXECUTE) && (((PIMAGE_SECTION_HEADER)pSectionHeader)->Characteristics &\nIMAGE_SCN_MEM_WRITE)) {\n\n    ulPermissions = PAGE_EXECUTE_WRITECOPY;\n\n  }\n\n  if ((((PIMAGE_SECTION_HEADER)pSectionHeader)->Characteristics &\nIMAGE_SCN_MEM_EXECUTE) && (((PIMAGE_SECTION_HEADER)pSectionHeader)->Characteristics &\nIMAGE_SCN_MEM_READ)) {\n\n    ulPermissions = PAGE_EXECUTE_READ;\n\n  }\n\n  if ((((PIMAGE_SECTION_HEADER)pSectionHeader)->Characteristics &\nIMAGE_SCN_MEM_EXECUTE) && (((PIMAGE_SECTION_HEADER)pSectionHeader)->Characteristics &\nIMAGE_SCN_MEM_WRITE) && (((PIMAGE_SECTION_HEADER)pSectionHeader)->Characteristics &\nIMAGE_SCN_MEM_READ)) {\n\n    ulPermissions = PAGE_EXECUTE_READWRITE;\n\n  }\n\n  pVirtualProtect(thisSectionVA, thisSectionVirtualSize, ulPermissions,\n&ulPermissions);\n\n  pSectionHeader += sizeof(IMAGE_SECTION_HEADER);\n\n}\n\n```\n\n-----\n\nThe below screenshot shows the newly rebased PE section which does not have any RWX\nregions anymore, and the RX section only contains the executable code i.e. the .text section\nsince all other remaining sections are allocated to other regions now.\n\nOne important note before we execute our main payload, is to cleanup any existing artefacts\nleft from our previously allocated (RX) region. This can be done using a simple struct\ncontaining the pointer to the start of our initial RX region (thread) and the parameters passed\nto the thread and then forwarding it to Dllmain for cleanup using VirtualFree. This can be\ndone using the below code in DllMain. This basically erases the whole history of who actually\ncreated the new rebased regions and executed DllMain.\n```\n#include \"badger.h\"\n\nBOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD dwReason, LPVOID lpReserved)\n\n{\n\n  BOOL bReturnValue = TRUE;\n\n  switch (dwReason)\n\n  {\n\n  case DLL_PROCESS_ATTACH: {\n    struct DLL_SWEEPER *dllSweeper = (struct DLL_SWEEPER*)lpReserved;\n\n    CHAR* newlpParam = NULL;\n\n    task_crealloc(&newlpParam, (CHAR*)dllSweeper->lpParameter);\n\n    VirtualFree((LPVOID)dllSweeper->lpParameter, 0, MEM_RELEASE);\n\n    VirtualFree((LPVOID)dllSweeper->dllInitAddress, 0, MEM_RELEASE);\n\n    badger_main(newlpParam);\n\n    break;\n\n  }\n\n  case DLL_PROCESS_DETACH:\n\n  case DLL_THREAD_ATTACH:\n\n  case DLL_THREAD_DETACH:\n\n    break;\n\n  }\n\n  return bReturnValue;\n\n}\n\n```\n\n-----\n\nBrute Ratel will have this feature in the upcoming version 0.5. It not only relocates the whole\nPE section to a new region with dedicated permissions, but also erases the whole PE, it’s\narguments and it’s thread from memory which were created by it’s Parent process during the\ninitial RX region execution. So, if any EDR or defender tries to find the injected PE in\nmemory, they won’t find any threads created from external entity. Also, all the memory\nsections in the executable will look like garbage because the whole PE will be split into\nmultiple parts allocated into different places. And for those of you who don’t know, Brute\nRatel’s payloads by default erased the DOS header/PE header and NT header, whenever a\nnew memory region was allocated since version 0.3.1.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-06-01 - PE Reflection- The King is Dead, Long Live the King.pdf"
+    ],
+    "report_names": [
+        "2021-06-01 - PE Reflection- The King is Dead, Long Live the King.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1683338939,
+    "ts_updated_at": 1743041320,
+    "ts_creation_date": 1683252526,
+    "ts_modification_date": 1683252526,
+    "files": {
+        "pdf": "https://archive.orkl.eu/49ca93f6d6f3ccfa98912309141d0117e4ffed49.pdf",
+        "text": "https://archive.orkl.eu/49ca93f6d6f3ccfa98912309141d0117e4ffed49.txt",
+        "img": "https://archive.orkl.eu/49ca93f6d6f3ccfa98912309141d0117e4ffed49.jpg"
+    }
+}

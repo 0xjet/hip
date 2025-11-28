@@ -1,0 +1,160 @@
+{
+    "id": "a1e19963-7b56-4fd9-9f50-db3d912d366a",
+    "created_at": "2023-01-12T15:07:36.874746Z",
+    "updated_at": "2025-03-27T02:05:59.80758Z",
+    "deleted_at": null,
+    "sha1_hash": "702748edcd14909889c72b9b5e1d98faffd95999",
+    "title": "2022-01-25 - Weaponization of Excel Add-Ins Part 1- Malicious XLL Files and Agent Tesla Case Studies",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:03:24Z",
+    "file_modification_date": "2022-05-28T19:03:24Z",
+    "file_size": 342281,
+    "plain_text": "# Weaponization of Excel Add-Ins Part 1: Malicious XLL Files and Agent Tesla Case Studies\n\n**[unit42.paloaltonetworks.com/excel-add-ins-malicious-xll-files-agent-tesla/](https://unit42.paloaltonetworks.com/excel-add-ins-malicious-xll-files-agent-tesla/)**\n\nYaron Samuel January 25, 2022\n\nBy [Yaron Samuel](https://unit42.paloaltonetworks.com/author/yaron-samuel/)\n\nJanuary 25, 2022 at 6:00 AM\n\n[Category: Malware](https://unit42.paloaltonetworks.com/category/malware-2/)\n\nTags: [AgentTesla,](https://unit42.paloaltonetworks.com/tag/agenttesla/) [Cortex,](https://unit42.paloaltonetworks.com/tag/cortex/) [Dridex,](https://unit42.paloaltonetworks.com/tag/dridex/) [Macros,](https://unit42.paloaltonetworks.com/tag/macros/) [Microsoft Excel,](https://unit42.paloaltonetworks.com/tag/microsoft-excel/) [next-generation firewall,](https://unit42.paloaltonetworks.com/tag/next-generation-firewall/) [WildFire](https://unit42.paloaltonetworks.com/tag/wildfire/)\n\nThis post is also available in: 日本語 [(Japanese)](https://unit42.paloaltonetworks.jp/excel-add-ins-malicious-xll-files-agent-tesla/)\n\n## Executive Summary\n\nBetween July 27 and Dec. 1, 2021, Unit 42 researchers observed a new surge of Agent Tesla and\nDridex malware samples, which have been dropped by Excel add-ins (XLL) and Office 4.0 macros.\nWe have found that the Excel 4.0 macro dropper is mainly used to drop Dridex, while the XLL\ndroppers are used to drop both Agent Tesla and Dridex. While malicious XLL files have been known\nfor quite some time, their reappearance in the threat landscape is a new trend and possibly indicates\na shift toward this infection vector.\n\nThe XLL files we observed were mainly distributed via emails that contain price quote luring contents\nsent from an abcovid[.]tech email address with the email subject “INQUIRY.” Targets of these emails\ninclude organizations in the following sectors: manufacturing; retail; federal, state and local\ngovernment; finance; pharmaceuticals; transportation; education; and several others across the\nUnited States, Europe and Southeast Asia. Furthermore, some of the malicious XLL files we have\n[seen abuse a legitimate open-source Excel add-in framework named Excel-DNA.](https://excel-dna.net/)\n\n\n-----\n\nThis blog is the first of a two-part series. Here, we take a look into the XLL file attributes, the abused\nlegitimate open-source framework and the final Agent Tesla payload. The second part of the series\nwill deal with the other infection flows, the XLL and Excel 4 (XLM) droppers that deliver Dridex\nsamples.\n\nPalo Alto Networks customers receive protections against the attacks discussed here through Cortex\nXDR or the [WildFire cloud-delivered security subscription for the Next-Generation Firewall.](https://www.paloaltonetworks.com/products/secure-the-network/wildfire)\n\nTypes of Attacks Covered [Malware,](https://unit42.paloaltonetworks.com/category/malware-2/) [Agent Tesla](https://unit42.paloaltonetworks.com/tag/agenttesla/)\n\nRelated Unit 42 Topics [Dridex,](https://unit42.paloaltonetworks.com/tag/dridex/) [Macros](https://unit42.paloaltonetworks.com/tag/macros/)\n\n## Table of Contents\n\nChains of Infection\n\nWhat Is XLL Again?\n\nMalicious Excel Add-In (XLL) Dropper\n\n- Excel-DNA\n\n- Jack Resource\n\nFinal Payload – Agent Tesla\n\n- String Decryption\n\n- Windows Vault\n\nConclusion\n\nIndicators of Compromise\n\nAdditional Resources\n\nAppendix A: Deobfuscated Code of the Function That Reads Windows Vault\n\n## Chains of Infection\n\nThe flow chart in Figure 1 shows the two possible chains of events we have observed during our\ninvestigation:\n\nA victim receives an email with a malicious attachment.\nThe attachment is either a malicious XLL or XLM file.\nIn the case of an XLL, when run it will either:\n\nDrop an intermediate dropper that in turn will drop an Agent Tesla payload.\n[Download Agent Tesla payload from Discord.](https://yoroi.company/research/office-documents-may-the-xll-technique-change-the-threat-landscape-in-2022/)\nDownload Dridex payload from Discord.\nIn the case of an XLM, when run it will drop a VBS downloader that downloads and executes a\nDridex sample from Discord.\n\nWhile Agent Tesla and Dridex infection chains are not necessarily distributed by the same actor, they\nseem to be part of a new trend of infection vectors.\n\n\n-----\n\nFigure 1. Chains of infection.\n\n## What Is XLL Again?\n\nXLL is an extension for Excel add-ins. In reality, XLL is just a regular PE-DLL file. The XLL file\nextension is associated with an icon very similar to other Excel-supported extensions. In turn, the\naverage user won’t notice any difference between XLL and other Excel file formats and can be lured\nto open it. This may be surprising, but Excel will gladly load and execute an XLL file upon doubleclicking.\n\nFigure 2. XLL icon.\n\n\n-----\n\nOnce the XLL is loaded by Excel, it will invoke the export functions of the XLL file based on the\n[defined XLL interface. Two of these interface functions stand out: xlAutoOpen and xlAutoClose.](https://docs.microsoft.com/en-us/office/client-developer/excel/add-in-manager-and-xll-interface-functions)\nThese functions get called once the add-in gets activated or deactivated, respectively. These\nfunctions can be used to load malicious code, similar to the methods Auto_Open and Auto_Close in\nclassic VBA macros.\n\nOne disadvantage of XLL files is that they can only be loaded by Excel with the correct bitness. For\nexample, a 64-bit XLL can only be loaded by the 64-bit version of Excel. The same goes for 32-bit\nversions. Therefore, malware authors have to rely on the Excel version that is installed on the\nvictim’s machine.\n\nLike with VBA macros, Excel will warn the user about the security concern arising from executing the\nadd-in. In that aspect, it has no advantage for malware compared to VBA macros.\n\nFigure 3. Warning by Excel while trying\n\nto execute an XLL file.\nFor the reasons described, XLL files can be a good choice for adversaries seeking to gain an initial\nfoothold on a victim machine. An attacker can get code packaged into a DLL loaded by Excel, which\nin turn may mislead security products that are not prepared to deal with this scenario.\n\nFigure 4 shows an example of an XLL file in a PE editor. Among other exported functions, we can\nfind the xlAutoOpen and xlAutoClose functions.\n\n\n-----\n\nFigure 4. Excel add-in exports as shown by the PE header editor CFF Explorer.\n\n## Malicious Excel Add-In (XLL) Dropper\n\nWe have observed malicious emails with the following XLL samples attached:\n\nSHA256: 7a6f8590d4be989faccb34cd393e713fd80fa17e92d7613f33061d647d0e6d12\n\nSHA256: fbc94ba5952a58e9dfa6b74fc59c21d830ed4e021d47559040926b8b96a937d0\n\n### Excel-DNA\n\nThe XLL sample we encountered utilizes a legitimate open-source framework for Excel add-in\n[development called Excel-DNA. The framework has several features that also suit malware authors.](https://excel-dna.net/)\nOne is the ability to load a compressed .NET assembly packaged in the PE resources directly to\nmemory without “touching” the disk. Therefore, despite being a legitimate framework, Excel-DNA has\nfunctionality that resembles malicious loaders and can be abused as a loader.\n\n\n-----\n\nExcel-DNA has another attribute that may hinder coverage with Yara, likely unknown even to the\nmalware authors. For some reason, many Excel-DNA samples have slightly more than 10,000\nexported functions, most of them without any meaningful functionality. The Yara PE module export\n[function parsing limit is only 8,192. Therefore, a Yara rule that targets a certain export name located](https://github.com/VirusTotal/yara/blob/master/libyara/modules/pe/pe.c#L98)\nat an index higher than 8192 will not match against the sample.\n\nWhen we look at the resources of our Excel-DNA XLL, we can see an XML resource named\n__MAIN__. This resource contains information about which module gets loaded by Excel-DNA. In\nour case, the specified module will be decompressed from a resource named JACK.\n\nThe resource will be decompressed using the LZMA algorithm and subsequently loaded to memory.\n\nFigure 5. Excel-DNA\n\nresources.\nWe have created Python code for the extraction of such assemblies from an Excel-DNA add-in. You\n[can find this script on the Unit 42 GitHub repo.](https://github.com/pan-unit42/iocs/tree/master/agent_tesla)\n\n### JACK Resource\n\nThe loaded module is a simple dropper. Upon loading the module, the AutoOpen method will be\ninvoked. The malicious code in this method drops the final payload executable into\n%AppData%\\service.exe and executes it (see Figure 6). It’s worth noting that the module contained\nin Jack is configurable, meaning in other versions it may download a payload instead of dropping it,\nas well as dropping a real Excel template and executing it.\n\nThe configuration is displayed in Figure 7, which contains the following options:\n\nbDown - Download the payload.\ntemplateEnabled - Drop and open an Excel template.\n\n\n-----\n\npayload - Contains the payload to be dropped.\n\nFigure\n\n6. Decompiled code of the JACK dropper module with the AutoOpen method, as shown by dnSpy.\n\nFigure 7. Dropper configuration variables and the final\n\npayload contained in a byte array.\n\n## Final Payload – Agent Tesla\n\nSHA256: AB5444F001B8F9E06EBF12BC8FDC200EE5F4185EE52666D69F7D996317EA38F3\n\nThe final payload is an obfuscated Agent Tesla sample. In terms of features, Agent Tesla is\n[extensively](https://news.sophos.com/en-us/2021/02/02/agent-tesla-amps-up-information-stealing-attacks/) [documented. Our sample exfiltrates the stolen data to the email](https://www.fortinet.com/blog/threat-research/new-agent-tesla-variant-spreading-by-phishing)\nphantom1248@yandex[.]com using the SMTP protocol. Figure 8 shows the decompiled entry point\nof our Agent Tesla sample. It is structured in a similar way to other Agent Tesla samples.\n\n\n-----\n\nFigure 8. Agent Tesla’s decompiled main function.\n\n### String Decryption\n\nThe Agent Tesla sample stores all of its strings in an encrypted form within a large array of\ncharacters.\n\nUpon initialization, the sample XORs each byte of the “large byte array” with the hard coded byte 170\nand the index (trimmed to byte size) of the character in the “large byte array.” Next, the sample fills\nan array that stores all the strings, by splicing the decrypted array in known offsets and\ncorresponding lengths. For instance, let’s examine the eight bytes in the offset 665:\n\nBefore execution (encrypted form) 28, 92, 94, 81, 25, 64, 88, 122\n\n\nUpon initialization\n(after decryption, XORed with the index and 170)\n\n\n47, 108, 111, 103, 46, 116, 109, 112\n\n\nASCII form after decryption /log.tmp\n\nThe code below assigns the 53rd member of the string’s array the eight bytes at offset 665 of the\ndecrypted byte-array.\n\nFigure 9. String assignment code.\nExamining the decrypted string array reveals the various targets that Agent Tesla aims to steal:\n\nSensitive browser information and cookies.\nMail, FTP and VPN client information.\n\n\n-----\n\nCredentials from Windows Vault.\nRecorded keystrokes and screenshots.\nClipboard information.\n\n### Windows Vault\n\nTo steal information from the Windows Vault, it appears that the Agent Tesla authors converted a\n[PowerSploit script into C# to build a .NET assembly.](https://github.com/PowerShellMafia/PowerSploit/blob/master/Exfiltration/Get-VaultCredential.ps1#L265)\n\nIt uses [P/Invoke to call API functions from the vaultcli.dll library. At first, VaultEnumerateItems will be](https://docs.microsoft.com/en-us/dotnet/standard/native-interop/pinvoke)\ncalled to get all available vaults. Next, each vault will be opened using VaultOpenVault. Once a vault\nis open, the contained items will be enumerated using VaultEnumerateItems. Finally, the attributes of\nthe items are read using VaultGetItem. Agent Tesla records the queries as items in its own list\n(manually deobfuscated code shown in Figure 10). The curious reader can find the fully\ndeobfuscated method in Appendix A.\n\nFigure 10. Deobfuscated Agent Tesla code for recording extracted Windows Vault items.\nBelow is the list of Windows Vault GUIDs (and corresponding descriptions) that Agent Tesla uses to\nsteal information:\n\n**GUID** **Description**\n\n2F1A6504-0641-44CF-8BB5-3612D865F2E5 Windows Secure Note\n\n3CCD5499-87A8-4B10-A215-608888DD3B55 Windows Web Password Credential\n\n154E23D0-C644-4E6F-8CE6-5069272F999F Windows Credential Picker Protector\n\n4BF4C442-9B8A-41A0-B380-DD4A704DDB28 Web Credentials\n\n77BC582B-F0A6-4E15-4E80-61736B6F3B29 Windows Credentials\n\nE69D7838-91B5-4FC9-89D5-230D4D4CC2BC Windows Domain Certificate Credential\n\n3E0E35BE-1B77-43E7-B873-AED901B6275B Windows Domain Password Credential\n\n3C886FF3-2669-4AA2-A8FB-3F6759A77548 Windows Extended Credential\n\n## Conclusion\n\n\n-----\n\nFor the recent surge of malware we observed, we analyzed the infection chain that uses Excel addins (XLL). We also described how the malware author abuses the legitimate Excel-DNA framework\nfor the creation of these malicious XLLs. Lastly, we briefly described the final Agent Tesla payload\nand which information it tries to exfiltrate from a victim’s system, with a focus on the Windows Vault\ndata. The usage of Excel add-ins in recent attacks may indicate a new trend in the threat landscape.\n\nIn the next part of this series, we will describe the other infection chain, which involves using Excel\n4.0 macros to deliver Dridex.\n\nPalo Alto Networks customers receive protections against the attacks discussed here through Cortex\nXDR or the [WildFire cloud-delivered security subscription for the Next-Generation Firewall.](https://www.paloaltonetworks.com/products/secure-the-network/wildfire)\n\nIf you think you may have been compromised or have an urgent matter, get in touch with the Unit 42\nIncident Response team or call North America Toll-Free: 866.486.4842 (866.4.UNIT42), EMEA:\n+31.20.299.3130, APAC: +65.6983.8730, or Japan: +81.50.1790.0200.\n\nPalo Alto Networks has shared these findings, including file samples and indicators of compromise,\nwith our fellow Cyber Threat Alliance members. CTA members use this intelligence to rapidly deploy\nprotections to their customers and to systematically disrupt malicious cyber actors. Learn more about\nthe [Cyber Threat Alliance.](http://www.cyberthreatalliance.org/)\n\n### Indicators of Compromise\n\n**Sample hash (SHA256)** **Description**\n\n7a6f8590d4be989faccb34cd393e713fd80fa17e92d7613f33061d647d0e6d12 XLL dropper\n\nfbc94ba5952a58e9dfa6b74fc59c21d830ed4e021d47559040926b8b96a937d0 XLL dropper\n\nbfc32aab4f7ec31e03a723e0efd839afc2f861cc615a889561b38430c396dcfe Intermediate\ndropper\n(Jack)\n\nAB5444F001B8F9E06EBF12BC8FDC200EE5F4185EE52666D69F7D996317EA38F3 Final Agent\nTesla\npayload\n\n### Additional Resources\n\n Appendix A: Deobfuscated Code of the Function That Reads Windows Vault\n\n[See more information on GitHub.](https://github.com/pan-unit42/iocs/tree/master/agent_tesla)\n\n**Get updates from**\n\n**Palo Alto**\n\n**Networks!**\n\nSign up to receive the latest news, cyber threat intelligence and research from us\n\n\n-----\n\n[By submitting this form, you agree to our Terms of Use and acknowledge our Privacy Statement.](https://www.paloaltonetworks.com/legal-notices/terms-of-use)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-01-25 - Weaponization of Excel Add-Ins Part 1- Malicious XLL Files and Agent Tesla Case Studies.pdf"
+    ],
+    "report_names": [
+        "2022-01-25 - Weaponization of Excel Add-Ins Part 1- Malicious XLL Files and Agent Tesla Case Studies.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "fce5181c-7aab-400f-bd03-9db9e791da04",
+            "created_at": "2022-10-25T15:50:23.759799Z",
+            "updated_at": "2025-03-27T02:00:55.540135Z",
+            "deleted_at": null,
+            "main_name": "Transparent Tribe",
+            "aliases": [
+                "Transparent Tribe",
+                "COPPER FIELDSTONE",
+                "APT36",
+                "Mythic Leopard",
+                "ProjectM"
+            ],
+            "source_name": "MITRE:Transparent Tribe",
+            "tools": [
+                "DarkComet",
+                "ObliqueRAT",
+                "njRAT",
+                "Peppy"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "c68fa27f-e8d9-4932-856b-467ccfe39997",
+            "created_at": "2023-01-06T13:46:38.450585Z",
+            "updated_at": "2025-03-27T02:00:02.836543Z",
+            "deleted_at": null,
+            "main_name": "Operation C-Major",
+            "aliases": [
+                "C-Major",
+                "Transparent Tribe",
+                "Mythic Leopard",
+                "ProjectM",
+                "APT 36",
+                "TMP.Lapis",
+                "Green Havildar",
+                "COPPER FIELDSTONE",
+                "APT36",
+                "Earth Karkaddan",
+                "Storm-0156"
+            ],
+            "source_name": "MISPGALAXY:Operation C-Major",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "abb24b7b-6baa-4070-9a2b-aa59091097d1",
+            "created_at": "2022-10-25T16:07:24.339942Z",
+            "updated_at": "2025-03-27T02:02:10.179404Z",
+            "deleted_at": null,
+            "main_name": "Transparent Tribe",
+            "aliases": [
+                "APT 36",
+                "APT-C-56",
+                "Copper Fieldstone",
+                "Earth Karkaddan",
+                "Green Havildar",
+                "Mythic Leopard",
+                "Operation C-Major",
+                "Operation Honey Trap",
+                "Operation Transparent Tribe",
+                "ProjectM",
+                "STEPPY-KAVACH",
+                "Storm-0156",
+                "TEMP.Lapis",
+                "Transparent Tribe"
+            ],
+            "source_name": "ETDA:Transparent Tribe",
+            "tools": [
+                "Amphibeon",
+                "Android RAT",
+                "Bezigate",
+                "Bladabindi",
+                "Bozok",
+                "Bozok RAT",
+                "BreachRAT",
+                "Breut",
+                "CapraRAT",
+                "CinaRAT",
+                "Crimson RAT",
+                "DarkComet",
+                "DarkKomet",
+                "ElizaRAT",
+                "FYNLOS",
+                "Fynloski",
+                "Jorik",
+                "Krademok",
+                "Limepad",
+                "Luminosity RAT",
+                "LuminosityLink",
+                "MSIL",
+                "MSIL/Crimson",
+                "Mobzsar",
+                "MumbaiDown",
+                "Oblique RAT",
+                "ObliqueRAT",
+                "Peppy RAT",
+                "Peppy Trojan",
+                "Quasar RAT",
+                "QuasarRAT",
+                "SEEDOOR",
+                "Scarimson",
+                "SilentCMD",
+                "Stealth Mango",
+                "UPDATESEE",
+                "USBWorm",
+                "Waizsar RAT",
+                "Yggdrasil",
+                "beendoor",
+                "klovbot",
+                "njRAT"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536056,
+    "ts_updated_at": 1743041159,
+    "ts_creation_date": 1653764604,
+    "ts_modification_date": 1653764604,
+    "files": {
+        "pdf": "https://archive.orkl.eu/702748edcd14909889c72b9b5e1d98faffd95999.pdf",
+        "text": "https://archive.orkl.eu/702748edcd14909889c72b9b5e1d98faffd95999.txt",
+        "img": "https://archive.orkl.eu/702748edcd14909889c72b9b5e1d98faffd95999.jpg"
+    }
+}

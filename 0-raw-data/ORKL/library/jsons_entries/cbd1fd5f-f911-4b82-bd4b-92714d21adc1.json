@@ -1,0 +1,156 @@
+{
+    "id": "cbd1fd5f-f911-4b82-bd4b-92714d21adc1",
+    "created_at": "2023-01-12T15:10:47.435234Z",
+    "updated_at": "2025-03-27T02:14:02.883296Z",
+    "deleted_at": null,
+    "sha1_hash": "6e0eca272f4b1ef240a4c1a867114507c8f9396b",
+    "title": "2015-10-06 - I am HDRoot! Part 1",
+    "authors": "",
+    "file_creation_date": "2022-05-28T21:46:18Z",
+    "file_modification_date": "2022-05-28T21:46:18Z",
+    "file_size": 492115,
+    "plain_text": "# I am HDRoot! Part 1\n\n**securelist.com/i-am-hdroot-part-1/72275/**\n\nAuthors\n\n[Dmitry Tarakanov](https://securelist.com/author/dmitryt/)\n\nSome time ago while tracking Winnti group activity we came across an intriguing sample.\n\n**MD5** **Size** **Linker** **Compiled on**\n\n**2C85404FE7D1891FD41FCEE4C92AD305** 241’904 10.00 2012-08-06 16:12:29\n\n**Property** **Value**\n\nCompanyName Microsoft Corporation\n\nFileDescription Net Command\n\nFileVersion 6.1.7600.16385 (win7_rtm.090713-1255)\n\nInternalName net.exe\n\nLegalCopyright © Microsoft Corporation. All rights reserved.\n\nOriginalFilename net.exe\n\nProductName Microsoft Windows Operating System® ®\n\n\n-----\n\nIt was protected by a commercial VMProtect Win64 executable signed with a known\ncompromised certificate from Chinese entity Guangzhou YuanLuo Technology. Moreover, the\nproperties of the executable read as if it were Microsoft’s Net Command net.exe, and even\nrunning the sample also resulted in output typical of the original net.exe utility:\n\n_Masquerading as net.exe_\n\nAll this pointed to the sample being rather suspicious.\n\n## Bootkit\n\nSince the code of the program was protected, an analysis of its functionality would have\nbeen an arduous task. But luckily a dump revealed some unique and quite important strings\nand four more samples hidden inside the initial one: Win32 and Win64 versions of one library\nand one driver:\n\n\n-----\n\n_Strings in malware body_\n\nThe strings led us to suspect that this sample was actually a bootkit installer. And thanks to\nsome clear artifacts we found a similar sample but with no code protection that confirmed our\nsuspicions.\n\nFirst of all, let’s run this tool:\n\n\n-----\n\n_Original HDD Rootkit output_\n\nThe program parameters are quite self-explanatory – this tool installs a bootkit that infects\nthe operating system during the boot stage with an arbitrary backdoor specified as a\nparameter. The backdoor has to be a Win32 executable or dynamic link library.\n\nThis utility is called “HDD Rootkit”; hence the base of our verdict names HDRoot. On 22\nAugust 2006 the version number was 1.2.\n\nSo, we can conclude that the protected version was the same utility modified for use on the\nvictim side to avoid revealing the intent of the tool in case someone outside the intruders’\ncircle discovered it.\n\nHDD Rootkit maintains a bunch of resources that also have quite telling names:\n\n_HDD Rootkit resources_\n\nAs it reads:\n\n“MBR” maintains the 1st piece of malicious code that is injected to the MBR of an infected\ncomputer;\n“BOOT” – 2nd piece of malicious booting code;\n“RKIMAGE” – 3rd piece of malicious booting code;\n“DLLLOAD” – Dynamic Link Library that is pushed by the malicious booting code into the file\nsystem and OS autorun.\n\nLet’s try running some executable with the help of a bootkit. In our experiment the role of the\nexecutable is played by a benign program that does nothing apart from create a file in the\nroot of the C: drive. I will try to run it using the HDD Rootkit utility with the following command\nline:\n\n_hdroot.exe inst write_to_c.exe c:_\n\n\n-----\n\ntelling it that I d like to install a bootkit on drive C: that will make the program write_to_c.exe\nrun on system startup.\n\n_Live installing of HDRoot bootkit_\n\nThe utility checks the free space left on the specified drive and refuses to install the bootkit\nwhen the value is less than 30% of overall volume.\n\n_Free space check_\n\n\n-----\n\nSo, now the bootkit has been installed. Let s take a look at what has happened. First of all,\npart of the code in the MBR is replaced with a malicious one from the resource “MBR”:\n\n_“MBR” resource_\n\nThe first 2 bytes EB 70 mean a jump to the 72nd offset where the rest of the 1st booting\ncode block is located. The zeros before 0x70 and after 0xB0 mean the code of the original\nMBR at these positions remains intact. The following image represents a patched MBR after\nthe bootkit is installed:\n\n\n-----\n\n_Injected malicious code in MBR_\n\nThis first piece loads the next booting code block that has been placed by the bootkit installer\nin the 11th sector (Offset: 0x1400 bytes). The 2nd block is taken from the resource “BOOT”.\n\n_2nd booting block_\n\n\n-----\n\nThe byte at 8th offset of the 2nd booting block is a drive number and the next DWORD is an\noffset in sectors where the next booting part is located. This example has the value 0x80,\nmeaning drive 0 and the offset 0x5FD9A0, which if multiplied by 0x200 bytes (size of sector)\nresults in 0xBFB34000. This is the offset in bytes from the beginning of the drive where the\nbootkit installer has put the 3rd booting block taken from its resource “RKIMAGE”.\n\nThe “RKIMAGE” resource has a large piece of code that implements a DLL injection (the\nDLL is taken from the “DLLLOAD” resource) into the file system and makes changes in the\nsystem registry so that DLL is loaded and run during system start-up. As that piece of code is\nexecuted at the early booting stage, there is no API for accessing the file system and the\ncode parses the file systems (FAT32 and NTFS) on its own.\n\n_Supported file systems_\n\nIt searches for the hardcoded special file whose content is replaced with the DLL taken from\na specified place on the disk. Most versions of HDRoot that we have found and detected use\nthe file %windir%\\WMSysPr9.prx for these purposes. Sometimes the DLL overwrites some\nexisting system library which is certainly not a safe way for malware to work because it could\ncause OS failure in some cases and alert the user to the infection. Among other files that can\nbe used for overwriting we have noticed:\n\n_%windir%\\twain.dll_\n_%windir%\\msvidc32.dll_\n_%windir%\\help\\access.hlp_\n_%windir%\\help\\winssnap.hlp_\n_%windir%\\system\\olesvr.dll_\n_%windir%\\syswow64\\C_932.NLS_\n_%windir%\\syswow64\\C_20949.NLS_\n_%windir%\\syswow64\\dssec.dat_\n_%windir%\\syswow64\\irclass.dll_\n_%windir%\\syswow64\\msvidc32.dll_\n_%windir%\\syswow64\\kmddsp.tsp_\n\nThe code then reads the content of the file %windir%\\system32\\config\\system that maintains\nthe content of the HKEY_LOCAL_MACHINE\\SYSTEM registry hive. Among other things the\nregistry hive contains information about installed services. There are numerous system\nservices that are started during OS logon as ServiceDll via svchost.exe where the path to the\nfunctional library to be run is specified in the ServiceDll registry value for a particular service.\n\n\n-----\n\nThe malicious booting code searches in the file _system for the hardcoded path to a system_\nlibrary associated with a system service and replaces that value with the path to the injected\nDLL (for example, %windir%\\WMSysPr9.prx). In all the versions we encountered we found\nthat HDRoot exploited the following services:\n\n\n**Internal service**\n**name**\n\n\n**Displayed service name** **Path to search for**\n\n\nwuauserv Automatic Updates system32\\wuauserv.dll\n\nLanManServer Server system32\\srvsvc.dll\n\nschedule Task Scheduler system32\\schedsvc.dll\n\n\nwinmgmt Windows Management\nInstrumentation\n\n\nsystem32\\wbem\\wmisvc.dll\n\n\nSo, when the operating system starts running services, instead of loading the original service\nDLL svchost.exe loads a malicious one. This malicious library does nothing apart from load\nand run a backdoor taken from a specified offset on the hard drive where the bootkit installer\nHDD Rootkit had placed it. We have found two versions of HDRoot with different methods of\ndoing this. The first one just saves the backdoor as a file %windir%\\temp\\svchost.exe and\nexecutes it with the help of the WinExec API function. By all appearances the malware\nauthor later decided that this approach is not the best way to run the backdoor because it is\nvisible to AV products and the fact that the application has started may be noticed when\ninspecting events in the system logs. The other version of the DLL does not drop the file but\nallocates a read backdoor in memory, prepares it for proper execution (loads libraries\naccording to the import table and fixes relocations) and runs it there on its own. This\napproach is much more clandestine as it substantially reduces the chances of discovering\nthe backdoor even if the DLL or poisoned MBR are detected.\n\nReturning to our experiment, when the command\n\n_hdroot.exe inst write_to_c.exe c:_\n\nhas been run, we restart the operating system. After the OS has loaded we can see the\nresult of running of our program write_to_c.exe, which behaves as though it were a\nbackdoor:\n\n\n-----\n\n_Created test file zzz.bin_\n\nThe file C:\\zzz.bin is seen immediately after Windows has loaded, which proves that the\nprogram write_to_c.exe has been successfully executed.\n\nThe whole process of the HDRoot infection is as follows:\n\n_HDRoot operation scheme_\n\nInterestingly, the malware does not have functionality to start the original service that was\nsubstituted during the boot process. Because the affected services are part of the OS,\nneglecting to do this could cause Windows to malfunction and reveal the infection. This is\neven stranger considering the malware does try to cover its tracks. Namely “tries”, because it\nfails to do so. The dropped DLL has a function to restore the original value of ServiceDll in\nthe registry, storing the path to the DLL associated with the service. But due to flawed code\nin the 3rd booting block (from “RKIMAGE”), which slightly patches the content of “DLLLOAD”\nbefore injecting, DLL starts holding the wrong data at hardcoded offsets and it prevents the\n\n\n-----\n\nDLL from finding the proper registry path to ServiceDll to restore the original value. That s\nwhy, for example, “C:\\WINDOWS\\WMSysPr9.prx” can still be viewed instead of\n“C:\\WINDOWS\\system32\\wuauserv.dll” after logging on to Windows:\n\n_Path remains to injected malicious DLL in registry_\n\n_Wrong registry path and value name_\n\n\n-----\n\n_Mistakenly overwritten registry SubKey with original value of ServiceDll_\n\nAs a result, we have to conclude that the malware was not created very carefully, which is\nnot what you expect from such a serious APT actor as Winnti. However, we have noticed the\nmalware author’s efforts to make this bootkit work properly at the booting stage to avoid\ncompletely blocking the OS from loading. But the mistakes mentioned above leave some\nquite conspicuous signs of infection on the compromised computer. For example, original\nservices such as Windows Update or Task Scheduler do not work, but it appears nobody\nnoticed them.\n\nDuring the investigation we found several backdoors that the HDRoot bootkit used for\ninfecting operating systems. These malicious programs will be described in the next part of\nour article.\n\n[APT](https://securelist.com/tag/apt/)\n[Bootkit](https://securelist.com/tag/bootkit/)\n[Cyber espionage](https://securelist.com/tag/cyber-espionage/)\n[Digital Certificates](https://securelist.com/tag/digital-certificates/)\n[HDRoot](https://securelist.com/tag/hdroot/)\n[Malware](https://securelist.com/tag/malware/)\n[Rootkits](https://securelist.com/tag/rootkits/)\n[Targeted attacks](https://securelist.com/tag/targeted-attacks/)\n[Winnti](https://securelist.com/tag/winnti/)\n\nAuthors\n\n[Dmitry Tarakanov](https://securelist.com/author/dmitryt/)\n\nI am HDRoot! Part 1\n\nYour email address will not be published. Required fields are marked *\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2015/2015-10-06 - I am HDRoot! Part 1.pdf"
+    ],
+    "report_names": [
+        "2015-10-06 - I am HDRoot! Part 1.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "5bbced13-72f7-40dc-8c41-dcce75bf885e",
+            "created_at": "2022-10-25T15:50:23.695735Z",
+            "updated_at": "2025-03-27T02:00:55.525839Z",
+            "deleted_at": null,
+            "main_name": "Winnti Group",
+            "aliases": [
+                "Winnti Group"
+            ],
+            "source_name": "MITRE:Winnti Group",
+            "tools": [
+                "PipeMon",
+                "Winnti for Windows",
+                "PlugX"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "945a572f-ebe3-4e2f-a288-512fe751cfa8",
+            "created_at": "2022-10-25T16:07:24.413971Z",
+            "updated_at": "2025-03-27T02:02:10.212853Z",
+            "deleted_at": null,
+            "main_name": "Winnti Group",
+            "aliases": [
+                "Wicked Panda",
+                "Winnti Group"
+            ],
+            "source_name": "ETDA:Winnti Group",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "FunnySwitch",
+                "RbDoor",
+                "RibDoor",
+                "RouterGod",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "4c68ccd0-caba-4189-9ead-86ac4c2d9b70",
+            "created_at": "2024-05-01T02:03:07.930196Z",
+            "updated_at": "2025-03-27T02:05:17.251237Z",
+            "deleted_at": null,
+            "main_name": "BRONZE ATLAS",
+            "aliases": [
+                "Axiom",
+                "BARIUM ",
+                "Blackfly ",
+                "CTG-2633",
+                "GREF",
+                "Group 72 ",
+                "Red Kelpie ",
+                "TG-2633 ",
+                "Wicked Panda ",
+                "Winnti",
+                "APT41 "
+            ],
+            "source_name": "Secureworks:BRONZE ATLAS",
+            "tools": [
+                " CCleaner v5.33 backdoor",
+                " ChinaChopper",
+                " Cobalt Strike",
+                " Dicey MSDN",
+                " ForkPlayground",
+                " HUC Proxy Malware (Htran)",
+                " Mimikatz",
+                " PipeMon",
+                " PlugX",
+                " PortReuse",
+                " Powershell Empire",
+                " RCMD",
+                " RbDoor",
+                " SPEEDBOAT",
+                " ShadowPad",
+                " Sidewalk",
+                " Speculoos",
+                " TeamViewer",
+                " Winnkit",
+                " Winnti",
+                " reg save",
+                " vssadmin",
+                "Acehash"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536247,
+    "ts_updated_at": 1743041642,
+    "ts_creation_date": 1653774378,
+    "ts_modification_date": 1653774378,
+    "files": {
+        "pdf": "https://archive.orkl.eu/6e0eca272f4b1ef240a4c1a867114507c8f9396b.pdf",
+        "text": "https://archive.orkl.eu/6e0eca272f4b1ef240a4c1a867114507c8f9396b.txt",
+        "img": "https://archive.orkl.eu/6e0eca272f4b1ef240a4c1a867114507c8f9396b.jpg"
+    }
+}

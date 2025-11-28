@@ -1,0 +1,42 @@
+{
+    "id": "b6984773-62fc-43ee-8d3b-de66514afb00",
+    "created_at": "2023-01-12T15:01:12.04928Z",
+    "updated_at": "2025-03-27T02:06:05.141001Z",
+    "deleted_at": null,
+    "sha1_hash": "4e15646f727f8da2b2ac5fd71e1b784ed29d39e5",
+    "title": "2020-05-20 - Unloading the GuLoader",
+    "authors": "",
+    "file_creation_date": "2022-05-28T04:58:01Z",
+    "file_modification_date": "2022-05-28T04:58:01Z",
+    "file_size": 1971577,
+    "plain_text": "# Unloading the GuLoader\n\n**labs.vipre.com/unloading-the-guloader/**\n\nPosted by VIPRE Labs\n\nWe recently came across a spike of spam email samples containing GuLoader. This malware\nwas discovered last year in 2019 and became more popular among cyber criminals during\nthe coronavirus outbreak. GuLoader is usually attached to a spam email related to bill\npayments, wire transfers or COVID malspam (you can see a detailed analysis of the COVID\nmalspam here). GuLoader is written in VB5/6 and compressed in a .rar/.iso file. We can see\non the graph below the increase of GuLoader which our customers have received:\n\n**Figure 1.0 Data collected from January to April 2020 showing the increase in**\n**GuLoader related samples**\n\n\n-----\n\n-----\n\n**Figure 2.0 Spam emails containing GuLoader**\n\nGuloader is popular for distributing Remote Access Trojan (RAT) tools. These allow the\nattackers to control, monitor, or steal information from the infected machine. This malware\ndownloader utilizes cloud hosting services (Microsoft OneDrive or Google Drive) to keep its\npayload encrypted.\n\n## Dig Deeper Inside of GuLoader\n\nAnalyzing the GuLoader sample, the malware is indeed a VB5/6 executable. Also, a\ncompiled Visual Basic sample can be recognized by an imported DLL\ncalled MSVBVM60.DLL.\n\n\n-----\n\n**Figure 3.0 GuLoader sample written in VB5/6 and the msvbvm60.dll**\n\nAnalyzing further, we’ve found the malware’s encrypted malicious code. This malware\nallocates virtual memory and decrypts the encrypted malicious code using XOR.\n\nThe decrypted code will be in virtual memory 0x350000. Checking this memory in memory\nmap, it has read, write, and execute (RWE) access. We’ve now dumped the decrypted code\nto conduct analysis.\n\n\n-----\n\n**Figure 6.0 The dumped memory and the familiar strings that were found in the**\n**decrypted code**\n\nChecking the strings on the decrypted code, we can see clearly the cloud hosting service\nURL that stores the encrypted payload (hxxps://drive[.]google[.]com/uc?\n_export=download&id=19sVk-ZTWHVl3_ITBst1x51qX2L28yNlw). We can also see familiar_\nDLLs like wininet.dll and APIs like InternetOpenA, InternetOpenUrlA, InternetSetOptionA etc.\nThe wininet.dll contains internet related functions like InternetOpenA and these functions will\nprobably be used to connect to the URL that contains the encrypted payload.\n\nAnalyzing what’s inside of the decrypted code, we can see that the malware will find the\nGetProcAddress function in kernel32.dll because GetProcAddress is important in finding and\ncalling other API functions. In order to do this, the malware will first access the Process\nEnvironment Block (PEB) -> LDR data -> InMemoryOrderModuleList and then get the\naddress of the module kernel32.dll.\n\n**Figure 7.0 Accessing the PEB and getting the address of kernel32.dll**\n\nAfter obtaining the address of kernel32.dll and finding GetProcAddress in kernel32.dll, the\nmalware will resolve the following series of APIs:\n\nLoadLibraryA\nTerminateProcess\nEnumWindows\nNtProtectVirtualMemory\n\n\n-----\n\nNtSetInformationThread\nNtAllocateVirtualMemory\nDbgBreakPoint\nDbgUiRemoteBreakin\n\nAfter this, we ran into some anti-analysis techniques. The anti-analysis was used by malware\nauthors to make it more difficult to analyze the malware.\n\nHere are some of the techniques we encountered:\n\nAn anti-debugger that hides the thread from the debugger. In order to perform this, the\nAPI NtSetInformationThread is needed. They set the second parameter\n(ThreadInformationClass) to 0x11 which is equivalent to ThreadHideFromDebugger. It\nwill hide the thread from the debugger so it can’t be easily debugged. For example, the\nthread will continue to run, but the debugger will not be able to receive any events\nrelated to the thread.\n\n**Figure 8.0 Calling of NtSetInformationThread to hide the thread from the debugger**\n\nThread attach in a debugger can be seen in the thread window. On figure 9.0, we can\nsee the before and after the thread is hidden from the debugger. The before part is\nwhere we can see the main thread and its thread ID which is 11DC. The after part is\nwhere the main thread is hidden from the debugger.\n\n**Figure 9.0 Before and after the hiding of thread**\n\n\n-----\n\nThere s another technique that will first call the NtProtectVirtualMemory function to set\nthe permission of ntdll’s .text section as PAGE_EXECUTE_READWRITE. The ntdll.dll\ncontains the following APIs, DbgBreakPoint and DbgUiRemoteBreakin, that will be\nused to perform anti-attach. The malware prevents the debugger from attaching to a\nprocess by hooking the DbgBreakPoint and DbgUiRemoteBreakin functions. For\nexample, it will patch DbgBreakPoint and DbgUIRemoteBreakin functions that will\ntrigger the process to exit or to designate an unknown location. Like in figure\n_12.0, DbgUIRemoteBreakin will call 0x00000000 address and exit._\n\nGuLoader will create a folder in the C:\\Users directory and the created folder contains a copy\nof the malware itself. It will also achieve persistence by modifying the registry key\nHKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce\n\n**Figure 13 0 The created folder containing the created malware copy**\n\n\n-----\n\n**Figure 14.0 Achieving malware persistence**\n\n[Now GuLoader implements process hollowing:](https://labs.vipre.com/?s=process+hollowing)\n\n\n-----\n\nThe child process (for this sample it’s RegAsm.exe) downloads and decrypts the encrypted\npayload from a cloud hosting service, and maps the decrypted payload into memory to\nexecute.\n\n\n-----\n\n**Figure 10.0 The cloud hosting service storing the encrypted payload**\n\n[The common GuLoader payloads are Formbook, NetWire, Remcos, Lokibot etc.](https://labs.vipre.com/business-email-compromise-img-file-attachment-contains-remcos/)\n\n### IOCs:\n\n**URLs**\n\nhxxps://onedrive[.]live[.]com/download?\ncid=1491235303209D1A&resid=1491235303209D1A!109&authkey=ACw2GiM8jfgliBs\n\nhxxps://drive[.]google[.]com/uc?\nexport=download&id=1EQ7DIlAk9lk2E52DQLELmB02ADqw-62s\nhxxps://drive[.]google[.]com/uc?export=download&id=19sVkZTWHVl3_ITBst1x51qX2L28yNlw\n\n**Samples**\n\nIMG and ISO Files\n\n466a8de97917fdbc706ccad735ef08a4b049f802d01a03e4f611f75a132e4839\n7aadacc7c5bb0c0319f8943d3c65ef2d41d49b1c470210e70e250dd665f167fe\nEXE Files\n\n503f94f00304bc18900c3494f2da5bcb1d8a103a0b15ce00bbdaeb5dfd8d9b7b\ncbffd8f471de9728610b1edd4519f65399a8e64e46177e1178685ef6b081065b\n\nVIPRE detects and prevents this kind of malware and associated infections.\n\nAnalysis by #Farrallel\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-05-20 - Unloading the GuLoader.pdf"
+    ],
+    "report_names": [
+        "2020-05-20 - Unloading the GuLoader.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673535672,
+    "ts_updated_at": 1743041165,
+    "ts_creation_date": 1653713881,
+    "ts_modification_date": 1653713881,
+    "files": {
+        "pdf": "https://archive.orkl.eu/4e15646f727f8da2b2ac5fd71e1b784ed29d39e5.pdf",
+        "text": "https://archive.orkl.eu/4e15646f727f8da2b2ac5fd71e1b784ed29d39e5.txt",
+        "img": "https://archive.orkl.eu/4e15646f727f8da2b2ac5fd71e1b784ed29d39e5.jpg"
+    }
+}

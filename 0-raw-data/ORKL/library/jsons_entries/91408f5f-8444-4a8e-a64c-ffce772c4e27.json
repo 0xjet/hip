@@ -1,0 +1,67 @@
+{
+    "id": "91408f5f-8444-4a8e-a64c-ffce772c4e27",
+    "created_at": "2023-01-12T15:09:24.948942Z",
+    "updated_at": "2025-03-27T02:08:41.339449Z",
+    "deleted_at": null,
+    "sha1_hash": "eb5880b04c2face8a6a6db75e071f96cb03f082b",
+    "title": "2022-02-04 - N-W0rm analysis (Part 2)",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:14:29Z",
+    "file_modification_date": "2022-05-28T19:14:29Z",
+    "file_size": 2110826,
+    "plain_text": "# N-W0rm analysis (Part 2)\n\n**secuinfra.com/en/techtalk/n-w0rm-analysis-part-2/**\n\n04.02.2022\n\nBefore we analyze this RAT in-depth, we will show an overview of its behavior as a diagram.\nThis can help to understand its inner working at a more high-level view:\n\n\n-----\n\n-----\n\nTo analyze this sample, we will open it with dnSpy to decompile and possibly debug it.\n\n## Entry Point\n\nWe will first begin at the entry point of this RAT and analyze its executed code before we\njump into all possible modules this RAT possesses. To jump to the entry point we can rightclick on the class menu on the left and select Go to Entry Point:\n\n\n-----\n\nFigure 1: How to get to the Entry Point\n\nDoing so will lead us to the first called function called uLnqUtvIwAOVXLU. To make things\nmore understandable we have pasted it below. It starts by sleeping for 2 seconds before\ncalling hlIinikmNYFRC.gwgzcfkYmyQKIgW(). If this function returns False, then the RAT\nexists, which means that this function is probably going to do some environment checks.\nLet’s start by examining what the RAT is checking.\n\n\n-----\n\nFigure 2: Entry Point\n\n### hlIinikmNYFRC.gwgzcfkYmyQKIgW()\n\nThe content of the function can be seen below. The RAT is trying to create a new Mutex. The\nname of the Mutex can be found in the variable hlIinikmNYFRC.HREdkIUrRAzFBOcfZ and\nis 2e3fb6d0. This makes a great IOC.\n\nFigure 3: Mutex Creation\n\nIf the Mutex is already created, the result will be False, but if the Creation of The Mutex is\nsuccessful, the result will be True. In conclusion the entry point is checking if the Mutex\nalready exists, i.e. if the system was already infected with this RAT.\n\n### hlIinikmNYFRC.ATCCkfeyJnyt()\n\nIf the Mutex check is passed, the RAT will call hlIinikmNYFRC.ATCCkfeyJnyt() and pass an\nenum. This is just a wrapper to call SetThreadExecutionState. According to the Microsoft\ndocs this function is doing the following:\n\n_“Enables an application to inform the system that it is in use, thereby preventing the system_\n_from entering sleep or turning off the display while the application is running.”_\n\n\n-----\n\nLastly, the entry point starts a new thread and passes control to\n**hlIinikmNYFRC.fqLxpecOTiCgE**\n\n### hlIinikmNYFRC.fqLxpecOTiCgE\n\nThis function starts with an infinite loop and is basically responsible for getting the\ncommands and interpreting them. If the connection is not setup or is disconnected it will be\nreset. Here we also learn the C2 address used by this RAT:\n\nnyanmoney02[.]duckdns.org\n\nAt this point, there is an interesting observation. If the connection to the C2 fails, a secondary\nC2 address will be used. However, this fallback address is the same as the primary one. So,\neither the author of the malware forgot to change the failback address or this version of the\nRAT is just some alpha/beta version.\n\nWe will not analyze the socket handling in-depth here but instead take a further look at all the\ninformation the RAT sends to its operator and the function that handles the received\ncommands.\n\n## Information Gathering\n\nIf the RAT is creating a new connection or reconnecting it sends some general information\nabout the host to its C2. We will not go through each function line by line but rather\nsummarize what information is collected and sent back:\n\nUser Domain Name\nUsername\nProcessor count\nOS full name\nIs user admin?\nVersion of the RAT (the analyzed RAT has the version v0.3.8)\nList of installed antivirus products using a WMI query\nLast write time of RAT on disk\nPath of the RAT on disk\n\n## Modules\n\nBefore we explain all available modules, we will first look at the preprocessing of the\nreceived data.\n\n\n-----\n\nFigure 4: Preprocessing of received Data\n\nBefore any module is executed, a further function is called, and the input is split. The function\n**GYZswDqNcBskynCV() is responsible for sending the string “received” to its C2 and to**\nsleep for 1 second. Next, we split the input by a hardcoded delimiter that is “|NW|”. The first\nvalue in this list is the key or rather the module that should be run. All further data will be\nused as parameters for the chosen module. We will now explain all modules in-depth.\n\n**runFile**\n\nFigure 5: Module runFile\n\nThis module is further divided into multiple options. The RAT can execute binaries directly inmemory or first write the data to disk and execute it from there. If the passed file was a\nPowerShell script, the typical arguments are used. Lastly, if array[3] is true, then the RAT will\ndelete itself.\n\n**runUrl**\n\n\n-----\n\nThis module is pretty similar to the previous one, except that the operator passes an URL,\nand the RAT downloads the file itself and executes it.\n\n**plugin**\n\nHere the operator can load further plugins into this .NET binary and hence extend the\nfunctionality.\n\n**close**\n\nThis module does what the name suggests. It closes the Mutex and the TcpClient and then\nexits.\n\n**restart**\n\nCalling this module also first closes the Mutex and TcpClient and then creates a batch file in\nthe %temp% directory.\n\nFigure 6: Temp Batch Script\n\nAfter the batch file has been started the program kills itself.\n\n**del**\n\nThis module deletes the RAT and closes the Mutex and TcpClient.\n\n**ps1**\n\nExecutes the provided ps1 File.\n\n**url**\n\nHere the content of a passed URL is downloaded. However, it appears nothing happens if\nthe request was successful.\n\nFigure 7: Module url (decompiled with DnSpy)\n\n\n-----\n\nTo verify that this is not just some bugged decompilation, I checked my results with ILSpy.\nThe result is more or less the same. Either this method is not finished or it is just used to\nverify that there is a connection (maybe for sandbox testing?).\n\nFigure 8: Module url (decompiled with ILSpy)\n\n**killer**\n\nThis function does what it says, it kills a lot of stuff.\n\nFirst, it iterates over all processes and applies some checks to the name of the process. If\nthe FileName attribute of the process satisfies one of the below checks and the window of\nthe process is not visible, then the next block is entered:\n\nthe path contains “wscript.exe”\nthe path contains the User Profile Path (i.e. C:\\Users\\<USER>)\nthe path contains the Common Application Data Path (i.e. C:\\ProgramData).\n\nNow, if these checks are true, then the process is killed, the program is deleted and the\nprogram is removed from the Run and RunOnce registry key located at the following paths:\n\nSoftware\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run\nSoftware\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\RunOnce\n\nAfter the iteration through all processes, the RAT sends the number of killed processes to its\nC2.\n\n\n-----\n\nFigure 9: Module killer\n\n## IOC\n\n**Memory**\n\nMutex: 2e3fb6d0\n\n**Network**\n\nnyanmoney02[.]duckdns.org\n\nMozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)\nChrome/76.0.3809.100 Safari/537.36\n\nPort: 9031\n\n**Yara**\n\n[You can find a complete Yara rule here -> SECUINFRA Falcon Team Git](https://github.com/SIFalcon/Detection/blob/main/Yara/RAT/n-w0rm.yar)\n\nfazitanfang\n\n## Series overview\n\n[N-W0rm analysis Part 1](https://www.secuinfra.com/en/techtalk/n-w0rm-analysis-part-1/)\n\nfazitende\n\n[SECUINFRA Falcon Team · Author](https://www.secuinfra.com/en/author/si_falcon_tm/)\n\nDigital Forensics & Incident Response Experten\n\n\n-----\n\nNeben den Tätigkeiten, die im Rahmen von Kundenaufträgen zu verantworten sind, kümmert\nsich das Falcon Team um den Betrieb, die Weiterentwicklung und die Forschung zu diversen\nProjekten und Themen im DF/IR Bereich.\n\nDas SECUINFRA Falcon Team ist auf die Bereiche Digital Forensics (DF) und Incident\nResponse (IR) spezialisiert. Hierzu zählen die klassische Host-Based Forensik, aber auch\nThemen wie Malware Analysis oder Compromise Assessment gehören zu diesem\nAufgabengebiet. Neben den Tätigkeiten, die im Rahmen von Kundenaufträgen zu\nverantworten sind, kümmert sich das Falcon Team um den Betrieb, die Weiterentwicklung\nund die Forschung zu diversen Projekten und Themen im DF/IR Bereich. Dazu zählen\nbeispielsweise Threat Intelligence oder die Erstellung von Erkennungsregeln auf Basis von\nYara.\nDigital Forensics & Incident Response experts\n\nIn addition to the activities that are the responsibility of customer orders, the Falcon team\ntakes care of the operation, further development and research of various projects and topics\nin the DF/IR area.\n\nThe SECUINFRA Falcon Team is specialized in the areas of Digital Forensics (DF) and\nIncident Response (IR). This includes classic host-based forensics, but also topics such as\nmalware analysis or compromise assessment. In addition to the activities for which we are\nresponsible within the scope of customer orders, the Falcon team is also responsible for the\noperation, further development and research of various projects and topics in the DF/IR area.\nThese include, for example, threat intelligence or the creation of detection rules based on\nYara.\n- [All posts](https://www.secuinfra.com/en/author/si_falcon_tm/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-02-04 - N-W0rm analysis (Part 2).pdf"
+    ],
+    "report_names": [
+        "2022-02-04 - N-W0rm analysis (Part 2).pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536164,
+    "ts_updated_at": 1743041321,
+    "ts_creation_date": 1653765269,
+    "ts_modification_date": 1653765269,
+    "files": {
+        "pdf": "https://archive.orkl.eu/eb5880b04c2face8a6a6db75e071f96cb03f082b.pdf",
+        "text": "https://archive.orkl.eu/eb5880b04c2face8a6a6db75e071f96cb03f082b.txt",
+        "img": "https://archive.orkl.eu/eb5880b04c2face8a6a6db75e071f96cb03f082b.jpg"
+    }
+}

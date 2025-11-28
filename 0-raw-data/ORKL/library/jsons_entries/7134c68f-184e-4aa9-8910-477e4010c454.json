@@ -1,0 +1,160 @@
+{
+    "id": "7134c68f-184e-4aa9-8910-477e4010c454",
+    "created_at": "2023-01-12T15:08:17.651049Z",
+    "updated_at": "2025-03-27T02:05:49.713531Z",
+    "deleted_at": null,
+    "sha1_hash": "f14c648246eb905424ea1fbe7c56a08cfa22bc1c",
+    "title": "2020-11-27 - Having fun with a Ursnif VBS dropper",
+    "authors": "",
+    "file_creation_date": "2022-05-28T01:31:23Z",
+    "file_modification_date": "2022-05-28T01:31:23Z",
+    "file_size": 2537226,
+    "plain_text": "# Having fun with a Ursnif VBS dropper\n\n**[malware.love/malware_analysis/reverse_engineering/2020/11/27/analyzing-a-vbs-dropper.html](https://malware.love/malware_analysis/reverse_engineering/2020/11/27/analyzing-a-vbs-dropper.html)**\n\nNovember 27, 2020\n\n27 Nov 2020 » [malware_analysis,](https://malware.love/category/malware_analysis) [reverse_engineering](https://malware.love/category/reverse_engineering)\nI recently stumbled across an interesting sample that was delivered as part of an encrypted\nzip archive via a Google-Drive link. The password for the archive was sent by email\ntogether with the Google-Drive link. Since the sample runs only partially in some sandboxes\nand it’s not even starting in others, I took a closer look at it.\n\nThe sample can be found on VirusTotal and there are still only ten detections so far (even\nthough it’s on VT for two months now).\n\nfd490c7b728af08052cf4876c1fc8c6e290bde368b6343492d60fc9d8364a7e5 aPsYyn8Rw2Xf.vbs\n\nLooking at the file extension, you could already guess it’s a Visual Basic Script file, which\nhowever appears unusually large. Due to the size, the actual payload is most probably\nsomehow hidden in the VBS file so lets have a look into the file.\n\n## Deobfuscation\n\nScrolling through the file we see lots of useless comments, some array definitions, some\nconstant definitions and a for loop.\n\n\n-----\n\nTo get rid of all the useless code, I wrote a quick’n’dirty python tool to remove all the junk\ncode and convert the remaining code to python for easier analysis. Since the constant and\narray definitions are mixed up in the code, we have to restructure them. I moved all const\ndefinitions to the beginning followed by the array definitions, the function calls and\neverything else at the end.\n\n\n-----\n\n```\nf open( aPsYyn8Rw2Xf.vbs, r )\nconst_lines = []\narray_lines = []\nexecute_lines = []\nloop_lines = []\neverything_else = []\nfor line in f:\n  if not (line.startswith(\"'\") or line.startswith(\"REM\")):\n    if \"const\" in line:\n      const_lines.append(line.replace(\"const\", \"\").replace(\"\\n\", \"\").replace(\"\n\", \"\"))\n    elif \"Array(\" in line:\n      array_lines.append(line.replace(\"Array(\", \"[\").\n                replace(\")\", \"]\").replace(\"\\n\", \"\").strip())\n    elif \"Execute\" in line:\n      execute_lines.append(line.replace(\"Execute\", \"print\").replace(\"\\n\",\n\"\").strip())\n    elif line.startswith(\"for\"):\n      loop_lines.append(line.replace(\"\\n\", \"\").strip())\n    else:\n      everything_else.append(line.replace(\"\\n\", \"\"))\nfor item in const_lines:\n  print(item)\nfor item in array_lines:\n  print(item)\nfor item in execute_lines:\n  print(item)\nfor item in loop_lines:\n  print(item)\nfor item in everything_else:\n  if len(item) > 0:\n    print(item)\n\n```\nAfter running the python script, we will get a new cleaned up code which is almost runnable\nin python.\n\n\n-----\n\nAt the end we can spot a function `kuHKE() which is called several times and is taking an`\narray as an argument. This is most probably the function which is used for decoding all the\narrays. Another thing here to mention are the function calls at the end of the cleaned code.\nThose will be relevant later when we have the final deobfuscated code.\n\nSo let’s rewrite the `kuHKE() function into python and remove the function calls at the end.`\n```\ndef kuHKE(EUnWxs):\n  result = \"\"\n  for Mali842 in EUnWxs:\n    result += chr(Mali842 - ((26 + 30) - ((17 - 1) + 35)))\n  return result\n\n```\nAfter executing the cleaned code, we still get a little bit of obfuscated code but since it’s not\nvery much, we can easily do it manually.\n\n[So the final deobfuscated but still not annotated code can be found here. I will break it down](https://gist.github.com/lazydaemon/7493bcdc604c5e9f6cf89dd7aaf26724)\ninto the most interesting things since it will be too much otherwise.\n\n\n-----\n\n## Analysis\n\nThe sample contains several anti-sandbox tricks and uses WMI and WSH objects to\nperform them. If one of those anti sandbox tricks succeed, the script will call a clean up\nroutine which looks as follows (I have annotated the function accordingly for better\nreadability):\n```\nFunction clean_up_routine()\n  send_http_get_request(\"none\")\n  delete_itself\n  print_fake_message\n  WScript.Quit\nEnd Function\n\n```\nIt’s sending a HTTP GET request to `none (for whatever reason), deleting itself and`\nshowing a fake error message in a message box:\n\nIn the following, I explain the functions in the order in which they are called.\n\n**1. Anti Sandbox - Check physical space**\n\nThe first function `NoSkh() is calling the clean up routine when the file`\n```\n\"%USERPROFILE%\\Downloads\\614500741.txt\" is already there or when your\n\n```\nTotalPhysicalMemory is smaller than 1GB.\n\n\n-----\n\n**2. Anti Sandbox - Check Disk space**\n\nIf your TotalPhysicalMemory is bigger than 1GB, the next function `vgdKyGt() is called`\nwhich is terminating the script if your total disk space is smaller than 60GB.\n\n**3. Anti Sandbox - Check country code**\n\nWhen the first two anti sandbox checks were not successful, the next function `ULLhsI()`\nis called. It checks your configured country code at `\"HKEY_CURRENT_USER\\Control`\n```\nPanel\\International\\Geo\\Nation\" . If your nation key is configured to 203, which is\n\n```\nRussia, the script is terminating with its clean up routine. Otherwise it will proceed.\n\n**4. Anti Sandbox - Check LastBootUpTime**\n\nThe next function `OUbPa() checks how long your machine is already running. Therefor,`\nit’s checking the LastBootUpTime via WMI and if it’s less than 10 minutes, it will terminate\ncalling its clean up routine.\n\n**5. Anti Sandbox - Check Processes**\n\nSince the malware does not want to run on an analyst system the function\n```\nconfidante615() is checking for specific processes from analysis tools.\nrZRjk = Array(\"frida-winjector-helper-64.exe\",\"frida-winjector-helper32.exe\",\"pythonw.exe\",\"pyw.exe\",\"cmdvirth.exe\",\"alive.exe\",\"filewatcherservice.exe\",\"\nrelease.exe\",\".exe\",\"prince.exe\",\"snoop.exe\",\"autoscreenshotter.exe\",\"idag.exe\",\"proc\n\n```\nIf there is such a process, it’s terminating with its clean up routine. Additionally, it will\nterminate if there are less than 28 processes running on the system.\n\n**Finally..**\n\nThe next function `qlqDsdN() is terminating if the file` `%TEMP%\\microsoft.url exists. If`\nnot, it creates a shortcut file `%TEMP%\\adobe.url which points to` `https://adobe.com`\n(No idea why. If someone knows, please tell me. Maybe a red herring but nobody is looking\ninto the %TEMP% folder, so why!?).\n\n\n-----\n\nThe function `WjwMtT() is making use of the before mentioned` `kuHKE() function to write`\na large byte array to a zip file `%TEMP%\\Monica.zip . Inside` `Monica.zip, there are three`\nfiles:\n\naccouter.dxf (the final payload)\ninhibitory.tif (contains part of a string which may be used from `accouter.dfx )`\nisolate.woff (the other part of a string which may be used from `accouter.dfx )`\n```\nbluish578() copies the three items of Monica.zip into %TEMP%, deletes\nMonica.zip and gMcKFIz() ` finally executes the file accouter.dxf which was before\n\n```\ncopied from Monica.zip into `%TEMP% .`\n\nExecution is performed via `rundll32 :`\n```\nsXmEKs.Create \"rundll32\" + \" \" + Get_Temp_Folder + \"accouter.dxf\" +\n\",DllRegisterServer\"\n\n```\nThe dropped file `accouter.dfx can be found on VT and it seems like its Ursnif.`\n\n_IOCs:_\n```\nfd490c7b728af08052cf4876c1fc8c6e290bde368b6343492d60fc9d8364a7e5\n%TEMP%\\adobe.url\n%TEMP%\\Monica.zip\n%TEMP%\\accouter.dfx\n%TEMP%\\inhibitory.tif\n%TEMP%\\isolate.woff\ned7d22c2f922df466fda6914eb8b93cc27c81f16a60b7aa7eac9ca033014c22c\n\n```\n**Related Posts**\n\n[Python stealer distribution via excel maldoc (Categories:](https://malware.love/malware_analysis/reverse_engineering/2021/05/19/unknown-python-stealer.html) [malware_analysis,](https://malware.love/category/malware_analysis.html)\n[reverse_engineering)](https://malware.love/category/reverse_engineering.html)\n[Trickbot tricks again [UPDATE] (Categories: malware_analysis,](https://malware.love/malware_analysis/reverse_engineering/2020/11/22/trickbot-fake-ips-part2.html) [reverse_engineering)](https://malware.love/category/reverse_engineering.html)\n[Trickbot tricks again (Categories:](https://malware.love/malware_analysis/reverse_engineering/2020/11/17/trickbots-latest-trick.html) [malware_analysis,](https://malware.love/category/malware_analysis.html) [reverse_engineering)](https://malware.love/category/reverse_engineering.html)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-11-27 - Having fun with a Ursnif VBS dropper.pdf"
+    ],
+    "report_names": [
+        "2020-11-27 - Having fun with a Ursnif VBS dropper.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "fce5181c-7aab-400f-bd03-9db9e791da04",
+            "created_at": "2022-10-25T15:50:23.759799Z",
+            "updated_at": "2025-03-27T02:00:55.540135Z",
+            "deleted_at": null,
+            "main_name": "Transparent Tribe",
+            "aliases": [
+                "Transparent Tribe",
+                "COPPER FIELDSTONE",
+                "APT36",
+                "Mythic Leopard",
+                "ProjectM"
+            ],
+            "source_name": "MITRE:Transparent Tribe",
+            "tools": [
+                "DarkComet",
+                "ObliqueRAT",
+                "njRAT",
+                "Peppy"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "c68fa27f-e8d9-4932-856b-467ccfe39997",
+            "created_at": "2023-01-06T13:46:38.450585Z",
+            "updated_at": "2025-03-27T02:00:02.836543Z",
+            "deleted_at": null,
+            "main_name": "Operation C-Major",
+            "aliases": [
+                "C-Major",
+                "Transparent Tribe",
+                "Mythic Leopard",
+                "ProjectM",
+                "APT 36",
+                "TMP.Lapis",
+                "Green Havildar",
+                "COPPER FIELDSTONE",
+                "APT36",
+                "Earth Karkaddan",
+                "Storm-0156"
+            ],
+            "source_name": "MISPGALAXY:Operation C-Major",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "abb24b7b-6baa-4070-9a2b-aa59091097d1",
+            "created_at": "2022-10-25T16:07:24.339942Z",
+            "updated_at": "2025-03-27T02:02:10.179404Z",
+            "deleted_at": null,
+            "main_name": "Transparent Tribe",
+            "aliases": [
+                "APT 36",
+                "APT-C-56",
+                "Copper Fieldstone",
+                "Earth Karkaddan",
+                "Green Havildar",
+                "Mythic Leopard",
+                "Operation C-Major",
+                "Operation Honey Trap",
+                "Operation Transparent Tribe",
+                "ProjectM",
+                "STEPPY-KAVACH",
+                "Storm-0156",
+                "TEMP.Lapis",
+                "Transparent Tribe"
+            ],
+            "source_name": "ETDA:Transparent Tribe",
+            "tools": [
+                "Amphibeon",
+                "Android RAT",
+                "Bezigate",
+                "Bladabindi",
+                "Bozok",
+                "Bozok RAT",
+                "BreachRAT",
+                "Breut",
+                "CapraRAT",
+                "CinaRAT",
+                "Crimson RAT",
+                "DarkComet",
+                "DarkKomet",
+                "ElizaRAT",
+                "FYNLOS",
+                "Fynloski",
+                "Jorik",
+                "Krademok",
+                "Limepad",
+                "Luminosity RAT",
+                "LuminosityLink",
+                "MSIL",
+                "MSIL/Crimson",
+                "Mobzsar",
+                "MumbaiDown",
+                "Oblique RAT",
+                "ObliqueRAT",
+                "Peppy RAT",
+                "Peppy Trojan",
+                "Quasar RAT",
+                "QuasarRAT",
+                "SEEDOOR",
+                "Scarimson",
+                "SilentCMD",
+                "Stealth Mango",
+                "UPDATESEE",
+                "USBWorm",
+                "Waizsar RAT",
+                "Yggdrasil",
+                "beendoor",
+                "klovbot",
+                "njRAT"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536097,
+    "ts_updated_at": 1743041149,
+    "ts_creation_date": 1653701483,
+    "ts_modification_date": 1653701483,
+    "files": {
+        "pdf": "https://archive.orkl.eu/f14c648246eb905424ea1fbe7c56a08cfa22bc1c.pdf",
+        "text": "https://archive.orkl.eu/f14c648246eb905424ea1fbe7c56a08cfa22bc1c.txt",
+        "img": "https://archive.orkl.eu/f14c648246eb905424ea1fbe7c56a08cfa22bc1c.jpg"
+    }
+}

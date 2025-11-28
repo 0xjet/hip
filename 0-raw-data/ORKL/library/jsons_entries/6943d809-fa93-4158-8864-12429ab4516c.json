@@ -1,0 +1,181 @@
+{
+    "id": "6943d809-fa93-4158-8864-12429ab4516c",
+    "created_at": "2023-01-12T15:00:20.36614Z",
+    "updated_at": "2025-03-27T02:09:18.539983Z",
+    "deleted_at": null,
+    "sha1_hash": "fbaf3d888b7f67376e783747257c935264f7596c",
+    "title": "2022-03-17 - IcedID Analysis",
+    "authors": "",
+    "file_creation_date": "2022-05-28T00:26:47Z",
+    "file_modification_date": "2022-05-28T00:26:47Z",
+    "file_size": 1844320,
+    "plain_text": "# IcedID gziploader analysis (Part1)\n\n**eln0ty.github.io/malware analysis/IcedID/**\n\n5 minute read\n\n## Introduction\n\n\nMarch 17, 2022\n\n\nIcedID, also known as BokBot, was among one of the most active malware families and has been\nknown for loading different types of payloads such as Cobalt Strike.\n\nIn this report, I’m going to walk through an analysis of a malicious document that distributes and\nexecutes an IcedID DLL payload then, the malicious payload itself.\n\nOur process divided to 3 stages (Entry stage + 1st stage + 2nd stage) but unfortunately, I can’t get\nto the second stage because the C2 server is down. Here I will review some of the characteristics of\nour different stages:\n\nEntry stage: Malicious document executes VBA macro to download `IcedID on the disk.`\nFirst stage: Loader is executed and download the the real malware (C2 is down in this step)\nThe Second: The malware for which this process was being performed is being executed and\nthis is something that is determined by the server administrator (Cobalt Strike for example).\n\n## Entry Stage\n\n**sha256:** `f604ca55de802f334064610d65e23890ab81906cdac3f8a5c7c25126176289c8`\n\nI used `olevba to extract the embedded script from the .doc file.`\n\n\n-----\n\nI just want to point out that I used `Exiftool to extract some meta data to understand the script:`\n\n-> `Exiftool <filename.doc>`\n\n\n-----\n\nWhen I opened the document, I found obfuscated content with white color and too small size. So, I\ngriped it and removed all `%1 instances. This is some of code after beautifying:`\n\nThe main function for the whole script is decoding the 2 strings in the top of HTML code then\ncreates a connection with the server to download IcedID dll Loader. I `cyberchef to get these`\nstrings.\n\nFinal results:\n\n\n-----\n\n## First Stage\n\nThe main purpose of this stage is to drop the payload and it could be a real malware or another\ndropper. This process depends on the malware developer and what he wants.\n\nLet’s start the analysis with our dropped DLL payload. Dropped file is packed. I tried to upload it to\n[automatic unpacker umpac.me but it doesn’t support x64 binaries. Let’s unpack in manually with](https://www.unpac.me/)\n**x64dbg.**\n\nThe unpacking process is really simple. It allocates memory for the unpacked code using\n```\nVirtualAlloc() . So we just set a breakpoint at VirtualAlloc() and run the debugger twice,\n\n```\nthen dump the file from memory.\n\n\n-----\n\n## Decrypt Config\n\nThe first function that malware performs, it decrypts C2 server and campaign number.\n\nMalware uses a pretty simple decryption algorithm. It retrieves the encrypted data from `.data`\nsection then -> `data[0:32] ^ data[64:96]` .\n\nI wrote a python script to decrypt the config.\n\n\n-----\n\n```\nimport struct\n#data[0:32]\ndata =\n[0x55,0x00,0x29,0x36,0x84,0x33,0x8f,0x67,0x5d,0xe1,0x1b,0xc1,0x4e,0xe6,0x17,0xf5,0x2b,0x35,0x\n#data[64:96]\nkey =\n[0x16,0x68,0x29,0x53,0xe2,0x5a,0xfd,0x02,0x33,0x88,0x78,0xa0,0x3a,0x94,0x7e,0x97,0x47,0x50,0x\nres = bytearray()\nfor i in range(32):\n     res.append(data[i] ^ key[i])\nprint(\"CampaignID:\", struct.unpack(\"<I\", res[:4])[0])\nprint(\"C2:\", res[4:].split(b'\\x00')[0].decode())\n'''\nResults\n     CampaignID: 1694525507\n     C2: firenicatrible.com\n'''\n\n```\nThe first 4 bytes refer to Campaign number that shows the purpose of the attack. Second, C2\ndecryption.\n\n## Misleading traffic\n\nThe mawlare sends traffic to `aws.amazon.com to mislead, and between the lines it sends a`\nrequest to the C2 to drop the malicious file.\n\n\n-----\n\n## Playing with cookies\n\nThis is first impression when you look to the function which manipulating the request cookies.\n\n**IcedID sends 6 parameters in cookies after manipulating them numerically. I will give you a**\nsummary of them and why they are important then explain in details.\n\n**Name** **Value**\n\n_gads First DWORD from decoded config data(Campaign number), flag from inspecting server\ncertificate, number of milliseconds, sys info\n\n_gat Windows version info\n\n_ga Processor info via CPUID including hypervisor brand if available\n\n_u Computername, Username and VM detection\n\n_io Domain identifier from SID\n\n_gid Based on physical address of NIC\n\n### gads\n\n\n-----\n\n**Campaign number**\n\nI already explained it in the code above (Campaign number = 1694525507)\n\n**flag**\n\nThe value most of time = 1 because amazon server is always available\n\n**VM detection**\n```\n   GetTickCount64 retrieves the number of milliseconds that have elapsed since the system\n\n```\nwas started.\n\n**System information**\n\nRetrieves the specified system information.\n\n### _gat\n\nCheck version:\n\n### _ga\n\nCheck cpu:\n\n\n-----\n\n### _u\n\n\n**Computername**\n\n**Username**\n\n\n-----\n\n**VM detection**\n\nThe last parameter is a bit tricky. I crossed reference the values then I found that:\n\nIts common to use `RDTSC to get fine-grained timing information, where the overhead of a`\nvirtualization trap would be quite significant. Most common use is to have two `RDTSC`\ninstructions with a small amount of code between them, taking the difference of the times as\nthe elapsed time (number of cycles) for the code sequence.\n\nBut in our case, this malware sleeps 4 times instead of calling it twice.\n\n### _io\n\nCheck SID:\n\n### _gid\n\nThe `GetAdaptersInfo function retrieves adapter information for the local computer.`\n\n\n-----\n\nThe view from [sandbox traffic.](https://tria.ge/211215-qrtm9ahef3/behavioral1)\n\nNow, the attacker knows almost all the information about the victim’s machine, and he is ready to\ndrop a suitable malware to start Stage2 depending on the campaign number that determines the\nattack behavior.\n\n## Connect C2 server\n\nIn this step, malware connect to C2 server.\n\n\n-----\n\nThen it drops the malicious file in `c:\\\\ProgramData\\\\ .`\n\nUnfortunately, This is the end of analysis because the server is down. My next report will be about\nthe second stage of the loader and an example of malware that can be downloaded from it. stay\n**tuned for more. “إن ﺷﺎء اﷲ”**\n\n## Conclusion\n\n\n-----\n\n1. Phishing mails drops malicious document\n2. Malicious document runs VBS script\n3. The script executes JavaScript code to drop dll file\n4. dll file connects to C2 server\n\nThere are several steps you can take to protect against phishing:\n\n**Do not reply, even if you recognize the sender as a well-known business or financial**\ninstitution. If you have an account with this institution, contact them directly and ask them to\nverify the information included in the email.\n**Do not click any links provided in these emails.**\n**Do not open any attachments. If you receive an attachment you are not expecting, confirm**\nwith the senders that they did indeed send the message and meant to send an attachment.\n**Do not enter your personal information or passwords on an untrusted Web site or form**\nreferenced in this email.\n**Delete the message.**\n\n## IOCs\n\nHash\n\ndoc ->\nf604ca55de802f334064610d65e23890ab81906cdac3f8a5c7c25126176289c8\nPacked dll ->\nCFE2CAF566857C05A6A686CA296387C5E1BFDDA6915FF0ED984C1C53CD5192A3\nUnpacked dll ->\n1A2A8F604B8E4917A7E5A2A8994F748B59CA435C8AABC6D3ED211C696B883BC4\n\nURLs\n\nmaldonadoposts.com\nfirenicatrible.com\n\nFiles\n\nc:\\users\\public\\youYou.jpg\nc:\\users\\%username%\\documents\\karolYouYou.hta\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-03-17 - IcedID Analysis.pdf"
+    ],
+    "report_names": [
+        "2022-03-17 - IcedID Analysis.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535620,
+    "ts_updated_at": 1743041358,
+    "ts_creation_date": 1653697607,
+    "ts_modification_date": 1653697607,
+    "files": {
+        "pdf": "https://archive.orkl.eu/fbaf3d888b7f67376e783747257c935264f7596c.pdf",
+        "text": "https://archive.orkl.eu/fbaf3d888b7f67376e783747257c935264f7596c.txt",
+        "img": "https://archive.orkl.eu/fbaf3d888b7f67376e783747257c935264f7596c.jpg"
+    }
+}

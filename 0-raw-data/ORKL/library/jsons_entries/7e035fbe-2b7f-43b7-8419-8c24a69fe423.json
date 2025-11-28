@@ -1,0 +1,110 @@
+{
+    "id": "7e035fbe-2b7f-43b7-8419-8c24a69fe423",
+    "created_at": "2023-01-12T15:03:51.831869Z",
+    "updated_at": "2025-03-27T02:09:29.225676Z",
+    "deleted_at": null,
+    "sha1_hash": "f5514e10325405ccffbcb705ee54c2511c2b3a82",
+    "title": "2018-01-15 - Bootkits are not dead. Pitou is back!",
+    "authors": "",
+    "file_creation_date": "2022-05-28T23:45:30Z",
+    "file_modification_date": "2022-05-28T23:45:30Z",
+    "file_size": 934094,
+    "plain_text": "# News - Malware & Hoax\n\n**tgsoft.it/english/news_archivio_eng.asp**\n\nTG Soft's Research Centre (C.R.A.M.) has analyzed in the last\nmonths new versions of Bootkit dubbed Pitou. From September to\nOctober 2017 we have seen new samples of Pitou in the wild.\n\nThe first version of Pitou has beeen released on April 2014. It\nmaybe an evolution of the rootkit \"Srzizbi\" developed on 2008.\n\nPitou is a spambot, the main goal is send spam form the\ncomputer of victim.\n\n\n### CONTENTS\n\n**==>** Bootkit\ninstallation\n\n**==>** Switch from Real\nMode to Protect\nMode on Windows Xp\n32 bit\n\n**==>** Pitou on\nWindows 10 64 bit\n\n==> Pitou Driver 32bit\n\n**==>** Pitou & Curiosity\n\n==> IOC\n\n==> Conclusions\n\n\nIt uses the sophisticated technique of Bootkit to bypass the Microsoft Kernel-Mode Code\nSigning policy for load the own driver (kernel payload) on Windows.\n\n\n-----\n\nThe Bootkits have reached the peak of popularity from 2010 to 2012 with Sinowal, TDL4,\nTDSS (Olmasco), Cidox (Rovnix) and GAPZ. These Bootkits was diseappear after 2012 and\nseemed the end of era of Bootkit. In the 2014 Pitou was detected as a new Bootkit, but it\nseem that not have had a big diffusion in the wild.\nIn the last months of 2017 Pitou is back!\n\nPitou spreads in various way:\n\ndrive-by-download from compromised websites\nfrom others malware\n\nPitou can infect all operating system of Windows: from XP to Windows 10 (32/64 bit)\n\nPitou maybe considered as the last Bootkit that infects the partitions type MBR (it cannot\ninfect UEFI).\nPitous is known with name \"Backboot\".\n\nThe sample analyzed:\n\n**Name: 63.TMP.EXE**\n**Size: 673.792 byte**\n**MD5: B6BA98AB70571172DA9731D2C183E3CC**\n**Found: 20 September 2017**\n**Compilation Time Date Stamp: 19 September 2017 20:55:31**\n**First submission on VT: 2017-09-23 04:58:27**\n\n## Bootkit installation\n\nWhen the dropper is executed, the malware infects the Master Boot Record of disk in the\nfollowing way:\n\n\n-----\n\n**Pitou uses the \"standard\" technique of infection of the MBR. It overwrites the last 1 MB with**\nthe loader of Pitou and the Driver in the unpartitioned space.\n\nIn the first 17 sectors of the last 1 MB there is the code of loader of Pitou and in the following\nsectors there is the Driver (kernel payload) in encrypted form\n\n.\n\nHere we can see the dump of MBR\ninfected:\n\n\n-----\n\nThe code of MBR infected by Pitou reads the 17 sectors at end of disk (in the unpartitioned\nspace) in memory at address 500:0 as we can see here:\n\nThe 17 sectors are encrypted, so Pitou decrypts it with this easy algorithm (xor and ror):\n\n\n-----\n\nThe next step is hook the int 13h at address 500:9Bh:\n\nAfter that Pitou has hooked the int 13h, it decrypts the original MBR at address 0:7C00h and\nexecutes it.\n\n**Back on top**\n\n\n-----\n\n## Switch from Real Mode to Protect Mode\n\nNow that Pitou has passed the control at original MBR, Pitou is hooked only at int 13h. Here\nwe can see the routine of int 13h of Pitou:\n\nThe routine Pitou detects each request of read of sectors, function ah=42h (Extended Read\nSectors) and ah=02h (Read Sectors), this permits at Pitou to know when the process of boot\nwill read the file C:\\NTLDR or C:\\BOOTMGR.\n\nIn this step Pitou must hook C:\\NTLDR or C:\\BOOTMGR for \"survive\" when there is the\nswitch from real mode into protect mode:\n\nPitou patches \"ntldr\" with:\n\nxxxxxxxx  call gate selector 8:600h\n00000600  jmp 0x5183\n\n\n-----\n\nThe first patch is call gate selector 8:600h, so the ntldr will go at address 0x00000600. At\naddress 0x00000600 Pitou has patched this area of memory with \"0xe9 0x7e 0x4b 0x0 0x0\"\nso jump (jmp) at address 0x00005183 (0x600 + 0x4b7e + 0x5 = 0x5183)\nThe address 0x00005183 in protect mode is equal in real mode at address 500:0183 where\nPitou is saved in this moment.\nNow Pitou is working in protect mode, but the area of memory where Pitou is saved can be\noverwritten by Windows or the memory can be paged.\nSo Pitou needs to allocate \"safe\" memory, it will allocate 2 pages and it will copy the loader\nat 32 bit in the new area of memory.\n\nNow Pitou parses the NTLDR to hook the call at function KiSystemStartup. The hook is\nmade before the NTLDR calls KiSystemStartup, because at thata moment the NLDR has\nloaded the \"NTOSKRNL.EXE\" but not executed. The hook permits to Pitou to know the base\nof address of module \"NTOSKRNL.EXE\", then Pitou will parse the module\n\"NTOSKRNL.EXE\" to insert a new hook.\n\nThe last hook in \"NTOSKRNL.EXE\" permits to Pitou to know that the kernel of Windows\n(NTOSKRNL.EXE) is running properly.\nNow Pitou can use the API exported by NTOSKRNL.EXE:\n\nPitou creates a new system thread calling the function PsCreateSystemthread exported by\nNTOSKRNL.EXE. The thread will load the driver bypassing the Microsoft Kernel-Mode Code\n_Signing policy._\n\nIn this phase Pitou will do:\n\n\n-----\n\n1. Allocate 0xfde00 bytes in memory (\"physical memory\" )\n2. Read and decrypt the last 0x7ef sectors of disk in the\n\n\"physical memory\"\n3. Allocate a buffer with size equal at ImageSize of driver for\n\nthe \"virtual memory\"\n4. \"Load\" the driver from \"physical memory\" to \"virtual memory\"\n5. Create the structure \"DriverObject\" to pass at Entrypoint of\n\ndriver\n\nHere we can see as Pitou execute the driver:\n\n**Back on top**\n\n## Pitou on Windows 10 64 bit\n\nThe loader of Pitou on Windows 10 64 bit uses 3 different codes:\n\n16 bit (from BIOS to Bootmgr)\n32 bit (from Bootmgr to Bootmgr.exe)\n64 bit (from Winload.exe to NTOSKRNL.EXE)\n\n\n-----\n\nIn the scheme the point 1 indicates the hook at int 13h by Pitou to know when the \"Bootmgr\"\nis read. The second hook is made inside the \"Bootmgr\" to swtich from real mode into protect\nmode. In this phase the \"Bootmgr\" will extract from it a file PE dubbed \"Bootmgr.exe\". The\nfile \"Bootmgr.exe\" works in 32 bit and is executed by Bootmgr. At this point Pitou (32 bit) will\nhook the \"Bootmgr.exe\" to know when it will load the file \"Winload.exe\" (64 bit). This hook is\nneed to survive at switch from 32 bit to 64 bit. When this hook is called, Pitou (64 bit) will\nparse the file \"Winload.exe\" to hook when \"Winload.exe\" will load and execute the\n\"NTOSKRNL.EXE\". When the hook inside \"Winload.exe\" is called, then Pitou will parse\n\"NTOSKRNL.EXE\" to hook the function \"InbvIsBootDriverInstalled\".\nThe last hook in the function \"InbvIsBootDriverInstalled\" is need to know when\n\"NTOSKRNL.EXE\" is loaded and ready.\nAs in the previous case, Pitou will load the driver 64 bit bypassing the Microsoft Kernel-Mode\n_Code Signing policy._\n\n**Back on top**\n\n## Pitou Driver 32bit\n\nWe have analyzed the driver 32 bit of Pitou, the 64 bit version is similar.\n\nThe driver extracted from the end of disk has the following characteristics:\n\n**Size: 437.248 byte**\n\n**MD5: EA286ABDE0CBBF414B078400B1295D1C**\n\n**Compilation Time Date Stamp: 10 July 2017 15:59:35**\n\nNo submission on VT\n\n**Fully obfuscated: difficult to analyze in static way**\n\n**Anti-VM**\n\n**Stealth**\n**SpamBot (works completely in kernel mode)**\n\n**Obfuscation**\n\nThe driver is obfuscated as we can see:\n\nIt contains a lot of random strings as \"Again, one can talk,\nfor to kill\" to evade the AVs.\n\n\n-----\n\nWe can see some levels of obfuscation. The first level is at DriverEntry :\n\nThe DriverEntry sets a local variable [ebp+var_C] with value 0x209fdc, after it calls a lot of\nsubroutines that modifies this value each time until to arrive to call the subroutine \"call\n\n**[ebp+var_C]\" with the real \"DriverEntry\".**\n\nA second level of obfuscation is the use of hashes of blocks of 16 byte of code/data to\ncalculate the addresses of objects, structures, strings, data and etc.\nThese hashes change everytime with the execution of drivers, so it is very difficult to take a\nsnapshot for the analysis.\nHere an example:\n\n\n-----\n\n**Anti-VM**\n\nPitou checks if it is running under VM, Sandboxing or in emulated/virtualized environments:\n\nMS_VM_CERT, VMware -> VMWare\nParallels -> Paralles Desktop for Mac\nSeaBIOS -> SeaBIOS emulator\ni440fx, 440BX -> QEMU emulator\nBochs -> Bochs emulator\nQEMU0 -> QEMU emulator\nVRTUALMICROSFT -> Hyper-V\nOracle, VirtualBox -> Oracle VM VirtualBox\ninnotek -> Innotek VirtualBox (Oracle VM VirtualBox)\n\nIf it is running under VM or in emuIated/virtualized environments then it stops to work.\n\n**Stealth**\nPitou uses technique to be stealth, as other bootkits, it hooks the Miniport Device Object of\ndisk to detect the request of read/write of sectors of disk:\n\nIRP_MJ_DEVICE_CONTROL\nIRP_MJ_INTERNAL_DEVICE_CONTROL\n\n\n-----\n\n**\\Driver\\ACPI -> MajorFunction[IRP_MJ_DEVICE_CONTROL] = 81aefe43 Hook in ???**\n\n81aefe43 55        push  ebp\n\n81aefe44 8bec       mov   ebp,esp\n\n81aefe46 51        push  ecx\n\n81aefe47 53        push  ebx\n\n81aefe48 8b5d08      mov   ebx,[ebp+0x8]\n\n81aefe4b 33c0       xor   eax,eax\n\n**\\Driver\\ACPI -> MajorFunction[IRP_MJ_INTERNAL_DEVICE_CONTROL] = 81ae9a5f**\n**Hook in ???**\n\n81ae9a5f 55        push  ebp\n\n81ae9a60 8bec       mov   ebp,esp\n\n81ae9a62 83e4f8      and   esp,0xf8\n\n81ae9a65 83ec24      sub   esp,0x24\n\n81ae9a68 833d68b9b48100  cmp   dword ptr [81b4b968],0x0\n\n81ae9a6f 8b4d0c      mov   ecx,[ebp+0xc]\n\nWhen an application in \"user mode\" send a request to read the MBR, this\nis intercepted by Pitou in kernel mode, that instead will read the original\nMBR at end of disk hiding the infection.\n\nAbove we can see the hook in the miniport of device \"ACPI\" on:\nIRP_MJ_DEVICE_CONTROL and\nIRP_MJ_INTERNAL_DEVICE_CONTROL\n\n**Server C/C**\n\nPitou connects at server C/C with IP 195.154.237.14 Port 7384 TCP, and is hosted in Paris.\nIn encrypted form it receives commands to send spam:\n\nemail addresses\nbody\nsmtps\n\n\n-----\n\nIf Pitou cannot connect at server C/C then it generates 4 domains (DGA), examples:\n\nunpeoavax.mobi\nilsuiapay.us\nivbaibja.net\nasfoeacak.info\n\n**SpamBot**\n\nPitou sends spam from the pc of victim, this operation is made totally in kernel mode.\nHere some example of spam sent by Pitou:\n\nAs you can see Pitou sends spam of Viagra and Cialis.\n\n**Back on top**\n\n## Pitou & Curiosity\n\nIn this paragraph we speak about a little curiosity. We well know the researcher\n\"MalwareTech\" for the kill switch of \"WannaCry\", he is a very famous and smart researcher\nanti-malware.\n\nMalwareTech has written a POC of Bootkit called TinyXPB in April 2014 (Github):\n[https://github.com/MalwareTech/TinyXPB](https://github.com/MalwareTech/TinyXPB)\n\nIn the analysis of Pitou by F-Secure, they have reported that the first detection of Pitou was\nin April 2014.\n\nWe have found some similarities in the code of Pitou :\n\nThe loader 16 bit is identical at version written by MalwareTech in TinyXPB\nThe loader 32 bit is a little different\n\nFrom our point of view, we can say that there are some things in the loader 16 bit which was\n\n\n-----\n\nalready developed by others Bootkit, so in the code of Pitou there aren t new ideas.\nWe guess the author of Pitou has taken inspiration by MalwareTech.\n\n**Back on top**\n\n## IOC\n\n**MD5**\n\nB6BA98AB70571172DA9731D2C183E3CC (dropper)\n\nEA286ABDE0CBBF414B078400B1295D1C (driver 32 bit)\n\nEC08C0243B2C1D47052C94F7502FB91F (dropper)\n\n9A7632F3ABB80CCC5BE22E78532B1B10 (driver 32 bit)\n\n264A210BF6BDDED5B4E35F93ECA980C4 (driver 64 bit)\n\n**IP**\n\n195.154.237.14\n\n## Conclusions\n\nPitou is the last known \"MBR\" Bootkit that uses this sophisticated technique. The Bootkit has\na very strong arsenal that can bypasses the Kernel Mode Code Signing policy ans is\n\nvery difficult to detect, because they have a high degree of stealth.\n\nWe are surprise to see again Bootkits that infects the Master Boot Record. Nowadays the\nnew machines uses BIOS with UEFI or with huge hard disk, then the partitions cannot be of\ntype MBR, so in the next period we guess to see more UEFI Bootkit than MBR Bootkit..\nAuthor: Gianfranco Tonello\n\nCentro Ricerche Anti-Malware di TG Soft\n**Back on top**\n\n_Any information published on our site may be used and published on other websites, blogs,_\n_forums, facebook and/or in any other form both in paper and electronic form as long as the_\n_source is always and in any case cited explicitly “Source: CRAM by TG Soft www.tgsoft.it”_\n_with a clickable link to the original information and / or web page from which textual content,_\n_ideas and / or images have been extrapolated._\nIt will be appreciated in case of use of the information of C.R.A.M. by TG Soft www.tgsoft.it in\n\n\n-----\n\nthe report of summary articles the following acknowledgment/thanks Thanks to AntiMalware Research Center C.R.A.M. by TG Soft of which we point out the direct link to the\noriginal information: [direct clickable link]”\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2018/2018-01-15 - Bootkits are not dead. Pitou is back!.pdf"
+    ],
+    "report_names": [
+        "2018-01-15 - Bootkits are not dead. Pitou is back!.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "5d9dfc61-6138-497a-b9da-33885539f19c",
+            "created_at": "2022-10-25T16:07:23.720008Z",
+            "updated_at": "2025-03-27T02:02:09.944484Z",
+            "deleted_at": null,
+            "main_name": "Icefog",
+            "aliases": [
+                "ATK 23",
+                "Dagger Panda",
+                "Icefog",
+                "Red Wendigo"
+            ],
+            "source_name": "ETDA:Icefog",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "Dagger Three",
+                "Fucobha",
+                "Icefog",
+                "Javafog",
+                "POISONPLUG.SHADOW",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "XShellGhost"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "1aead86d-0c57-4e3b-b464-a69f6de20cde",
+            "created_at": "2023-01-06T13:46:38.318176Z",
+            "updated_at": "2025-03-27T02:00:02.803684Z",
+            "deleted_at": null,
+            "main_name": "DAGGER PANDA",
+            "aliases": [
+                "IceFog",
+                "RedFoxtrot",
+                "Red Wendigo",
+                "PLA Unit 69010"
+            ],
+            "source_name": "MISPGALAXY:DAGGER PANDA",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535831,
+    "ts_updated_at": 1743041369,
+    "ts_creation_date": 1653781530,
+    "ts_modification_date": 1653781530,
+    "files": {
+        "pdf": "https://archive.orkl.eu/f5514e10325405ccffbcb705ee54c2511c2b3a82.pdf",
+        "text": "https://archive.orkl.eu/f5514e10325405ccffbcb705ee54c2511c2b3a82.txt",
+        "img": "https://archive.orkl.eu/f5514e10325405ccffbcb705ee54c2511c2b3a82.jpg"
+    }
+}

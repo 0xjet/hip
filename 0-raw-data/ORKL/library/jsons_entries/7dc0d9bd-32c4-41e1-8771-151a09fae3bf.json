@@ -1,0 +1,92 @@
+{
+    "id": "7dc0d9bd-32c4-41e1-8771-151a09fae3bf",
+    "created_at": "2023-05-06T02:09:11.523812Z",
+    "updated_at": "2025-03-27T02:17:00.423796Z",
+    "deleted_at": null,
+    "sha1_hash": "b3bf70472fa7b8eb689693b1a305a76c131103a7",
+    "title": "2023-03-29 - BumbleBee notes",
+    "authors": "",
+    "file_creation_date": "2023-05-05T01:46:37Z",
+    "file_modification_date": "2023-05-05T01:46:37Z",
+    "file_size": 9648420,
+    "plain_text": "# BumbleBee notes 🐝\n\n**blog.krakz.fr/articles/bumblebee/**\n\nMarch 29, 2023\n\nBumbleBee is categorized as a Loader, the malware is used by Initial Access Brokers to\ngain access\nin targeted companies. This article aims to summarizing the different TTPs\nobserved in campaigns\ndistributing BumbleBee and provides a script to extract its\nconfiguration.\n\n## TL;DR BumbleBee #\n\nThe loader delivers diverse payloads (e.g: Cobalt Strike, ransomware, etc), the operators of\nBumbleBee have been named EXOTIC LILY by the TAG in a report published in March\n2022.\nGoogle TAG article mentionned BumbleBee Loader (e.g: The user-agent set to bumblebee, hence\n[dubbed BUMBLEBEE.\nhttps://blog.google/threat-analysis-group/exposing-initial-access-broker-ties-conti/](https://blog.google/threat-analysis-group/exposing-initial-access-broker-ties-conti/)\nMoreover, similarities with other loaders in terms of operation have been noticed notably with\nIcedID and Emotet.\nCode similarty (hook installation) with Trickbot have been observed and\nexplained in the post The chronicles of Bumblebee: The Hook, the Bee, and the Trickbot\nconnection.\nThe malware is well documented by now (March 2023) as evidenced by the\n[number of reports on malpedia.](https://malpedia.caad.fkie.fraunhofer.de/details/win.bumblebee)\n\n## BumbleBee capabilities #\n\nThe malware has a custom unpacking mechanism, it manipulates hooks to setup its\nexecution chain,\nthe loader uses multiple environment detection techniques because of the\n[complete integration of the project al-khaser\nal-khaser is a PoC “malware” application with good](https://github.com/LordNoteworthy/al-khaser)\nintentions that aims to stress your anti-malware system. It performs a bunch of common malware tricks\nwith the goal of seeing if you stay under the radar.\n. It communicates with its command and control\nover HTTP. Since August 2022 the malware embeds a list of IP addresses in its\nconfiguration,\nsome of them are legitimate IP addresses, this technique is also used by other\nmalware such as Emotet and Trickbot.\n\n\n-----\n\nBumbleBee command and control IP addresses, port and the bot (or botnet) identifier are\nstored in the .data section, obfuscated with the RC4 encryption algorithm. A script to extract\nand deobfuscate\nthem is provided at the end of this post.\n\n## Campaigns file format #\n\nFirst malspam campaign which delivered BumbleBee contains a web link to a protected ZIP\narchive.\n\n1. The archive contains an ISO file;\n2. The ISO contains a LNK file and a DLL file;\n3. The LNK executes rundll32.exe to invoke the embedded DLL;\n\nFigure 1: BumbleBee infection chain with ISO file\n\nThis model of campaign was used for months. During the summer of 2022, actors updated\nthe disk image format from ISO to VHD.\nContent of disk image (VHD) changed too, the DLL\nis no more stored as a file, but it is embed obfuscated in a PowerShell script. The script is\nexecuted by\nthe LNK with the execution policy set to bypass. The BumbleBee’s DLL is\nstored in the PowerShell script in obfuscated strings (e.g:\n```\n$elem30=$elem30.$casda.Invoke(0,\"H\")).\nAfter strings replacement, the base64 encoded\n\n```\nvariable is decoded, decrompressed (ungzip) and invoked (e.g: `scriptPath | iex).`\n\n\n-----\n\nFigure 2: BumbleBee infection chain with VHD file\n\n_NB: File sharing service used to deliver BumbleBee change regulary e.g.: WeTransfer,_\n_Onedrive, Smash, etc.\nDetails of a campaign using onedrive file sharing website are written_\n_[in the article: Bumblebee DocuSign Campaign.](https://0xtoxin-labs.gitbook.io/malware-analysis/malware-analysis/bumblebee-docusign-campaign)_\n\n**Examples IOCs:**\n\nISO: SHA-256:\n8695f4936f2942d322e2936106f78144f91602c7acace080e48c97e97b888377\nVHD: SHA-256:\ne9a1ce3417838013412f81425ef74a37608754586722e00cacb333ba88eb9aa7\n\n## Configuration extractor #\n\nAs introduced above, the configuration is stored encrypted with the RC4 algorithm.\nRC4:\n\n[Rivest Cipher 4, also known as ARC4: https://en.wikipedia.org/wiki/RC4\nThe key is in cleartext in the](https://en.wikipedia.org/wiki/RC4)\nbinary and its length is repeatedly (for BumbleBee case) fixed to 10 characters.\n\nHere is the two functions that implement RC4 algorithm in BumbleBee:\n\n\n-----\n\nFigure 3: BumbleBee implemenation of PRGA of RC4 algorithm\n\nFigure 4: BumbleBee implementation of KSA of RC4 algorithm\n\nThe key is stored at the end of the blob of data containing the encrypted list of IP addresses.\nAfter analysing few samples of BumbleBee, it appears that the blob of data containing the IP\naddresses is always 4105 bytes long (plus one null byte) which is\na pattern to look for in the\nDLL for a C2 extractor.\n\n\n-----\n\nFigure 5: Location of the blob and the RC4 key\n\nThe script below attempts to loop over data until a blob matches the blob size, then it\nextracts the RC4 key (the last 10 bytes of the blob)\nto finally decrypt the data.\n```\n  from cryptography.hazmat.primitives.ciphers import Cipher\n\n  from cryptography.hazmat.primitives.ciphers.algorithms import ARC4\n\n\n  def decrypt_rc4(key: bytes, ciphertext: bytes) -> bytes:\n\n    \"\"\"Decrypt RC4 encrypt data, `pip install cryptography`\"\"\"\n\n    algorithm = ARC4(key)\n\n    cipher = Cipher(algorithm, mode=None)\n\n    decryptor = cipher.decryptor()\n\n    cleartext = decryptor.update(ciphertext)\n\n    return cleartext\n\n\n  def get_bumblebee_c2(data: bytes) -> bytes:\n\n    \"\"\"\n\n    Command and Control are stored at the end of the .data section,\n\n    the configuration of the obfuscated C2 and its associated RC4\n\n    are stored in the same blob with a fixed lenght of\n\n    4105 plus one null byte (4106).\n\n  !\\xac\\xd2\\xfe=;\\x87\\x94\\xebP\\x8e@\\x08}\\x00/^I\\xd4\\x86\\xaf\\xd2\\x14\n    \\x16\\x89A\\xa9uT\\x00\\xbduC\\xb7\\x9e~\\x19\\xac\\x9f\\xb4\\x0f\\xae>\\xcc\n\n  \\x96S]\\xb56\\x93C\\x9d*p\\xed\\xc9\\x04:Oew\\xc3*X`:a\\xe0T\\x8e\\x93>\\xf9\n\n  \\xf8\\xe2\\x17Q\\x15b,8\\xa8[\\xf5N\\x93\\xffMM]\\x8d\\xec\\xde\\x13\\x95z\\xc3\n\n    ...\n\n    ...\n\n    ... <redatacted> ...\n\n  \\xd4\\x00\\xa1xZ:\\x1e\\x90\\x00X\\xea\\xca\\x0c\\'\\xee\\xffOR5tw\\xc0I\\x86R\"!\n\n    \\xf8\\xa3\\x87\\xc8\\x16Mo_5\\x82_\\x81\\x9f<RC4 key composed by 10\n  bytes>\n\n    \"\"\"\n\n    c2 = b\"\"\n\n    for blob in map(lambda x: x.strip(b\"\\x00\"), data.split(b\"\\x00\" *\n  4)):\n\n     if len(blob) == 4106:\n\n```\n\n-----\n\n```\n      key blob[ 10:]\n\n      ciphertext = blob[:-10]\n\n      c2 = decrypt_rc4(key, ciphertext)\n\n      c2 = c2.replace(b\"\\x00\", b\"\")\n\n      print(f\"BumbleBee Command and Control IoCs: {c2}\")\n\n  return c2\n\n\nif __name__ == \"__main__\":\n\n  import sys\n\n  with open(sys.argv[1], \"rb\") as f:\n\n   get_bumblebee_c2(f.read())\n\n```\n\n-----\n\nCode Snippet 1:\nBumbleBee C2 extractor\n\n_PS: Tested with the package cryptography with the version: 3.4.8._\n\nGo head and re-use, adapt the script for your needs!\n\n## Resources #\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2023/2023-03-29 - BumbleBee notes.pdf"
+    ],
+    "report_names": [
+        "2023-03-29 - BumbleBee notes.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "4594f985-865e-4862-8047-2e80226e246a",
+            "created_at": "2022-10-27T08:27:12.984825Z",
+            "updated_at": "2025-03-27T02:00:55.424827Z",
+            "deleted_at": null,
+            "main_name": "EXOTIC LILY",
+            "aliases": [
+                "EXOTIC LILY"
+            ],
+            "source_name": "MITRE:EXOTIC LILY",
+            "tools": [
+                "Bazar"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "56384d06-abc2-4853-8440-db4d7b7d1b5f",
+            "created_at": "2023-01-06T13:46:39.367122Z",
+            "updated_at": "2025-03-27T02:00:03.064071Z",
+            "deleted_at": null,
+            "main_name": "EXOTIC LILY",
+            "aliases": [
+                "DEV-0413"
+            ],
+            "source_name": "MISPGALAXY:EXOTIC LILY",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1683338951,
+    "ts_updated_at": 1743041820,
+    "ts_creation_date": 1683251197,
+    "ts_modification_date": 1683251197,
+    "files": {
+        "pdf": "https://archive.orkl.eu/b3bf70472fa7b8eb689693b1a305a76c131103a7.pdf",
+        "text": "https://archive.orkl.eu/b3bf70472fa7b8eb689693b1a305a76c131103a7.txt",
+        "img": "https://archive.orkl.eu/b3bf70472fa7b8eb689693b1a305a76c131103a7.jpg"
+    }
+}

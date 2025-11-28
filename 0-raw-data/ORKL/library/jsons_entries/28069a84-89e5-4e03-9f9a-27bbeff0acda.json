@@ -1,0 +1,145 @@
+{
+    "id": "28069a84-89e5-4e03-9f9a-27bbeff0acda",
+    "created_at": "2023-01-12T15:00:17.817596Z",
+    "updated_at": "2025-03-27T02:15:35.462111Z",
+    "deleted_at": null,
+    "sha1_hash": "a8b475760dcb92719b44065bdc6c2c3991297562",
+    "title": "2020-02-22 - Nexus - Just another stealer",
+    "authors": "",
+    "file_creation_date": "2022-05-28T02:39:37Z",
+    "file_modification_date": "2022-05-28T02:39:37Z",
+    "file_size": 622828,
+    "plain_text": "# Nexus - Just another stealer\n\n**fr3d.hk/blog/nexus-just-another-stealer**\n\n1. You are here: [fr3d.hk](https://fr3d.hk/blog/)\n[2. Malware](https://fr3d.hk/blog/category/malware)\n[3. Nexus - Just another stealer](https://fr3d.hk/blog/nexus-just-another-stealer)\n\nFebruary 22, 2020 - Reading time: 13 minutes\n\nIn today's post I will be analyzing and reversing a new credential stealer that has recently hit\nthe market. I'll be showing it's control flow, how it steals data and the methods it uses to be\nable to grab information off of its victims.\n\nI would like to preface this post with the fact that this is my first formal analysis of a piece of\nmalware, I may have jumped to conclusions about some functions and may have got things\nslightly wrong here and there. If you notice any errors please contact me and I hope that I\ncan learn from these mistakes. That being said, enjoy.\n\nNexus is a new stealer that has recently hit the marketplace of a popular crime forum, its\nsales thread boasts that it steals from multiple commonly found programs and will send this\ndata to an easy to use web panel. Here the actor is able to read logs that have been sent\nfrom infected computers, mark them as checked and also tag them with a comment. The\nactor can also add a direct link to any windows executable that the malware will then\ndownload & execute. The thread claims that the stealer will steal data from the following\nprograms:\n\nChromium browsers\nYandex-Browser\n.dat files of cryptocurrency wallets\nAuthy\nTelegram\nDiscord\nSteam\nFileZilla\nWinSCP\nTotalCommander\nWindowsSecureVault\nInternet Explorer & Edge\nPidgin\nPSI & PSI+\nNordVPN & ProtonVPN\n\n\n-----\n\nText file grabber\n\nThe malware will also take a screenshot of the computer upon execution and will also get\ngeneral information about the computer such as username, CPU, GPU, memory and\ninstalled programs. The author states that the program has been developed in C++ and has\na file size of 460kb. Nexus is sold for 100$ and provides free updates after purchase. The\nseller is clearly from Russia due to the clear indication of google translate from Russian to\n[English in the sales thread. The sales thread can be read here I have censored the contact](https://pastebin.com/raw/vNWa5sqj)\ndetails as to not give him any exposure. Here are some screenshots of the panel:\n\nDashboard\n\n\n-----\n\nSettings\n\nNow onto the analysis, I use Ghidra as my decompiler due to it being a free tool with a good\npseudo code generator that makes reversing much easier than reading raw assembly. Along\nwith Ghidra I also use x32dbg to be able to step through the program and see exactly what it\nis doing. I have already gone through the file in Ghidra and renamed functions so that the\ndecompilation makes sense. Let's first take a look at how the program hides its console\nwindow.\n\nThe program uses a call to a WinAPI function called GetConsoleWindow to get a handle of\nthe window, it then uses this handle and 0 as parameters for the \"ShowWindow\" function to\nhide the console window.\n\n\n-----\n\nThe program then calls a function of \"get_HWID\" that will use the \"GetCurrentHwProfileA\"\nfunction to get the hardware profile. It will then copy the returned Guid into a string. The set\nvariable function will check data and if it is not correctly set it will exit the program.\n\nThe program then gets the documents folder directory by using \"SHGetFolderPathA\", and\nsets it as the current directory. After this it creates a folder with the HWID folder name and\nwill set that folder as the new current directory. Nexus will then put the\n\"%ALLUSERSPROFILE%\" directory into a variable. After this is completed it will take a\nscreenshot and save it into the newly created HWID folder. This folder is where Nexus will\nstore all of it's collected data and I will refer to it as the temp folder.\n\n\n-----\n\nAfter this the stealer then generates a path to the Discord local storage directory where the\nlogin token is stored. It will then check if the directory exists, if so it will create a Discord\nfolder in the temporary logs folder and then copy the local storage files into this. If this copy\nfails then the folder it has created is removed. The same technique is then used to grab the\nlocal storage directory of Authy. The developer has probably copied and pasted the discord\nfunction and then changed it slightly to support stealing Authy session files..\n\n\n-----\n\nThe program then creates a \"Grabber.zip\" zip file in the temp directory and then recurses\nthrough the \"Desktop\", \"Downloads\" & \"Documents\" folders and checks for any \".docx\", \".txt\"\nand \".rtf\" files which it will then copy into the zip.\n\n\n-----\n\nAfter grabbing text files Nexus will attempt to grab data from WinSCP. Firstly it opens the\n\"Software\\\\Martin Prikryl\\\\WinSCP 2\\\\Sessions\" registry key using \"RegOpenKeyExA\" and\nthen it will query this key for \"HostName\", \"UserName\" & \"Password\" this is all then written to\na log file named \"WinSCP.log\". The program also use the same registry technique to grab\ndata from Telegram.\n\n\n-----\n\nNext up is FileZilla where Nexus does the same technique of grabbing data from where the\nprogram saves it's credentials and writes these to a log file called \"filezilla.log\". If the\nextraction of this data fails or the program does not exist then the log file will be deleted. The\nsame technique is used to grab data from Pidgin, TotalCommander, PSI & PSI+.\n\n\n-----\n\n-----\n\nThis screenshot shows about half of the wallets that Nexus steals from. The technique is\nonce again the same where it simply checks for the existence of the wallet directory and then\ngrabs the dat file from them. These are all written into the \"Crypto\" folder in the temp\ndirectory.\n\n\n-----\n\nThe next operation is to steal Steam data, oddly the strings used to steal this data are\nbase64 encoded which leads me to believe that this function was copy and pasted due to no\nother stealing functions being processed this way. It decodes the directory string and then\nchecks if the registry keys exist. If it does then Nexus will begin to grab information by\ncopying files based on the registry information it queries. This is all then placed into a\n\"Steam\" directory in the temp folder.\n\nTo get computer information the program queries \"SOFTWARE\\\\Microsoft\\\\Windows\nNT\\\\CurrentVersion\" in the registry and grabs the windows version name. It then writes it to\nthe information log. After this it uses a function to get the OS language and again writes it to\nthe computer information log. Once the information has been written, the username,\n\n\n-----\n\nhostname & processor are also then written to the log. After this the GPU, and memory are\ngrabbed and a recursive function is called to get all of the installed programs by seeing what\nprograms are in the uninstall page in the control panel.\n\nVPN files and sessions are then grabbed in the same way as many of the other programs\nare stolen from by copying important data that the programs write to disk. These are all then\ncopied into their relative directories in the temp folder.\n\nNext up is browsers. Same old with non-standard browsers, Nexus just copies important files\nand formats them and then writes them into their respective log files.\n\n\n-----\n\nTo grab any data that isn't written to disk the program will query the local databases of the\nbrowsers for the needed information and in doing this will grab the following information:\nPasswords, Credit cards, Cookies, AutoFill forms, Browsing history, Download history,\nSearch engine history\n\n\n-----\n\nNow that Nexus has carried out all of it's stealing functions it then gets some more\ninformation about the computer and formats it to send it as the POST body to the c2. It then\nputs all of the information gathered into a zip called \"t.zip\" and sends the data.The function to\ncreate the POST body looks like this.\n\n\n-----\n\nThe function first gets some directories then gets the HWID and current windows version, it\nalso base64 decodes some version information and gets statistics on the information it has\nstolen to then send to the panel. The information is added into a string delimited with '~;^;'\nwhich is then stored in a variable to be sent along with the new zip file.\n\n\n-----\n\nThe program base64 decodes the c2 domain and gate file and creates a request to it using\n\"HttpOpenRequestA\", then after this it copies the zip into the request and sends it. After this\nthe internet handle is closed. The temporary directory will be then be deleted along with\n\"t.zip\". The data is sent again for some reason but this time Nexus looks for a return string of\na direct link to a windows executable and will call a download and execute function to drop\nand run it.\n\n\n-----\n\nIf by some miracle nothing else in the binary has managed to trip up an anti-virus this surely\nwill. After this the program just exits without deleting itself.\n\nIn conclusion Nexus stealer is a pretty normal stealer, nothing special and nothing new. It will\nprobably be detected by most modern anti-viruses. It gets the job done and I am pretty\ncertain that the c2 has been copied from another prominent stealer named Vidar/Arkei. Since\nstarting my analysis on Nexus stealer it has been updated to include the following new\nfeatures.\n\nCollecting OpenVPN Session and Authorization Data\nCollection of detailed information about Steam (based on customer wishes)\nWiFi Profile Data Collection\nCollecting profiles from Credmanager\nSaving cookies in .log and .txt formats (based on customer wishes)\nFixed error creating data directories\nChromium autocomplete collection fixed\n\nSee you next time & thanks for reading!\n\nEdit: [AnyRun](https://app.any.run/tasks/fdd9b291-64ae-4a99-8d22-f4287bbad310/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-02-22 - Nexus - Just another stealer.pdf"
+    ],
+    "report_names": [
+        "2020-02-22 - Nexus - Just another stealer.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "9f101d9c-05ea-48b9-b6f1-168cd6d06d12",
+            "created_at": "2023-01-06T13:46:39.396409Z",
+            "updated_at": "2025-03-27T02:00:03.074969Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "CHROMIUM",
+                "ControlX",
+                "Red Dev 10",
+                "RedHotel",
+                "Red Scylla",
+                "TAG-22",
+                "BRONZE UNIVERSITY",
+                "AQUATIC PANDA",
+                "Charcoal Typhoon",
+                "BountyGlad"
+            ],
+            "source_name": "MISPGALAXY:Earth Lusca",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "6abcc917-035c-4e9b-a53f-eaee636749c3",
+            "created_at": "2022-10-25T16:07:23.565337Z",
+            "updated_at": "2025-03-27T02:02:09.868522Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Bronze University",
+                "Charcoal Typhoon",
+                "Chromium",
+                "Red Dev 10",
+                "Red Scylla"
+            ],
+            "source_name": "ETDA:Earth Lusca",
+            "tools": [
+                "Agentemis",
+                "AntSword",
+                "BIOPASS",
+                "BIOPASS RAT",
+                "BadPotato",
+                "Behinder",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Doraemon",
+                "FRP",
+                "Fast Reverse Proxy",
+                "FunnySwitch",
+                "HUC Port Banner Scanner",
+                "KTLVdoor",
+                "Mimikatz",
+                "NBTscan",
+                "POISONPLUG.SHADOW",
+                "PipeMon",
+                "RbDoor",
+                "RibDoor",
+                "RouterGod",
+                "SAMRID",
+                "ShadowPad Winnti",
+                "SprySOCKS",
+                "WinRAR",
+                "Winnti",
+                "XShellGhost",
+                "cobeacon",
+                "fscan",
+                "lcx",
+                "nbtscan"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d53593c3-2819-4af3-bf16-0c39edc64920",
+            "created_at": "2022-10-27T08:27:13.212301Z",
+            "updated_at": "2025-03-27T02:00:55.529662Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Earth Lusca",
+                "TAG-22",
+                "Charcoal Typhoon",
+                "CHROMIUM",
+                "ControlX"
+            ],
+            "source_name": "MITRE:Earth Lusca",
+            "tools": [
+                "Mimikatz",
+                "PowerSploit",
+                "Tasklist",
+                "certutil",
+                "Cobalt Strike",
+                "Winnti for Linux",
+                "Nltest",
+                "NBTscan",
+                "ShadowPad"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535617,
+    "ts_updated_at": 1743041735,
+    "ts_creation_date": 1653705577,
+    "ts_modification_date": 1653705577,
+    "files": {
+        "pdf": "https://archive.orkl.eu/a8b475760dcb92719b44065bdc6c2c3991297562.pdf",
+        "text": "https://archive.orkl.eu/a8b475760dcb92719b44065bdc6c2c3991297562.txt",
+        "img": "https://archive.orkl.eu/a8b475760dcb92719b44065bdc6c2c3991297562.jpg"
+    }
+}

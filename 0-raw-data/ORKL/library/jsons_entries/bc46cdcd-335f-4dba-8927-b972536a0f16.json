@@ -1,0 +1,258 @@
+{
+    "id": "bc46cdcd-335f-4dba-8927-b972536a0f16",
+    "created_at": "2023-01-12T15:08:20.960342Z",
+    "updated_at": "2025-03-27T02:14:12.249969Z",
+    "deleted_at": null,
+    "sha1_hash": "ac4c31cec155f7bae05586dd9b1a67dedfabfe60",
+    "title": "2019-03-21 - Interception- Dissecting BokBot’s “Man in the Browser”",
+    "authors": "",
+    "file_creation_date": "2022-05-28T02:48:52Z",
+    "file_modification_date": "2022-05-28T02:48:52Z",
+    "file_size": 2575978,
+    "plain_text": "# Dissecting BokBot’s “Man in the Browser”\n\n**[crowdstrike.com/blog/bokbots-man-in-the-browser-overview/](https://www.crowdstrike.com/blog/bokbots-man-in-the-browser-overview/)**\n\nShaun Hurley and James Scalise March 21, 2019\n\n## BokBot: Proxy Module\n\nThis article is a continuation of CrowdStrike’s recent blog, “Digging Into BokBot’s Core\nModule,” and provides a detailed analysis of the inner workings of the BokBot proxy module\n— a complex piece of code written to trick victims into sending sensitive information\n**to a command and control (C2) server.**\n\n## Overview\n\nThe BokBot banking Trojan — also known as IcedID — was first observed in April 2017 and\nCrowdStrike has been tracking this threat ever since. BokBot has been used against\nfinancial institutions worldwide and is able to augment its capabilities by retrieving several\nmodules, including one that runs a local proxy server. This proxy module is able to intercept\nand potentially manipulate web traffic with the goal of facilitating financial fraud.\n\nThe BokBot core module downloads the proxy module, injects it into a spawned svchost\nchild process, and the proxy module initializes itself in the target process. The following is a\nstep-by-step analysis of how this process unfolds.\n\n## Module Initialization\n\n\n-----\n\nPrior to standing up the proxy server thread, this module goes through an initialization\n[process. Most of it is similar to the other BokBot modules — covered in the previous blog —](https://www.crowdstrike.com/blog/digging-into-bokbots-core-module/)\nand includes making errors less noisy, building a list of C2s, and setting up named events for\ncommunicating with the parent process. The following steps are taken prior to intercepting\nany traffic from a victim’s browser.\n\n### Webinject Updates\n\nUser-mode asynchronous procedure call (APC) objects are used to trigger update events for\nthe webinject data that exists in process memory. During initialization, separate user APC\nobjects are sent to the APC queue, one for each of the webinject DAT files (see previous\nblog). Each DAT file is decoded and stored in process memory, and will be passed as a\nparameter to the APC callback function. Once the APC queue is processed, the web configs\nwill be parsed and loaded into process memory.\n\n### C2 Communication Thread\n\nThe communication thread is signaled whenever there is collected data to be sent back to\nthe C2. A signal event occurs when the injected malicious javascript sends a specific type of\nrequest to the proxy server (see: Browser Perspective section) . The data that is sent back\ncan consist of harvested personal information, snapshots or proxy-related errors.\n\n### Proxy Server Initialization\n\nThe proxy server is bound to 127.0.0.1 on TCP port 57391. After the listener is set, a\nWindows Socket API (WSA) event handler is registered using this socket to handle all\nconnect/send/receive network requests.\n\n### SSL Certificates\n\nIn order to perform a [man-in-the-middle (MITM) attack on SSL connections, the proxy server](https://www.crowdstrike.com/epp-101/man-in-the-middle-mitm-attacks/)\nneeds to generate an SSL certificate, and insert it into the cert store. The certificate is\ncreated by calling CertCreateSelfSignCertificate, using the following hard-coded\ndistinguished name (DN) values:\n\nA temporary cert store is created in memory and will eventually be written out to the following\nlocation, with a filename that is generated using the Bot ID:\n\nC:\\Users\\jules\\AppData\\Local\\Temp\\D38D667F.tmp\n\n\n-----\n\nThe certificate store contains an SSL certificate for the webinject and C2 servers.\n\nOnce these steps have been completed, the proxy server is ready to intercept requests from\nthe browser, but the browser has not been reconfigured to point to the proxy server.\n\n## Proxy Connections\n\nNow, whenever the browser attempts to connect to a website, that request is hijacked and\nfirst processed by the proxy server. This section covers how the connection states are\nmanaged, how SSL MITM works, and what actions are taken by the proxy server.\n\n### Managing Connection State\n\nAll connections are managed by a series of data structures tied to WSA callback events that\nkeep track of internal communication with the client, external communication with the target\nwebsite, and to ensure the integrity of all the requests handled by the proxy server.\n\n\n-----\n\nFigure 1: Proxy Connection State Architecture\n\nThe architecture diagram in Figure 1 summarizes the layout of relations between the proxy\nserver components used to maintain the state of a proxy request.\n\n### SSL Man in the Middle\n\nAny SSL request, where the URL matches a URL from the list of webinject targets, is\nhijacked by the proxy inserting itself into the communication using its own SSL certificate.\nThe proxy server receives the request from the victim and establishes an SSL connection\nusing the proxy server’s SSL certificate. After that, the proxy server sends the request to the\ntarget website, and establishes an SSL connection between the proxy and the target\nwebsite. The response from the target is decrypted, and then encrypted using the proxy’s\ncertificate. This response is sent to the victim, where the traffic will be decrypted using the\nproxy’s certificate. An SSL context data-structure, similar to Figure 1, is used to maintain the\nstate of the SSL traffic.\n\nSee the “Ensuring Valid Certificates” section to understand how the browser is hooked to\nensure that it sees these certificates as valid.\n\n## Proxy Action\n\nIf the requested URL hostname does not match one of the webinjects, then the proxy server\npasses the HTTP requests/responses between the infected host and the web server.\nHowever, if a URL matches one of the many websites targeted by the webinjects, then\nadditional action is taken (see “Traffic Manipulation Proxy Perspective”).\n\n\n-----\n\n## Redirecting Browsers to the Proxy\n\nAfter the proxy server has been initialized, any currently executing browser process will have\nto be configured to use the proxy. To do this, BokBot injects code into the browser process.\nThe injected code adds hooks into key functions, allowing it to hijack browser traffic.\n\n### Browser Process Selection\n\nA looping thread is spawned to iterate over all of the currently executing process names. To\nget a list of current processes, a list of `BASIC_PROCESS_INFORMATION structures is`\ngenerated using `ZwQuerySystemInformation .`\n\n**Process Identification**\n\nOnce the list is generated, the module will attempt to identify browser processes. A hash of\nthe process name is used to identify whether the process is one of the specific browser\nprocesses listed in Table 1.\n\nTable 1: Browser Identification by Hash\n\nThe hash is generated using a custom method, and then XORed with a constant value that\nvaries between samples, so that the hash values differ between campaigns.\n\n**Proxy Configured Check**\n\nOnce the browser has been identified an additional check is made to determine if this\nbrowser process has already had the proxy configured by BokBot. To keep track of every\nbrowser process that has been injected into, a linked list data structure is created (Figure 2).\nThe entire list is walked, checking to see if both the process ID and the process creation time\nexist in the list. If the browser is not in the list, then a new list item is created that contains the\ntarget process ID and target process creation time.\n\nFigure 2: Linked List of Browsers Processes Using the Proxy\n\n\n-----\n\nAn additional check is made by attempting to open up a named event. After the code is\ninjected, a named event is created by the browser process. The naming scheme is\ngenerated in a similar manner as was discussed in the previous blog about BokBot’s main\nmodule, however, the process ID is appended to the end of the name. The module calls\nOpenEvent and if the returned error code is `ERROR_FILE_NOT_FOUND, the injection code`\ncontinues.\n\n### Opening the Process and Additional Checks\n```\nOpenProcess is called to open a handle to the browser process. BokBot checks to see if\n\n```\nthe process is WOW64, and if so, different procedures are used that will yield the same\nresult.\n\nTo be thorough, another check is made to determine if the process has already been\nconfigured:\n```\n   ZwQueryInformationProcess and ReadProcessMemory are used to get the\n\n```\nprocess environment strings.\nEach string is checked to see if this exists: `v313235373937=true`\n\nThe `3132353739 is an ascii representation of the BotID.`\nNo injection occurs if this environment string exists.\n\n### Browser Process Injection and Code Execution\n\nThe proxy configuration code is injected in the same manner as BokBot’s child process\n[injection method (see the blog on BokBot’s main module), except for two](https://www.crowdstrike.com/blog/digging-into-bokbots-core-module/)\nthings: OpenProcess is called to connect to the process, and a hook is added for\n```\nZwWaitForSingleObject . This means that as soon as the browser executes\nZwWaitForSingleObject, the injected code executes: The hook is removed, the proxy is\n\n```\nconfigured and the `ZwWaitForSingleObject call is completed to maintain process`\nexecution.\n\n**Context Structure**\n\nThe context data structure is injected into the browser process and provides the proxy\nconfiguration code with the necessary information to properly configure the proxy.\n\n### Browser Proxy Configuration Code\n\nThe “configuration code” is actually a series of procedure hooks that are used to insert the\nproxy module into the communication channel:\n\n\n-----\n\n```\n   connect (ws2_32.dll)\n\n```\nBrowser specific functions:\n\nInternet Explorer: `MSAFD_ConnectEx`\nFirefox: `SSL_AuthCertificateHook`\nChrome: `ws2_32.WSAEventSelect`\n\n**Inserting the Hooks**\n\nMost of the hooks are inserted by walking the export table of the target module, hashing the\nprocedure name, and then comparing that hash against a static value. If these hashes\nmatch, then the hook can be placed.\n\nTable 2: Hash for Hooked Function Names\n\nTo get the address for `MSAFD_ConnectEx, a different method is used and is discussed in`\nthe “Internet Explorer: MSAEFD_ConnectEx” section.\n\n**Winsock2 Connect Hook**\n\nThe Winsock2 hook intercepts all `AF_INET network traffic that uses the` `connect API to`\nsend network traffic (Firefox and IE). The socket is set to non-blocking mode,\nusing ioctlsocket and a new `connect call is sent to the proxy server. Once a`\nconnection is established, a 12-byte packet containing the following data is sent to the proxy\nserver:\n\nThese 12 bytes are parsed and stored in the `PROXY_SESSION_CONTEXT data structure`\n(Figure 1). The result of the hooked call is a network file descriptor. Any network call that\nuses this file descriptor will be sent to the proxy server. Whichever browser made the call\n\n\n-----\n\nwill be unaware of the proxy intercepting the traffic.\n\n**Hooking Browser-Specific Functions**\n\nThe next set of hooks are dependent on the target browser. Essentially, whether or not it is a\nbrowser-specific library or a MS shared module, each browser handles requests in a different\nmanner.\n\nInternet Explorer: MSAFD_ConnectEx\n\nSimilar to the previous `connect hook, this function swaps out the original socket with a`\nsocket that contains the connection data for the proxy server. The procedure address is not\nlocated in the export table of mswsock.dll, so the address is acquired by calling `WSAIoctl`\nsocket with the IO Control Code of `SIO_GET_EXTENSION_FUNCTION_POINTER`\n```\n(0xC8000006).\n\n```\nFireFox: SSL_AuthCertificateHook\n\nFirefox uses the `SSL_AuthCertificateHook callback function to authenticate a certificate.`\n```\nSECSuccess (null) is returned if the certificate is authenticated. BokBot attempts to hook\n\n```\nthis function in the “nss3.dll” module and if that fails, it will patch the same function in\n“ssl3.dll.” The hook always returns `SECSuccess .`\n\nGoogle Chrome: WSAEventSelect\n\nIn addition to the `ws2_32.connect procedure being hooked, BokBot adds an additional`\nhook in the ws_32.dll module in `WSAEventSelect . The hook grabs the socket and the`\nevent object for every connection event ( FD_CONNECT ). This data will be processed by the\ncall to the hooked connect procedure.\n\nGoogle Chrome: connect\n\nEssentially, this hook does the same thing as what is covered in the previous section on the\nconnect hook for IE and Firefox. The main difference is that all connection events collected\nby the `WSAEventSelect hook are processed by this hook.`\n\n**Ensuring Valid Certificates**\n\nOnce browser traffic is redirected to the proxy, the malware must prevent browser certificate\nerrors from informing the user that requests are being intercepted. To ensure that the\ncertificates are both verified and trusted, two procedures are hooked:\n```\nCertVerifyCertificateChainPolicy and GetCertificateChain .\n\n```\nCertificate Chain Verification\n\nCertificate chains are verified by calling `CertVerifyCertificateChainPolicy . This`\nprocedure returns a Boolean function to signify whether or not a specific chain is valid.\nBokBot hooks this function to ensure that all attempts to verify SSL certificate chains\n( CERT_CHAIN_POLICY_SSL ) will always return `TRUE .`\n\n\n-----\n\nCertificate Chain Context Trust\n\nIn order to ensure that the browser sees that the certificates are trusted, BokBot hooks the\n```\nGetCertificateChain procedure. GetCertificateChain will construct a\nCERT_CHAIN_CONTEXT structure that contains an array of CERT_SIMPLE_CHAIN structures.\n\n```\nEach one of these `CERT_SIMPLE_CHAIN structures contains an array of`\n```\nCERT_CHAIN_ELEMNT data structures.\n\n```\nThese data structures all contain a field, `TrustStatus, used to convey potential issues`\nwith the certificate chain. To ensure success, the `TrustStatus` field needs to be modified\nto ensure all certificates in the chain are trusted.\n```\nTrustStatus is a structure comprised of a field that identifies errors with the certificate\n\n```\n( ErrorStatus ) and a field that contains an information status for the ticket ( InfoStatus ).\nPatching these two fields within each structure will trick the browser into believing that the\ncertificates are all trusted.\n\nFirst, `ErrorStatus is set to indicate that there is no error with the certificate or chain:`\n\nThis value is set the same for all of the data structures. The `InfoStatus fields, however,`\nare different between the `CERT_CHAIN_ELEMENT structure,` `CERT_CHAIN_CONTEXT and`\n```\nCERT_SIMPLE_CHAIN structures:\n\n```\nOnce these two values are set, the certificate chain will be seen as trusted by the browser.\n\n## Proxy C2 Communication\n\nThe majority of the communication passed between the proxy server and the C2 will be\ncomprised of either exfiltrated data or error messages for debugging. Table 3 contains the\nURI (Uniform Resource Identifier) parameters that are passed with every request. The data\nsent will be covered in the following section.\n\n\n-----\n\nTable 3: C2 URI Parameters\n\nThe following is an example of the request headers:\n\nIn this case, the request body contains the following Zlib compressed data:\n\n\n-----\n\nThe request body decompresses to the following:\n\n## Traffic Manipulation: Proxy Perspective\n\nBokBot’s proxy module relies on traffic manipulation to steal a victim’s sensitive information.\nWeb traffic generated by a victim’s browser is matched against a list of target URLs\n(webinjects), and if matched, the proxy takes one of the following actions: redirect to a decoy\nwebsite (webfake); scrape the page; screenshot the page; or ignore. In addition, the\nresponse to the request is matched to determine if either HTML or Javascript is injected into\nthe page and served back to the victim.\n\nFigure 3: BokBot WebFake Process Overview\n\n\n-----\n\n### Web Injection DAT Files\n\nThe DAT files downloaded by the BokBot main module are structured binary files that contain\na list of target URLs, target HTML/Javascript code blocks, and the Javascript/HTML code\nblocks to be injected. During the initialization process, this structured data is broken into\nmultiple lists for each of the webinject categories. The webinject category lists are built out of\na series of webinject types. Once parsed, each element has the following structure:\n\n### Page Scraping\n\nThe page-scraping processing functions perform a match on either the URL or on the HTML\nbody to determine if the webpage’s information should be scraped and sent to the C2. Page\nscraping targets banking account display pages to grab the target’s account information.\n\n**Types 33, 34**\n\nEither an exact URL string or a regex is used to match the victim’s requested URL. Once a\nmatch is made, both the HTML body and the matched URL are sent to the C2. Each of the\ntargeted URLs are related to pages that contain the victim’s account information, for\nexample:\n\n\n-----\n\nchaseonline.chase.com/gw/secure/ena\nclient.schwab.com/Accounts/Summary/Summary.aspx\n\n**Type 64**\n\nThis scans the webpage body looking for text (“Account Balance,” “Current Balance,” etc.)\nrelated to account balances, security challenge questions and other personal data. If located,\nthe URL, the HTML body and the matched text are compressed and sent to the C2.\n\n### Screenshots\n\nScreenshots are generated when a URL matches on a Type 49 inject. Screenshots are taken\nusing the Windows GDI+ API. A bitmap is generated, written to a tmp file, read into a buffer,\ncompressed, and then sent to the C2. Bitmaps are written to the local temp directory under\nAppData and the filename is a unique string of alpha characters.\n\nExample: AppData\\Local\\Temp\\alksfjlkdsfk.tmp\n\nAlthough no concrete examples came with the webinjects of the BokBot versions used to\ngenerate this report, it is believed that these screenshots will contain sensitive details related\nto commercial and banking accounts.\n\n### Code Injection\n\nCode injection works by either matching a URL, or doing a match and replace on an HTML\nelement.\n\n**Types 17 and 19**\n\nTypes 17 and 19 are used to hide elements within a page, grab form data, inject code,\nreplace code, and to make the webfake experience more believable for the victim. The\ndifference between these two types is that Type 17 doesn’t rely on regex to match and\nreplace HTML and Javascript.\n\n**Type 81**\n\nType 81 is a list of URLs that are ignored entirely by the proxy server. The purpose is to\navoid complications that could come up when injecting into advertisements and chat or email\nclients. Rather than deal with handling this code, the requests and responses are forwarded\nto the victim or the target by the proxy, without modification.\n\n\n-----\n\n### Webfake Phishing Site\n\nBokBot uses the webinjects to create a replica of the original target website. These replica\nwebsites are called webfakes. URIs are rewritten to forward the traffic to the webfake site.\nThis section covers each of the injection types used to redirect traffic to a webfake. The web\nbrowser is not aware that traffic is being redirected to the webfake.\n\nFigure 4: BokBot WebFake Example\n\n**Type 50**\n\nType 50 requests perform exact matches (no regex) on URIs received from the client.\nWhenever a match occurs, the URL is rewritten to point toward the webfake site, and the\nrequest is sent to the replica page. The response to that request is parsed by the proxy\nserver and sent back to the victim.\n\n**Type 51**\n\nTo match individual icon/gif/bitmap/other names, regex match and replace is leveraged:\n\nRegex to match: ^https:\\/\\/www\\.amazon\\.[a-z]{2,5}\\/.*\\/style\\/images\\/(.*)\\.(png’|gif)$\nReplacement URI: hxxps://hospirit[.]com/amazon/style/images/$1.$2\n\nIP Address for hospirit[.]com: 185.68.93.136\n\nThis regex will replace the values “$1” and “$2” with the name of the PNG or GIF file. This\nrewritten request is what will be sent out of the proxy server.\n\n\n-----\n\n**Type 52**\n\nType 52 requests appear to check a URL for a substring and then extract that data, but the\nBokBot samples used to build this report did not contain a Type 52 rewrite.\n\n**URL Rewrite Bypass**\n\nIt would become an issue if the same webfake process is used every time a victim attempts\nto log into a targeted website. Once the victim’s information has been collected, there is no\nlonger a need to rewrite URLs to point towards the webfake site. Instead, the request should\nbe sent, unmodified, to the real website. To ensure this happens, BokBot, maintains a list of\nsubkeys located under the HKCU\\Software\\Classes\\CLSID registry key.\n\nFor this to work, a unique name needs to be generated for each of the target sites. Each of\nthe inject types included in this category contains a Webfake Template field, for example:\n\nThe highlighted value is used as a seed to generate a unique registry key name (covered in\nmore detail in the “Verification Requests” section). Each of the target sites contains either a\nvalue similar to the one highlighted above, or a simple identifier that uses the URL hostname\n(e.g., “amazon”).\n\nIf the registry subkey exists, the proxy server sends a request to the C2 to determine if the\nrequest should be rewritten. If the response from the C2 is anything other than one of the two\nbytes — “0x2D” or “0x2B” — the legitimate URL will not be rewritten to point to the webfake\nsite.\n\n### Verification Requests\n\nVerification requests are generated by the Bot API javascript (covered further down) and are\nused to either send data to the C2, or to insert/delete/query a value in the registry. Multiple\nverification request types are used, each one is processed by the proxy server.\n\n\n-----\n\nTable 4: Verification Commands\n\n**Type 96**\n\nIn order to either display a “Site Down for Maintenance” message or present the victim with a\nlegitimate website (bypass the URL rewrite request), the Bot API injected javascript code can\ngenerate these Type 96 `banknameS requests.`\n\nThe values passed to the body of this request will be written to the registry and checked both\nby the Bot API and during execution of the code that handles the URL redirection request\ntypes.\n\nEach site is provided a unique ID that is sent to the proxy server via the `banknameS`\nparameter. This value is used to generate a UUID, which will be the name of the registry key.\nAll of these entries are created under the following registry path:\n```\nHKCU\\Software\\Classes\\CLSID .\n\n```\nAfter the key is created, the value located in the body of the Type 96 request is hashed and\nwritten to the ( Default ) value field in the registry subkey.\n\n**Types 97 and 98**\n\nBoth Type 97 and 98 verifications will be generated by the Bot API’s injected javascript, and\nwill perform an action on the registry key that was created by the Type 96 request. Type 97\nqueries the registry to see if the value exists and Type 98 will delete the key\n\n\n-----\n\n**Type 100**\n\nVerification Type 100 is either passed directly to the C2 (Type 2) or the request tells the\nproxy server to interact with the C2 (Type 1) in some manner. These requests are either\nHTTP POST or HTTP GET requests that contain the information collected from the malicious\njavascript code.\n\n### Putting it All Together\n\nLet’s take an example using the cashanalyzer website inject: First, the proxy server receives\na request from a web browser to access www.cashanalyzer.com. The proxy cycles through\nthe various webinject lists to match the URL. A match is found.\n\nThe proxy server takes the `2299737dfa5c070dc29784f1219cd511 value from the first part`\nof the Webfake Template field and uses it to generate a UUID to determine if a “Site Down\nFor Maintenance” page is set (see the “Verification Requests” section). If it exists, a request\nis sent to the C2 to determine if the block page should be updated with a new time or\nremoved.\n\nOnce the block page check has been made, the proxy server takes the rest of the Webfake\nTemplate and replaces the `front:// string with the web protocol (HTTP/HTTPS) and the`\nreplacement URL `hospirit.com/cashanalyzer . The URL path and query,`\n```\ncontent/main?a=2299737dfa5c070dc29784f1219cd511&b=#gid#&c=#id#, is appended\n\n```\nto the end of the URL. The Project ID and the Bot ID values replace the `#gid# and` `#id#`\nparameter value tokens, respectively.\n\nThis request is sent to the webfake. A response is sent and additional checks are made to\ndetermine if anything matches one of the inject types. In this case, no match was found and\nthe response will be forwarded back to the victim’s browser without modification. The\nbrowser is not aware of the redirection and the original requested URL is still visible in the\nbrowser address bar.\n\n\n-----\n\nAs the browser renders the response, additional requests will be sent to load dependant\njavascript files from the webfake. In this case, `main.js is loaded from the webfake. The`\nbrowser requests to download the javascript file from the redirected website and, once again,\nthe proxy server performs the webinject match routines. As a result, a Type 19 match is\nfound.\n\nThe “Code to Inject” value will be injected into the `main.js code when the redirected`\nwebsite responds to the request. Now all of the necessary components are in place to collect\nthe target’s account information.\n\nOnce form data is collected, Validation Type 100 requests are sent and processed by the\nproxy server. These requests are POST requests with the form data contained within the\nrequest body. Once processed by the proxy, the form data will be sent to the C2 by signaling\nthe C2 communication thread.\n\nThe request parameters can be parsed by referring back to the “Proxy C2 Communication”\nsection.\n\nThere are multiple variations of how webinjects are handled by the proxy server. However,\nthis example is sufficient to showcase the entire workflow.\n\n## Traffic Manipulation: Browser Perspective\n\nDue to the multitude of variations for the injected javascript API, and rather than attempting\nto abstract and present the high-level processes each inject has in common, this section will\nfocus only on continuing the cashanalyzer.com example introduced in the previous section.\nThis analysis can be used to understand how the other injects work.\n\nThe first couple of sections will cover how the site interacts with the victim, the proxy and the\nC2. After that is covered, the “Putting it All Together” section will connect the separate\npieces.\n\n**Bot API: Core Javascript Module**\n\n\n-----\n\nAs previously mentioned, the `main.js file contains the Bot API code. This code provides`\neverything necessary to interact with the proxy, the C2 and the webpage HTML elements, to\nensure that the victim has a seamless experience while entering the account information.\n\n**Token States**\n\nA token state is a numerical indicator used to identify what action the Bot API should take\nnext. There are five token states:\n\nTable 5: Token States\n\nAs an example, if there is some sort of error, the token state is set to either 3 or 4, and this\nwill trigger the logic in the javascript to call the viewBlock method (next section) and load the\n“Site Down for Maintenance” page.\n\n**Page View Architecture**\n\nIn order to ensure that the correct information is collected in the proper order, the Bot API\nrelies on a traditional view/controller architecture. In this case, the controller is the attackercontrolled webfake site. The Bot API client notifies the C2 that it is ready to receive a\ncommand, the server responds with a command, and this command is used to load the next\npage view.\n\n\n-----\n\nTable 6: Page View Commands\n\nOnce the command is received by the Bot API, the CSS display field of the relevant HTML\nelement is modified to display this code block. A typical session using the webfake will take\nthe following steps:\n\n1. Login page view is loaded\n\n1. Victim enters the account information and submits the form\n2. A wait page is displayed as the login form is processed\n2. Security token page view is loaded\n\n1. Victim enters the security token\n2. A wait page is displayed as the security token form is processed\n3. First name/last name/phone number page view is loaded\n\n1. Victim enters this information\n2. Another wait page is displayed as this form is processed\n\nAn example of this will be covered in the “Putting it All Together” section below.\n\n**Wait Pages**\n\nAfter the victim attempts to log in to the website, there is an idle period as the proxy forwards\nthe request to the webfake site, and that site forwards the request to the legitimate website.\nTo avoid causing any concern, the Bot API displays a wait page.\n\n\n-----\n\nFigure 5: Post-Login Wait Page\n\nThere are multiple versions of this site, one for each step of the account information\ncollection process: login information; security token information; security question answers;\nand the form that collects the victim’s name and address.\n\n**Communication: Bot API Requests to the C2**\n\nCommands are forwarded to the C2 on behalf of the Bot API by the proxy server using\nValidation Type 100 requests. Contained within these requests is a base64-encoded string.\nThis string decodes to a series of parameters in JSON format.\n\n\n-----\n\nTable 7 describes the meaning of each of these parameters. In this case, the Bot API is\nnotifying the C2 that the page has not been initialized (invalid).\n\nTable 7: URL Parameters for Bot API C2 Communication\n\nHeatbeat (Type 1) requests are sent out at regular intervals by the Bot API. These requests\nare used as a means to maintain constant communication with the C2 and provide a medium\nfor the Bot API to receive commands.\n\n**Communication: C2 Responses to the Bot API**\n\n\n-----\n\nResponses from the C2 contain commands specifying what actions the Bot API should take,\nbased on the initial request. After each form submission, a command is received from the C2\ntelling the Bot API which page to load next. These responses are also base64-encoded\nJSON.\n\nIn this case, the command ID is “99” and it is telling the Bot API to reload the original site.\nThis will reset all of the forms, clear any site blocks and load the original page. Table 8\ncovers the various fields of the C2 response:\n\nTable 8: C2 Response Fields\n\nAs can be seen, the `id field lines up with the view commands table (Table 6) covered in`\nthe “Page View Architecture” section.\n\n**Site Maintenance Page**\n\nWhenever the token state of the Bot API is set to “3” or “4,” an error page stating that there\nare technical issues is displayed (Figure 6). The token is set to one of those two states\nwhenever there is an issue communicating with the C2, the webfake, the proxy server, or if\nan error occurs when the webfake communicates with the real website.\n\n\n-----\n\nFigure 6: BokBot Proxy “Site Down for Maintenance” Page\n\nThe fix date is generated by adding one hour to the current time. After displaying the\nwebsite, this timestamp is set in the registry by sending a Type 96 Verification request. Once\nthe timer expires, a Type 98 Verification request is sent to delete the block time from the\nregistry.\n\n**Logging**\n\nThe Bot API is constantly sending logging data back to the C2 as base64-encoded JSON.\nThe following is the decoded JSON object:\n\nThis chunk of data has a series of `key:value pairs, where the h key contains the log, as a`\n```\nvalue . The logs are descriptive and useful for the malicious actor.\n\n### Putting it All Together\n\n```\n**Initial Browser Request**\n\nThe victim’s browser sends a request for cashanlyzer.com, and that request is intercepted by\nthe proxy, rewritten, sent to the webfake site, and the response is sent from the proxy to the\nvictim. The page content also contains the following javascript code to load a javascript file\nfrom the attacker-controlled site:\n\n\n-----\n\nThis `main.js request is forwarded by the proxy and has the following code injected into`\nthe response:\n\nThis code will call the `String.prototype.init method that is defined in` `main.js . In this`\ncase, the init method contains the malicious Bot API javascript module, and will end up\ncalling the main function to initialize and load the webfake site.\n\nFigure 7: Cashanalyzer Fake Login Page\n\nAfter checks are performed to determine if a block page needs to be loaded, the Bot API\ncalls the viewStep method and passes it the string “login.” The string passed to this method\nis the element `id of the HTML <div> object that contains the login form.`\n\n\n-----\n\nThis display field of this element will be switched from `none to` `block and the login page`\nis displayed (Figure 7). Now the victim can enter the login information and click “continue.”\nAll of the data entered is placed into a C2 request structure and sent to the webfake site.\n\nThe first highlighted section above is the user account credentials, and the second is the\nlogging information. This information notifies whoever is on the other end that the login view\nwas loaded, and that the last view is the wait page.\n\nThe wait page that the victim is seeing churns as the Bot API continuously sends heartbeat\nrequests, waiting for the response from the webfake site.\n\nAfter processing is finished, the webserver responds with a command to disable the login\npage, and make the next page viewable. In this case, the command is to load the user\ncontact information form.\n\nThe rest of the steps are self explanatory: The subsequent actions consist of forms leading\nto a wait time, followed by additional forms until the last step is reached.\n\n**Wrapping Up the Process**\n\nOnce all of the information has been collected, the Bot API sends a Validation Type 96\nrequest to the proxy server: However, instead of a timestamp, the value being set in the\nregistry is the string “true,” as highlighted below.\n\n\n-----\n\nThis request instructs the proxy server to create the ‘ HKCU\\Software\\Classes\\CLSID\\\n```\n{7570CC99-D32B-6883-1375-9D2881583EFB) ‘ registry key with the ( Default )value, set to\n\n```\na four-byte binary value. Once this is set, any further attempt to access bypasses any\nattempt to rewrite the URL (inject Types 50, 51, 52), and will load the legitimate website.\n\nTo load the legitimate website, the page is refreshed and now the victim will be able to login\nto the legitimate cashanalyzer.com website. Of course, if any of the other webinjects match\non the site, other actions will be taken (collecting account balance data, etc.).\n\n## How CrowdStrike Falcon Prevent Stops BokBot\n\n[CrowdStrike® Falcon® Prevent™ next-generation antivirus successfully stops BokBot when](https://www.crowdstrike.com/endpoint-security-products/falcon-next-gen-av/)\nprocess blocking is enabled, as explained in the following.\n\nBokBot spawns a svchost child process, injects the main module, and that svchost process\nspawns and injects into multiple child processes. The process tree in Figure 8 is an example\nof what BokBot looks like when viewed using Falcon Prevent with process blocking is\ndisabled. As shown below, several malicious child processes were launched by BokBot’s\nmain module, located inside of the first svchost process.\n\n\n-----\n\nFigure 8: BokBot Process Tree Without Process Blocking Enabled\n\nWithout preventions enabled, the customer will still be notified of the malicious activity, but no\naction will be taken to prevent the behavior automatically.\n\n### Suspicious Process Blocking\n\nFalcon has the capability to prevent the execution of BokBot’s main module and all of the\nchild modules. Turning on process blocking in Falcon Prevent kills the BokBot infection at the\nparent svchost process. Looking at the process tree in the Falcon UI with process blocking\nenabled (Figure 9), an analyst sees that the svchost process was prevented. The block\nmessage (Figure 10) that occurs with this preventative action explains why this process was\nterminated.\n\nFigure 9: BokBot Process Tree With Process Blocking Enabled\n\n\n-----\n\nFigure 10: BokBot Process Block Message\n\nSuspicious process blocking is an example of malware prevention based on behavior. If the\nmalware uses behavior that has not been caught by Falcon’s indicators of attack (IOAs),\nthen Falcon can also prevent malware execution by leveraging either next-generation AV\nmachine learning or intelligence collected by the Crowdstrike Intelligence team.\n\n## Indicators\n\n### BokBot Hashes\n\nThe following hashes were used in creation of this blog post.\n\n**File Hash** **File**\n\n87d37bc073d4d045d29e9c95806c7dcf83677697148e6b901c7a46ea7d5f552e BokBot\nContainer\n\n2c331edaadd4105ce5302621b9ebe6808aecb787dd73da0b63882c709b63ce48 BokBot\nContainer\n\n7e05d6bf0a28233aa0d0abfa220ef8834a147f341820d6159518c9f46f5671b7 BokBot\nContainer\n\n961f7bada0c37c16e5ae7547d9b14b08988942af8d4a155ad28e224ece4fa98e BokBot\nContainer\n\nc992229419759be2ecaddcfd2d0ce26ce3cddca823a4c4875564316b459b05eb BokBot\nContainer\n\n\n-----\n\n88e41cc6bd4ec57bcabf67f15566475e1ee3ff7667b73f92ac81946f8564e6d9 BokBot\nProxy\nDAT\n\nec205babdc4422888c3c29daa2f3d477315a2a136a2bd917947cd2184cdce406 BokBot\nProxy\nDAT\n\n### File Locations\n\n**Path** **Details**\n\n%PROGRAMDATA%\\{UUID}\\[A-Za-z].exe Bokbot main binary\n\n%PROGRAMDATA%\\[A-Za-z]}\\[A-Za-z].dat Bokbot DAT File\n\n### Registry\n\n**Path** **Details**\n\nHKCU\\Software\\Classes\\CLSID\\{UUID) Block Site and Rewrite bypass data\n\n### Network Listeners\n\n**Port** **Service Name** **Details**\n\nTCP 57391 svchost.exe Proxy Server Port\n\n### Attacker Controlled Sites\n\n**Hostnames**\n\nsegregory[.]com\n\ntybalties[.]com\n\nwaharactic[.]com\n\nambusted[.]space\n\noverein[.]space\n\nexterine[.]space\n\nstradition[.]space\n\n\n-----\n\nstocracy[.]space\n\nugrigo[.]space\n\nyorubal[.]space\n\nportened[.]space\n\ncoultra.space\n\nparchick.space\n\nexhausines.space\n\nharactice.space\n\nacquistic.space\n\n**Additional Resources**\n\n_Learn about the collaboration among eCrime groups that may be driving these attacks:_\n_[“New Evidence Proves Ongoing WIZARD SPIDER / LUNAR SPIDER Collaboration,”](https://www.crowdstrike.com/blog/wizard-spider-lunar-spider-shared-proxy-module/)_\n_and_ _“Sin-ful SPIDERS: WIZARD SPIDER and LUNAR SPIDER Sharing the Same_\n_Web.”_\n_[Download the 2021 CrowdStrike Global Threat Report](https://www.crowdstrike.com/global-threat-report/)_\n_[Download the 2018 CrowdStrike Services Cyber Intrusion Casebook and read up on](https://www.crowdstrike.com/resources/reports/cyber-intrusion-services-casebook-2018/?ctm_source=Digital&ctm_medium=blog&ctm_campaign=WC_Casebook2018_Report)_\n_real-world IR investigations, with details on attacks and preventative recommendations._\n_Learn more about CrowdStrike’s next-gen endpoint protection by visiting the Falcon_\n_platform product page._\n_Test CrowdStrike next-gen AV for yourself:_ _[Start your free trial of Falcon Prevent™](https://go.crowdstrike.com/try-falcon-prevent.html)_\n_today._\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-03-21 - Interception- Dissecting BokBot’s “Man in the Browser”.pdf"
+    ],
+    "report_names": [
+        "2019-03-21 - Interception- Dissecting BokBot’s “Man in the Browser”.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "b740943a-da51-4133-855b-df29822531ea",
+            "created_at": "2022-10-25T15:50:23.604126Z",
+            "updated_at": "2025-03-27T02:00:55.505366Z",
+            "deleted_at": null,
+            "main_name": "Equation",
+            "aliases": [
+                "Equation"
+            ],
+            "source_name": "MITRE:Equation",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "475ea823-9e47-4098-b235-0900bc1a5362",
+            "created_at": "2022-10-25T16:07:24.506596Z",
+            "updated_at": "2025-03-27T02:02:10.263346Z",
+            "deleted_at": null,
+            "main_name": "Lunar Spider",
+            "aliases": [
+                "Gold SwathMore"
+            ],
+            "source_name": "ETDA:Lunar Spider",
+            "tools": [
+                "BokBot",
+                "IceID",
+                "IcedID",
+                "NeverQuest",
+                "Vawtrak",
+                "grabnew"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "c2385aea-d30b-4dbc-844d-fef465cf3ea9",
+            "created_at": "2023-01-06T13:46:38.916521Z",
+            "updated_at": "2025-03-27T02:00:02.950071Z",
+            "deleted_at": null,
+            "main_name": "LUNAR SPIDER",
+            "aliases": [
+                "GOLD SWATHMORE"
+            ],
+            "source_name": "MISPGALAXY:LUNAR SPIDER",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "63061658-5810-4f01-9620-7eada7e9ae2e",
+            "created_at": "2022-10-25T15:50:23.752974Z",
+            "updated_at": "2025-03-27T02:00:55.538582Z",
+            "deleted_at": null,
+            "main_name": "Wizard Spider",
+            "aliases": [
+                "Wizard Spider",
+                "UNC1878",
+                "TEMP.MixMaster",
+                "Grim Spider",
+                "FIN12",
+                "GOLD BLACKBURN",
+                "ITG23",
+                "Periwinkle Tempest",
+                "DEV-0193"
+            ],
+            "source_name": "MITRE:Wizard Spider",
+            "tools": [
+                "TrickBot",
+                "AdFind",
+                "BITSAdmin",
+                "Bazar",
+                "LaZagne",
+                "Nltest",
+                "GrimAgent",
+                "Dyre",
+                "Ryuk",
+                "Conti",
+                "Emotet",
+                "Rubeus",
+                "Mimikatz",
+                "Diavol",
+                "PsExec",
+                "Cobalt Strike"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "f6f91e1c-9202-4497-bf22-9cd5ef477600",
+            "created_at": "2023-01-06T13:46:38.86765Z",
+            "updated_at": "2025-03-27T02:00:02.938998Z",
+            "deleted_at": null,
+            "main_name": "WIZARD SPIDER",
+            "aliases": [
+                "FIN12",
+                "UNC2053",
+                "Pistachio Tempest",
+                "TEMP.MixMaster",
+                "GOLD BLACKBURN",
+                "Periwinkle Tempest",
+                "DEV-0193",
+                "Storm-0193",
+                "Trickbot LLC",
+                "DEV-0237"
+            ],
+            "source_name": "MISPGALAXY:WIZARD SPIDER",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "e6a21528-2999-4e2e-aaf4-8b6af14e17f3",
+            "created_at": "2022-10-25T16:07:24.422115Z",
+            "updated_at": "2025-03-27T02:02:10.216817Z",
+            "deleted_at": null,
+            "main_name": "Wizard Spider",
+            "aliases": [
+                "DEV-0193",
+                "Gold Blackburn",
+                "Gold Ulrick",
+                "Grim Spider",
+                "ITG23",
+                "Operation BazaFlix",
+                "Periwinkle Tempest",
+                "TEMP.MixMaster",
+                "Wizard Spider"
+            ],
+            "source_name": "ETDA:Wizard Spider",
+            "tools": [
+                "AdFind",
+                "Agentemis",
+                "Anchor_DNS",
+                "BEERBOT",
+                "BazarBackdoor",
+                "BazarCall",
+                "BazarLoader",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Conti",
+                "Diavol",
+                "Dyranges",
+                "Dyre",
+                "Dyreza",
+                "Dyzap",
+                "Gophe",
+                "Invoke-SMBAutoBrute",
+                "KEGTAP",
+                "LaZagne",
+                "LightBot",
+                "PowerSploit",
+                "PowerTrick",
+                "PsExec",
+                "Ryuk",
+                "SessionGopher",
+                "TSPY_TRICKLOAD",
+                "Team9Backdoor",
+                "The Trick",
+                "TheTrick",
+                "Totbrick",
+                "TrickBot",
+                "TrickLoader",
+                "TrickMo",
+                "Upatre",
+                "bazaloader",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bc119938-a79c-4e5f-9d4d-dc96835dfe2e",
+            "created_at": "2024-06-04T02:03:07.799286Z",
+            "updated_at": "2025-03-27T02:05:17.337094Z",
+            "deleted_at": null,
+            "main_name": "GOLD BLACKBURN",
+            "aliases": [
+                "Periwinkle Tempest ",
+                "Wizard Spider ",
+                "ITG23 "
+            ],
+            "source_name": "Secureworks:GOLD BLACKBURN",
+            "tools": [
+                " Buer Loader",
+                " Dyre",
+                " Team9",
+                " TrickBot",
+                "BazarLoader"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "7cfe3bc9-7a6c-4ee1-a635-5ea7b947147f",
+            "created_at": "2024-06-19T02:03:08.122318Z",
+            "updated_at": "2025-03-27T02:05:17.398805Z",
+            "deleted_at": null,
+            "main_name": "GOLD SWATHMORE",
+            "aliases": [
+                "Lunar Spider "
+            ],
+            "source_name": "Secureworks:GOLD SWATHMORE",
+            "tools": [
+                " GlobeImposter",
+                " Gozi",
+                " Gozi Trojan",
+                " IcedID",
+                " Latrodectus",
+                " TrickBot",
+                " TrickBot",
+                "Cobalt Strike"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536100,
+    "ts_updated_at": 1743041652,
+    "ts_creation_date": 1653706132,
+    "ts_modification_date": 1653706132,
+    "files": {
+        "pdf": "https://archive.orkl.eu/ac4c31cec155f7bae05586dd9b1a67dedfabfe60.pdf",
+        "text": "https://archive.orkl.eu/ac4c31cec155f7bae05586dd9b1a67dedfabfe60.txt",
+        "img": "https://archive.orkl.eu/ac4c31cec155f7bae05586dd9b1a67dedfabfe60.jpg"
+    }
+}

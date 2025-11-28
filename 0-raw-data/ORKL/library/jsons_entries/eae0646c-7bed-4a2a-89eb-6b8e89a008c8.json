@@ -1,0 +1,277 @@
+{
+    "id": "eae0646c-7bed-4a2a-89eb-6b8e89a008c8",
+    "created_at": "2023-01-12T15:08:19.124663Z",
+    "updated_at": "2025-03-27T02:14:08.480752Z",
+    "deleted_at": null,
+    "sha1_hash": "ff43ae7d0e91caf3f36cc7f87a42978d75651771",
+    "title": "2016-06-15 - Mofang- A politically motivated information stealing adversary",
+    "authors": "",
+    "file_creation_date": "2022-05-06T08:56:46Z",
+    "file_modification_date": "2022-05-06T08:56:46Z",
+    "file_size": 141850,
+    "plain_text": "# When a malware is more complex than the paper.\n\n**[sebdraven.medium.com/when-a-malware-is-more-complex-than-the-paper-5822fc7ff257](https://sebdraven.medium.com/when-a-malware-is-more-complex-than-the-paper-5822fc7ff257)**\n\n\nAugust 29, 2018\n\n\nSeb\ndrave\n\n\n[Sebdraven](https://sebdraven.medium.com/?source=post_page-----5822fc7ff257--------------------------------)\nAug 28, 2018\n\nFireye has published a paper of the backdoor Felixroot after using two vulnerabilities CVE[2017–0199 and CVE-2017–11882. The RTF document drops an executable.](https://www.fireeye.com/blog/threat-research/2017/12/targeted-attack-in-middle-east-by-apt34.html)\n\nAnd the Analyst explains:\n\n_The dropped executable (MD5: 78734CD268E5C9AB4184E1BBE21A6EB9) contains the_\n_compressed FELIXROOT dropper component in the Portable Executable (PE) binary overlay_\n_section. When it is executed, it creates two files: an LNK file that points to_\n_%system32%\\rundll32.exe, and the FELIXROOT loader component. The LNK file is moved to_\n_the startup directory. Figure 5 shows the command in the LNK file to execute the loader_\n_component of FELIXROOT._\n\n## Microsoft Office Vulnerabilities Used to Distribute FELIXROOT Backdoor in Recent Campaign \"…\n\n### Campaign Details In September 2017, FireEye identified the FELIXROOT backdoor as a payload in a campaign targeting…\n\nwww.fireeye.com\n\nBut it’s no so easy. The dropper copies two PE files after using RC4 and a decompression\nfunction custom in memory.\n\nThe two PE file are an installer and the backdoor Felixroot.\n\nThe installer puts on the disk the backdoor and after decrypting strings, it creates the\npersistance (a lnk in startup folder) and execute run32dll with Felixroot and uses some technics\nanti forensic to change the timestamps of the backdoor.\n\nNow all technical details !\n\n## Encryption and decompression\n\n load the overlay in memory\n\n\n-----\n\nAfter a look with Pestudio, the overlay is 53% of the dropper and the entropy is 7,994. it s too\nhigh for a compression.\n\nOverlay of the dropper\n\nto dump the overlay, two lines of python are enough. The overlay starts at 0xD800 in the file.\n\n_overlay =_\n_open(‘573ea78afb50100f896185164da3b8519e2e0f609a34a7c70460eca5b4ae640d’,’rb’).read()_\n\n_[0xD800:]_\n\n_open(‘overlay.dump’,’wb’).write(overlay)_\n\n\n-----\n\nSo launch the debugger to understand how this overlay is used by the dropper.\n\nThe dropper starts to read itself.\n\nRead itself\n\nThe file handler is in EAX as value 288.\n\nIf we check in IDA, this part is badly interpreted by IDA. It’s patched at runtime.\n\n\n-----\n\nerro in IDA\n\nSo the best way, it’s to set a breakpoint at the CreateFile and ReadFile.\n\nSo it reads and stores the result in [ebp + C].(here 194408)\n\n\n-----\n\n-----\n\nAnd the dropper seeks to D800 to set EAX at the start of the overlay.\n\n## RC4 and Custom decompression\n\n\n-----\n\nOverlay in memory\n\n\nif we check in IDA where we are.\n\n\n-----\n\nsub_406681\n\nIf we check the the graph overview,this function is in a huge function with many jmp.\n\nIt seems this function is like a packer.\n\nIn the second step, it reads 40 bytes ( from C08 to C30)\n\n\n-----\n\n-----\n\nThe loop is made by the the jmp to go to the start of the function if the 40bits are not read.\n\nAfter reading the 40 bits, we have a loop of 256 steps, to store 01 to 256 on the stack.\n\n\n-----\n\ninit of RC4\n\nAnd it manipulates the 40 bytes and stores the result on the\nstack in a loop of 256 steps.\n\n\n-----\n\nInit of RC4\n\n\n-----\n\nAnd a third function with aritmethic operations works on the overlay with the results of the two\nlasted functions\n\n\n-----\n\n[EBP+C] store F9D8. Remember !? It’s the size of file.\n\nThe result of this function is stored at the same place of the overlay in C30.\n\n\n-----\n\nOk, everybody has recognized the three steps of RC4.\n\nif we do a comparaison using python langage, the first functions is:\n```\nself.state = list(range(256))\n\n```\nThe second function is:\n```\ndef init(self, key):    for i in range(256):      self.x = (ord(key[i %\nlen(key)]) + self.state[i] + self.x) & 0xFF      self.state[i], self.state[self.x]\n= self.state[self.x], self.state[i]    self.x = 0\n\n```\nAnd the third function is:\n```\ndef decrypt(self, input):    output = [None]*len(input)    for i in\nrange(len(input)):      self.x = (self.x + 1) & 0xFF      self.y =\n(self.state[self.x] + self.y) & 0xFF      self.state[self.x], self.state[self.y] =\nself.state[self.y], self.state[self.x]      output[i] = chr((ord(input[i]) ^\nself.state[(self.state[self.x] + self.state[self.y]) & 0xFF]))    return\n''.join(output)\n\n```\n\n-----\n\nSo here, the key of the RC4 is the first 40 bytes of the overlay.\n\n1B 73 B4 17 5E 5F 14 59 AF F7 BA AF DA 75 AB F5 19 4D 32 50 36 01 46 30 09 AB 9C 09 4D B2\n74 01 9E C0 C0 9E FD B9 ED E5\n\nThe result seems to be a PE file but not totally.\n\nAfter that, the dropper increases the stack from 12F000 to 12C000 before launching the\ndecompression function (seemly custom after many searches, but if it’s not that, write a\ncomment at the end of this post !)\n\nthe dropper puts the three bytes [AB,CD,EF] in the stack.\n\nThe algorithm used in the first AB,C and secondly D, EF in this function sub_004055FC.\n\n\n-----\n\nAB,C\n\n\n-----\n\nD,EF\n\nIf C or D == 0 then the dropper writes AB or EF.\n\nIf C != 0 then the dropper writes 0 and the number of 0 depends on AB\n\nif D!= 0 then the dropper write 0 and the number of 0 depends on EF\n\nWe develop many examples to better understand:\n\n4D 00 5A -> 4D 5A\n\n90 00 00 -> 90 00\n\n03 00 00 -> 03 00\n\n51 10 04 -> 00 00 04\n\nThe result is stored in a buffer. The address of the buffer is stored by EAX.\n\n\n-----\n\n-----\n\nThe dropper decodes two PE Files: another dropper which we name drop and the backdoor\nFelixroot.\n\nFelixroot is copyied to 378C38.\n\n\n-----\n\ndrop is copied after a Virtualloc at 20000 and drop is executed in 00021964.\n\n## Installation\n\ndrop verifies if it’s executed after the dropper by checking a mutex.\n\n\n-----\n\n-----\n\n-----\n\nIf it’s ok, drop checks if it’s executed on a 64bits systems to correctly set the parameters of\ndecoding strings\n\n\n-----\n\nDrop decodes the first string depending on if it’s 64bits or not.\n\n\n-----\n\noffset unk_ is the key of the decode functions.\n\nThe function is a XOR with a and with FF.\n\nThe data to decrypt is in drop ressources.\n\n\n-----\n\nThe result is the stored the result in a buffer.\n\nThe result of the first decoding function is \\\\System32.\n\n\n-----\n\nrundll32.exe is the result of the second decoding.\n\n\n-----\n\ndrop drops the backdoor after decoding strings to set in which folder the backdoor is dropped.\n\nin first it decodes the pattern of the path L”%lS\\\\%lS\\\\%lS.dbf”\n\nIt chooses the special folder: %APPDATA%/Roaming/Microsoft/\n\nIn 32bits, this folder is not used so it’s very easy to hide a malware.\n\nAnd the path of file is: ”C:\\\\Users\\\\IEUser\\\\AppData\\\\Roaming\\\\Microsoft\\\\{22B4CEF1–\n633C-4F94–824E-0C207AC4F2DF}.dbf”\n\nThe name of file changes at each execution.\n\n\n-----\n\ndrop writes the backoor in the disk from 378C38in sub 210E5.\n\n\n-----\n\ndrop decodes a string to have the path: c:\\\\windows\\\\system32\\\\msvcrt.dll\n\n\n-----\n\nin sub_00021845, drop catches the creation date of c:\\\\windows\\\\system32\\\\msvcrt.dll\n\n\n-----\n\ndrop changes the attributes of the timestamps (creation date of the file, last modified…) of the\nbackdoor switching the value with L”c:\\\\windows\\\\system32\\\\msvcrt.dll” in sub_000218AF\n\n\n-----\n\nthe persistance is created. The first step is the decoding of the name of file in 00021A1A. the\nresult is .lnk\n\nAfter ther create the persistance of the backdoor in sub_000211D7. It’s a shortcut installed in\nstartup folder and create a copy in roaming folder.\n\n\n-----\n\nin sub_216D1, drop installs the shortcut in the Startup Folder and copies the shorcut and\nexecute with the function ShellExecute.\n\n0012DC84 0012DCA0 L”C:\\\\Windows\\\\system32\\\\cmd.exe”\n0012DC88 0012E6C8 L”/c move \\”C:\\\\Users\\\\IEUser\\\\AppData\\\\Roaming\\\\ .lnk\\”\n\\”C:\\\\Users\\\\IEUser\\\\AppData\\\\Roaming\\\\Microsoft\\\\Windows\\\\Start\nMenu\\\\Programs\\\\Startup\\\\ .lnk\\””\n\n\n-----\n\n-----\n\n-----\n\n## Shortcut to restart\n\nThe lnk runs run32dll.exe with the .dbf and ordinal 1 of the export of the dll.\n\n\n-----\n\n## Few words about Threat Intel\n\nIt’s strange that FireEye hasn’t published a full paper with the analysis of the dropper and the\nbackdoor.\n\nThe dropper uses many very interesting techniques:\n\nrc4 encryption\ndecompression function custom\nrun32dll to bypass applocker and AV\nchange timestamps of the installed files\n\n\n-----\n\ndecrypting strings to install the backdoor\ndecrypting strings for the persistance settings\n\nThe function sub_406681 is very interesting and it’s very difficult to make a yara rules on it\nbecause there are many jump to have enough binaries to make a rule. the rc4 encryption and a\ndecompression function are in this function.\n\n## Thanks\n\nthank to the zone de confort to try to understand this f… decompression function and thank to\n@FliegenEinhorn to find the sample !\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/ICS SCADA/GreyEnergy and BlackEnergy/When a malware is more complex than the paper.pdf"
+    ],
+    "report_names": [
+        "When a malware is more complex than the paper.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "ce10c1bd-4467-45f9-af83-28fc88e35ca4",
+            "created_at": "2022-10-25T15:50:23.458833Z",
+            "updated_at": "2025-03-27T02:00:55.475188Z",
+            "deleted_at": null,
+            "main_name": "APT34",
+            "aliases": null,
+            "source_name": "MITRE:APT34",
+            "tools": [
+                "netstat",
+                "Systeminfo",
+                "PsExec",
+                "SEASHARPEE",
+                "Tasklist",
+                "Mimikatz",
+                "POWRUNER",
+                "certutil"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "4d9cdc7f-72d6-4e17-89d8-f6323bfcaebb",
+            "created_at": "2023-01-06T13:46:38.82716Z",
+            "updated_at": "2025-03-27T02:00:02.928984Z",
+            "deleted_at": null,
+            "main_name": "GreyEnergy",
+            "aliases": [],
+            "source_name": "MISPGALAXY:GreyEnergy",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "a2939cf7-76f8-4080-9ba1-42ccb4016b3b",
+            "created_at": "2022-10-25T15:50:23.53328Z",
+            "updated_at": "2025-03-27T02:00:55.494818Z",
+            "deleted_at": null,
+            "main_name": "Mofang",
+            "aliases": [
+                "Mofang"
+            ],
+            "source_name": "MITRE:Mofang",
+            "tools": [
+                "ShimRatReporter",
+                "ShimRat"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "cffb3c01-038f-4527-9cfd-57ad5a035c22",
+            "created_at": "2022-10-25T15:50:23.38055Z",
+            "updated_at": "2025-03-27T02:00:55.459558Z",
+            "deleted_at": null,
+            "main_name": "OilRig",
+            "aliases": [
+                "COBALT GYPSY",
+                "IRN2",
+                "APT34",
+                "Helix Kitten",
+                "Evasive Serpens",
+                "Hazel Sandstorm",
+                "EUROPIUM",
+                "ITG13"
+            ],
+            "source_name": "MITRE:OilRig",
+            "tools": [
+                "ISMInjector",
+                "RDAT",
+                "Systeminfo",
+                "QUADAGENT",
+                "OopsIE",
+                "Tasklist",
+                "certutil",
+                "ZeroCleare",
+                "POWRUNER",
+                "netstat",
+                "ipconfig",
+                "LaZagne",
+                "BONDUPDATER",
+                "SideTwist",
+                "PsExec",
+                "SEASHARPEE",
+                "Mimikatz",
+                "RGDoor",
+                "ftp"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "67709937-2186-4a32-b64c-a5693d40ac77",
+            "created_at": "2023-01-06T13:46:38.495593Z",
+            "updated_at": "2025-03-27T02:00:02.848206Z",
+            "deleted_at": null,
+            "main_name": "OilRig",
+            "aliases": [
+                "IRN2",
+                "Hazel Sandstorm",
+                "EUROPIUM",
+                "TA452",
+                "Earth Simnavaz",
+                "Cobalt Gypsy",
+                "Crambus",
+                "Helix Kitten",
+                "APT 34",
+                "APT34",
+                "ATK40",
+                "G0049",
+                "Evasive Serpens",
+                "Twisted Kitten"
+            ],
+            "source_name": "MISPGALAXY:OilRig",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "db318f04-09e6-4c57-b0e9-3f71f0b2de94",
+            "created_at": "2023-01-06T13:46:38.648954Z",
+            "updated_at": "2025-03-27T02:00:02.882685Z",
+            "deleted_at": null,
+            "main_name": "Mofang",
+            "aliases": [
+                "BRONZE WALKER"
+            ],
+            "source_name": "MISPGALAXY:Mofang",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "df9bfbf1-bb9d-492f-b381-95b9e1482267",
+            "created_at": "2022-10-25T16:07:24.394491Z",
+            "updated_at": "2025-03-27T02:02:10.207352Z",
+            "deleted_at": null,
+            "main_name": "Whitefly",
+            "aliases": [
+                "ATK 83",
+                "Bronze Walker",
+                "Mofang",
+                "SectorM04",
+                "TEMP.Mimic"
+            ],
+            "source_name": "ETDA:Whitefly",
+            "tools": [
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "Mimikatz",
+                "Nibatad",
+                "Shim RAT",
+                "ShimRAT",
+                "Vcrodat"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "728d2c2c-c4af-4cdc-8723-5d3aa97924a8",
+            "created_at": "2024-05-01T02:03:08.002557Z",
+            "updated_at": "2025-03-27T02:05:17.299162Z",
+            "deleted_at": null,
+            "main_name": "BRONZE WALKER",
+            "aliases": [
+                "Mofang ",
+                "CTG-2810 "
+            ],
+            "source_name": "Secureworks:BRONZE WALKER",
+            "tools": [
+                " Superman",
+                "ShimRat"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "3eebdb3f-f4e3-42e5-bb4d-f02a13328316",
+            "created_at": "2024-05-01T02:03:08.014303Z",
+            "updated_at": "2025-03-27T02:05:17.306592Z",
+            "deleted_at": null,
+            "main_name": "COBALT EDGEWATER",
+            "aliases": [
+                "Cold River ",
+                "DNSpionage ",
+                "APT34 "
+            ],
+            "source_name": "Secureworks:COBALT EDGEWATER",
+            "tools": [
+                " DNSpionage",
+                " Karkoff",
+                " MailDropper",
+                " SideTwist",
+                " TWOTONE",
+                "AgentDrable"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "8f9c8a6e-f6b6-431b-bedd-94fdeea5474a",
+            "created_at": "2024-05-01T02:03:08.022974Z",
+            "updated_at": "2025-03-27T02:05:17.310877Z",
+            "deleted_at": null,
+            "main_name": "COBALT GYPSY",
+            "aliases": [
+                "CHRYSENE ",
+                "Crambus ",
+                "EUROPIUM ",
+                "Hazel Sandstorm ",
+                "Helix Kitten ",
+                "ITG13 ",
+                "OilRig ",
+                "Yellow Maero ",
+                "APT34 "
+            ],
+            "source_name": "Secureworks:COBALT GYPSY",
+            "tools": [
+                " Helminth",
+                " Jason",
+                " MacDownloader",
+                " PoisonFrog",
+                " RGDoor",
+                " ThreeDollars",
+                " TinyZbot",
+                " Toxocara",
+                " Trichuris",
+                " TwoFace",
+                "Glimpse"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536099,
+    "ts_updated_at": 1743041648,
+    "ts_creation_date": 1651827406,
+    "ts_modification_date": 1651827406,
+    "files": {
+        "pdf": "https://archive.orkl.eu/ff43ae7d0e91caf3f36cc7f87a42978d75651771.pdf",
+        "text": "https://archive.orkl.eu/ff43ae7d0e91caf3f36cc7f87a42978d75651771.txt",
+        "img": "https://archive.orkl.eu/ff43ae7d0e91caf3f36cc7f87a42978d75651771.jpg"
+    }
+}

@@ -1,0 +1,145 @@
+{
+    "id": "45b05036-1d5d-419d-9cb7-468214e76600",
+    "created_at": "2023-04-05T02:09:46.548389Z",
+    "updated_at": "2025-03-27T02:15:35.647558Z",
+    "deleted_at": null,
+    "sha1_hash": "8adfde5557197f695dbd59f3b5587e81511d7adc",
+    "title": "2023-03-07 - SYS01 Stealer",
+    "authors": "",
+    "file_creation_date": "2023-04-03T08:26:12Z",
+    "file_modification_date": "2023-04-03T08:26:12Z",
+    "file_size": 1347155,
+    "plain_text": "# SYS01 Stealer Will Steal Your Facebook Info\n\n**blog.morphisec.com/sys01stealer-facebook-info-stealer**\n\nArnold Osipov\n\n## How SYS01 Stealer Will Get Your Sensitive Facebook Info\n\n[Tweet](https://twitter.com/share)\n\nStarting in November 2022, Morphisec has been tracking an advanced info stealer we have\nnamed “SYS01 stealer.” SYS01 stealer uses similar lures and loading techniques to another\ninformation stealer recently dubbed S1deload by the Bitdefender group, but the actual\npayload (stealer) is different.\n\nWe have seen SYS01 stealer attacking critical government infrastructure employees,\nmanufacturing companies, and other industries. The threat actors behind the campaign are\ntargeting Facebook business accounts by using Google ads and fake Facebook profiles that\npromote things like games, adult content, and cracked software, etc. to lure victims into\ndownloading a malicious file. The attack is designed to steal sensitive information, including\nlogin data, cookies, and Facebook ad and business account information.\n\nThe campaign was first seen in May 2022 and was initially attributed to the Ducktail\noperation by Zscaler. (This attribution was later discovered to be incorrect.) In this blog we\nexplore the various methods used to distribute SYS01 stealer.\n\nWe show how the attacker advances the delivery chain and includes Rust, Python, PHP, and\nPHP advanced encoders to successfully evade security vendors over the past five months.\n\n## The Infection Chain\n\nThe attack begins by luring a victim to click on a URL from a fake Facebook profile or\nadvertisement to download a ZIP file that pretends to have an application, game, movie,\netc.\n\n\n-----\n\nThe infection chain is divided into two parts: the loader, and the Inno-Setup installer that\ndrops the final payload. The loader is usually a legitimate C# application susceptible to a\nside-loading vulnerability that comes with a hidden malicious dynamic link library (DLL) file\nthat’s eventually side-loaded to the application. This legitimate application drops the Inno_Setup installer that decompresses to a whole PHP application containing malicious scripts._\nThe PHP scripts are responsible for stealing and exfiltrating information. The scripts are\nencoded using different techniques, which makes their analysis and detection harder.\n\n_Infection chain_\n\n## The Loader\n\nWe’ve seen the payload delivered in diverse ways including DLL side-loading, Rust and\nPython executables, and many others. All methods eventually drop an Inno-Setup installer\nwhich, at the next stage, drops and executes the PHP information stealer. In the next\nsections we elaborate on various delivery techniques and luring themes the attackers use.\n\nNote: these delivery methods are representative samples. There are many other variations of\nthese methods with minor modifications.\n\n### DLL Side-Loading V1\n\n\n-----\n\nIn this method, the victim downloads a zipped folder with different luring themes such as\nworld cup live streaming, free applications, and more that abuse legitimate applications\nvulnerable to DLL side-loading attack. The zipped folder usually holds the following file\npatterns:\n\n1. Executable. A benign, legitimate executable abused to side-load the malicious DLL\n2. [A-Z]Data.dat (hidden). A ZIP or self extracting archive (SFX) containing legitimate\n\nHTML webpages used as a decoy\n3. [A-Z]License (hidden). The Inno-Setup installer to be executed (base64 encoded with\n\nsome string modifications)\n4. DLL (hidden). The malicious side loaded DLL\n\n_Western Digital's WDSyncService.exe executable abused to side-load a malicious DLL_\n\nThe malicious DLL has two main goals: displaying the decoy to the victim and executing the\n_Inno-Setup installer. It does this by creating a thread that checks whether the License file_\nexists. If it doesn’t, it downloads the file from its command and control (C2) server, then\ndecodes and executes it. In the main thread the SFX/ZIP file is executed/decompressed, and\nthe victim is shown the decoy HTML files.\n\n_Decoy dropped to the folder_\n\nIn some samples we noticed cases where the .dat and License files are not included in the\nzipped folder. Instead, they’re downloaded from the C2 using the following pattern:\n\n\n-----\n\n_https://<domain>/files/dld?t=wcup. Downloads the License file_\n_https://<domain>/files/dlz?t=wcup. Downloads the .dat file as a ZIP_\n\n**dld Download the License (base64 encoded with string replacements)**\n**dlz Download .zip (.dat file with the decoys)**\n**t Is the theme used as a decoy**\n\n_Side loaded malicious DLL_\n\nAs mentioned, the License file is the next stage Inno-Setup installer that drops the PHP\ninformation stealer.\n\n### DLL Side-Loading V2\n\nIn this method, the victim downloads a ZIP folder that purportedly contains an application or\nmovie etc.\n\n\n-----\n\n_Garmin’s ElevatedInstaller.exe executable abused to side-load malicious DLL_\n\nThe above image shows an example of Garmin’s ElevatedInstaller.exe being abused to sideload the malicious DLL. Once the executable starts running, it side-loads the malicious DLL\nthat decodes and drops three files to the %temp% folder:\n\n1. vcruntime140.dll Dependency\n2. rhc.exe (hidec) Executable that accepts an executable as an argument and executes\n\nit with hidden console\n3. <[A-Z0-9]{15}>.exe Rust executable compiled with Cargo\n\nNext, it creates a scheduled task that runs the Rust executable by passing it as an argument\nto rhc.exe. Before exiting, it pops up a message box informing the victim that the execution\ndidn’t succeed.\n\n\n-----\n\n_Dropping a Rust executable and popping a fake message box_\n\nThe Rust executable then downloads the next stage—an Inno-Setup installer that deploys\nthe PHP information stealer from <domain_name>/files?t=<theme_name>&tp=d.\n\nWe’ve also spotted similar delivery methods that dropped Python executables compiled with\n_[Nuitka instead of Rust to drop the next stage Inno-Setup.](https://github.com/Nuitka/Nuitka)_\n\n### DLL Side-Loading V3\n\nSimilar to the other delivery methods, in this scenario a victim downloads what seems to be a\ngame, movie, nude album, etc.\n\n_FUD ZIP file with malicious DLL_\n\n\n-----\n\nAll the executables named as image files are in fact the same benign executable—\n_WDSyncService.exe that is abused to side-load a malicious DLL named WDSync.dll._\n\n_Zipped folder with the same executable file: WDSyncService.exe that side-loads WDSync.dll_\n\nThe WDSyncService.exe file is signed by Western Digital and acts as Western Digital’s sync\nservice, which is written in C#. Additionally, this executable uses several shared libraries,\nincluding WDSync.dll which is hidden in the ZIP file and obfuscated with SmartAssembly.\nThe rest of the DLLs WDSyncService.exe uses are compressed and encrypted within\n_[WDSync.dll using the embedding dependencies feature by SmartAssembly.](https://documentation.red-gate.com/sa/obfuscating-your-code-with-smartassembly/embedding-dependencies)_\n\nWDSync dll embeds legitimate DLLs using the SmartAssembly feature\n\n\n-----\n\nOnce a victim has executed one of the executables from the ZIP folder, a fake message box\npops up and alerts the user to install a “framework” to open the file.\n\n_Fake message box_\n\nMeanwhile, a thread with malicious logic is executing. It starts with de-obfuscating the next\nstage (string replacements + base64 decoding) and writing it to a %tmp% folder under the\nhardcoded name TS.exe and executing it with “t” as an argument. Once the execution\ncompletes, the file is deleted to leave no evidence on the machine.\n\n_Drops ”TS.exe” and executes it with t as an argument_\n\nThe dropped executable (TS.exe) can be executed with one of the following options: t, d\n\n\n-----\n\n_t|d options that the executable accepts_\n\nOption t copies the executable to %appdata%\\Packages\\TS.exe and registers a new\nscheduled task to trigger every day and repeat every hour with option “d” as an argument.\n\n_Creates a scheduled task to be executed with d as an argument_\n\nOption d checks if the file %localappdata%\\m.txt exists. If it does, the program exits because\nit means the info stealer is already running on the machine. If the file does not exist, the\nexecutable decodes and drops the next stage Inno-Setup executable to %temp%\\\\<[A-Z]\n_{15}.exe> and executes it with /VERYSILENT /SUPPRESSMSGBOXES /NORESTART as_\narguments. As before, when the execution finishes the file is deleted to remove evidence\nfrom the machine.\n\n\n-----\n\n_Drops next stage Inno-Setup executable_\n\n## Inno-Setup to PHP Information Stealer\n\nOnce the Inno-Setup installer executes, it drops a PHP application with additional files,\nusually to %localappdata\\[A-Z]{4}\\<version_number>. Between different variants of this\ninformation stealer, we saw the following files used to execute the malicious logic:\n\n**include.php Responsible for installing persistence via scheduled tasks**\n**index.php Executes the main logic of the stealing act**\n**version.php (embedded in index.php if it does not exist) Holds the stealer version**\n**rhc.exe Hides the console window of started programs (hidec)**\n**rss.txt (other variants have a different name) Base64 encoded string with several**\nstring replacements. Once decoded, this executable, written in Rust and compiled with\n_Cargo, gets the current date and time, and decrypts Chromium-based browsers’_\nencryption key\n\nIn older variants the PHP scripts were not obfuscated in any manner. In newer variants we\n[noticed commercial encoders ionCube and Zephir, which are self-written extensions that](https://www.ioncube.com/)\nobfuscate the PHP scripts.\n\nAfter dropping the folder, the Inno-Setup executable executes php.exe include.php, or\npasses this command line as an argument to rhc.exe.\n\ninclude.php registers two scheduled tasks:\n\n\n-----\n\n1. rhc.exe php.exe include.php\n\nrhc.exe php.exe index.php\n2. rhc.exe php.exe index.php\n\nThe first task is triggered at log-on. The second task is triggered every two minutes. The\nattacker must know the time to set it in the scheduled task. It does this by decoding the\nrss.txt into an executable, adding a uniquid at the end of the executable, and dropping it to\n_%temp%\\tmp\\<uniqid>.exe. If for some reason the operation fails, this script gets the current_\ndate and time running: “wmic os get LocalDateTime /value”.\n\n_createTS—creates scheduled task. createLG—creates scheduled task at logon_\n\nindex.php is the script where the stealing logic takes place. It starts by setting a configuration\narray with the following information:\n\n**version—Stealer version**\n**b—Bot name (SYS01 is the bot name we’ve seen in all the variants we covered, which**\nis why we named the php stealer SYS01)\n**tmpData—Path for saving temporarily used files**\n**url_endpoint—A list of C2 domains**\n\n\n-----\n\n_Configuration array_\n\nDuring each execution, the script shuffles and randomly defines one of the domains to be\nused as the C2 in the entire script.\n\nNext, the script creates a machine ID associated with the victim and saves it to\n_%localappdata%\\packages\\m.txt for future executions. The machine ID is constructed by the_\nfollowing: uniqid() + _ + rand(111111, 999999). Later, it will call the getTask function that\nconstructs the following URL\n\nurl= URL_ENDPOINT . \"?a=http&dev=1&v={$config[\"version\"]}&machine_id=\n{$macID}&from={$config['b']}&tag={$tag}&uname={$uname}&mt={$time}&f=\" .\nFORCE_TASK;\n\nand issues a GET request to the C2 with information identifying the victim. The response is a\nJson object with zero or more tasks in it.\n\n_C2 response with tasks_\n\n\n-----\n\nThe main script routine goes over each task and acts accordingly. As seen in the main\nfunction there are five task types: get_ck_all, dlAR, upload, r, dl.\n\n_index.php main routine_\n\n\n-----\n\n1. get_ck_all Gets all cookies. Iterating over based_ch, which consists of a list of\n\nChromium-based browser names. It tries to extract the cookies and login data for each\nbrowser name, and after extracting this information checks if the flag sendD (send\ndata) is set to true. If so, it posts the stolen information to its C2. The attacker\nadditionally checks whether the user has a Facebook account logged in or not. It does\nthis by checking if the cookie hostname contains facebook.com and collects the\nsession specific cookies xs and c_user that store the user ID and session secret\nrespectively.\n\n_Extracting Facebook’s session cookies – xs and c_user_\nIf the victim has a logged in Facebook account (checked with xs name in Facebook’s\ncookie), and the rs_flag (resource flag) is set to true, the attacker will query Facebook’s\ngraph API using the access token, obtained via Facebook’s graphql API, to steal the\nvictim’s Facebook information and send it back to the C2. The stolen information is that\nset as fields in the URL parameter:\n\n_C2 response—Facebook's graph API used to access sensitive information_\n\n\n-----\n\n_Extract victim’s sensitive Facebook data using the graph API and send the results to a_\n_C2 server_\n\n\n-----\n\n2. dlAR Download and run. Downloads a file from the given URL and executes it with the\n\ngiven arguments.\n\n_dlAR task_\n\nAt the time of writing, in the given task the downloaded file was an Inno-Setup\nexecutable that dropped a legitimate WD Discovery app to side-load the malicious\n_WDLocal.dll._\n\n_Western’s Digital WDDdiscovery.exe side-loads malicious WDLocal.dll_\n\nThe side-loaded DLL issues a GET request to one of its hardcoded URLs with\nparameters stating the old machine ID, new machine ID, and the current version of the\ninformation stealer. The response is a Json object that holds the new version number,\nURL to download the new version, command to be executed, and arguments. The\nresponse is parsed, and the new stealer is downloaded and executed. Next, it creates\na scheduled task that executes the updated routine, which triggers at log-on and every\n30 minutes.\n\n\n-----\n\n_Information Stealer update routine_\n\n\n-----\n\n3. upload Asks for a file to be uploaded to the C2, checks whether the file exists, and\n\nuploads it.\n\n_Upload file function_\n\n4. r Gets a command to run, executes it, and posts the result back to the C2.\n\n_Gets command from C2 and executes it_\n5. dl Sends a get request with the parameter “a=update” to the C2 and does the same as\n\nthe dlAR task.\n\n## How do You Combat SYS01 stealer?\n\nDLL side-loading is a highly effective technique for tricking Windows systems into loading\nmalicious code. Dynamic link libraries enable more efficient memory use and system\nmodularity, but because Microsoft doesn’t enforce search order for DLLs by default, it makes\napplications vulnerable to exploitation.\n\nMicrosoft doesn’t enforce search order for a range of reasons, such as enabling things like\nportability and backwards compatibility—for example, portable browser applications that use\nolder Microsoft libraries. Security-minded developers may enforce search order within their\ncode. But most developers aren't security minded.\n\nThis enables threat actors to position a malicious payload alongside a legitimate application.\nThen when an application loads in memory and search order is not enforced, the application\nloads the malicious file instead of the legitimate one, allowing threat actors to hijack\n\n\n-----\n\nlegitimate, trusted, and even signed applications to load and execute malicious payloads.\nAdversaries use side-loading attacks for execution, persistence, privilege escalation, and\ndefense evasion.\n\nMicrosoft has started to enforce default search order on many of their applications, even if\nnot universally. But attackers can still misuse highly popular Microsoft applications that were\ncreated in previous years that are legitimately signed. And they will be able to do so for many\nyears to come.\n\nBasic steps to help prevent SYS01 stealer include implementing a zero-trust policy and\nlimiting users’ rights to download and install programs. And SYS01 stealer at heart relies on\na social engineering campaign, so it’s important to train users about the tricks adversaries\nuse so they know how to spot them.\n\n_[Read Your Guide to Top Info Stealers of 2022](https://blog.morphisec.com/infostealer-comparison)_\n\nBut humans are fallible, and limiting device functionality is not always possible when you\nneed to ensure effective business functions. This is why the best protection is all-of-theabove plus a Defense-in-Depth approach. Security tools like next generation anti-virus\n(NGAV), endpoint protection platforms (EPP), and endpoint detection and response (EDR,\nXDR, and MDR) are necessary, but not sufficient to stop stealers like SYS01 stealer.\n\nThis is because detection-based tools don’t always flag benign executables used to sideload payloads during delivery and/or execution. And malicious payloads are also sometimes\nencrypted/packed or obfuscated until loaded into runtime memory, which detection-based\ntools [struggle to effectively scan. The most effective way to secure runtime memory is with](https://blog.morphisec.com/runtime-attacks-in-memory)\nMoving Target Defense (MTD) technology. MTD morphs—randomizes—the runtime memory\nenvironment to create a dynamic attack surface and leaves decoy traps where targets used\nto be. Any code that attempts to execute on a decoy is immediately terminated and trapped\nfor forensic analysis. The combination of detection-based tools with Moving Target Defense\ncreates the most effective Defense-in-Depth against threats like SYS01 stealer. To learn\nmore, read the white paper: Zero Trust + Moving Target Defense: The Ultimate Ransomware\n_Strategy._\n\n\n-----\n\n## Indicators of Compromise (IOCs)\n\n### Zip Files\n\n01f76140374da14b72a8f1e648cb8f46590419cddd56bc089e67f38cee767735\n\n7f54dc5ddab4de19c5ad7c7b6d4398bd07d97504cdedabc398a6d6db52fe9875\n\nbad4de1c398954b9c381d91fee52607b78e1c65bd9f38c3e82a307e236a76223\n\n2c58bfbf8d274434e3307a76a37720d09387978e8e401780048992ea21fd222b\n\nc81175d56aa006ad140799e39c800306b439ea98b9efc4491c269eccbfeebd4e\n\nc636ed3b0ca558a92687f60f0b37c0e44ff3a6d4f15acd3cfb858fee4b0b0916\n\n833b871f342ba7b0e852363ed123682b99588888f01567e56942889d886bb4b2\n\ndaba97a67f219443ef4b0a39e2d051179d20de6a2febb927bec4108dcac1b3a6\n\n5698feaacd122f75d69ed1d9a561ab7210051031e821b934b3022d48a185443b\n\nf58b9794f5b973625551333f469878c1df65302733f9a3e9a214e3739cee09bf\n\n### Inno-Setup Installers\n\n3416982484faefb7b0092cc639039863e52a9aa6ba0a277f943216a398dd0f8b\n\n804f137c4253241cdcbbe8cd59181f0621cbd26bb8a78163b8bc0461d5f3bafb\n\n20a1c15d016a2d11659a74ae9e23e57020a4023df4c9f8c0357a38b69eddfa08\n\n14fe2d1d1df11d887f5c53a78af6e1885928aa9256b79cd365f2c1d39397c2f4\n\n25a5422f4a4a1d11b242730adbce06673cefee533da62a8ddef93e0074a3ba75\n\n7d64de081057d18b1503854386a351a76caac9d71aada177373ef77b597a4f06\n\n### C&C\n\n\n-----\n\ncaseiden[.]com\n\ngraeslavur[.]com\n\nrapadtrai[.]com\n\nbaglamanotalari[.]com\n\noscarnaija[.]com\n\nmakananwisata[.]com\n\nseleriti[.]com\n\nseemlabie[.]top\n\ncraceruib[.]top\n\nmahinetain[.]top\n\n[Contact SalesInquire via Azure](https://www.morphisec.com/schedule)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2023/2023-03-07 - SYS01 Stealer.pdf"
+    ],
+    "report_names": [
+        "2023-03-07 - SYS01 Stealer.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "9f101d9c-05ea-48b9-b6f1-168cd6d06d12",
+            "created_at": "2023-01-06T13:46:39.396409Z",
+            "updated_at": "2025-03-27T02:00:03.074969Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "CHROMIUM",
+                "ControlX",
+                "Red Dev 10",
+                "RedHotel",
+                "Red Scylla",
+                "TAG-22",
+                "BRONZE UNIVERSITY",
+                "AQUATIC PANDA",
+                "Charcoal Typhoon",
+                "BountyGlad"
+            ],
+            "source_name": "MISPGALAXY:Earth Lusca",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "6abcc917-035c-4e9b-a53f-eaee636749c3",
+            "created_at": "2022-10-25T16:07:23.565337Z",
+            "updated_at": "2025-03-27T02:02:09.868522Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Bronze University",
+                "Charcoal Typhoon",
+                "Chromium",
+                "Red Dev 10",
+                "Red Scylla"
+            ],
+            "source_name": "ETDA:Earth Lusca",
+            "tools": [
+                "Agentemis",
+                "AntSword",
+                "BIOPASS",
+                "BIOPASS RAT",
+                "BadPotato",
+                "Behinder",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Doraemon",
+                "FRP",
+                "Fast Reverse Proxy",
+                "FunnySwitch",
+                "HUC Port Banner Scanner",
+                "KTLVdoor",
+                "Mimikatz",
+                "NBTscan",
+                "POISONPLUG.SHADOW",
+                "PipeMon",
+                "RbDoor",
+                "RibDoor",
+                "RouterGod",
+                "SAMRID",
+                "ShadowPad Winnti",
+                "SprySOCKS",
+                "WinRAR",
+                "Winnti",
+                "XShellGhost",
+                "cobeacon",
+                "fscan",
+                "lcx",
+                "nbtscan"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d53593c3-2819-4af3-bf16-0c39edc64920",
+            "created_at": "2022-10-27T08:27:13.212301Z",
+            "updated_at": "2025-03-27T02:00:55.529662Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Earth Lusca",
+                "TAG-22",
+                "Charcoal Typhoon",
+                "CHROMIUM",
+                "ControlX"
+            ],
+            "source_name": "MITRE:Earth Lusca",
+            "tools": [
+                "Mimikatz",
+                "PowerSploit",
+                "Tasklist",
+                "certutil",
+                "Cobalt Strike",
+                "Winnti for Linux",
+                "Nltest",
+                "NBTscan",
+                "ShadowPad"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1680660586,
+    "ts_updated_at": 1743041735,
+    "ts_creation_date": 1680510372,
+    "ts_modification_date": 1680510372,
+    "files": {
+        "pdf": "https://archive.orkl.eu/8adfde5557197f695dbd59f3b5587e81511d7adc.pdf",
+        "text": "https://archive.orkl.eu/8adfde5557197f695dbd59f3b5587e81511d7adc.txt",
+        "img": "https://archive.orkl.eu/8adfde5557197f695dbd59f3b5587e81511d7adc.jpg"
+    }
+}

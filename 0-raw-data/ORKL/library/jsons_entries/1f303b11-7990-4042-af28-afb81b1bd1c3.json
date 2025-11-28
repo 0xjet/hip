@@ -1,0 +1,260 @@
+{
+    "id": "1f303b11-7990-4042-af28-afb81b1bd1c3",
+    "created_at": "2022-10-25T16:48:21.959567Z",
+    "updated_at": "2025-03-27T02:16:58.193254Z",
+    "deleted_at": null,
+    "sha1_hash": "2a04fb97ff89595bc49dd71a7246402e3b355cc6",
+    "title": "",
+    "authors": "",
+    "file_creation_date": "2019-05-08T04:58:17Z",
+    "file_modification_date": "2019-05-08T04:58:17Z",
+    "file_size": 1311589,
+    "plain_text": "# ATMitch: New Evidence Spotted In The Wild\n\n**[blog.yoroi.company/research/atmitch-new-evidence-spotted-in-the-wild](https://blog.yoroi.company/research/atmitch-new-evidence-spotted-in-the-wild/)**\n\nZLAB-YOROI May 7, 2019\n\n## Introduction\n\nIn the first days of April, our threat monitoring operations spotted a new interesting malware sample\npossibly active in the wild since 2017. Its initial triage suggests it may be part of an advanced attacker\narsenal targeting the Banking sector, possibly related to the same APT group [Kaspersky Lab tracked two](https://securelist.com/atmitch-remote-administration-of-atms/77918/)\nyears ago after the compromise of a Russian bank, where a particular malware tool dubbed ATMitch has\nbeen unveiled. In the past, this piece of malware was manually installed on the victim ATM after a wide\nenterprise network intrusion, enabling the cyber-criminals to manipulate the cash-withdrawal process on\nthe machine.\n\nThe recent, unattended discovery of such kind of sample within the Info-Sec community led us to a deep\ndive into this particular malware tool, spearhead of a sophisticated cyber arsenal.\n\n## Technical Analysis\n\nThe executable sample is a PE32 x86 file named “tester.exe”. It seems to be custom loader for the real\nmalicious payload able to take control of the target machine.\n\n**Sha256** bf9c35d8f33e2651d619fe22a2d55372dedd0855451d32f952ecfc73fa824092\n\n**Threat** ATMitch ATM malware\n\n**Brief description** ATMitch initial loader\n\n**Ssdeep** 1536:sPNdY/P/r6aqTzN7gqJT/0vniPJiz3yUrvGkc+uylR:sPiz657gqJT/06xiT/vaVyl\n\n_Table 1: Information about Dropper/Loader of ATMitch_\n\n\n-----\n\nThe static data about this sample reveal the sample has been compiled on 8th Oct 2017, months later than\nthe Kaspersky disclosure of the ATMitch attack operation. This element is not enough to date the sample\nwith 100% accuracy due to possible tampering, anyway the other static details suggest the date could be\ngenuine due to the absence of scrambled artifacts.\n\nFigure 1: Payload as resource of the Loader\n\nWhen started, the executable creates a new folder on “C:\\intel” and then starts inspecting all the running\nprocesses. It looks for a really particular one: “fwmain32.exe”. This lookup reveals how deeply\nenvironmental aware is this implant. In fact, the “fwmain32” process is part of the software services\nproduced by Wincor Nixdorf International GmbH, one of the major vendors providing retail and banking\nhardware such as ATMs.\n\n\n-----\n\nFigure 2: Research of “fwmain32.exe” process by malware\n\nOnce the “fwmain32.exe” process is found, the loader injects the actual payload in its own memory,\ninfecting it. The payload DLL, initially stored into the loader resources section, will be implanted into the\n[target process using the “SetThreadContext” injection technique (Thread Hijacking).](http://www.rohitab.com/discuss/topic/40579-dll-injection-via-thread-hijacking/)\n\n\n-----\n\nFigure 3: Complete Thread Hijacking flow\n\nThe figure above shows the sample calls on the OpenThread and the SuspendThread functions to pause\nthe current execution. After allocating the right memory amount in the target process, it writes the shellcode\ntarget memory space using the WriteProcessMemory function and sets up the new process context with\n_SetThreadContext. Finally, using the ResumeThread function the payload is able to start its malicious_\nexecution.\n\nWhen the loader succeeded to inject the payload into the “fwmain” process, it also shows a popup window\nreporting the outcome of the injection phases.\n\n\n-----\n\nFigure 4: Prompt window reporting the log of the injection phase\n\n## ATMitch Payload\n\n**Sha256** e372631f96face11e803e812d9a77a25d0a81fa41e4ac362dc8aee5c8a021000\n\n**Threat** ATMitch ATM malware\n\n**Brief description** ATMitch payload\n\n**Ssdeep** 768:N/qZvnFW5PJizM5qy1ucRM7YNNsrGkc+uW9LMQDFd+MbfRprj:N/0vniPJiz3yUrvGkc+uylR\n\n_Table 2: Information about the payload (DLL contained as resource in the Dropper/Loader)_\n\nThe injected DLL has a very characteristic dependency: it requires the “msxfs.dll”. This library provides\naccess to the EXtension for Financial Service (XFS) API, the communication interface needed to interact\nwith AMT components such as PIN pad and cash dispenser. Again, this is a very particular dependency\ncan only be resolved on special purpose Windows environment, like the Wincor machines.\n\nFigure 5: “msxfs.dll”, library required by malware to communicate with ATM device\n\nThe malware is quite simple: it reads commands from a file included into “c:\\intel” folder and interacts with\nthe ATM drivers in order to retrieve information about the current amount and to dispense money at the\nright time. In the following screen is shown a function used to initiate the communication with the PinPad\nand Dispenser ATM components.\n\n\n-----\n\nFigure 6: Discovering of PinPad and Dispenser components\n\nUsing the functions provided by “msxfs.dll” library, the malware can easily interact with these components.\nFor example, using the WFSExecute function it is possible to send one of the supported commands to the\ndispenser, like OPEN_SHUTTER or OPEN_SAFE_DOOR.\n\n\n-----\n\nFigure 7: Part of commands accepted by ATM\n\nIn the specific case, the malware uses the function to dispense money through the command\nWFS_CMD_CDM_DISPENSE, as shown in figure:\n\nFigure 8: Command “WFS_CMD_CDM_DISPENSE” used by malware to dispense money\n\nThe core of the malware is the following switch structure: after reading the new command from the specific\nfile, it compares the command code with the embedded ones, such as “code 2” for retrieving information or\n“code 7” for dispensing money.\n\n\n-----\n\nFigure 9: Malware’ switch structure\n\nMoreover, the malware provides a well-structured logging system: all actions are traced and logged into\n_“c:\\intel\\__log.txt”. In relation to the action that needs to be logged, it is able to set a specific logging level_\n(FATAL, ERROR, DEBUG etc.).\n\n\n-----\n\nFigure 10: Logging-level of the malware logging system\n\n## Conclusion\n\nThis recently discovered ATMitch sample is one of the key assets used by advanced attackers during bank\ncyber-robberies, potentially even by the Carbanak or the GCMAN group. Who manually install it within\nsegregated hosts and write commands directly into the target machine, without any command and control\ntraffic. The usage of Remote Desktop to directly connect to the target machine is also supported by the\npresence of a prompt window (Figure 4) which shows the correct execution of the first stage. Probably the\nlast steps of an attack flow involving ATMitch are the following:\n\n1. The attacker connects to the ATM machine using Remote Desktop;\n2. The attacker transfers the loader EXE and runs it: the prompt window shows if everything went well;\n3. The attacker deletes the initial file in order to remove tracks;\n4. The attacker writes commands in the appropriate file;\n5. The malware executes the new commands and writes in the log file;\n6. The attacker examines the log file to know the state of the command execution.\n\n\n-----\n\nSo, the eventual presence of this malware could be the tip of the iceberg of a more complex and articulated\nattack perpetrated by advanced cyber-criminals.\n\n## Indicators of Compromise\n\nHashes\n\nbf9c35d8f33e2651d619fe22a2d55372dedd0855451d32f952ecfc73fa824092\ne372631f96face11e803e812d9a77a25d0a81fa41e4ac362dc8aee5c8a021000\n\n### Yara Rules\n\nimport \"pe\"\nrule ATMitch {\nmeta:\ndescription = \"Yara Rule for ATMitch Dropper/Payload\"\nauthor = \"ZLAB Yoroi - Cybaze\"\nlast_updated = \"2019-05-03\"\ntlp = \"white\"\ncategory = \"informational\"\n\nstrings:\n$str1 = {4A 75 E6 8B C7 8B 4D FC}\n$str2 = {EC 53 8D 4D DC 88}\n$str3 = \"MSXFS.dll\"\n$str4 = \"DISPENSE\"\n$str5 = \"PinPad\"\n$str6 = \"cash\"\n$str7 = {40 59 41 50 41 58 49 40 5A}\n$str8 = \"WFMFreeBuffer\"\n\ncondition:\npe.number_of_sections == 4 and pe.number_of_resources == 3 and $str1 and $str2 or $str3\nand $str4 and $str5 and $str6 and $str7 and $str8\n}\n\n_This blog post was authored by Antonio Farina, Davide Testa, Antonio Pirozzi and Luca Mella of Cybaze-_\n_Yoroi Z-LAB_\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2019/2019.05.07.ATMitch/ATMitch_%20New%20Evidence%20Spotted%20In%20The%20Wild.pdf"
+    ],
+    "report_names": [
+        "ATMitch_ New Evidence Spotted In The Wild"
+    ],
+    "threat_actors": [
+        {
+            "id": "fc11deee-6db4-46a9-a3d5-c02bb960cc51",
+            "created_at": "2022-10-25T15:50:23.277991Z",
+            "updated_at": "2025-03-27T02:00:55.421482Z",
+            "deleted_at": null,
+            "main_name": "GCMAN",
+            "aliases": [
+                "GCMAN"
+            ],
+            "source_name": "MITRE:GCMAN",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "c9617bb6-45c8-495e-9759-2177e61a8e91",
+            "created_at": "2022-10-25T15:50:23.405039Z",
+            "updated_at": "2025-03-27T02:00:55.462193Z",
+            "deleted_at": null,
+            "main_name": "Carbanak",
+            "aliases": [
+                "Carbanak",
+                "Anunak"
+            ],
+            "source_name": "MITRE:Carbanak",
+            "tools": [
+                "Carbanak",
+                "Mimikatz",
+                "PsExec",
+                "netsh"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "3b185161-668f-4cac-b930-9482f9706848",
+            "created_at": "2022-10-25T16:07:23.670892Z",
+            "updated_at": "2025-03-27T02:02:09.917459Z",
+            "deleted_at": null,
+            "main_name": "GCMAN",
+            "aliases": [],
+            "source_name": "ETDA:GCMAN",
+            "tools": [
+                "GCMAN",
+                "Meterpreter",
+                "VNC",
+                "Virtual Network Computing"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "1e408839-27ce-4f52-b7c6-d0a700e54027",
+            "created_at": "2023-01-06T13:46:38.479274Z",
+            "updated_at": "2025-03-27T02:00:02.844302Z",
+            "deleted_at": null,
+            "main_name": "GCMAN",
+            "aliases": [
+                "G0036"
+            ],
+            "source_name": "MISPGALAXY:GCMAN",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f4f16213-7a22-4527-aecb-b964c64c2c46",
+            "created_at": "2024-06-19T02:03:08.090932Z",
+            "updated_at": "2025-03-27T02:05:17.387119Z",
+            "deleted_at": null,
+            "main_name": "GOLD NIAGARA",
+            "aliases": [
+                "Carbanak",
+                "Carbon Spider ",
+                "FIN7 ",
+                "Navigator ",
+                "Sangria Tempest ",
+                "TelePort Crew ",
+                "Calcium "
+            ],
+            "source_name": "Secureworks:GOLD NIAGARA",
+            "tools": [
+                " Carbanak",
+                " Cobalt Strike",
+                " DICELOADER",
+                " DRIFTPIN",
+                " GGLDR",
+                " GRIFFON",
+                " JSSLoader",
+                " Meterpreter",
+                " OFFTRACK",
+                " PILLOWMINT",
+                " POWERTRASH",
+                " SUPERSOFT",
+                " TAKEOUT",
+                " TinyMet",
+                "Bateleur"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "bb8702c5-52ac-4359-8409-998a7cc3eeaf",
+            "created_at": "2023-01-06T13:46:38.405479Z",
+            "updated_at": "2025-03-27T02:00:02.82533Z",
+            "deleted_at": null,
+            "main_name": "FIN7",
+            "aliases": [
+                "JokerStash",
+                "ATK32",
+                "G0046",
+                "Coreid",
+                "Carbanak",
+                "Sangria Tempest",
+                "CARBON SPIDER",
+                "GOLD NIAGARA",
+                "G0008",
+                "ELBRUS",
+                "Carbon Spider"
+            ],
+            "source_name": "MISPGALAXY:FIN7",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "ed3810b7-141a-4ed0-8a01-6a972b80458d",
+            "created_at": "2022-10-25T16:07:23.443259Z",
+            "updated_at": "2025-03-27T02:02:09.801771Z",
+            "deleted_at": null,
+            "main_name": "Carbanak",
+            "aliases": [
+                "Anunak",
+                "Carbanak",
+                "Carbon Spider",
+                "ELBRUS",
+                "Gold Waterfall",
+                "Sangria Tempest"
+            ],
+            "source_name": "ETDA:Carbanak",
+            "tools": [
+                "AVE_MARIA",
+                "Agentemis",
+                "AmmyyRAT",
+                "Antak",
+                "Anunak",
+                "Ave Maria",
+                "AveMariaRAT",
+                "BABYMETAL",
+                "BIRDDOG",
+                "Backdoor Batel",
+                "Batel",
+                "Bateleur",
+                "BlackMatter",
+                "Boostwrite",
+                "Cain & Abel",
+                "Carbanak",
+                "Cl0p",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "DNSMessenger",
+                "DNSRat",
+                "DNSbot",
+                "DRIFTPIN",
+                "DarkSide",
+                "FOXGRABBER",
+                "FlawedAmmyy",
+                "HALFBAKED",
+                "JS Flash",
+                "KLRD",
+                "MBR Eraser",
+                "Mimikatz",
+                "Nadrac",
+                "Odinaff",
+                "POWERPIPE",
+                "POWERSOURCE",
+                "PsExec",
+                "SQLRAT",
+                "Sekur",
+                "Sekur RAT",
+                "SocksBot",
+                "SoftPerfect Network Scanner",
+                "Spy.Agent.ORM",
+                "TEXTMATE",
+                "TeamViewer",
+                "TiniMet",
+                "TinyMet",
+                "Toshliph",
+                "VB Flash",
+                "WARPRISM",
+                "avemaria",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716501,
+    "ts_updated_at": 1743041818,
+    "ts_creation_date": 1557291497,
+    "ts_modification_date": 1557291497,
+    "files": {
+        "pdf": "https://archive.orkl.eu/2a04fb97ff89595bc49dd71a7246402e3b355cc6.pdf",
+        "text": "https://archive.orkl.eu/2a04fb97ff89595bc49dd71a7246402e3b355cc6.txt",
+        "img": "https://archive.orkl.eu/2a04fb97ff89595bc49dd71a7246402e3b355cc6.jpg"
+    }
+}

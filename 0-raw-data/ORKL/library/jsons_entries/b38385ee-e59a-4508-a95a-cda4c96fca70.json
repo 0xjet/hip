@@ -1,0 +1,98 @@
+{
+    "id": "b38385ee-e59a-4508-a95a-cda4c96fca70",
+    "created_at": "2023-01-12T15:04:03.496677Z",
+    "updated_at": "2025-03-27T02:12:03.942363Z",
+    "deleted_at": null,
+    "sha1_hash": "01ece6c3766cf23e30c1302242daa575df42ee64",
+    "title": "2021-03-15 - HAFNIUM, China Chopper and ASP.NET Runtime",
+    "authors": "",
+    "file_creation_date": "2022-05-27T23:15:18Z",
+    "file_modification_date": "2022-05-27T23:15:18Z",
+    "file_size": 839299,
+    "plain_text": "# HAFNIUM, China Chopper and ASP.NET Runtime\n\n**[trustwave.com/en-us/resources/blogs/spiderlabs-blog/hafnium-china-chopper-and-aspnet-runtime/](https://www.trustwave.com/en-us/resources/blogs/spiderlabs-blog/hafnium-china-chopper-and-aspnet-runtime/)**\n\nLoading...\n\nBlogs & Stories\n\n## SpiderLabs Blog\n\nAttracting more than a half-million annual readers, this is the security community's go-to\ndestination for technical breakdowns of the latest threats, critical vulnerability disclosures\nand cutting-edge research.\n\n[The recent Microsoft Exchange Server zero-day exploits (CVE-2021-26855,](https://msrc.microsoft.com/update-guide/vulnerability/CVE-2021-26855) CVE-202126857, [CVE-2021-26858,](https://msrc.microsoft.com/update-guide/vulnerability/CVE-2021-26858) [CVE-2021-27065) have seen tens of thousands of organizations](https://msrc.microsoft.com/update-guide/vulnerability/CVE-2021-27065)\n[compromised by HAFNIUM and numerous other threat actor groups. Working closely with](https://www.microsoft.com/security/blog/2021/03/02/hafnium-targeting-exchange-servers/)\nour customers across the globe, we have quickly been able to identify and isolate attributes\nof those attacks – particularly the China Chopper web shell being uploaded to compromised\nMicrosoft Exchange servers with a publicly facing Internet Information Services (IIS) web\n[server. Although the China Chopper web shell has been around for years, in the interest of](https://www.fireeye.com/blog/threat-research/2013/08/breaking-down-the-china-chopper-web-shell-part-i.html)\n\n\n-----\n\nproviding more information to the security community during this time, we decided to dig\neven deeper into how the China Chopper web shell works as well as how the ASP.NET\nruntime serves these web shells.\n\nChina Chopper is an Active Server Page Extended (ASPX) web shell that is typically\nplanted on an Internet Information Services (IIS) server through an exploit. China Chopper\nis used for post-exploitation by giving attackers access to execute any code they want on\nthe server.\n\nThe China Chopper server-side ASPX web shell is extremely small and typically, the entire\nthing is just one line. There are multiple versions of this web shell for executing code in\ndifferent languages such as ASP, ASPX, PHP, JSP, and CFM. In this blog, we will cover the\nJScript version; however, they all are very similar aside from the language used.\n\nFigure 1 - China Chopper ASPX Script\n\nThis script is essentially a page where when an HTTP POST request is made to the page,\nand the script will call the JScript “eval” function to execute the string inside a given POST\nrequest variable. In the above script, the POST request variable is named “secret”, meaning\nany JScript contained in the “secret” variable will be executed on the server.\n\nJScript is implemented as an active scripting engine allowing the language to use ActiveX\nobjects on the client it is running on. This can be and is abused by attackers to achieve\nreverse shells, file management, process execution, and much more.\n\nAfter setting up a test IIS server and placing the web shell on the server, we can now test\nour own payloads against it. To do this, we used Python to send HTTP POST requests to\nthe China Chopper page and put our malicious JScript in an HTTP POST “secret” variable.\n\nHere is our example payload, which starts a command prompt and pings itself. This\ndemonstrates the possibility of process execution.\n\nFigure 2 - JScript Payload 01\n\n\n-----\n\n### Attackers Viewpoint\n\nFor the attacker, typically a client component of the China Chopper web shell is used on the\nattacker’s systems. This client is a C binary file.\n\nThis client allows the attacker to perform many nefarious tasks such as downloading and\nuploading files, running a virtual terminal to execute anything you normally could using\ncmd.exe, modifying file times, executing custom JScript, file browsing, and more. All this is\nmade available just from the one line of code running on the server.\n\nFigure 3 - Custom Script Execution\n\nFigure 4 - Virtual Terminal\n\n\n-----\n\nFigure 5 - File Manager\n\nTo see exactly what the client is sending to the web shell, we captured the HTTP request for\nexecuting the following custom JScript:\n\n**_Response.Write(“Hello World”);_**\n\nThis script was expected to be sent as an HTTP POST request from the client to the server,\nwith the custom JScript to be sent in the “secret” POST field. The following code is the\nrequest which was sent:\n\nFigure 6 - Custom JScript Response\n\nWe can see that the client encodes the custom JScript in Base64 and uses the markers ->|\nand <-| to help the client identify the portion of the response relating to the web shell.\n\nExecuting a more complex command such as the virtual terminal and running “ipconfig”\nyields the same result; however, the base64 encoded command is automatically generated\nfrom the client and decodes to the following code:\n\n\n-----\n\nFigure 7 - Virtual Terminal ipconfig Response\n\nThis request introduces two new POST variables containing Base64 encoded strings:\n\nAccording to this code, the Virtual Terminal feature will start the CMD process silently and\nexecute the command sent from the client. The output is then captured and sent back to the\nclient.\n\n### ASP.NET Runtime and .NET DLLs\n\nSome of the artifacts found on the compromised IIS servers were DLLs. When an ASPX\nscript is seen by the ASP.NET runtime for the first time, the ASPX script is parsed and\ntransformed into a C# or VB.NET class file. This class file is then either compiled into its\nown .NET assembly or, depending on the IIS settings, combined with other converted ASPX\nscripts to form one larger .NET assembly. This .NET assembly is what is served to an enduser rather than the ASPX script itself. These .NET DLLs are stored in a temporary location\nalong with an XML file specifically crafted for that .NET DLL called a preservation file.\n\n\n-----\n\nFigure 8 - ASP.NET Runtime Flow\n\nFor the China Chopper ASPX file, a .NET Assembly was compiled along with a\npreservation file and stored in a temporary directory for compiled ASPX files. For our IIS\nserver, the locations were:\n\nThe suspicious looking random strings are just hashes of the file names and paths for\ninternal use with the ASP.NET runtime.\n\n\n-----\n\nOpening the App_Web_bvbfecjk.dll file in DNSpy, we can see several methods inside of the\nDLL. Only one of these methods contains the C# .NET version of the China Chopper ASPX\nscript, and the other methods are boilerplate code for the ASP.NET Runtime to execute\nbefore getting to the compiled ASPX script.\n\nFigure 9 - C# Converted ASPX Script\n\nIn this method, we can see a strong resemblance to the ASPX China Chopper web shell in\na compiled C# .NET assembly format. This is what is served to a user when the page is\nrequested.\n\nSomething interesting to note here is the JScript stack frame. We can see that two local\nvariables have been pushed onto the JScript stack. These variables are “__w” and\n“parameterContainer”. In theory, in the JScript we send to be executed, we should be able\nto access these variables. Let's try it out.\n\n\n-----\n\nFigure 10 - JScript Payload 02\n\nWe can see that the JScript was executed successfully and made use of the “__w” variable\npushed on the stack to render the text “Hello World” in bold on the page. This can be useful\nfor the attacker to render the output of their script.\n\nThe preserve file for the generated assembly is an XML file and has a “.compiled”\nextension. The content in this file is not very interesting. It primarily contains metadata for\nthe ASP.NET Runtime to use for identifying if the origin ASPX file needs recompiling as well\nas to know which assembly file to serve a page request for.\n\nFigure 11 - Preserve File\n\nTo wrap up, when examining servers for signs of compromise, in addition to ASPX scripts,\nbe aware also of the corresponding DLLs generated by ASP.NET runtime. As we are likely\nto see many systems compromised with web shells in the future due to the zero-day\nexploits by HAFNIUM and multiple other threat actor groups, it does not hurt to know a little\nmore about how these ASPX web shell scripts work behind the scenes with the ASP.NET\nruntime and what the attack looks like from the attacker’s perspective.\n\n### IOCs\n\nName Hash (SHA-1) File Type\n\nApp_Web_rkpouxdy.dll fa3dc5cd49bd6aadb7f4c30e3381d0da0c7adb96 DLL\n\nchinachopper.aspx 55f29d511d39e87b32c710a3ad32e61d4c40a30a ASPX\n\nChinaChopperClient.exe 056a60ec1f6a8959bfc43254d97527b003ae5edb PE32\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-03-15 - HAFNIUM, China Chopper and ASP.NET Runtime.pdf"
+    ],
+    "report_names": [
+        "2021-03-15 - HAFNIUM, China Chopper and ASP.NET Runtime.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "529c1ae9-4579-4245-86a6-20f4563a695d",
+            "created_at": "2022-10-25T16:07:23.702006Z",
+            "updated_at": "2025-03-27T02:02:09.93109Z",
+            "deleted_at": null,
+            "main_name": "Hafnium",
+            "aliases": [
+                "Red Dev 13",
+                "Silk Typhoon"
+            ],
+            "source_name": "ETDA:Hafnium",
+            "tools": [],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "7c969685-459b-4c93-a788-74108eab6f47",
+            "created_at": "2023-01-06T13:46:39.189751Z",
+            "updated_at": "2025-03-27T02:00:03.017103Z",
+            "deleted_at": null,
+            "main_name": "HAFNIUM",
+            "aliases": [
+                "ATK233",
+                "G0125",
+                "Operation Exchange Marauder",
+                "Red Dev 13",
+                "Silk Typhoon"
+            ],
+            "source_name": "MISPGALAXY:HAFNIUM",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "2704d770-43b4-4bc4-8a5a-05df87416848",
+            "created_at": "2022-10-25T15:50:23.306305Z",
+            "updated_at": "2025-03-27T02:00:55.43633Z",
+            "deleted_at": null,
+            "main_name": "HAFNIUM",
+            "aliases": [
+                "HAFNIUM",
+                "Operation Exchange Marauder",
+                "Silk Typhoon"
+            ],
+            "source_name": "MITRE:HAFNIUM",
+            "tools": [
+                "Tarrask",
+                "ASPXSpy",
+                "Impacket",
+                "PsExec",
+                "China Chopper"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535843,
+    "ts_updated_at": 1743041523,
+    "ts_creation_date": 1653693318,
+    "ts_modification_date": 1653693318,
+    "files": {
+        "pdf": "https://archive.orkl.eu/01ece6c3766cf23e30c1302242daa575df42ee64.pdf",
+        "text": "https://archive.orkl.eu/01ece6c3766cf23e30c1302242daa575df42ee64.txt",
+        "img": "https://archive.orkl.eu/01ece6c3766cf23e30c1302242daa575df42ee64.jpg"
+    }
+}

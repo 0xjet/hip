@@ -1,0 +1,42 @@
+{
+    "id": "a7b4c6bc-4672-4423-907a-23b673b78e97",
+    "created_at": "2023-01-12T15:08:46.731098Z",
+    "updated_at": "2025-03-27T02:05:42.975911Z",
+    "deleted_at": null,
+    "sha1_hash": "5ffa4d34297542d7ee6e2c1230b7338de56ae238",
+    "title": "2022-02-08 - Brbbot Analysis",
+    "authors": "",
+    "file_creation_date": "2022-05-28T16:04:25Z",
+    "file_modification_date": "2022-05-28T16:04:25Z",
+    "file_size": 1742520,
+    "plain_text": "# Brbbot\n\n**[github.com/itaymigdal/malware-analysis-writeups/blob/main/Brbbot/Brbbot.md](https://github.com/itaymigdal/malware-analysis-writeups/blob/main/Brbbot/Brbbot.md)**\n\nitaymigdal\n\n\n**Malware**\n**Name**\n\n\n**File**\n**Type** **SHA256**\n\n\nBrbbot x64\nexe\n\n\nF9227a44ea25a7ee8148e2d0532b14bb640f6dc52cb5b22a9f4fa7fa037417fa\n\n\n## Analysis process\n\nFirst thing first, I started Procmon in order to get an idea of the malware main activities:\n\nTwo interesting operations that were seen, were dropping a config file and self-copying\nto `\\AppData\\Roaming\\ path. Opening the file in Pestudio we see that the file is`\npacked using UPX:\n\n\n-----\n\nTrying to unpack it using UPX will throw an error:\n\nThis suspicious error indicates that the malware packed using UPX but then modified in\nsuch a way that the tool would not be able to unpack it back again. If we pay attention\nclosely to the image above, we can see that one section renamed to NPX0 (it should be\nUPX0). Therefore, there are two ways to unpack the malware:\n\nModify the PE file on disk by renaming the section NPX0 → UPX0, then try to\nunpack using UPX tool again (at the end of this WriteUp)\nUnpack it in memory using a debugger.\n\nIt is Important to note that the first method suitable just for very specific cases, most\nmalware would be packed with custom & unknown packers, therefore, unpacking them\nmust occur in memory.\n\nSo, dropping the sample to x64dbg...\n\nA known trick (suitable for packers that work like UPX) to find OEP (Original Entry Point)\nis to locate a jmp opcode followed by a bunch of NULL bytes, that jumps high and far to\na distant location. This is the point where the code decrypted / decompressed / decoded\nitself in memory and now jumping to the real deal – OEP.\n\nSo found it and break on it:\n\n\n-----\n\nSingle-step and we landed at OEP:\n\nNow we are at the entry point of the real malware business, and all the imports should\nbe resolved by the UPX loader in that point, so we use the built-in tool Scylla to rebuild\nthe IAT and dump the unpacked malware to disk:\n\n\n-----\n\nWe can see now new suspicious libraries and imports that were not there on the packed\nfile.\n\nObserving the strings of the dumped file reveals some gems:\n\nThere is a malware config file named brbconfig.tmp (that we already saw under\nprocmon).\nAutorun key for persistense\nUser-agent that indicated on a http request\n\nLooking at the resources:\n\n\n-----\n\nWe can see a \"CONFIG\" resource, saving to disk:\n\neeergg! probably encrypted...\n\nSooo.. moving back again to debugging:\n\nThere is a call to `IsDebuggerPresent, not quite sure if this is an anti-debugging`\nattempt (if it is, it's really poor one) or part of the compiler nonsense, so anyway we'll\nuse ScyllaHide:\n\nSpraying some BP's on some interesting API calls:\n\n\n-----\n\nFirst BP we encountered is `CryptDecrypt :`\n\nThis API call is used to decrypt blob of encrypted data (in conjuction with some more\nAPI calls from the `CryptXXXX family). Malware often use this call to decrypt a payload,`\na config, or a dropped file.\n\nAs we can learn from MSDN the fifth argument (the grey one in the stack view) points to\nthe blob of the encrypted data (in the memory dump view).\n\n\n-----\n\nSo, single-stepping over that call should decrypt that blob:\n\nVwallaaa !! this is the clear config :)\n\nConfig content:\n\n\"uri=ads.php;exec=cexe;file=elif;conf=fnoc;exit=tixe;encode=5b;sleep=30000\"\n\nuri - the uri for the panel file on the c2\nexec, file, conf, exit - maybe bot commands?!\n**encode - single byte key that will use us later on**\nsleep - sleep amount for some point\n\nKeep debugging:\n\nMalware is trying to call home :)\n\nThe stack arguments for `InternetConnectA :`\n\nThe MSDN for `InternetConnectA :`\n\nSecond argument on the stack is our nice c2 address:\n\nbrb.3dtuts.by\n\n\n-----\n\nThe content that sent to the c2 was found nearby in memory using Process Hacker:\n\nThe malware exfiltrating the internal ip address, hostname and some encoded data.\n\nPlaying a little bit around with the encoded data and with the single byte key that\n[retrieved before, brought me to write a little python script to Hexdump the decoded data](https://github.com/itaymigdal/malware-analysis-writeups/blob/main/Brbbot/Brbbot-decode-traffic.py)\n(the receipt is: unhex the data --> xor with the single byte key):\n\nThe malware send the process list to the c2.\n\nRest of the malware functionality comes down to this:\n\nRead a file from the c2:\n\n\n-----\n\nCreate a new process:\n\nBoth implies that the infection isn't over and the party continues with the next stage :)\n\n### Bonus – unpacking on disk\n\nLocate renamed section with a hex editor, and rename it to original:\n\nSave:\n\n\n-----\n\nUnpack using UPX tool:\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-02-08 - Brbbot Analysis.pdf"
+    ],
+    "report_names": [
+        "2022-02-08 - Brbbot Analysis.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673536126,
+    "ts_updated_at": 1743041142,
+    "ts_creation_date": 1653753865,
+    "ts_modification_date": 1653753865,
+    "files": {
+        "pdf": "https://archive.orkl.eu/5ffa4d34297542d7ee6e2c1230b7338de56ae238.pdf",
+        "text": "https://archive.orkl.eu/5ffa4d34297542d7ee6e2c1230b7338de56ae238.txt",
+        "img": "https://archive.orkl.eu/5ffa4d34297542d7ee6e2c1230b7338de56ae238.jpg"
+    }
+}

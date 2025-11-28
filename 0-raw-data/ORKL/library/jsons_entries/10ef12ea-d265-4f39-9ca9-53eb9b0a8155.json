@@ -1,0 +1,106 @@
+{
+    "id": "10ef12ea-d265-4f39-9ca9-53eb9b0a8155",
+    "created_at": "2023-01-12T15:09:03.230401Z",
+    "updated_at": "2025-03-27T02:16:25.911417Z",
+    "deleted_at": null,
+    "sha1_hash": "b0b25988244d3d6c19adee89b382f8ea523ec1fb",
+    "title": "2021-06-02 - AMSI bypasses remain tricks of the malware trade",
+    "authors": "",
+    "file_creation_date": "2022-05-28T01:22:38Z",
+    "file_modification_date": "2022-05-28T01:22:38Z",
+    "file_size": 3162453,
+    "plain_text": "# AMSI bypasses remain tricks of the malware trade\n\n**[news.sophos.com/en-us/2021/06/02/amsi-bypasses-remain-tricks-of-the-malware-trade/](https://news.sophos.com/en-us/2021/06/02/amsi-bypasses-remain-tricks-of-the-malware-trade/)**\n\nSean Gallagher June 2, 2021\n\nMalware developers are eternally looking for a way to evade detection by their targets’\ndefenses. One way is to beat the scanners—using obfuscation, encryption, steganography\nand other techniques to make it harder for antivirus software to figure out what the intent of\nthe payload is. Another is to completely avoid having your malware scanned in the first\nplace.\n\nAs Windows 10 and the latest generation of Windows Server platforms have risen to\nprominence, malware developers and other malicious actors have increasingly aimed to\nevade detection by taking out those platforms’ anti-malware traffic cop: Microsoft’s\nAntimalware Scan Interface. AMSI, introduced in 2015, provides a way for software to talk to\nsecurity products, requesting scans of files, memory, or streams for malicious payloads in a\nvendor-agnostic way.\n\nAMSI gives antimalware software visibility into Microsoft components and applications,\nincluding into Windows’ PowerShell engine and script hosts (wscript.exe and cscript.exe),\nOffice document macros, the current .NET Framework (version 4.8), and Windows\nManagement Instrumentation (WMI)—components frequently used in “living off the land”\n\n\n-----\n\n(LOL) tactics by adversaries and in the execution of fileless malware. Windows third-party\ndevelopers can leverage AMSI with their own applications as well, to allow anti-malware\nsoftware to check for content passed to them that could turn their applications into “LOLbins”\n(living off the land binaries)—applications abused for malicious purposes by malware or\nnetwork intruders.\n\nFor those reasons, AMSI is a very attractive target for malware developers. Almost since the\nday AMSI was introduced, attackers (and security researchers) have created tools to attempt\nto bypass or disable AMSI. Microsoft and security software providers have taken steps to\nblock some of the approaches used for AMSI bypass and evasion, but attackers continue to\nadjust—using automated tools in some cases to obfuscate their attack code and probing\ndefenses until they find one that sticks, and finding other ways to avoid AMSI altogether.\n\nIn this report, we will examine the most commonly encountered AMSI bypass methods in\nuse, and examine how they are used by malware we’ve observed to attempt to evade\ndefenses on Windows systems.\n\n## Fly the fail flag\n\n[In May of 2016, PowerShell hacker Matt Graeber published a one-line AMSI evasion in a](https://twitter.com/mattifestation)\ntweet:\n\nMatt Graeber’s one-line AMSI bypass.\nGraeber’s single line of PowerShell code flips the flag on an attribute for PowerShell’s AMSI\nintegration—amsiInitFailed— to “true”, which then causes the current PowerShell process to\nstop requesting scans. With that achieved, a malicious PowerShell script can (in theory)\nexecute whatever badness it is intended to without triggering a scan by antimalware\nsoftware.\n\n\n-----\n\nThis bypass is now widely detected and blocked as malicious content (as any 5-year-old\npublic exploit should be). However, malware actors still use versions of it that have been\nobfuscated in an attempt to evade signature-based scans. And the amsiInitFailed bypass still\naccounts for about 1 percent of detections, based on a 90-day chunk of telemetry data from\nFebruary to May of 2021.\n\nMost of these detections appear to be post-exploitation manual attempts at lateral movement\nor penetration testing, as the IP addresses associated with delivering the packages related to\nthose detections were from a local network. For example, this recently-spotted version of the\nbypass method attempts to retrieve a PowerShell backdoor from a secure web server inside\nthe network’s private IP address space:\n\nHowever, we did detect a recent use of the same bypass that connected to a remote server\nto obtain a PowerShell-based malware downloader. This one appears to have been part of a\nProxy Logon-based attack that attempted to load a Meterpreter backdoor DLL from a server\n\n\n-----\n\nin Russia:\n\nUsing the web worker process to execute shell commands, the malicious actor sent this\ncommand to PowerShell.exe:\n\n\n-----\n\nThe second URL in that string references a PowerShell script that is normally identified by\nWindows Defender as “Ploty-C” and blocked from execution. However, the first script block\nexecuted is an obfuscated version of the AMSI bypass, base64-encoded and GZipcompressed in an attempt to evade detection.\n\n[Another way to achieve the same exploit uses reflection to invoke the same commands](https://devblogs.microsoft.com/scripting/use-powershell-to-interact-with-the-windows-api-part-3/)\nthrough the .NET framework from PowerShell. In one recently-detected intrusion using this\nvariant, the actor (possibly a penetration tester, but likely someone attempting lateral\nmovement within an already-penetrated network) was using an offensive security and\n[exploitation tool called Seatbelt. In this case, the PowerShell script creates a delegate](https://github.com/GhostPack/Seatbelt)\nprocess that uses reflection to access the .NET interfaces for AmsiUtils, using string\nobfuscation to attempt to evade being detected:\n\nA\n\nreflective version of the AmsiUtils bypass.\n\n## Altered memory\n\nWhile manipulation of the properties of the AmsiUtils interface is still a common method of\nattempting AMSI bypass, over 98 percent of the bypass attempts we see in recent telemetry\nfocus on a different approach: tampering with the code of the AMSI library itsef. already\nloaded into memory to make scan requests fail. In this attack, the malware locates the library\nAmsiScanBuffer in memory, and then overwrites the instructions at that address with new\nones that redirect to an error message. An implementation of this attack in PowerShell,\nunobfuscated, would look like this:\n\n\n-----\n\nAlternative versions of this attack modify the memory storing the code for returning the result\nof a buffer scan, causing a scan failure.\n\nThe memory patch technique has been integrated into the commercial offensive security\n[platform Cobalt Strike as an option called amsi_disable. It has also been seen in a number of](https://www.cobaltstrike.com/help-malleable-postex)\nmalware families, including in a downloader for the Agent Tesla remote access tool (RAT)\n[malware we recently analyzed, in WannaMine crypto-jacking malware installations, and in](https://support.sophos.com/support/s/article/KB-000037977?language=en_US)\n[recent ProxyLogon-based intrusions dropping PowerShell-based RATs.](https://news.sophos.com/en-us/2021/05/05/intervention-halts-a-proxylogon-enabled-attack/)\n\nIn March, we detected repeated attempts to install a WannaMine payload on a customer’s\nsystems. One unprotected Windows system had become infected, and while Sophos\nblocked execution on protected systems, we continued to see attempts by the cryptojacking\nworm to spread to those systems; those attempts peaked at over 300 a day for each system\nthat provided AMSI telemetry.\n\nOn systems running versions of Windows with with AMSI support, WannaMine executes a\ncommand line that invokes a remote script based on whether the system is running 32-bit or\n64-bit Windows:\n\nThe remote script object is heavily obfuscated:\n\n\n-----\n\nA\n\n16-megabyte obfuscated script invoked in PowerShell to execute WannaMiner’s secondstage install on 64-bit systems.\nAfter unpacking the obfuscated commands, the remote script attempts to patch amsi.dll with\nthe appropriate code for the version of Windows detected.\n\nThe deobfuscated AMSI evasion script in the 32-bit version of WannaMine’s remote code\nblock.\nSophos blocks the execution of this AMSI evasion, as well as the other attempts made by\nWannaMine’s scripts to spread to other systems and install its cryptominer. But the infection\nof a single unprotected system on the network can lead to continued attacks across the\nnetwork.\n\n## Fake it (the DLL) until you make it\n\n\n-----\n\nAnother well-worn method of bypassing AMSI is based on a method revealed by Cornelis de\nPlaa in 2016 that fools PowerShell into loading a counterfeit version of amsi.dll. It’s fairly\nstraightforward in its original implementation:\n\nCreate an empty DLL named “amsi.dll” in a target directory;\nCopy PowerShell.exe to the same directory;\nLaunch evil PowerShell script, and AMSI scans attempted by the PowerShell.exe copy\nwill fail because the fake DLL is loaded first.\n\nHowever, Microsoft has since made changes to PowerShell’s code that cause it to crash if\nthe proper interfaces aren’t available in amsi.dll. In order for a DLL hijack of this type to work,\n[the attacker now has to provide a counterfeit DLL with the required interfaces defined.](https://sensepost.com/blog/2020/resurrecting-an-old-amsi-bypass/)\n\n## Detouring around AMSI\n\nOther techniques of evading AMSI generally involve either downgrading scripting engines to\nversions from before AMSI was available or otherwise staying away from processes that\ninteract with AMSI altogether. On systems that still have PowerShell version 2 installed, an\nattacker may switch versions of PowerShell used by scripts (by executing PowerShell from\nthe command line with the parameter -Version 2.\n```\npowershell.exe -Version 2\n\n```\nAnother way to evade AMSI is to bring along a scripting engine that doesn’t support it. While\nAMSI will detect anything leveraging the .NET framework, some malicious actors have\nbrought along their own scripting host (such as a NodeJS engine), or have used compiled\nexecutables built from other scripting languages (such as Python).\n\nIn extreme cases, we’ve seen attackers bring along entire virtual machines to conceal their\nscripts from detection. [Ragnar Locker, for example, deployed a VirtualBox virtual machine](https://news.sophos.com/en-us/2020/05/21/ragnar-locker-ransomware-deploys-virtual-machine-to-dodge-security/)\nas part of a ransomware attack, concealing its processes from malware scanners entirely.\n\n## Defense in depth\n\nAMSI is intended to provide a defense against LOL tactics that leverage Microsoft\ncomponents, and to provide application developers a way to harden their own tools against\nexploitation by malicious scripts and code. Given how prevalent those tactics have become,\nparticularly in ransomware operator intrusions, AMSI can play a particularly important role in\nkeeping Windows 10 and Windows Server systems from being compromised. But AMSI is\nnot a panacea. And while Microsoft’s Windows Defender provides some protection against\nAMSI bypasses, attackers are continuously finding ways to obfuscate and conceal malicious\ncontent from anti-malware signature detections.\n\n\n-----\n\nSophos and other anti-malware providers offer guards against AMSI bypasses that go\nbeyond signature-based detection. But malicious actors are not standing still in their efforts\nto step around AMSI defenses. And too frequently, inconsistent deployment of defenses and\nsecurity patches leave some systems vulnerable to even less advanced attacks–giving\nmalware an opportunity to gain a foothold to step partially or completely around AMSI-based\ndefenses. A defense in depth, leveraging a blend of detections at the endpoint and on the\nnetwork, is critical in blunting many of these intrusions before they can do damage.\n\n**SophosLabs would like to acknowledge the contributions of Rajesh Nataraj and**\n**Michael Wood to this report**\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-06-02 - AMSI bypasses remain tricks of the malware trade.pdf"
+    ],
+    "report_names": [
+        "2021-06-02 - AMSI bypasses remain tricks of the malware trade.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536143,
+    "ts_updated_at": 1743041785,
+    "ts_creation_date": 1653700958,
+    "ts_modification_date": 1653700958,
+    "files": {
+        "pdf": "https://archive.orkl.eu/b0b25988244d3d6c19adee89b382f8ea523ec1fb.pdf",
+        "text": "https://archive.orkl.eu/b0b25988244d3d6c19adee89b382f8ea523ec1fb.txt",
+        "img": "https://archive.orkl.eu/b0b25988244d3d6c19adee89b382f8ea523ec1fb.jpg"
+    }
+}

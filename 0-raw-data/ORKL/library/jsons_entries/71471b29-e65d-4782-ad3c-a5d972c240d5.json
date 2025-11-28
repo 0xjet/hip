@@ -1,0 +1,111 @@
+{
+    "id": "71471b29-e65d-4782-ad3c-a5d972c240d5",
+    "created_at": "2023-01-12T15:02:11.232045Z",
+    "updated_at": "2025-03-27T02:06:10.590428Z",
+    "deleted_at": null,
+    "sha1_hash": "a571d07fcc29fb62f53da42acaad2e9f00ad0cb4",
+    "title": "2021-03-21 - In the eye of our CyberSOC- Campo Loader, analysis and detection perspectives",
+    "authors": "",
+    "file_creation_date": "2022-05-27T23:04:55Z",
+    "file_modification_date": "2022-05-27T23:04:55Z",
+    "file_size": 2003332,
+    "plain_text": "# In the eye of our CyberSOC: Campo Loader, analysis and detection perspectives\n\n**orangecyberdefense.com/global/blog/cybersoc/in-the-eye-of-our-cybersoc-campo-loader-analysis-and-detection-**\nperspectives/\n\n## How to detect and analyze Campo Loader? Answers from our CyberSOC.\n\n Campo Loader, a recent campaign\n\nSince January 2021, our CyberSOC has noted the fairly active use of a loader(1). This\nloader was quickly named “Campo Loader” on the Internet because of the rather\nstriking patterns in its URL, observed during network communications.\n\nNotably used to “drop” in the second stage Ursnif/Gozi, a banking trojan, these campaigns\nuse several exciting techniques and remain quite easily detectable with adequate security\nsolutions.\n\n\n-----\n\n_Figure 1- Campaign Summary – Source: Orange Cyberdefense_\n\nVery similar campaigns have also been observed since the summer of\n2020 [and documented by Morphisec in September.](https://blog.morphisec.com/trickbot-emotet-delivery-through-word-macro)\n\nIt seems that this loader is still used to deliver Trickbot. However, we will note some\ndifferences with our case in the format of the maldoc and the final load deployed.\n\n## Vector of infection: maldoc\n\nUnsurprisingly, the first vector of infection is an e-mail containing an attachment. More\nprecisely, an Excel XLSB (Excel Spreadsheet-Binary) document.\n\nThis type of file is quite common for maldoc because it evades most AV (AntiViral) engines. Even after several days of existence on VirusTotal (VT), files are still detected\nby less than 10 AV out of 64.\n\n\n-----\n\n_Figure 2 – VirusTotal Detection Ratio; Source:_ _[virustotal.com](https://www.virustotal.com/gui/file/4ff20ae33d417f61df1f23b4966bea79a659fe14e60729cd1f42dd5a73dba035/summary)_\n\nWhen the file is opened, it prompts the user to activate the content, making him believe that\nthis action will decrypt the document and display its content.\n\n_Figure 3 – Preview of the file File_812265.xlsb – Orange Cyberdefense_\n\n\n-----\n\nThe usual tools such as olevba/oledump or XLMMacroDeobfuscator are not satisfactory in\nterms of static analysis. So we adopt another well, more manual technique:\n\n_Figure 4 – Analysis of the file File_812265.xlsb – Orange Cyberdefense_\n\nBy decompressing the file, we identify a spreadsheet in binary format (BIFF12) that\nlooks interesting. Indeed, a first “Strings” on this file indicates a routine that seems quite\nmalicious:\n\n_Figure 5 – Analysis of the file File_812265.xlsb – Orange Cyberdefense_\n\n\n-----\n\nAt first glance, the use of the certutil.exe binary would therefore be present to decode several\nfiles’ contents. Then the functions and strings “Shell32”, “rundll32.exe” as well as\n“ShellExecuteA” indicate that the role of this file is also to execute DOS commands or even a\nDLL.\n\nWe go directly to the analysis of the document via Excel. It turns out that several Excel\nsheets are hidden. By unmasking the four hidden sheets, the correspondence with the\npreviously displayed strings makes it possible to link the sheet4.bin file to one of\nthe hidden sheets.\n\nA second sheet will prove interesting for understanding this file. Indeed, sheet 2 is in charge\nof the execution of the routine via an Auto_Open.\n\n_Figure 6 – Analysis of the file File_812265.xlsb – Orange Cyberdefense_\n\nHowever, the most interesting part is still missing. The associated Excel sheet is protected.\n\nTo bypass the protection, simply save the file in another format (e.g., Xslm). Thus binary files\nwill be converted to XML format. Then, removing the protection is relatively easy.\nIndeed, a simple tag is responsible for this mechanism. By removing it, the protection of the\nsheet is no longer effective.\n\n_Figure 7 – Protected Spreadsheet File_812265.xlsb – Orange Cyberdefense_\n\n\n-----\n\nWe then identify several cells likely containing encoded content, which will turn out to be a\nPE (Portable Executable).\n\n_Figure 8 – Decoding the content File_812265.xlsb – Orange Cyberdefense_\n\nThus, we have a good understanding of the actions of this first xslb file:\n\nDrop a. txt file containing data encoded in b64\nDecoding of the file + drop of a new hex file via the binary certutil.exe\nDecoding of the second file via certutil.exe + drop of a PE.\n\nWe then validated our first static analysis based on a dynamic analysis by running the file in\nthe Orange Cyberdefense sandbox:\n\n\n-----\n\n_Figure 9 – Orange Cyberdefense SandboxAnalysisFile_812265.xlsb_\n\nThree files are well dropped:\n\nCyberSOC - Campo Loader\n\nC:\\Users\\Public\\11250.txt\n\nCyberSOC - Campo Loader\n\nC:\\Users\\Public\\11250.png2\n\nCyberSOC - Campo Loader\n\nC:\\Users\\Public\\11250.png\n\nWe fall well on PE “packaged” (UPX was noted on some campaigns). This DLL is then\nexecuted via rundll32.exe. It seems to be the Campo loader.\n\nThanks to an analysis of http/https queries, we noticed a GET query to this URL :\n\n**_hxxp[://]172[.]104[.]129[.]156/campo/o/o_**\n\nIt redirects (307 Temporary Redirect) to :\n\n**_hxxps[://]ciudadstereo[.]com[.]ec/wp-content/plugins/wp-calculated-_**\n**_fields/templates/01/out[.]dll_**\n\nThis DLL purpose, which we will attach to the Campo loader, is to download and execute a\nsecond DLL.\n\n\n-----\n\nNote that several repositories identified in similar campaigns often have open directories,\nallowing to identify other malicious DLLs and get an idea about the temporality of the\nattacks thanks to the Last-Modifiedfield.\n\n_Figure 10 – Repo Ursnif – Source: Orange Cyberdefense_\n\nAnother important point related to the temporary redirection: a “campo” URL allows you to\ndistribute many payloads dynamically. Indeed, by analyzing several times the same sample,\nwe obtained a different final DLL.\n\n\n-----\n\n_Figure 11 – Http traffic linked to the Campo loader – Source: Orange Cyberdefense_\n\nWithout going into too much detail in this last stage analysis, the DLL corresponds to Ursnif /\nGozi, a banking Trojan. A quick sandbox analysis will allow us to identify the control servers\nand thus feed our information base.\n\n\n-----\n\n_Figure 12 – Ursnif DLL Sandbox Analysis – Source: Orange Cyberdefense_\n\n## Detection prospects\n\n**Network communications (Campo Loader)**\n\nWhile analyzing many campaigns, we noticed that a pattern was coming back often enough\nin the URL to be used as a detection/hunting means.\n\nIndeed, the uri path corresponds with this regex: ” ^\\/(?:campo)\\/\\w{1}\\/\\w{1}$ “.\n\nHere are some examples of URLs we have identified:\n\n**_hxxp://172.104.143[.]130/campo/t/t_**\n\n**_hxxp://178.62.19[.]66/campo/v/v_**\n\n**_hxxp://pipkaboss[.]xyz/campo/b/b_**\n\nSome older campaigns also seem to follow this pattern:\n\n**^\\/(?:campo)\\/[a-zA-Z0-9]{1,2}\\/[a-zA-Z0-9]{1,2}$, which will also be more flexible.**\n\nExample :\n\n**_hxxp://androidflash[.]space/campo/DQ/s9_**\n\n## System behaviors\n\n\n-----\n\nThe use of certutil.exe to decode the first charge is quite striking and generic enough to\nbe used as a means of detection. Moreover, this approach fits within\nthe [Att&CKMITRE matrix, with the “T1140:Deobfuscate/Decode Files or Information”](https://orangecyberdefense.com/fr/insights/blog/threat_management/test-mitre-attck/)\ntechnique.\n\n[A Sigma rule is already available on the GitHub of the same project.](https://github.com/Neo23x0/sigma/blob/master/rules/windows/process_creation/win_susp_certutil_command.yml)\n\nThis rule should be triggered by the two commands extracted from our sandbox\nanalysis (below). While generic enough to include most of the LOLBAS/LOLBINS (Living Off\nThe Land Binaries and Scripts) related to this Microsoft binary.\n\nCampo Loader\n\nSeveral approaches can also be taken to DLL execution via “rundll32.exe“.\n\nThe first one being the detection of DLL execution passing a . png file with its extension. This\ntechnique is more and more used and can be approached using the “T1036:\nMasquerading” and “T1218.011: Signed Binary Proxy Execution: Rundll32/” techniques.\n\nCampo Loader\n\nThe last detection method could be done via the process tree. By resuming the execution of\nthe campaign in its entirety, we note a rather striking process tree from EXCEL.EXE:\n\n**EXCEL.EXE > rundll32.exe > rundll32.exe**\n\n## IOCs and MITRE ATT&CK references\n\n\n-----\n\nSource: Orange Cyberdefense\n\nTo download the IOCs and the MITRE ATT&CK references, [click here.](https://orangecyberdefense.com/fileadmin/general/News/MITRE_Attck_and_IOCs_for_references.xlsx)\n\n**To discover our SOC and CyberSOC offers,** **[click here.](https://orangecyberdefense.com/global/blog/managed-detection-response/mdr-services-all-you-need-to-know)**\n\n(1) Loader: A loader is a malware program responsible for executing a malicious load on the\ntarget system. This second load can be remote (accessible from an IP/URL) or directly\nincluded in the loader. The purpose of a loader is to propose methods for evading and\ntargeting users (encryption, memory injection, anti-vm, anti-sandbox, geographical analysis,\nsystem profiling, etc.).\n\n[Learn more](https://orangecyberdefense.com/global/all-services/detect-respond)\n\n## More articles\n\n\n-----\n\n# Becoming the best at detecting threats\n\n15 October 2020\n\nCareer\nDetect & Respond\nCareer\nDetect & Respond\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-03-21 - In the eye of our CyberSOC- Campo Loader, analysis and detection perspectives.pdf"
+    ],
+    "report_names": [
+        "2021-03-21 - In the eye of our CyberSOC- Campo Loader, analysis and detection perspectives.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "26a04131-2b8c-4e5d-8f38-5c58b86f5e7f",
+            "created_at": "2022-10-25T15:50:23.579601Z",
+            "updated_at": "2025-03-27T02:00:55.50292Z",
+            "deleted_at": null,
+            "main_name": "TA551",
+            "aliases": [
+                "TA551",
+                "GOLD CABIN",
+                "Shathak"
+            ],
+            "source_name": "MITRE:TA551",
+            "tools": [
+                "QakBot",
+                "IcedID",
+                "Valak",
+                "Ursnif"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "04e34cab-3ee4-4f06-a6f6-5cdd7eccfd68",
+            "created_at": "2022-10-25T16:07:24.578896Z",
+            "updated_at": "2025-03-27T02:02:10.286803Z",
+            "deleted_at": null,
+            "main_name": "TA551",
+            "aliases": [
+                "Gold Cabin",
+                "Monster Libra",
+                "Shathak",
+                "TA551"
+            ],
+            "source_name": "ETDA:TA551",
+            "tools": [
+                "BokBot",
+                "CRM",
+                "Gozi",
+                "Gozi CRM",
+                "IceID",
+                "IcedID",
+                "Papras",
+                "Snifula",
+                "Ursnif",
+                "Valak",
+                "Valek"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "90f216f2-4897-46fc-bb76-3acae9d112ca",
+            "created_at": "2023-01-06T13:46:39.248936Z",
+            "updated_at": "2025-03-27T02:00:03.031127Z",
+            "deleted_at": null,
+            "main_name": "GOLD CABIN",
+            "aliases": [
+                "Shakthak",
+                "TA551",
+                "ATK236",
+                "G0127",
+                "Monster Libra"
+            ],
+            "source_name": "MISPGALAXY:GOLD CABIN",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535731,
+    "ts_updated_at": 1743041170,
+    "ts_creation_date": 1653692695,
+    "ts_modification_date": 1653692695,
+    "files": {
+        "pdf": "https://archive.orkl.eu/a571d07fcc29fb62f53da42acaad2e9f00ad0cb4.pdf",
+        "text": "https://archive.orkl.eu/a571d07fcc29fb62f53da42acaad2e9f00ad0cb4.txt",
+        "img": "https://archive.orkl.eu/a571d07fcc29fb62f53da42acaad2e9f00ad0cb4.jpg"
+    }
+}

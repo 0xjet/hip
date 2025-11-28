@@ -1,0 +1,96 @@
+{
+    "id": "955e3a64-7074-46fc-a0b9-382a63dde764",
+    "created_at": "2023-01-12T15:00:44.296169Z",
+    "updated_at": "2025-03-27T02:06:08.347341Z",
+    "deleted_at": null,
+    "sha1_hash": "1fdb0b8e783057dc3875acb9542c425d27017016",
+    "title": "2016-08-25 - Shakti Trojan - Technical Analysis",
+    "authors": "",
+    "file_creation_date": "2022-05-28T04:55:55Z",
+    "file_modification_date": "2022-05-28T04:55:55Z",
+    "file_size": 551352,
+    "plain_text": "# Shakti Trojan: Technical Analysis\n\n**[blog.malwarebytes.com/threat-analysis/2016/08/shakti-trojan-technical-analysis/amp/](https://blog.malwarebytes.com/threat-analysis/2016/08/shakti-trojan-technical-analysis/amp/)**\n\nMalwarebytes Labs\n\nMalwarebytes Labs\n6 years ago\n\n[Recently, we took a look at the interesting Trojan found by Bleeping Computer. Our small](http://www.bleepingcomputer.com/news/security/new-information-stealing-trojan-steals-and-uploads-corporate-files/)\ninvestigation on its background and possible attribution has led us to the conclusion that this\nthreat is in reality not new – probably it has been designed in 2012 for the purpose of\ncorporate espionage operations. Yet it escaped from the radar and haven’t been described\nso far. More about that research, as well as the behavioral analysis of the malware, you can\n[find in the article Shakti Trojan: Document Thief.](https://blog.malwarebytes.com/threat-analysis/2016/08/shakti-trojan-stealing-documents)\n\nIn contrary to the first part, this post will be a deep dive in the used techniques.\n\n## Analyzed samples\n\nRecent sample mentioned by Bleeping Computer:\n\n[b1380af637b4011e674644e0a1a53a64: main executable](https://www.virustotal.com/en/file/d6d64c61dada8b5ccfa970356057a6c2c7697f084922744c5a2e29aff079647b/analysis/1470314447/)\n\n[bc05977b3f543ac1388c821274cbd22e: Carrier.dll](https://www.virustotal.com/en/file/490974f9bbca168dbb3e2ca6552a2701e18cb09f29232b12ce4dfe0aa7ff342c/analysis/1471098701/)\n[7d0ebb99055e931e03f7981843fdb540: Payload.dll](https://www.virustotal.com/en/file/343630542a5c402c6b02482bcbcdc258385606e74f11ecb7ab9c545031383179/analysis/1471098641/)\nC&C: web4solution.net\n\nOther found samples:\n\n[8ea35293cbb0712a520c7b89059d5a2a: submitted to VirusTotal in 2013](https://www.virustotal.com/en/file/978bbaf56ad70b34f06531de0b4fc0ee1c419a0ea039ca5d6b5840f029b884de/analysis/)\n\nC&C: securedesignus.com\n\n\n-----\n\n[6992370821f8fbeea4a96f7be8015967: submitted to VirusTotal in 2014](https://www.virustotal.com/en/file/7aafb633f1081528726eb65925e56f712bbaf42f7463f108f8b7b38c281026f4/analysis/)\n\nC&C: securedesignuk.com\n[d9181d69c40fc95d7d27448f5ece1878: submitted to VirusTotal in 2015](https://www.virustotal.com/en/file/81cc4d4f04afd6409e5953a49c59e85a81b865d309dc698facf9c7b890089479/analysis/)\n\nCnC: web4solution.net\n\n## Inside the main executable\n\nThe main executable is a loader responsible for unpacking and deploying the core malicious\nmodules. Often, malware distributors use ready-made underground crypters to pack and\nprotect their bots. After unpacking that first layer, we usually get a fully independent PE file.\n\nIn this case it is slightly different. The main loader looks like it is prepared exclusively for this\nparticular bot (rather than being a commercial crypter).\n\nIn resources we can find content obfuscated by XOR with 0x97:\n\nThis content is loaded and decoded during malware execution. The author tried to obfuscate\nthe XOR operation performed on the buffer by splitting it into three and hiding in between\nredundant API calls:\n\n\n-----\n\n```\nbyte ^ 0x97 = byte ^ (0xc7 ^ 0xe7 ^ 0xb7)\n\n```\nAfter decoding the buffer, we find that it is a Trojan’s configuration file, which contains the\nfollowing strings:\n```\nEA20E48B6CBC1134DCC52B9CD23479C7\nweb4solution.net\n{40f550c2-a844-49e6-ba74-ded0ab840d5b}\nigfxtray\nJUpdate\nJava Update Service\n\n```\nThe first string of the configuration:\n```\nEA20E48B6CBC1134DCC52B9CD23479C7 -> md5(\"HEMAN\")\n\n```\nmust match the one hardcoded in the executable:\n\n\n-----\n\nAnother curious fact about this executable is a huge overlay. Below you can see the size of\nthe overlay (at the end of the file) versus the size of the space consumed by the main\nexecutable’s sections:\n\nAs we found out, two more (encrypted) PE files are hidden in this space. In order to decode\nthem and deploy, the application reads its own file into a newly allocated memory.\n\n\n-----\n\nThose two hidden modules are, appropriately: Carrier.dll and Payload.dll.\n\n**Flow obfuscation**\n\nThis Trojan utilizes some techniques of flow obfuscation. Among them, there is an interesting\ntrick of redirecting execution to the new module – via DOS header. It takes the following\nsteps:\n\n1) The new PE file is unpacked into a newly allocated memory block. Address to its\nbeginning is stored. Below we can see the main executable making a call to such address.\nThis way, it is redirecting execution flow to the beginning of Carrier.dll:\n\n_As we can see above, the main module passes to the Carrier.dll some additional parameters:_\n_handle to the decrypted configuration and a magic constant (0x0DEFACED) that will be used_\n_further by the DLL as a marker for searching parameters on the stack._\n\n2) The bytes of the DOS header are being interpreted as code and executed:\n\n\n-----\n\n3) Execution of the DOS header leads to calling a function inside the code section of the\nsame module:\n\nIn the analyzed case the called function is ReflectiveLoader – a stub of a well-known\ntechnique allowing to easily map any PE file into memory (you can read more about this\n[technique here).](http://www.harmonysecurity.com/files/HS-P005_ReflectiveDllInjection.pdf)\n\n**_Reflective Loader is responsible for doing all the actions that Windows Loader would do if_**\nthe DLL was loaded in a typical way. After mapping the module it calls its entry point:\n\n## Carrier.dll\n\nCarrier is responsible for checking the environment, installing, and deploying the bot.\n\nIt exports one function: ReflectiveLoader that was mentioned before:\n\n\n-----\n\nExecution of the important code starts in the DllMain. First, the DLL searches the magic\nconstant on the stack, and with its help retrieves the handle to the configuration:\n\nFound handle to the configuration:\n\n\n-----\n\nIf the handle is successfully retrieved (like in the example above), execution proceeds with\nenvironment check and, eventually, bot installation is deployed:\n\n**Defensive techniques**\n\nBefore performing the installation, the Trojan checks the environment in order to defend itself\nfrom being analyzed. If any of the defined symptoms are found, the program terminates.\nHere’s how it proceeds:\n\n1) Uses standard function IsDebuggerPresent to check if it is not being debugged\n2) Checks names of the running processes against the blacklist:\n```\n\"VBoxService\"\n\"VBoxTray\"\n\"VMware\"\n\"VirtualPC\"\n\"wireshark\"\n\n```\n3) Tries to load library SbieDll.dll (to check against sandbox)\n4) Tries to find a window from the blacklist:\n```\n\"SandboxieControlWndClass\"\n\"Afx:400000:0\"\n\n```\nIf the check passes and no tools used for analysis have been detected, the program\nproceeds with installation.\n\n**Installation**\n\n\n-----\n\nBefore deciding which variant of the installation to use, the application checks the privileges\nwith which it is deployed. If it has administrator rights, it attempts to install itself as a service.\nThe name of created service is given in a configuration (mentioned before). In the described\ncase it is Java Update Service.\n\nIf this variant of achieving persistence is not possible, the application uses an autorun key\ninstead, and then injects itself into a browser.\n\nInjection in a browser is a good way to cover the operation of uploading files. The process of\na browser connecting to the Internet and generating traffic does not look suspicious at first.\nAlso, if the victim system uses a whitelist of applications that can connect to the Internet, the\nprobability that a browser is classified as trusted is very high.\n\nFirst, it checks if any of the following browsers are already running in the system:\n_chrome.exe, firefox.exe, opera.exe._\n\nEnumerating processes:\n\n\n-----\n\nSearching the names of browsers among the opened processes:\n\nIf it finds the appropriate process running, it injects itself as a new thread.\n\nIf no browser is running, it tries another way: finding the default browser, deploying it, and\nthen injecting itself inside. In order to find out which browser is installed as a default in the\nparticular system, it reads the registry key\n_HKEY_CLASSES_ROOT\\HTTP\\shell\\open\\command and finds the application that is_\ntriggered.\n\nHaving this information, it deploys the found browser as suspended, maps there it’s own\ncode and starts a in a remote thread.\n\n\n-----\n\n## Payload.dll\n\n[Payload is the piece responsible for carrying the main mission of stealing files.](https://www.virustotal.com/en/file/343630542a5c402c6b02482bcbcdc258385606e74f11ecb7ab9c545031383179/analysis/1471098641/)\n\nThis module is a DLL exporting two functions (one of them is also ReflectiveLoader):\n\nExecution starts in the function Init that is called from inside DllMain. To prevent being\ndeployed more than once, the program uses a mutex with the hardcoded name CStmtMan.\n\n\n-----\n\nBot attacks all the fixed drives:\n\nIt searches for files with the following extensions:\n```\ninp, sql, pdf, rtf, txt, xlsx, xls, pptx, ppt, docx, doc\n\n```\nThe list of found files is passed to the thread responsible for reading them and sending to the\nC&C.\n\n\n-----\n\nInternet connection is opened with a hardcoded user agent string: “Mozilla/4.0 (compatible;\n**MSIE 6.0; Windows NT 5.1; SV1)” – that was** used by Internet Explorer 7 on Windows\n**XP SP2 – confirming** [the hypothesis that the bot has been written several years ago.](https://blog.malwarebytes.com/threat-analysis/2016/08/shakti-trojan-stealing-documents/)\n\nWhile the address of the server is read from configuration, the subpath /external/update is\nhardcoded:\n\n\n-----\n\n## Conclusion\n\nThe code is not very sophisticated, yet it’s effective—probably written by a person/team with\nsome knowledge of malware development. We can see simple obfuscation and well-known\ninjection methods used for reasonable goals (deploying network activity under the cover of a\nbrowser). There are some weaknesses in the implementation and lack of optimization\n(sending open text not compressed or encrypted, user agent string doesn’t match the\ndeployed browser, etc). The unpolished design may suggest that the samples were\nreleased/sold in the early stages of development\n\nOver the years, the bot didn’t got any major improvements. It leads to conclude that the\ndistributor of the malware may not be the same entity as the author. Analysis of the C&Cs\ndepicts that it was used by a single threat actor – so probability is high, that this tool has\nbeen ordered by the actor from an external programmer, for the purpose of small espionage\ncampaigns.\n\n**_This trojan is detected by Malwarebytes Anti-Malware as ‘Trojan.Shakti’._**\n\n_This was a guest post written by Hasherezade, an independent researcher and programmer_\n_with a strong interest in InfoSec. She loves going in details about malware and sharing threat_\n_[information with the community. Check her out on Twitter @hasherezade and her personal](https://twitter.com/hasherezade)_\n_[blog: https://hshrzd.wordpress.com.](https://hshrzd.wordpress.com/)_\n\n[COMMENTS](https://blog.malwarebytes.com/threat-analysis/2016/08/shakti-trojan-technical-analysis//#disqus_thread)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2016/2016-08-25 - Shakti Trojan - Technical Analysis.pdf"
+    ],
+    "report_names": [
+        "2016-08-25 - Shakti Trojan - Technical Analysis.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "7ba9e3e3-1cef-4e20-be7e-95f05e8295d7",
+            "created_at": "2022-10-25T16:07:23.821494Z",
+            "updated_at": "2025-03-27T02:02:09.993311Z",
+            "deleted_at": null,
+            "main_name": "Mabna Institute",
+            "aliases": [
+                "Cobalt Dickens",
+                "Mabna Institute",
+                "Silent Librarian",
+                "TA407",
+                "TA4900",
+                "Yellow Nabu"
+            ],
+            "source_name": "ETDA:Mabna Institute",
+            "tools": [],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "adc8bb1a-6ded-4b27-8163-8069d5a6d492",
+            "created_at": "2022-10-25T15:50:23.566869Z",
+            "updated_at": "2025-03-27T02:00:55.500642Z",
+            "deleted_at": null,
+            "main_name": "Silent Librarian",
+            "aliases": [
+                "Silent Librarian",
+                "TA407",
+                "COBALT DICKENS"
+            ],
+            "source_name": "MITRE:Silent Librarian",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "42e41377-c64c-4be9-87a0-ee903e4b9055",
+            "created_at": "2023-01-06T13:46:38.950322Z",
+            "updated_at": "2025-03-27T02:00:02.960397Z",
+            "deleted_at": null,
+            "main_name": "Silent Librarian",
+            "aliases": [
+                "TA4900",
+                "Yellow Nabu",
+                "COBALT DICKENS",
+                "Mabna Institute",
+                "TA407"
+            ],
+            "source_name": "MISPGALAXY:Silent Librarian",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535644,
+    "ts_updated_at": 1743041168,
+    "ts_creation_date": 1653713755,
+    "ts_modification_date": 1653713755,
+    "files": {
+        "pdf": "https://archive.orkl.eu/1fdb0b8e783057dc3875acb9542c425d27017016.pdf",
+        "text": "https://archive.orkl.eu/1fdb0b8e783057dc3875acb9542c425d27017016.txt",
+        "img": "https://archive.orkl.eu/1fdb0b8e783057dc3875acb9542c425d27017016.jpg"
+    }
+}

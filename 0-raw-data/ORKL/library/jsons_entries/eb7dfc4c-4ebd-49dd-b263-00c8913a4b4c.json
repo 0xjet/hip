@@ -1,0 +1,88 @@
+{
+    "id": "eb7dfc4c-4ebd-49dd-b263-00c8913a4b4c",
+    "created_at": "2023-01-12T14:59:05.900248Z",
+    "updated_at": "2025-03-27T02:09:52.297791Z",
+    "deleted_at": null,
+    "sha1_hash": "dacbf69214c7110aa18dd8aab1041c8cf0586d8d",
+    "title": "2018-02-21 - FinSpy VM Unpacking Tutorial Part 3- Devirtualization",
+    "authors": "",
+    "file_creation_date": "2022-05-28T18:26:21Z",
+    "file_modification_date": "2022-05-28T18:26:21Z",
+    "file_size": 58395,
+    "plain_text": "# FinSpy VM Unpacking Tutorial Part 3: Devirtualization\n\n**[msreverseengineering.com/blog/2018/2/21/finspy-vm-unpacking-tutorial-part-3-devirtualization](https://www.msreverseengineering.com/blog/2018/2/21/finspy-vm-unpacking-tutorial-part-3-devirtualization)**\n\nFebruary 21, 2018\n\nFebruary 21, 2018 [Rolf Rolles](http://10.10.0.46/blog?author=5111cf9ee4b0a36262da10df)\n\n## 1. Overview\n\nThis is the third and final part in my series on statically unpacking the FinSpy VM. After\n[having deobfuscated the x86 implementation of FinSpy in part one and after having](http://www.msreverseengineering.com/blog/2018/1/23/a-walk-through-tutorial-with-code-on-statically-unpacking-the-finspy-vm-part-one-x86-deobfuscation)\nanalyzed the VM and written a disassembler for the bytecode format for the particular\n[sample in question in part two, we are now tasked with reconstructing x86 code](http://www.msreverseengineering.com/blog/2018/1/31/finspy-vm-part-2-vm-analysis-and-bytecode-disassembly)\ncorresponding to the pre-virtualized code. As before, the files are in the GitHub repository\n[here. Of note:](https://github.com/RolfRolles/FinSpyVM/)\n\n[The IDB with the devirtualized code added, and mostly analyzed: here](https://github.com/RolfRolles/FinSpyVM/blob/master/VMDevirtualization/BlackOasis-WithDevirtualization.idb)\n[The devirtualization program: here](https://github.com/RolfRolles/FinSpyVM/tree/master/VMDisassembler/Tmp)\n[FinSpy VM bytecode disassembly listings with various simplifications: here](https://github.com/RolfRolles/FinSpyVM/tree/master/VMProgram)\n[Binary files for the devirtualized code: here](https://github.com/RolfRolles/FinSpyVM/tree/master/VMDevirtualization)\n\nBecause the FinSpy VM is a weak and ineffective software protection, unpacking it is not\nvery difficult. Over half of the VM instructions in the bytecode program for the sample we're\nanalyzing already contain raw x86 machine code. It turns out that FinSpy only truly\nvirtualizes a handful of x86 instruction types, and that simple pattern-matching is effective in\nreconstructing the original code. It's perhaps the easiest software protection I know of\nworthy of being called a \"virtualization obfuscator\" -- and that makes it good practice for the\ndifficult ones.\n\nAs with [part one, I am attempting to write this in a walk-through tutorial style. We start from](http://www.msreverseengineering.com/blog/2018/1/23/a-walk-through-tutorial-with-code-on-statically-unpacking-the-finspy-vm-part-one-x86-deobfuscation)\nfirst principles in inspecting the FinSpy VM bytecode disassembly listing, and show all of the\nsteps (along with the code I wrote) along the way. Hopefully I've managed to capture the\nprocess of observation, evaluation of design considerations, actions taken including missteps, and above all, the iterative, trial-and-error nature of the affair.\n\n## 2. Organizational Overview\n\nThis part ended up being longer and more difficult to write than expected. In fact, writing this\ndocument as a tutorial was considerably more difficult than doing the work in the first place.\nI hope the effort pays off in terms of educational value. Because I personally don't enjoy\nhuge documents whose sections aren't well-segregated from one another, I have decided to\nsplit the devirtualization process, and also this document, into a number of \"phases\", each\n\n\n-----\n\nin its own individual blog entry. All entries are currently online and available for reading;\nlinks to them are immediately below. Each individual part links to the code and binary\nartifacts used in that phase.\n\nHere are the contents of each phase in brief, along with links to the individual parts:\n\n[1. Part #3, Phase #1: analyzing and deobfuscating FinSpy VM bytecode programs. In](http://www.msreverseengineering.com/blog/2018/2/21/wsbjxrs1jjw7qi4trk9t3qy6hr7dye)\n\n[part two, we analyzed the FinSpy VM and its instruction set, and ultimately wrote a](http://www.msreverseengineering.com/blog/2018/1/31/finspy-vm-part-2-vm-analysis-and-bytecode-disassembly)\ndisassembler for FinSpy VM programs. This phase begins by reviewing the FinSpy\nVM instruction set. Next, we work from first principles in analyzing the FinSpy VM\nbytecode program. First we add a useful feature to our FinSpy VM disassembler.\nNext, we analyze a set of VM instructions -- group #2, in the parlance -- used by the\nVM bytecode program for obfuscation purposes. We determine several patterns, and\nwrite code to detect and simplify instances of those patterns within FinSpy VM\nbytecode programs. After one more small tweak to the disassembler, the FinSpy VM\nbytecode program is now ready to be devirtualized back into x86 machine code.\n[2. Part #3, Phase #2: initial devirtualization. The previous phase left the FinSpy VM](http://www.msreverseengineering.com/blog/2018/2/21/devirtualizing-finspy-phase-2-first-attempt-at-devirtualization)\n\nbytecode program in a suitable form for devirtualization. This phase begins by\ndiscussing the theory behind devirtualizing the individual FinSpy VM instructions.\nNext, we write a tool to devirtualize FinSpy VM bytecode programs -- this tool takes as\ninput the disassembly of a FinSpy VM program, and produces as output a blob of x86\nmachine code that no longer relies upon the VM. After producing output, we then\ninspect our initial results in devirtualization to determine a few deficiencies and\nremaining tasks before our devirtualization can be considered complete. This phase\nends by fixing one of the issues revealed by inspecting the devirtualized output.\n[3. Part #3, Phase #3: devirtualizing function calls. The devirtualization generated by the](http://www.msreverseengineering.com/blog/2018/2/21/devirtualizing-finspy-phase-3-fixing-the-function-related-issues)\n\nprevious stage still has a few deficiencies that need to be fixed before the output is\nfully usable. As it turns out, all of these deficiencies relate to how the FinSpy VM deals\nwith function calls and function pointers. We discuss the source of the difficulties and\ndetermine what needs to be done to fix the issues. Then we discuss a few strategies\nthat we might employ to solve the problems, including a somewhat sophisticated one\ninvolving x86 emulation. We settle for something less than that.\n[4. Part #3, Phase #4: second devirtualization. The previous phase collected information](http://www.msreverseengineering.com/blog/2018/2/21/devirtualizing-finspy-phase-4-second-attempt-at-devirtualization)\n\nabout virtualized functions in preparation for a second attempt at devirtualization. This\nphase incorporates that information into the devirtualization process, and then reinspects the devirtualized code for defects. After fixing one more remaining major\nissue and two small ones, we now have our complete devirtualized blob of x86\nmachine code for the FinSpy VM program in our sample. We trick IDA into loading our\ndevirtualized code, and now our devirtualization journey is complete.\n\nAfter phase #4 was complete, I next completely analyzed the devirtualized FinSpy dropper\nbinary. I may publish some techniques I saw that weren't widely documented, and I may\npublish a complete analysis of the dropper. However, that writing remains to be done, and is\n\n\n-----\n\nnot part of this blog series on devirtualization.\n\nEnjoy.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2018/2018-02-21 - FinSpy VM Unpacking Tutorial Part 3- Devirtualization.pdf"
+    ],
+    "report_names": [
+        "2018-02-21 - FinSpy VM Unpacking Tutorial Part 3- Devirtualization.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "10ad5c1d-5030-4300-be4e-6d24b40a6330",
+            "created_at": "2022-10-25T16:07:23.400966Z",
+            "updated_at": "2025-03-27T02:02:09.780076Z",
+            "deleted_at": null,
+            "main_name": "BlackOasis",
+            "aliases": [],
+            "source_name": "ETDA:BlackOasis",
+            "tools": [
+                "FinFisher",
+                "FinFisher RAT",
+                "FinSpy",
+                "Wingbird"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "5200f27d-0d0a-49e9-a9de-9612971126c2",
+            "created_at": "2023-01-06T13:46:38.959648Z",
+            "updated_at": "2025-03-27T02:00:02.96312Z",
+            "deleted_at": null,
+            "main_name": "BlackOasis",
+            "aliases": [
+                "G0063"
+            ],
+            "source_name": "MISPGALAXY:BlackOasis",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "1ba9c064-34d2-48b5-a08c-04d241b00ebe",
+            "created_at": "2022-10-25T15:50:23.734241Z",
+            "updated_at": "2025-03-27T02:00:55.535726Z",
+            "deleted_at": null,
+            "main_name": "BlackOasis",
+            "aliases": [
+                "BlackOasis"
+            ],
+            "source_name": "MITRE:BlackOasis",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535545,
+    "ts_updated_at": 1743041392,
+    "ts_creation_date": 1653762381,
+    "ts_modification_date": 1653762381,
+    "files": {
+        "pdf": "https://archive.orkl.eu/dacbf69214c7110aa18dd8aab1041c8cf0586d8d.pdf",
+        "text": "https://archive.orkl.eu/dacbf69214c7110aa18dd8aab1041c8cf0586d8d.txt",
+        "img": "https://archive.orkl.eu/dacbf69214c7110aa18dd8aab1041c8cf0586d8d.jpg"
+    }
+}

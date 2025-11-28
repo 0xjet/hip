@@ -1,0 +1,206 @@
+{
+    "id": "bca9f07a-86f5-4bf9-b1d5-ef049cf2e35b",
+    "created_at": "2023-01-12T15:04:35.716296Z",
+    "updated_at": "2025-03-27T02:14:12.234322Z",
+    "deleted_at": null,
+    "sha1_hash": "d82d859acee0929aa8c05ed2e16e13ae4fe2673a",
+    "title": "2019-01-03 - Digging into BokBot’s Core Module",
+    "authors": "",
+    "file_creation_date": "2022-05-28T02:48:48Z",
+    "file_modification_date": "2022-05-28T02:48:48Z",
+    "file_size": 2569018,
+    "plain_text": "# Digging into BokBot’s Core Module\n\n**crowdstrike.com/blog/digging-into-bokbots-core-module/**\n\nShaun Hurley and James Scalise January 3, 2019\n\n## Introduction\n\nBokBot, developed and operated by the actor named LUNAR SPIDER, was first observed in\n2017 and the CrowdStrike’s Falcon Overwatch™ and Falcon Intelligence™ teams have®\nanalyzed these infections to ensure customers are both protected and informed. Recently,\nBokBot infections have become more prevalent due to distribution campaigns through the\nEmotet malware, which is associated with MUMMY SPIDER.\n\nThe BokBot malware provides robust functionality, such as:\n\nCommand and control of a system\n\nProcess execution\nRegistry editing\nWrite to the file system\nLogging\nPolymorphism and other obfuscations\nTamperProofing\nModular\n\nCredential theft\nIntercepting proxy\nRemote control via VNC\n\n\n-----\n\nIn addition, BokBot has been seen downloading and executing binary code from other\nmalware families: for example, the Azorult infostealer.\n\nThis blog post will dig into the technical details of BokBot’s main module. Subsequent blog\nposts will cover the additional downloaded modules.\n\n## BokBot Container Execution\n\nBokBot comes packed inside a crypter. The crypter goes through several stages before\nfinally unpacking the BokBot binary and injecting it into svchost.exe. Here is a quick rundown\nof the different stages:\n\nStage 1 (crypter)\n\nDecode stage 2 and execute\nStage 2 (crypter)\n\nDecodes shellcode and execute\nStage 3 (shellcode)\n\nHollows out the base process image\nDecodes the core process injection PE\nOverwrites the base process image with the core process injection PE\nStage 4 (process injection)\n\nExecutes the process injection code\nLaunches svchost.exe child process\nInjects BokBot as a headless PE image into the child process\n\nAll of the behaviors relevant to the CrowdStrike® Falcon platform occur in stage 4. The\nprimary focus for the following section is the unique method in which BokBot is injected into\nthe child process.\n\n### Process Injection\n\nIn order to bypass antivirus (AV) detections for process hollowing, BokBot hooks several\nWindows API functions, executes the hooking code, and then removes the hook.\n\n**Simulating Process Hollowing**\n\nIn order to simulate process hollowing, the `ZwCreateUserProcess` routine is hooked.\nBokBot calls `ZwProtectVirtualMemory` to modify the permissions of the routine to\n```\nPAGE_READWRITE . Next, the first five opcodes (bytes) are replaced with the opcodes for a\n\n```\nJMP `<address of hooking code> instruction. Permissions are restored, and then`\n\n\n-----\n\nFigure 1: Hooking `ZwCreateUserProcess`\n\nOnce `CreateProcessA` is called, a function call chain leads to calling\n\n`ZwCreateUserProcess` and then the hooking code, as shown in Figure 1. At this point, no\nprocess has been created.\n\nThe hooking code will complete the creation of the child process by removing the hook from\nthe `ZwCreateUserprocess` routine, and then the non-hooked `ZwCreateUserProcess`\nprocedure is called. This will create the child process, but execution doesn’t begin until\n\n`CreateProcessInternal` returns. The rest of the hook routine will decode and inject the\nembedded BokBot binary into the child svchost.exe process\n\n**Code Injection**\n\nPrior to injecting the code, the BokBot PE is decompressed and loaded into the local process\nmemory. Once loaded, the following Windows procedures are used to allocate and write to\nthe svchost child process:\n\nAfter the main BokBot module has been written to the child process, the steps to execute the\nBokBot code will begin.\n\n**Code Execution**\n\n\n-----\n\nBokBot uses a novel technique to get the code to execute inside of the child process. Using\nthe same APIs as earlier, the dropper hooks `RtlExitUserProcess in the child process.`\nSince svchost.exe is launched without arguments, it will terminate immediately. As the\nprocess attempts to exit, it will call the hooked `RtlExitUserProcess, thus executing the`\nBokBot payload.\n\nFigure 2: Executing BokBot with `RtlExitUserProcess Hook`\nThere is one more task for the hooking routine to complete before\n```\nCreateProcessInternalW resumes execution.\n\n```\n**Injecting a Context Data Structure**\n\nAfter the BokBot payload is injected into the child process, a context data structure is written\nto the child process. This context contains all of the data necessary to ensure that BokBot’s\nmain module is able to execute without issue:\n\n\n-----\n\nWindows Procedure Addresses\n\nntdll.ZwAllocateVirtualMemory\nntdll.ZwWriteVirtualMemory\nntdll.ZwProtectVirtualMemory\nntdll.ZwWaitForSingleObject\nntdll.LdrLoadDll\nntdll.LdrGetProcedureAddress\nntdll.RtlExitUserProcess\nntdll.ZwCreateUserProcess\nntdll.RtlDecompressBuffer\nntdll.ZwFlushInstructionCache\nLoad address for payload\nPath to the dropper binary\nC2 URLs\nProject ID\n\nThis data is collected throughout the lifetime of the dropper process. In addition, a similar\nstructure will be written to the child processes of BokBot as it downloads and execute\nmodules.\n\nAfter injection, `CreateProcessInternalW resumes, and the dropper process exits.`\nBokBot’s main module starts the initialization phase.\n\n## BokBot Initialization\n\nPrior to executing the primary loop to communicate with the C2, BokBot goes through\nseveral initialization steps to prepare itself for C2 communication. Initialization occurs in the\nfollowing steps:\n\nRemove the RtlExitUserProcess hook\nCreate a memory-mapped file to store logging data\nExecute BokBot as the logged-on user (if the current process is running as System)\nSuppress error windows\nCollect System information\n\nWindows version information\nUser SID\nMember of a domain\nUnique ID generation\nPrevent multiple executions\nInstall BokBot on the host\nInject existing downloaded modules into into child processes\n\nSome of these steps are covered in more details inside the following sections.\n\n\n-----\n\n### Silence Errors\n\nTo prevent error windows from informing the victim of an issue, BokBot sets the error mode\nof the process to 0x8007, which corresponds to the following:\n\nThis will disable most error notices that are generated when a process crashes.\n\n### Generating Unique IDs\n\nBokBot uses several unique IDS that are generated earlier on during process execution.\nThese values are passed to the C2 (command and control), used as a key for RC4, and\npassed to child processes.\n\n**Project ID**\n\nIn addition to injecting the main BokBot module into svchost, the dropper also injects a chunk\nof binary data that provides context for BokBot to execute, including the Project ID. These\nunique Project ID values appear to be used to identify infections that correspond to\ndistribution campaigns. The Project ID is a four-byte value.\n\n**Bot ID**\n\nBot IDs are unique to specific instances for a user on an infected host. The value is used as\nan encryption key and as a seed in the generation of the unique values that BokBot needs\nfor a variety of purposes, such as the generation of pseudo-random strings for file and event\nnames. This will be discussed further in subsequent sections.\n\nThe Bot ID is generated in one of the two following ways:\n\nSecurity ID (SID) of the account name\nSystem time in a file time format\n\nSince both values are 64-bit, no matter which method is used, the value is split into two 32bit chunks and XORed.\n\n**ID Hash**\n\nIn addition to this Bot ID, a simple hash is generated that can be used to verify the validity of\nboth the Bot ID and the Project ID. This hash is generated using the Bot ID and the Project\nID, in the following manner:\n\n\n-----\n\nThis value will be passed along with the Project ID and the Bot ID as part of the C2 URL\nparameters. If this request is invalid, infected hosts will not receive any instructions from the\nC2.\n\n## C2 Hostname Initialization\n\nBokbot contains an encoded list of C2 hostnames that were provided as part of the context\ndata structure that was injected by the dropper. The C2 list within that structure is decoded\nusing a key that was also provided by the context, and then re-encoded using a new key that\nwas generated using an rdtsc instruction, and stored as an array of pointers.\n\n## Prevent Multiple Executions\n\nA unique global named event is generated using the Bot ID. A successful call to\n```\nCreateEvent is proceeded with a call to GetLastError . If the malware is already\n\n```\nexecuting, the last error is `ERROR_ALREADY_EXISTS, and the process exits.`\n\n## Installation\n\nDuring installation, the BokBot dropper binary is written to an installation directory, and a\nscheduled task is created for persistence.\n\nThe installation directory is created in the following root directory:\n\nc:\\ProgramData\n\nThe installation directory name is unique and generated using the Bot ID. Once the directory\nis created, the original dropper file is renamed (also using the Bot ID as a seed) and written\nto the directory. Because the Bot ID is based on system information, using it as a seed\nensures that the malware will always generate the same installation path and filename on a\nparticular host.\n\nAfter generating the installation directory name, BokBot needs to generate a filename for the\nBokBot binary that is going to be written to that directory. The following Python code\nreproduces the algorithm that BokBot uses to generate the filename, and various other\nstrings.\n\n\n-----\n\nThe `str_id value in the script is a hard-coded integer that is used with the Bot ID to`\ngenerate consistent strings. For instance, using a Bot ID of 0x2C6205B3 and str_id of 2\nalways results in `ayxhmenpqgof, but switching to a` `str_id of 6 results in` `bwjncm.`\n\nThe following is an example of the installation path:\n\nC:\\ProgramData\\{P6A23L1G-A21G-2389-90A1-95812L5X9AB8}\\ruizlfjkex.exe\n\nA scheduled task is created to execute at windows logon. The task name is generated in the\nsame manner as the installation directory:\n\nTask Name: {Q6B23L1U-A32L-2389-90A1-95812L5X9AB8}\nTrigger: Logon\nAction: Start a program\nDetails: BokBot dropper path\n\n## C2 Communication\n\nBokBot communicates with C2 servers via HTTPS requests, passing various values to the\nserver through URL parameters and via POST data. The URL request data is not encrypted\nor obfuscated beyond the SSL/TLS used by the server.\n\nThe following sections detail parameters required by all requests, some additional optional\nparameters, and the bot registration process.\n\n### Required C2 Request/Response Parameters\n\n\n-----\n\nEvery request/response will have these parameters sent to the server. These will provide the\nC2 with information that identifies the request/response type and to uniquely identify the\ninfected machine:\n\nTable 1 describes these parameters in greater detail.\n\nTable 1: Required URI Parameters\n\nThe URL path often changes between versions: For instance, version 100-102 used\n```\n/data100.php instead of /in.php.\n\n### Additional C2 Request Parameters\n\n```\nBokBot contains a communication thread that loops continuously until the process exits,\nretrieving instructions from the C2 server. These requests include several additional\nparameters, detailed in Table 2, in addition to those already described. These parameters\nare not sent when a machine sends the result of a command issued by the C2, such as\nwhen uploading a screenshot.\n\nThe following URL parameters showcase an example of the initial connection to the C2:\n\n\n-----\n\nTable 2: Additional BokBot C2 Request URI Parameters\n\nIn this example, there are no web injects, no C2 URLs, and no modules have been\ndownloaded, therefore the highlighted parameters are either zero or empty. An initial\ntimestamp has been generated, and the version number is static.\n\n## Initial Bot Registration\n\nA registration request is combined with the standard C2 URL parameters that are sent to the\nC2 with each request. After the initial request, the C2 server will send commands back to the\nvictim, signaling it to download web injects, updated C2 hostnames, executable modules, or\nto perform other tasks.\n\nThe initial registration URL contains parameters related to system information. The following\nstring is an example:\n\n\n-----\n\nTable 3 describes the registration URI parameters.\n\nTable 3: Registration Request URI Parameters\n\nThe following is an example of a registration request (in red) and a response from the C2 (in\nblue) containing commands for the infected host:\n\n\n-----\n\n### C2 Commands\n\nThis section will cover the command requests made by the C2. Each command from the C2\ntakes the following format:\n\nThe following commands are available in the current version of BokBot:\n\n\n-----\n\nNote that these command ID values may change between versions. As this list\ndemonstrates, BokBot provides operators with a wide variety of options to interact with an\ninfected machine.\n\n### URL Download Command Handler\n\nA lot of commands trigger a command handler function that requires communication with\neither a C2 URL or another URL specified in the server request arguments. If specified by\nthe request, the data downloaded from the target URL will be written to a DAT. Whether or\nnot the downloaded data is written to a DAT file, it will always be processed by a callback\nfunction for one of the following C2 commands:\n\nStart a new executable module, restart current executable module\nUpdate web injects (either command)\nUpdate config\nUpdate BokBot\nWrite to a file\nDownload and execute a binary\n\nThe commands that use the C2 URL hostnames send a d URL parameter, such as the\nfollowing example:\n\n\n-----\n\nThis value is typically set to 0; the file to download is specified by the g parameters.\n\n## Modules and DAT Files\n\nAll data received from the C2 that needs to persist between reboots is written out as a DAT\nfile on the infected machine. These files include:\n\nWeb inject configuration\nC2 configuration\nExternal modules\n\nEach file is encrypted and decrypted as needed by either the main module or the child\nmodule, using the Bot ID as the key. Each module is given a unique tag.\n\n### Unique Tag Generation\n\nBokBot assigns unique tag values for injected processes, downloaded modules, and the\ndownloaded DAT files. These tags are a convenient method for the executing BokBot\nprocess to identify external process resources. Tag generation is simple:\n\n18 – Web injects configuration file, statically defined in the binary\n19 – Reporting configuration file, statically defined in the binary\n20 – C2 configuration file, statically defined in the binary\n33-46 – Downloaded modules to be injected into child processes\n\nAssigned as needed in an incremental fashion\nNot necessarily a unique tag for what the module does\n\nDuring analysis of BokBot, these values will come up on a regular basis, including values to\ngenerate a unique filename, as described later.\n\n## Downloading DAT Files\n\nAs previously mentioned, DAT files are downloaded based on commands sent from the C2.\nOnce the command is received from the C2, a command handler specific to this command is\ncalled to process the request. In response, the infected machine notifies the C2 with the\ncommand that it is ready to receive an RC4-encrypted blob from the C2. Figure 3 illustrates\nthe process of commands that download configuration files and modules.\n\n\n-----\n\nFigure 3: C2 Command to Trigger DAT File Download\nAn eight-byte RC4 key is prepended to the data buffer. Prior to writing the BLOB to a file,\nBokBot decrypts the file, and then re-encrypts it using a new RC4 key based on the Bot ID.\n\n### Write to a File\n\nBokBot creates a new directory under `C:\\ProgramData to store the DAT files. The`\ndirectory name is generated using the string generation algorithm described previously. DAT\nfile names are generated using the unique tag value. This value is run through a string\ngeneration algorithm (also dependent on the Bot ID), which returns a unique filename for the\nDAT file.\n\nTable 4: Example of BokBot DAT Files Written During Analysis\nTable 4 references all of the DAT files that were written during the testing process used for\nwriting this blog. In this case, the installation directory is C:\\ProgramData\\yyyyyyyyiu\\.\n\nThese DAT files are further handled based on the specified type, depending on whether it is\nan executable module or a data file.\n\n\n-----\n\n### Executable Module\n\nBokBot has several executable modules that can be downloaded and injected into a\nsvchost.exe child process. Once the relevant DAT file is decoded using RC4, no additional\ndecoding or decompression is necessary for the executable module DAT files. The\nexecutable module header contains information necessary to ID the module:\n\nThe rest of the file contains data necessary to load and execute the module, including the\nvarious portions of a PE file along with a custom PE header.\n\n**Module Injection and Execution**\n\nExecutable modules are injected with a technique similar to the dropper, minus the hook of\n```\nZwCreateUserProcess, and the child process start is suspended ( CREATE_SUSPENDED ).\n\n```\nIt’s a little closer to traditional process migration with the addition of the\n```\nRtlExitUserProcess hook.\n\n```\nPE Image Loading\n\nBecause there is no standard PE header, the DAT file has to contain all of the relevant\ninformation (virtual sizes, relocations, etc.) to properly map this binary into the child process.\nThis data is part of the header of the DAT file. BokBot builds the binary in local process\nmemory prior to injecting it into the child process.\n\nInjection\n\nInjection uses the same APIs as the dropper: ZwAllocateVirtualMemory,\nZwWriteVirtualMemory, ZwProtectVirtualMemory. After injection the process is resumed\nusing ResumeThread.\n\nExecution Context Injection\n\nOnce again, an execution context structure is written to the child process, prior to execution.\nSome of the information contained in this context includes:\n\nBot ID\nProject ID\nC2 hostnames\n\n\n-----\n\nA URL path format string\n\nThis keeps everything consistent between the parent and child process. No new unique\nidentifiers need to be generated, all of the encryption keys are going to be the same: same\nhostnames, and even the same URL path. Consistency between parent and child is\nnecessary for the messages sent between the two, using inter-process communication (IPC).\n\nAfter a module is injected into a child process, the first four bytes of the decrypted DAT file\nare added to an array, used by BokBot to identify which modules are currently executing.\n\n### Data Files\n\nThe other DAT files contain data necessary to either communicate with a C2, or related to\nweb injection. Essentially, these files provide whatever additional data the main BokBot\nprocess and the executable modules require to accomplish their job.\n\n**Config File**\n\nThe config file contains all of the data necessary for the BokBot main module to maintain\ncommunication with the C2. Once the file is decrypted using the process-specific RC4 key,\nno additional decompression or decryption is necessary.\n\nSignature Verification\n\nEach config file comes with a digital signature block, used to verify the integrity of the C2\nhostname data. The signature is verified based on the signature verification method outlined\nin the obfuscations section. The following is an example C2 configuration, with the signature\nblock in red:\n\n\n-----\n\n**Web Inject Files**\n\nThere are multiple web inject files. One contains all of the target URL and hostname data,\nand the second contains regex patterns, as well as the code to inject. These files are both\nRC4-encrypted and compressed.\n\nThese files are not parsed by the main BokBot binary, but rather by the intercepting proxy\nmodule. The `zeus file magic is verified, a buffer is allocated, and then the files are`\ndecompressed.\n\nA forthcoming blog post on the proxy module will cover decompression and usage of the web\ninjection configuration files.\n\n## Communication with Child Processes\n\n\n-----\n\nMemory-mapped files and events are used by BokBot to communicate with all child\nprocesses that contain an injected module. Through the process of leveraging named events\nwith `CreateEvent, OpenEvent` `, and` `OpenFileMapping, the BokBot main module is`\nable to provide additional information to these child processes.\n\n### Shared Module Log\n\nModules write to the same shared memory-mapped file. The memory-mapped file is created\nusing a shared name between the parent and child processes. Each process that can\ngenerate this name can use it to open the memory-mapped file, and to write data to the\nshared modules log. Further details are covered in the next section, and specific data written\nwill be covered in the separate module descriptions below. The main module is responsible\nfor clearing the log and sending the data to the C2.\n\n### Module-Specific Communication\n\nBokBot’s main module often needs to issue commands to the child processes that contain\ninjected module code. The commands can trigger an update of module-specific data, or\ninstruct the module to perform a specific function, such as harvest data from Outlook. Figure\n4 outlines this process, although it will be further explained in the subsequent sections.\n\n\n-----\n\nFigure 4: BokBot Communication Between Parent and Child Processes\n\n**Event Name Generation**\n\nIn order for the BokBot main modules and the child process to communicate with events,\nunique names need to be generated and must consistent across all of the processes. Table 5\nillustrates BokBot’s approach.\n\nThese events will be used by the parent and child processes to exchange data.\n\n\n-----\n\nTable 5: Event Name Structure\n\n**BokBot Main Module**\n\nThis process has the ability to communicate with all of the children of the injected modules.\nThese communication all revolve around commands generated by the C2. Once a command\nthat requires notification of an executable module child process is initiated, a named `Q`\nevent is opened to ensure that the child process is ready to receive the data. If this `Q event`\ndoes not exist, then the child process has not been started. BokBot injects the target module\ninto a child process, and loops a check to see if the event can be opened.\n\nOnce the `Q event has been successfully opened, BokBot creates a new named` `R event,`\ncreates a memory-mapped file (named `M event), writes data to the file, signals the open` `Q`\nevent, and waits for a response from the child process. After the child clears the `R event,`\nthe memory-mapped file is unmapped, and all handles are closed.\n\n**BokBot Executable Module**\n\nAfter initialization, the child process will create a named `Q event and wait until it is signaled`\nby the parent process. Once signaled, the named `R event is opened, and the data in the`\nmemory-mapped file is processed.\n\nData from the BokBot Parent\n\nBokBot’s main module writes some contextual information to the injected module, telling it to\nperform specific actions. These actions change based on the module receiving the data. The\nfollowing commands are consistent between modules, but the actions performed may vary:\n\n0xFF00: Process exit with a 0x1122 code\n0xFF01: Check web injects or no operation\n0xFF02: Update C2 hostnames\n\n\n-----\n\nIn addition to a command, relevant data associated with a command is also processed\nbased on whatever instruction the command tells the injected module to accomplish.\n\nAfter the task assigned by the parent process has completed, the memory mapped file is\nunmapped, the `R event is signaled, and all other open events are closed.`\n\n## Obfuscations and TamperProofing\n\nBokbot uses several methods to obfuscate analysis:\n\nString obfuscation\nEncrypted DAT files from the server\nSignature verification\nPolymorphism\n\n### String Obfuscation\n\nTo make analysis more difficult, significant strings have been XOR encoded using a shifting\nkey algorithm. All encoded strings have the following structure:\n\nHere is the algorithm to decode the string (Python):\n\n\n-----\n\n### Signature Verification\n\nSignature verification occurs under two circumstances: updated C2 urls, and updated BokBot\nbinary. In both cases, the process is the same. The verification function receives two things:\na 128-byte signature to verify, and the data to verify.\n\nFirst, BokBot creates an MD5 hash of the data requiring verification. Next, an RSA public key\nembedded in the executing binary is importing via `CryptImportKey . Once the hash is`\ngenerated and the key imported, `CryptVerifySignature is used to verify the signature.`\nThis may be an attempt to prevent some third party from taking over or otherwise disrupting\nthe botnet.\n\n### Polymorphism\n\nEverytime BokBot is installed, prior to it being written to the install directory, the .text section\nof the binary is modified with junk data and the virtual size is updated. A new checksum is\ngenerated to replace the current checksum.\n\n## How CrowdStrike Falcon Prevent™ Stops BokBot\n\nBokbot spawns a svchost child process, injects the main module, and that svchost process\nspawns and injects into multiple child processes. The process tree in Figure 5 is an example\nof what BokBot looks like when process blocking is disabled in Falcon Prevent. As can be\nseen, several malicious child processes were launched by BokBot’s main module located\ninside of the first svchost process.\n\nFigure 5: BokBot Process Tree Without Process Blocking Enabled\n\n\n-----\n\nWithout preventions enabled the customer will still be notified of the malicious activity, but no\naction will be taken to prevent the behavior.\n\n### Suspicious Process Blocking\n\nFalcon has the capability to prevent the execution of BokBot’s main module and all of the\nchild modules. Turning on process blocking in Falcon Prevent kills the BokBot infection at the\nparent svchost process. Looking at the process tree in the Falcon UI with process blocking\nenabled, shows an analyst that the svchost process was prevented. The block message (see\nFigure 7) that occurs with this preventative action explains why this process was terminated.\n\nFigure 6: BokBot Process Tree with Process Blocking Enabled\n\nFigure 7: BokBot Process Block Message\nSuspicious process blocking is an example of malware prevention based on behavior. If the\nmalware uses behavior that has not been caught by Falcon’s indicators of activity, then\nFalcon can also prevent malware execution by leveraging either next-generation AV machine\nlearning or intelligence collected by Crowdstrike’s Falcon Intelligence team\n\n\n-----\n\n## In Summary\n\nBokBot is a powerful banking trojan that provides attackers with a robust feature set. One of\nthe more unique features of BokBot is the method in which it uses to communicate with it’s\nchild modules. Additional blog posts for BokBot are coming that will contain more information\nfor the downloaded modules.\n\n## BokBot Hashes\n\nThe following hashes were used in creation of this blog post.\n\n## MITRE ATT&CK Framework Mapping\n\n\n-----\n\n### Additional Resources\n\n_Read a Security Intelligence article: “New Banking Trojan IcedID Discovered by IBM X-_\n_Force Research.”_\n_Read a Talos Blog: “IcedID Banking Trojan Teams up with Ursnif/Dreambot for_\n_Distribution.”_\n_Visit Vitali Kremez | Ethical Hacker | Reverse Engineer and read: “Let’s Learn: Deeper_\n_Dive into ‘IcedID’/’BokBot’ Banking Malware: Part 1.”_\n_[Download the 2018 CrowdStrike Services Cyber Intrusion Casebook and read up on](https://www.crowdstrike.com/resources/reports/cyber-intrusion-services-casebook-2018/?ctm_source=Digital&ctm_medium=blog&ctm_campaign=WC_Casebook2018_Report)_\n_real-world IR investigations, with details on attacks and recommendations that can help_\n_your organizations get better prepared._\n_Learn more about CrowdStrike’s next-gen endpoint protection by visiting the Falcon_\n_platform product page._\n_Test CrowdStrike next-gen AV for yourself:_ _[Start your free trial of Falcon Prevent™](https://www.crowdstrike.com/resources/free-trials/try-falcon-prevent/)_\n_today._\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-01-03 - Digging into BokBot’s Core Module.pdf"
+    ],
+    "report_names": [
+        "2019-01-03 - Digging into BokBot’s Core Module.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "42a6a29d-6b98-4fd6-a742-a45a0306c7b0",
+            "created_at": "2022-10-25T15:50:23.710403Z",
+            "updated_at": "2025-03-27T02:00:55.531313Z",
+            "deleted_at": null,
+            "main_name": "Silence",
+            "aliases": [
+                "Whisper Spider"
+            ],
+            "source_name": "MITRE:Silence",
+            "tools": [
+                "Winexe",
+                "SDelete"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "88e53203-891a-46f8-9ced-81d874a271c4",
+            "created_at": "2022-10-25T16:07:24.191982Z",
+            "updated_at": "2025-03-27T02:02:10.13692Z",
+            "deleted_at": null,
+            "main_name": "Silence",
+            "aliases": [
+                "ATK 86",
+                "Contract Crew",
+                "TAG-CR8",
+                "TEMP.TruthTeller",
+                "Whisper Spider"
+            ],
+            "source_name": "ETDA:Silence",
+            "tools": [
+                "EDA",
+                "EmpireDNSAgent",
+                "Farse",
+                "Ivoke",
+                "Kikothac",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "Meterpreter",
+                "ProxyBot",
+                "ReconModule",
+                "Silence.Downloader",
+                "TiniMet",
+                "TinyMet",
+                "TrueBot",
+                "xfs-disp.exe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "e8e18067-f64b-4e54-9493-6d450b7d40df",
+            "created_at": "2022-10-25T16:07:24.515213Z",
+            "updated_at": "2025-03-27T02:02:10.267637Z",
+            "deleted_at": null,
+            "main_name": "Mummy Spider",
+            "aliases": [
+                "ATK 104",
+                "Gold Crestwood",
+                "Mummy Spider",
+                "TA542"
+            ],
+            "source_name": "ETDA:Mummy Spider",
+            "tools": [
+                "Emotet",
+                "Geodo",
+                "Heodo"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "475ea823-9e47-4098-b235-0900bc1a5362",
+            "created_at": "2022-10-25T16:07:24.506596Z",
+            "updated_at": "2025-03-27T02:02:10.263346Z",
+            "deleted_at": null,
+            "main_name": "Lunar Spider",
+            "aliases": [
+                "Gold SwathMore"
+            ],
+            "source_name": "ETDA:Lunar Spider",
+            "tools": [
+                "BokBot",
+                "IceID",
+                "IcedID",
+                "NeverQuest",
+                "Vawtrak",
+                "grabnew"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "c2385aea-d30b-4dbc-844d-fef465cf3ea9",
+            "created_at": "2023-01-06T13:46:38.916521Z",
+            "updated_at": "2025-03-27T02:00:02.950071Z",
+            "deleted_at": null,
+            "main_name": "LUNAR SPIDER",
+            "aliases": [
+                "GOLD SWATHMORE"
+            ],
+            "source_name": "MISPGALAXY:LUNAR SPIDER",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "506404b2-82fb-4b7e-b40d-57c2e9b59f40",
+            "created_at": "2023-01-06T13:46:38.870883Z",
+            "updated_at": "2025-03-27T02:00:02.939775Z",
+            "deleted_at": null,
+            "main_name": "MUMMY SPIDER",
+            "aliases": [
+                "TA542",
+                "GOLD CRESTWOOD"
+            ],
+            "source_name": "MISPGALAXY:MUMMY SPIDER",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "2ac83159-1d9d-4db4-a176-97be6b7b07c9",
+            "created_at": "2024-06-19T02:03:08.024653Z",
+            "updated_at": "2025-03-27T02:05:17.348806Z",
+            "deleted_at": null,
+            "main_name": "GOLD CRESTWOOD",
+            "aliases": [
+                "TA542 ",
+                "Mummy Spider "
+            ],
+            "source_name": "Secureworks:GOLD CRESTWOOD",
+            "tools": [
+                "Emotet"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "7cfe3bc9-7a6c-4ee1-a635-5ea7b947147f",
+            "created_at": "2024-06-19T02:03:08.122318Z",
+            "updated_at": "2025-03-27T02:05:17.398805Z",
+            "deleted_at": null,
+            "main_name": "GOLD SWATHMORE",
+            "aliases": [
+                "Lunar Spider "
+            ],
+            "source_name": "Secureworks:GOLD SWATHMORE",
+            "tools": [
+                " GlobeImposter",
+                " Gozi",
+                " Gozi Trojan",
+                " IcedID",
+                " Latrodectus",
+                " TrickBot",
+                " TrickBot",
+                "Cobalt Strike"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535875,
+    "ts_updated_at": 1743041652,
+    "ts_creation_date": 1653706128,
+    "ts_modification_date": 1653706128,
+    "files": {
+        "pdf": "https://archive.orkl.eu/d82d859acee0929aa8c05ed2e16e13ae4fe2673a.pdf",
+        "text": "https://archive.orkl.eu/d82d859acee0929aa8c05ed2e16e13ae4fe2673a.txt",
+        "img": "https://archive.orkl.eu/d82d859acee0929aa8c05ed2e16e13ae4fe2673a.jpg"
+    }
+}

@@ -1,0 +1,119 @@
+{
+    "id": "83c81d23-7d25-49e8-add9-6d92dc63bea5",
+    "created_at": "2023-01-12T15:09:49.923495Z",
+    "updated_at": "2025-03-27T02:17:00.799693Z",
+    "deleted_at": null,
+    "sha1_hash": "1e3cbfd72813040f0ebb615d73c6a0a3a21c04b8",
+    "title": "2022-01-28 - WhisperGate Malware Corrupts Computers in Ukraine",
+    "authors": "",
+    "file_creation_date": "2022-05-28T02:09:50Z",
+    "file_modification_date": "2022-05-28T02:09:50Z",
+    "file_size": 316588,
+    "plain_text": "# WhisperGate Malware Corrupts Computers in Ukraine\n\n**[recordedfuture.com/whispergate-malware-corrupts-computers-ukraine/](https://www.recordedfuture.com/whispergate-malware-corrupts-computers-ukraine/)**\n\nInsikt Group\n_This report is a technical overview of the WhisperGate malware reported by_\n_Microsoft Threat Intelligence on January 15, 2022. It is intended for those_\n_looking for a high-level overview of the malware’s TTPs and mitigations._\n\n## Executive Summary\n\nWhisperGate is a new malware family being used in an ongoing operation\ntargeting multiple industries in Ukraine, including government, non-profit, and\ninformation technology organizations. The malware is a 3-stage master boot\nrecord (MBR) wiper designed to destroy a victim’s MBR and corrupt files on\nattached storage devices. Each stage of the malware has a discrete task: stage\n1 overwrites the MBR with a ransom note and code to overwrite sections on\neach drive found, stage 2 downloads and executes stage 3, which is hosted on\nDiscord’s CDN as a JPG attachment, and stage 3 corrupts any file that\nmatches a list of 191 file extensions. The developers of the malware use\nobfuscation, particularly in stage 3, to evade detection and analysis.\nWhisperGate wipes and corrupts a Windows system to the point where files\nand drives are no longer recoverable or usable. Details around the motive for\nWhisperGate and the threat actor behind the attacks are still emerging. These\nattacks take place in the context of an escalating risk of a Russian invasion of\nUkraine and the Ukrainian government website defacements that occurred on\nJanuary 14, 2022.\n\n## Key Judgments\n\nAs of this writing, the threat actor group deploying WhisperGate has not\nbeen attributed to any known threat groups, but other researchers\n[suspect the group is state sponsored.](https://www.microsoft.com/security/blog/2022/01/15/destructive-malware-targeting-ukrainian-organizations/)\n\n\n-----\n\nThe same precautions taken against ransomware with respect to data\nbackups should be applied to mitigate the effects of WhisperGate’s data\ndestruction capabilities.\nWhisperGate malware has not been observed in use as part of any other\nattacks outside of Ukraine, indicating it may have been developed\nspecifically for this operation.\n\n## Background\n\n[On January 15, 2022, Microsoft reported a destructive malware operation](https://www.microsoft.com/security/blog/2022/01/15/destructive-malware-targeting-ukrainian-organizations/)\ntargeting multiple organizations in Ukraine. This activity has not been\nattributed to any existing threat actor group and is therefore being tracked\nusing Microsoft's DEV-#### naming convention, which is used to track\nunknown emerging clusters of threat activity. This group has been given the\ndesignation DEV-0586 until it is eventually converted to a named actor or\nmerged with an existing actor. Microsoft started seeing this malicious activity on\nJanuary 13, 2022, which led to the investigation that uncovered a new malware\nfamily that is being tracked as WhisperGate.\n\n## WhisperGate Technical Analysis\n\nThe WhisperGate malware has 3 stages, detailed below in Figure 1. All 3\nstages must be executed prior to the machine rebooting for maximum effect.\nStage 1 corrupts the MBR of the victim’s boot disk and upon reboot will corrupt\nother drives on the system. Stage 2 downloads stage 3, which is used to\ncorrupt files on attached file systems and network drives. File damage will\noccur if even just one of either stage 1 or stage 2 executes successfully. In\ntesting, we found that GUID Partition Table (GPT) disks are not irreparably\ndestroyed by WhisperGate’s stage 1 malware and therefore are partially\nimmune to that stage of the malware. We speculate that the inclusion of stage\n2 and 3 may be a way to ensure that victims using GPT-style boot disks are\naffected by the malware too. However, stage 3 also targets remote network\ndrives, which would cause further damage regardless of the partitioning\nscheme used by the victim’s boot disk. **_Figure 1: Stages of WhisperGate_**\n_malware (Source: Recorded Future)_\n\n## Stage 1: Overwrite Master Boot Record (MBR)\n\nStage 1 is compiled using the Minimalist GNU for Windows (MinGW)\ndevelopment environment, which supports GNU Compiler Collection (GCC)\n6.3.0 on Windows. The binary’s primary objective is to overwrite the MBR of\n“\\\\\\\\.\\\\PhysicalDrive0” with a custom MBR whose effect won’t be seen until the\nmachine reboots. At startup, the computer’s BIOS determines the disk order to\n\n\n-----\n\nuse when looking for the MBR. Overwriting the MBR on PhysicalDrive0 is\nmaking an assumption that that disk is the first one in line to be checked by the\nBIOS, which is normally a reasonable assumption. Once the machine reboots\nand the custom MBR code executes, the user is presented with the ransom\nnote displayed in Figure 2. **_Figure 2: Ransom note displayed after stage 1_**\n_of WhisperGate is executed (Source: Recorded Future)_\nAfter displaying the ransom note, the MBR code overwrites sections of each\ndrive, on 199-byte intervals, with the contents shown in Figure 3. The content\nwritten to each drive differs at the sixth byte, incrementing sequentially from\n0x00.\n\n**_Figure 3: Hex view of the contents that are written to disk (Source:_**\n_Recorded Future)_\nThe MBR code writes the content multiple times to each drive by making\n[extended write function calls via interrupt 0x13, as shown in Figure 4.](https://en.wikipedia.org/wiki/INT_13H#INT_13h_AH=43h:_Extended_Write_Sectors_to_Drive)\n\n**_Figure 4: MBR instructions that enumerate the drives and overwrite_**\n_sections on each disk found (Source: Recorded Future)_\nIn the event that a victim is using GPT-style partition tables on their boot disk,\nthen stage 1 will not be effective. Upon reboot, Windows will not be able to\nboot; however, WhisperGate’s MBR code, which corrupts the disk drives, will\nnot run. Since GPT disks maintain a backup copy of the GPT table at the end\nof a disk, victims can restore the GPT table by running a live Linux distribution\n[and using the gdisk utility’s](https://manpages.debian.org/bullseye/gdisk/gdisk.8.en.html) [recovery command like shown in Figure 5.](https://wiki.archlinux.org/title/GPT_fdisk#Recover_GPT_header)\n\n**_Figure 5: Restoring the corrupted GPT table with the gdisk recovery_**\n_command (Source: Recorded Future)_\n\n## Stage 2: Downloader\n\nStage 2 is written in .NET, and its primary functionality is to download the third\nstage of the malware and execute it. It begins execution after 20 seconds,\n[using the PowerShell command “powershell -enc](https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/start-sleep?view=powershell-7.2)\n_UwB0AGEAcgB0AC0AUwBsAGUAZQBwACAALQBzACAAMQAwAA==”,_\nwhich decodes to “Start-Sleep -s 10”. The 10-second delay is executed twice\nand is likely used to help the malware evade detection by AV engines. The\nmalware retrieves the third stage from a Discord attachment hosted on\nhttps://cdn[.]discordapp[.]com, named Tbopbh.jpg. Stage 2 reverses the JPG\nfile’s bytes, reflectively loads the JPG file as a .NET assembly, and then calls\nthe exported function “Ylfwdwgmpilzyaph”.\n\n## Stage 3: File Corrupter\n\n\n-----\n\nStage 3 of the malware is written in .NET and obfuscated with eazfuscator.\nUpon execution, 2 embedded PE executable resources (AdvancedRun and\nWagybg) are unpacked, decoded, and GZIP decompressed. Next, a .vbs script\nis written to “%AppData%\\local\\Temp\\Nmddfrqqrbyjeygggda.vbs” and executed\nwith Wscript.exe. The script, shown in Figure 6, is used to exclude the entire C\ndrive from being scanned by Windows Defender. **_Figure 6: Contents of_**\n_“%AppData%\\local\\Temp\\Nmddfrqqrbyjeygggda.vbs” (Source: Recorded_\n_Future)_\nAdvancedRun is then executed to stop the Windows Defender service and\ndelete its program data folder. AdvancedRun is benign software developed by\n[NirSoft and used to run programs under different settings. The author used](https://www.nirsoft.net/utils/advanced_run.html)\nAdvancedRun due to its ability to run programs with TrustedInstaller privileges,\nwhich are needed to execute the command that disables Windows Defender.\nFigures 7 and 8 show the command line arguments used to run\nAdvancedRun.exe. The use of the “/RunAs 8” argument instructs\nAdvancedRun to use the TrustedInstaller privileges.\n\n**_Figure 7: “AdvancedRun.exe” stopping the Windows Defender service_**\n_(Source: Recorded Future)_ **_Figure 8: “AdvancedRun.exe” recursively_**\n_deleting Windows Defender’s program data (Source: Recorded Future)_\nFinally, Wagybg is run via process hollowing in an InstallUtil.exe process. A\n[similar technique was used to load the Netwire trojan in 2019 as part of a](https://www.real-sec.com/2019/04/dissecting-a-netwire-phishing-campaigns-usage-of-process-hollowing/)\n[phishing campaign. InstallUtil is a benign program produced by Microsoft and](https://docs.microsoft.com/en-us/dotnet/framework/tools/installutil-exe-installer-tool)\ndistributed as part of the .NET framework.\n\nThis stage of the malware is used to perform file corruption. It first gets a list of\nlogical drives on the system by calling GetLogicalDrives(), then identifies those\nthat are fixed media or network drives. The malware searches these drives for\nfiles ending in 1 of the 191 file extensions shown in Figure 9 below. It then\ncorrupts matching files by overwriting the first 1 MiB of each file with 0xCC\nbytes.\n\n**_Figure 9: Targeted file extensions (Source: Recorded Future)_**\nAfter it finishes corrupting files, the corrupter sends 5 ping requests to\n111.111.111[.]111 and then deletes itself as shown in Figure 10. While it is\nunclear exactly why the malware makes the ping requests, we speculate that it\ncould be to add a time delay before deleting itself or to keep a record of\ninfected hosts.\n\n**_Figure 10: Self-deletion function used by the file corrupter (Source:_**\n_Recorded Future)_\n\n## Mitigations\n\n\n-----\n\nWe recommend that organizations consider an offsite backup strategy to\nprotect their data from the destruction capabilities of the WhisperGate malware.\n\nNetwork segmentation can prevent attackers and malware from gaining\naccess to other parts of an organization's network. This solution involves\nsplitting the larger network into smaller network segments and can be\naccomplished through firewalls, virtual local area networks, and other\nseparation techniques.\nConsider keeping sensitive client information on systems that are\ndisconnected from the internet or segmented from the rest of the\ncorporate network. Since WhisperGate malware will tamper with files on a\nvictim system, moving highly sensitive customer data to a system with no\ninternet access or access to the rest of the network will minimize the\naccess WhisperGate malware would have to those files.\nConfigure your intrusion detection systems (IDS), intrusion prevention\nsystems (IPS), or any network defense mechanisms in place to alert on\n— and, upon review, consider blocking connection attempts to and from\n— the external IP address mentioned.\nIf remote access solutions are crucial to daily operations, all such remote\naccess services and protocols, such as Citrix and RDP, should be\nimplemented with two-factor or multi-factor authentication.\nMonitor for the creation of suspicious file modification activity, particularly\nlarge quantities of file modifications in user directories.\nSet the Execution Policy for PowerShell to require that scripts be signed\nin order to be executed. This will only be effective for scripts being run\ntraditionally (for example by double-clicking) and will not protect against\nbase64-encoded scripts executed on the command line as an argument\nto the PowerShell program (such as powershell.exe <command>).\nUse newer versions of PowerShell, such as version 5, which added some\nsecurity-related improvements.\n\nAntiMalware Scan Interface (AMSI): This feature was introduced in\nWindows 10 and Windows Server 2016 and provides “file and\nmemory or stream scanning, content source URL/IP reputation\nchecks, and other techniques” and can integrate with PowerShell,\nUAC, Windows Script Host, JavaScript, VBScript, and Office VBA\nMacros. Research into how AMSI can be bypassed indicates that\nthe use of obfuscation (such as XOR or base64-encoding “banned”\ncommands) or a simple execution bypass, among other more\nsophisticated methods such as memory patching, can be used to\nget around AMSI.\n\n\n-----\n\nEnsure logging of scripts and commands is enabled. These include:\nModule Logging (records pipeline execution of PowerShell scripts,\nincluding some portions of the script, some deobfuscated code and some\ndata formatted for output), Script Block Logging (records execution,\nincluding full contents of scripts and commands that are executed), and\nTranscription (creates a unique record of each PowerShell session,\nincluding input and output). While logging will not necessarily prevent\nmalicious PowerShell from executing, it could help with understanding\nwhat kind of malicious behavior or indicators were involved.\n\n## Outlook\n\nAs of this writing, it appears that DEV-0586 has only been using WhisperGate\nto target organizations in Ukraine. We expect more information about this threat\nactor, including attribution, will be published over the next few days or weeks.\nNow that WhisperGate has been publicly reported and security professionals\nhave been alerted to the malware, it is possible that the developers of\nWhisperGate will alter the wiper to better evade detections.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-01-28 - WhisperGate Malware Corrupts Computers in Ukraine.pdf"
+    ],
+    "report_names": [
+        "2022-01-28 - WhisperGate Malware Corrupts Computers in Ukraine.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "025b7171-98f8-4391-adc2-66333629c715",
+            "created_at": "2023-06-23T02:04:34.120175Z",
+            "updated_at": "2025-03-27T02:02:09.797581Z",
+            "deleted_at": null,
+            "main_name": "Cadet Blizzard",
+            "aliases": [
+                "DEV-0586",
+                "Operation Bleeding Bear",
+                "Ruinous Ursa"
+            ],
+            "source_name": "ETDA:Cadet Blizzard",
+            "tools": [
+                "GO Simple Tunnel",
+                "GOST",
+                "Impacket",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "P0wnyshell",
+                "PAYWIPE",
+                "Ponyshell",
+                "Pownyshell",
+                "WhisperGate",
+                "WhisperKill",
+                "netcat",
+                "reGeorg"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "c28760b2-5ec6-42ad-852f-be00372a7ce4",
+            "created_at": "2022-10-27T08:27:13.172734Z",
+            "updated_at": "2025-03-27T02:00:55.511386Z",
+            "deleted_at": null,
+            "main_name": "Ember Bear",
+            "aliases": [
+                "Ember Bear",
+                "UNC2589",
+                "Bleeding Bear",
+                "DEV-0586",
+                "Cadet Blizzard",
+                "Frozenvista",
+                "UAC-0056"
+            ],
+            "source_name": "MITRE:Ember Bear",
+            "tools": [
+                "P.A.S. Webshell",
+                "CrackMapExec",
+                "ngrok",
+                "WhisperGate",
+                "Saint Bot",
+                "PsExec",
+                "Rclone",
+                "Impacket",
+                "OutSteel"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "bdbf873a-048d-4c5d-9d92-922327cc83a8",
+            "created_at": "2023-01-06T13:46:39.387696Z",
+            "updated_at": "2025-03-27T02:00:03.071819Z",
+            "deleted_at": null,
+            "main_name": "DEV-0586",
+            "aliases": [
+                "Ruinous Ursa",
+                "Cadet Blizzard"
+            ],
+            "source_name": "MISPGALAXY:DEV-0586",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536189,
+    "ts_updated_at": 1743041820,
+    "ts_creation_date": 1653703790,
+    "ts_modification_date": 1653703790,
+    "files": {
+        "pdf": "https://archive.orkl.eu/1e3cbfd72813040f0ebb615d73c6a0a3a21c04b8.pdf",
+        "text": "https://archive.orkl.eu/1e3cbfd72813040f0ebb615d73c6a0a3a21c04b8.txt",
+        "img": "https://archive.orkl.eu/1e3cbfd72813040f0ebb615d73c6a0a3a21c04b8.jpg"
+    }
+}

@@ -1,0 +1,86 @@
+{
+    "id": "e66985e5-3b92-4e01-98b5-f4d23515178b",
+    "created_at": "2023-01-12T14:59:53.887547Z",
+    "updated_at": "2025-03-27T02:13:12.21372Z",
+    "deleted_at": null,
+    "sha1_hash": "c43998a4f6187533d1094d5d1da2835b97945666",
+    "title": "2013-04-26 - Linux-Cdorked.A- New Apache backdoor being used in the wild to serve Blackhole",
+    "authors": "",
+    "file_creation_date": "2022-05-27T22:04:54Z",
+    "file_modification_date": "2022-05-27T22:04:54Z",
+    "file_size": 205108,
+    "plain_text": "# Linux/Cdorked.A: New Apache backdoor being used in the wild to serve Blackhole\n\n**[welivesecurity.com/2013/04/26/linuxcdorked-new-apache-backdoor-in-the-wild-serves-blackhole/](https://www.welivesecurity.com/2013/04/26/linuxcdorked-new-apache-backdoor-in-the-wild-serves-blackhole/)**\n\nApril 26, 2013\n\nAnalysis of a malicious backdoor serving Blackhole exploit pack found on Linux Apache webserver compromised\nby malware dubbed Linux/Cdorked.A, together with remediation tool and techniques.\n\n26 Apr 2013 - 11:28AM\n\nAnalysis of a malicious backdoor serving Blackhole exploit pack found on Linux Apache webserver compromised\nby malware dubbed Linux/Cdorked.A, together with remediation tool and techniques.\n\nLast week, our friends at [Sucuri sent us a modified version of an Apache webserver redirecting some of its](http://sucuri.net/)\n[requests to the infamous Blackhole exploit packs. Sucuri has published a blog post on this attack. (You can find](http://blog.sucuri.net/?p=7057)\n[more about Blackhole here.)](https://www.welivesecurity.com/2011/12/04/carberp-blackhole-growing-fraud-incidents/)\n\nOur analysis of this malware, dubbed Linux/Cdorked.A, reveals that it is a sophisticated and stealthy backdoor\nmeant to drive traffic to malicious websites. We urge system administrators to check their servers and verify that\nthey are not affected by this threat. Detailed instructions to perform this check are provided below. (Update\n[5/1/2013: An improved tool coded in C replaced the Python script we originally published.)](https://www.welivesecurity.com/wp-content/uploads/2013/04/dump_cdorked_config.c)\n\nIn fact, Linux/Cdorked.A is one of the most sophisticated Apache backdoors we have seen so far. Although we are\nstill processing the data, our Livegrid system reports hundreds of compromised servers. The backdoor leaves no\ntraces of compromised hosts on the hard drive other than its modified httpd binary, thereby complicating forensics\nanalysis. All of the information related to the backdoor is stored in shared memory. The configuration is pushed by\nthe attacker through obfuscated HTTP requests that aren’t logged in normal Apache logs. This means that no\ncommand and control information is stored anywhere on the system.\n\n## Technical analysis of Linux/Cdorked\n\nHere we provide the first technical analysis of Linux/Cdorked, which seems to be affecting hundreds of webservers\nright now. In the Linux/Cdorked binary all the important or suspicious strings are encrypted. As shown in the\nfollowing image, a function is responsible for decrypting the strings on demand with a static XOR key.\n\n\n-----\n\nThe version of Linux/Cdorked that we have analyzed contains a total of 70 strings that are encoded this way. As\nshown in the following screenshot, the key used for encoding the data is\n27A4E2DADAF183B51E3DA7F6C9E6239CDFC8A2E50A60E05F.\n\nAs mentioned before, Linux/Cdorked does not write any files on the disk. Instead, it allocates around six\nmegabytes of shared memory to keep its state and configuration information. This memory block, a POSIX shared\nregion of memory (shm), is used by all Apache subprocesses but can also be accessed by any other process since\nthe malware authors didn’t limit its permission. The following screenshot shows the (read, write for everyone)\npermission rights assigned to the shared memory region.\n\nThere are two ways the attacker can control the behavior of the backdoored server: through a reverse connect\nshell or through special commands, all of them are triggered via HTTP requests.\n\n## The Linux/Cdorked.A backdoor\n\nThe HTTP server is equipped with a reverse connect backdoor that can be triggered via a special HTTP GET\nrequest. It is invoked when a request to a special path is performed with a query string in a particular format,\ncontaining the hostname and port to connect. The client IP of the HTTP dialog is used as a key to decrypt the\n\n\n-----\n\nquery string as a 4 byte XOR key. Additionally, IP specified in X Real IP or X Forwarded For headers will override\nthe client IP as the XOR key. This means we can craft a X-Real-IP header that will in effect be a “\\x00\\x00\\x00\\x00”\nkey. Query string also needs to be hex-encoded before sending.\n\nWhile the shell is used by the attacker, the HTTP connection creating it is hung (the backdoor code does not\nimplement forking). This implies that malicious shells can be found if one has access to the server and checks for\nlong-running HTTP connections. On the other hand, the HTTP request does not appear in Apache’s log file due to\nthe way the malicious code is hooked into Apache.\n\n## Redirection in Linux/Cdorked.A\n\nWhen redirecting a client, the malware adds base64 encoded string to the query containing information like the\noriginal visited URL and whether or not the request was originally to a javascript file so the server could provide the\nright payload.\n\nAn example redirection looks like:\n\n\n1\n\n2\n\n3\n\n4\n\n\nLocation: hxxp://dcb84fc82e1f7b01. xxxxxxgsm.be/index.php?j=anM9MSZudmNiaW11Zj1jY3\n\nZja3FqdSZ0aW1lPTEzMDQxNjE4MjctMzYwNDUzNjUwJnNyYz0yMzImc3VybD13d3cuaW5mZWN0ZWRzZXJ2\n\nZXIuY29tJnNwb3J0PTgwJmtleT0xM0Q5MDk1MCZzdXJpPS9mb3J1bS93Y2YvanMvM3JkUGFydHkvcHJvdG\n\n9hY3Vsb3VzLjEuOC4yLm1pbi5qcw==\n\n\nAfter decoding, the following parameters appear:\n\n\n1\n\n2\n\n\njs=1&amp;nvcbimuf=ccvckqju&amp;time=1304161827-360453650&amp;src=232&amp;surl=www.infectedserver\n\n.com&amp;sport=80&amp;key=13D90950&amp;suri=/forum/wcf/js/3rdParty/protoaculous.1.8.2.min.js\n\n\n-----\n\nThe surl parameter shows the infected host and the suri indicates what the original requested resource was.\n\nAfter the redirection, a web cookie is set on the client so it is not redirected again. This cookie is also set if a\nrequest is made to a page that looks like an administration page. The backdoor will check if the URL, the server\nname, or the referrer matches any of the following strings : ‘*adm*’, ‘*webmaster*’, ‘*submit*’, ‘*stat*’, ‘*mrtg*’,\n‘*webmin*’, ‘*cpanel*’, ‘*memb*’, ‘*bucks*’, ‘*bill*’, ‘*host*’, ‘*secur*’, ‘*support*’. This is probably done to avoid\nsending malicious content to administrators of the website, making the infection harder to spot. The following\nscreenshot shows part of the code responsible for handling the web cookie.\n\nA few other conditions must be met before redirection happens; for example, a check is done for the presence of\nthe Accept-Language, Accept-Encoding, and Referrer header.\n\n## Other Linux/Cdorked.A commands\n\nWe found 23 commands in Linux/Cdorked.A that can be sent to the server via a POST to a specially crafted URL.\nThe request must also contain a cookie header starting with “SECID=”. The query string value must hold 2 hex\nencoded bytes that are encrypted with the client IP, using the same technique as the shell. The SECID cookie data\nwill be used as arguments to some of the commands. We believe that the URLs to redirect clients are sent to the\nbackdoor using this method. The redirection information will be stored encrypted in the allocated shared memory\nregion. We also believe that the conditions for redirection are set this way, for example, a white list of user agents\nto redirect can be preconfigured and a black list of IPs to avoid redirection.\n\nThis is the complete list of commands found in the binary we have analysed: ‘DU’, ‘ST’, ‘T1’, ‘L1’, ‘D1’, ‘L2’, ‘D2’,\n‘L3’, ‘D3’, ‘L4’, ‘D4’, ‘L5’, ‘D5’, ‘L6’, ‘D6’, ‘L7’, ‘D7’, ‘L8’, ‘D8’, ‘L9’, ‘D9’, ‘LA’, ‘DA’.\n\nFinally, some information about the status of the backdoor is returned in the ETag HTTP header, as shown in the\nscreenshot below. We are still investigating the purpose of each of the commands and will publish our results as\nsoon as the analysis is completed. In short, they all either add content to, or remove it from, the configuration in the\nshared memory region.\n\n\n-----\n\n## Linux/Cdorked.A Remediation\n\nAs previously mentioned, the permissions on the shared memory allocation are loose. This allows other process to\naccess to memory. We have made a free tool to allow systems administrators to verify the presence of the shared\n[memory region and dump its content into a file (you can download dump_cdorked_config.c or copy and paste the](https://www.welivesecurity.com/wp-content/uploads/2013/04/dump_cdorked_config.c)\ncode from the listing below).\n\n[We also recommend using debsums for Debian or Ubuntu systems and rpm --verify for RPM based systems, to](http://manpages.ubuntu.com/manpages/natty/man1/debsums.1.html)\nverify the integrity of your Apache web server package installation. (However, remember to temper this advice with\nthe reality that the package manifest could have been altered by an attacker.) Checking for the presence of the\nshared memory is the recommended way to make sure you are not infected. We would be interested in receiving\nany memory dumps for further analysis.\n\nAt the time of writing, the ESET Livegrid monitoring system is showing hundreds of webservers that seem to be\naffected by this backdoor with thousands of visitors being redirected to malicious content. We will publish more\ninformation on the scale and complexity of this operation in the days to come.\n\n**The following researchers contributed to this report: Olivier Bilodeau, François Chagnon, Alexis Dorais-**\n**Joncas, Sebastien Duquette and Marc-Étienne Léveillé.**\n\n## Resources:\n\n1 SHA1 of the analyzed binary: 24e3ebc0c5a28ba433dfa69c169a8dd90e05c429\n\n[Code for the shared memory dump tool: dump_cdorked_config.c](https://www.welivesecurity.com/wp-content/uploads/2013/04/dump_cdorked_config.c)\n\n\n1\n\n2\n\n3\n\n4\n\n5\n\n6\n\n7\n\n8\n\n\n<span style=\"color: #3366ff;\">// This program dumps the content of a shared memory block</span>\n\n<span style=\"color: #3366ff;\">// used by Linux/Cdorked.A into a file named\nhttpd_cdorked_config.bin</span>\n\n<span style=\"color: #3366ff;\">// when the machine is infected.</span>\n\n<span style=\"color: #3366ff;\">//</span>\n\n<span style=\"color: #3366ff;\">// Some of the data is encrypted. If your server is infected and you</span>\n\n<span style=\"color: #3366ff;\">// would like to help, please send the httpd_cdorked_config.bin</span>\n\n<span style=\"color: #3366ff;\">// and your httpd executable to our lab for analysis. Thanks!</span>\n\n<span style=\"color: #3366ff;\">//</span>\n\n\n-----\n\n9\n\n10\n\n11\n\n12\n\n13\n\n14\n\n15\n\n16\n\n17\n\n18\n\n19\n\n20\n\n21\n\n22\n\n23\n\n24\n\n25\n\n26\n\n27\n\n28\n\n29\n\n30\n\n31\n\n32\n\n33\n\n34\n\n35\n\n36\n\n37\n\n38\n\n39\n\n40\n\n41\n\n42\n\n\nspan style color: #3366ff; // Build with gcc o dump_cdorked_config dump_cdorked_config.c /span\n\n<span style=\"color: #3366ff;\">//</span>\n\n<span style=\"color: #3366ff;\">// Marc-Etienne M.Léveillé &lt;leveille@eset.com&gt;</span>\n\n<span style=\"color: #3366ff;\">//</span>\n\n#include &lt;stdio.h&gt;\n\n#include &lt;sys/shm.h&gt;\n\n#define CDORKED_SHM_SIZE (6118512)\n\n#define CDORKED_OUTFILE \"httpd_cdorked_config.bin\"\n\nint main (int argc, char *argv[]) {\n\nint maxkey, id, shmid, infected = 0;\n\nstruct shm_info shm_info;\n\nstruct shmid_ds shmds;\n\nvoid * cdorked_data;\n\nFILE * outfile;\n\nmaxkey = shmctl(0, SHM_INFO, (void *) &amp;shm_info);\n\nfor(id = 0; id &lt;= maxkey; id++) {\n\nshmid = shmctl(id, SHM_STAT, &amp;shmds);\n\nif (shmid &lt; 0)\n\ncontinue;\n\nif(shmds.shm_segsz == CDORKED_SHM_SIZE) {\n\n// We have a matching Cdorked memory segment\n\ninfected++;\n\nprintf(\"A shared memory matching Cdorked signature was found.\\n\");\n\nprintf(\"You should check your HTTP server's executable file integrity.\\n\");\n\ncdorked_data = shmat(shmid, NULL, 0666);\n\nif(cdorked_data != NULL) {\n\noutfile = fopen(CDORKED_OUTFILE, \"wb\");\n\nif(outfile == NULL) {\n\n\n-----\n\n43\n\n44\n\n45\n\n46\n\n47\n\n48\n\n49\n\n50\n\n51\n\n52\n\n53\n\n54\n\n55\n\n56\n\n57\n\n58\n\n59\n\n60\n\n61\n\n62\n\n63\n\n64\n\n65\n\n\nprintf( Could not open file %s for writing., CDORKED_OUTFILE);\n\n}\n\nelse {\n\nfwrite(cdorked_data, CDORKED_SHM_SIZE, 1, outfile);\n\nfclose(outfile);\n\nprintf(\"The Cdorked configuration was dumped in the %s file.\\n\\n\", CDORKED_OUTFILE);\n\n}\n\n}\n\n}\n\n}\n\nif(infected == 0) {\n\nprintf(\"No shared memory matching Cdorked signature was found.\\n\");\n\nprintf(\"To further verify your server, run \\\"ipcs -m -p\\\" and look\");\n\nprintf(\" for a memory segments created by your http server.\\n\");\n\n}\n\nelse {\n\nprintf(\"If you would like to help us in our research on Cdorked, \");\n\nprintf(\"please send the httpd_cdorked_config.bin and your httpd executable file \");\n\nprintf(\"to our lab for analysis at leveille@eset.com. Thanks!\\n\");\n\n}\n\nreturn infected;\n\n}\n\n\n26 Apr 2013 - 11:28AM\n\n## Sign up to receive an email update whenever a new article is published in our Ukraine Crisis – Digital Security Resource Center\n\n Newsletter\n\n Discussion\n\n\n-----\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2013/2013-04-26 - Linux-Cdorked.A- New Apache backdoor being used in the wild to serve Blackhole.pdf"
+    ],
+    "report_names": [
+        "2013-04-26 - Linux-Cdorked.A- New Apache backdoor being used in the wild to serve Blackhole.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "1f6ae238-765f-4495-9d54-6a7883d7a319",
+            "created_at": "2022-10-25T16:07:24.573456Z",
+            "updated_at": "2025-03-27T02:02:10.284644Z",
+            "deleted_at": null,
+            "main_name": "TA511",
+            "aliases": [
+                "MAN1",
+                "Moskalvzapoe"
+            ],
+            "source_name": "ETDA:TA511",
+            "tools": [
+                "Agentemis",
+                "Chanitor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Ficker Stealer",
+                "Hancitor",
+                "NetSupport",
+                "NetSupport Manager",
+                "NetSupport Manager RAT",
+                "NetSupport RAT",
+                "NetSupportManager RAT",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "542cf9d0-9c68-428c-aff8-81b6f59dc985",
+            "created_at": "2023-02-15T02:01:49.554105Z",
+            "updated_at": "2025-03-27T02:00:03.110991Z",
+            "deleted_at": null,
+            "main_name": "Moskalvzapoe",
+            "aliases": [
+                "MAN1",
+                "TA511"
+            ],
+            "source_name": "MISPGALAXY:Moskalvzapoe",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535593,
+    "ts_updated_at": 1743041592,
+    "ts_creation_date": 1653689094,
+    "ts_modification_date": 1653689094,
+    "files": {
+        "pdf": "https://archive.orkl.eu/c43998a4f6187533d1094d5d1da2835b97945666.pdf",
+        "text": "https://archive.orkl.eu/c43998a4f6187533d1094d5d1da2835b97945666.txt",
+        "img": "https://archive.orkl.eu/c43998a4f6187533d1094d5d1da2835b97945666.jpg"
+    }
+}

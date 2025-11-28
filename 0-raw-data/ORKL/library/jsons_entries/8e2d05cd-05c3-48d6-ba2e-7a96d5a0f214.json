@@ -1,0 +1,110 @@
+{
+    "id": "8e2d05cd-05c3-48d6-ba2e-7a96d5a0f214",
+    "created_at": "2023-01-12T15:06:48.803196Z",
+    "updated_at": "2025-03-27T02:13:50.334078Z",
+    "deleted_at": null,
+    "sha1_hash": "4da1acf23e710c9275069409ac1c8491dd16837e",
+    "title": "2022-02-02 - CoinStomp Malware Family Targets Asian Cloud Service Providers",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:20:01Z",
+    "file_modification_date": "2022-05-28T19:20:01Z",
+    "file_size": 2301278,
+    "plain_text": "# CoinStomp Malware Family Targets Asian Cloud Service Providers\n\n**[cadosecurity.com/coinstomp-malware-family-targets-asian-cloud-service-providers/](https://www.cadosecurity.com/coinstomp-malware-family-targets-asian-cloud-service-providers/)**\n\nFebruary 2, 2022\n\nBlog\n\nFebruary 2, 2022\n\nNewly Discovered Malware Employs Anti-forensics & Anti-hardening Techniques\n\n**Introduction**\n\nResearchers at Cado Security recently discovered a new malware campaign targeting Asian\nCloud Service Providers (CSPs). This malware, which we’ve since named CoinStomp, is\ncomprised of a family of shell scripts that attempt to exploit cloud compute instances hosted\nby these CSPs for the purpose of mining cryptocurrency. While this form of crpytojacking\nattack is commonplace these days, CoinStomp makes use of some interesting techniques\nand even references a prior campaign.\n\nThe following summarises our findings and noteworthy capabilities:\n\nTimestomping (manipulation of timestamps) employed as an anti-forensics measure\nRemoval of system cryptographic policies\nCommand and Control communication initiated via a /dev/tcp reverse shell\nReference to a prior cryptojacking campaign named Xanthe\n\n**Timestamp Manipulation (Timestomping)**\n\nTimestomping is the process of manipulating timestamps for files dropped or utilised during a\nmalware attack. Generally, this technique is employed as an anti-forensics measure to\nconfuse investigators and foil remediation efforts. Timestomping has been used by the Rocke\ngroup in prior cryptojacking attacks. However, it’s not a technique commonly seen in the wild.\n\nOn Linux systems, timestomping is easily achieved via the touch command’s -t flag. Running\ntouch -t and passing in a timestamp updates the specified file’s modified and access times\nwith that timestamp.\n\n\n-----\n\n_Example of timestomping on lines 16 and 21_\n\n[As can be seen from line 16 in the above screenshot, this sample searches for the string](https://www.virustotal.com/gui/file/2a6f6324d026baeec3894877c44d4c74a231d9104c908e4162ff1cc3cf6fe14e)\n“Change the mode of each FILE to MODE”, copies the file containing that string to\n/usr/bin/modusr and updates the modified and access timestamps for the modusr file to 22:23\n20/05/2019. The grep search matches on the binary for the chmod utility, installed at\n/usr/bin/chmod. Line 21 demonstrates the same technique used for the chattr (change\nattributes) utility.\n\nChmod is responsible for changing permissions of files and is typically used by malware to\nensure dropped files are executable. In subsequent lines of this script, we observed the\nmodusr binary being used in place of chmod.\n\n_Examples of modusr being used in place of chmod_\n\nIt seems likely that timestomping was employed to obfuscate usage of the chmod and chattr\nutilities, as forensic tools would display the copied versions of these binaries as being last\naccessed (executed) at the timestamp used in the touch command.\n\nTo determine how Cado handles this, we ran the timestomping commands in a test machine\nand acquired an image of it from within the Cado Response platform. The image below shows\nthe modusr and chusr files within Cado and highlights the disparity between the timestamps:\n\nCado’s timeline view also displays the files with the correct created and modified timestamps:\n\n\n-----\n\n**Removal of System Cryptographic Policies**\n\nLinux distributions (such as RHEL) allow system-wide configuration of cryptographic policies\nvia the use of configuration files. On an instance of RHEL, these configuration files are stored\nin /usr/share/crypto-policies/ and are enforced by the crypto process which interfaces with the\n[Linux Kernel Crypto API.](https://www.kernel.org/doc/html/v4.13/crypto/index.html)\n\nThe policies themselves allow or deny usage of certain versions of cryptographic protocols\ndepending on the user’s risk posture. For example, American Federal institutions are required\n[to deploy computing systems that conform to FIPS 140-2. There is a FIPS-specific policy](https://en.wikipedia.org/wiki/FIPS_140-2)\n[bundled with RHEL that pins versions of common cryptographic protocols (such as TLS, DH,](https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/security_hardening/using-the-system-wide-cryptographic-policies_security-hardening)\nRSA etc) and prohibits application usage of deprecated and insecure protocols.\n\nClearly, enforcement of cryptographic policies has a tangible effect on the deployment of\nmalware. Additional payloads may be prevented from being downloaded and malicious\napplications could be prevented from running if they make use of insecure protocols – as, in\nthe case of malware, they often do.\n\nFor the sample in question, the developer is obviously aware of this and attempts to remove\nthe configuration files that define system-wide cryptographic policies and even kill the crypto\nprocess itself.\n\n_Command_\n_to remove cryptographic policy files and kill the crypto process_\n\nThis could undo attempts to harden the target machine by administrators, ensuring that the\nmalware achieves its objectives.\n\n**Command and Control (C2) Communication via /dev/tcp Reverse Shell**\n\nMost Linux distributions support read/write operations to a remote host via the /dev/tcp device\nfile. Naturally, this is perfect for malware developers as it’s an easy and natively-supported\nmethod of creating a reverse shell or C2 communication channel.\n\n\n-----\n\n___curl() function which facilitates C2 communication via /dev/tcp_\n\nAs can be seen from the above, the sample in question makes use of a function named\n__curl() which is used to retrieve additional payloads and communicate information about the\nstate of the target system back to the C2 server.\n\nLine 4 establishes a reverse shell connection via the /dev/tcp device file to a remote server at\n106[.]53.115.114 over port 443 – the port number typically associated with HTTPS traffic.\nSearching for this IP in [Shodan shows that the server is running the Python-based](https://www.shodan.io/host/106.53.115.114)\nSimpleHTTPServer. This means that despite the use of port 443, the traffic itself is\nunencrypted – as it’s being transferred using HTTP.\n\n_Shodan results page for the 106[.]53.115.114 IP address_\n\nRegardless, the traffic is likely to pass unimpeded by firewall restrictions as outbound traffic\n(especially to a common port, such as 443) is generally unrestricted and considered normal.\n\nThroughout the script, we observed examples of this function being invoked after file\nexistence and username checks to determine whether it was necessary to retrieve additional\npayloads.\n\n_If stater file exists, notify C2 server. Otherwise, retrieve stater payload_\n\n\n-----\n\n_If username is “tech”, notify C2 server. Otherwise, notify server and retrieve sshno payload_\n\n**Reference to Xanthe Cryptojacking Campaign**\n\nCreation of scheduled tasks via the Cron scheduler is a common malware persistence\ntechnique on Linux systems. However, rather than using Cron for persistence in this sample,\ntwo lines are added to kill the tail and masscan utilities – the former of which is used to view a\nlive buffer of the end of a file (usually a log file) and the latter, a tool for scanning large\nportions of the internet.\n\nWhat’s more interesting is the inclusion of an additional line consisting of a URL pointing at an\nanonymous DNS provider. As can be seen below, inclusion of the hash character indicates\nthis line is commented and no command precedes the URL – meaning that the line alone\nwouldn’t do anything when executed by Cron.\n\n_Cron entry created by the analysed sample_\n\nWhen visiting this URL, the following is displayed:\n\n[The name Xanthe was attributed to a previous cryptojacking campaign that we analysed and](https://www.cadosecurity.com/abcbot-an-evolution-of-xanthe/)\none of the installation scripts used in that campaign was named fczyo.\n\nUnfortunately, the payload hosted at this URL wasn’t available at the time of analysis so we\ncan’t determine whether it actually was a component of the Xanthe campaign. Given a lack of\noverlap in capabilities and infrastructure, along with the commenting of this line in the crontab,\nit seems that this campaign is distinct from Xanthe. Inclusion of this URL may well have been\nan attempt to foil attribution.\n\n**Analysis of Additional Payloads**\n\nA number of additional binary payloads were retrieved based on logic within the analysed\nscript. Analysis of the most noteworthy is included in this section. Each of these payloads\nwere persisted as system-wide systemd services, resulting in them being executed with root\nprivileges and kept alive.\n\n## Sshno, stater and adupd\n\n\n-----\n\nSshno is a heavily-obfuscated 32 bit ELF binary which was retrieved from the C2 server if the\nlogged-in username differed from “tech”. This binary was installed in /usr/bin/sshno and\nrepeatedly attempted to create a socket connection to 195.2.93[.]34 upon execution. At the\ntime of analysis, this connection was refused.\n\n_Strace of sshno payload_\n\nStater and adupd were two additional payloads with similar functionality to sshno. The only\ndifference being that adupd attempted to create a socket connection to a different IP address:\n109.234.36[.]173.\n\nThis looks like an attempt to establish additional backdoor or C2 communication channels in\nthe event that the machine was not yet fully compromised.\n\n## Dhcpclient and .Jason Statham\n\nThe dhcpclient binary is a customised version of the XMRig Monero mining software, and is\nresponsible for carrying out the mining capabilities of this malware. Rather amusingly, this\nbinary attempts to open a file named “config.jason” in the working directory and another file\nnamed “xmrig.jason” in root’s home directory.\n\nIt’s assumed that these are XMRig configuration files but it’s not clear whether the spelling\nmistakes are intentional.\n\n\n-----\n\n_References to config.jason and xmrig.jason in decompiled dhcpclient binary_\n\n**Conclusion**\n\nCoinStomp demonstrates the sophistication and knowledge of attackers in the cloud security\nspace. Employing anti-forensics techniques and weakening the target machine by removing\ncryptographic policies demonstrates not only a knowledge of Linux security measures, but\nalso an understanding of the incident response process.\n\nAlthough it’s a well-documented technique, the use of the /dev/tcp device file to create a\nreverse shell session is also fairly advanced. C2 communication can often be noisy and easy\nto spot for monitoring tools but the use of port 443 helps make this traffic appear legitimate.\nMany cloud computing instances will be vulnerable to this type of C2 communication.\n\n\n-----\n\nFinally, since attribution is often a key goal of malware analysts and threat intelligence\npersonnel, the presence of strings associated with another campaign is a sophisticated way\nto foil such attempts.\n\n**Indicators of Compromise (IoCs)**\n\n**Filename** **SHA256**\n\n2a6f6324d026baeec3894877c44d4c74a231d9104c908e4162ff1cc3cf6fe14e\n\n5f487ff8f9137ca4020610353089dfa1834082d6efeb0a53942b438f90fb044d\n\n6e3e6d2c36d3110fe41f2204d19b28edbc135528469f184ac40b34b1dd060a24\n\n533dfd3f30ae55284ab1c3a43143665701e6b12cf1e84e7fbb0015288d1ae245\n\neb1932fbad01525f47617913f7624d61fcdb5a6fed700d64f888f67bd740636f\n\nd.py cb9f0dca725fa0eae8a39c7d07e62441d6ae50b776df8a9ab1cb7f86a22c75ca\n\nzz.sh 17dd410fd7d42d34bd01b96c135f7890f1b3b15354a5d67f63acb70044752397\n\nadupd 7a065c7f0d17436809ce3a9bb6bebb74d4207f8555b8291c7ee3e3deac492a2b\n\ndhcpclient c1a3f32689461fb9570d4e212bba18391f6bb413bc77cb16def92d0226320e7d\n\nlibprocess.so dbe44ec7e9d6600cc0daf4e8aac1835348d6d4929c732bb7e30c32b3563362e6\n\nsshno 57c2fef3dd66a3756e85df53ad825d7bf6ff1ee38504323b756b4fc5d47023c3\n\nstater 3420588e7231167052775e68bab84384f449e08f1dd9ec9ba29f8437b5f86334\n\n**IP Addresses**\n\n205[.]185.113.151\n\n106[.]53.115.114\n\nFor tips and best practices for performing investigations of mining malware attacks, check out\nThe Ultimate Guide to Forensics of Mining Malware in Linux Container and Cloud\nEnvironments.\n\nAbout The Author\n\n\n-----\n\nMatt Muir\n\nMatt is a security researcher with a passion for UNIX and UNIX-like operating systems. He\npreviously worked as a macOS malware analyst and his background includes experience in\nthe areas of digital forensics, DevOps, and operational cyber security. Matt enjoys technical\nwriting and has published research including pieces on TOR browser forensics, an emerging\ncloud-focused botnet, and the exploitation of the Log4Shell vulnerability.\n\n**About Cado Security**\n\nCado Security provides the cloud investigation platform that empowers security teams to\nrespond to threats at cloud speed. By automating data capture and processing across cloud\nand container environments, Cado Response effortlessly delivers forensic-level detail and\nunprecedented context to simplify cloud investigation and response. Backed by Blossom\nCapital and Ten Eleven Ventures, Cado Security has offices in the United States and United\n[Kingdom. For more information, please visit https://www.cadosecurity.com/ or follow us on](https://www.cadosecurity.com/)\nTwitter [@cadosecurity.](https://twitter.com/CadoSecurity)\n\n[Prev Post](https://www.cadosecurity.com/grace-cassy-joins-the-cado-security-board-of-advisors/) [Next Post](https://www.cadosecurity.com/cado-response-now-integrates-with-splunk-soar-to-automate-your-cloud-incident-response-workflow/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-02-02 - CoinStomp Malware Family Targets Asian Cloud Service Providers.pdf"
+    ],
+    "report_names": [
+        "2022-02-02 - CoinStomp Malware Family Targets Asian Cloud Service Providers.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "7c053836-8f50-4d40-bc5c-7088967e1b57",
+            "created_at": "2022-10-25T16:07:24.549525Z",
+            "updated_at": "2025-03-27T02:02:10.278474Z",
+            "deleted_at": null,
+            "main_name": "Rocke",
+            "aliases": [
+                "Aged Libra",
+                "Iron Group",
+                "Rocke"
+            ],
+            "source_name": "ETDA:Rocke",
+            "tools": [
+                "Godlua",
+                "Kerberods",
+                "LSD",
+                "Pro-Ocean",
+                "Xbash"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "eb3f4e4d-2573-494d-9739-1be5141cf7b2",
+            "created_at": "2022-10-25T16:07:24.471018Z",
+            "updated_at": "2025-03-27T02:02:10.24394Z",
+            "deleted_at": null,
+            "main_name": "Cron",
+            "aliases": [],
+            "source_name": "ETDA:Cron",
+            "tools": [
+                "Catelites",
+                "Catelites Bot",
+                "CronBot",
+                "TinyZBot"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "905eabd9-2b7f-483d-86bd-0c72f96b4162",
+            "created_at": "2023-01-06T13:46:39.02749Z",
+            "updated_at": "2025-03-27T02:00:02.980813Z",
+            "deleted_at": null,
+            "main_name": "Rocke",
+            "aliases": [
+                "Aged Libra"
+            ],
+            "source_name": "MISPGALAXY:Rocke",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "0b02af5f-2027-42b7-a6f2-51e2fd49ba7f",
+            "created_at": "2022-10-25T15:50:23.360509Z",
+            "updated_at": "2025-03-27T02:00:55.45329Z",
+            "deleted_at": null,
+            "main_name": "Rocke",
+            "aliases": [
+                "Rocke"
+            ],
+            "source_name": "MITRE:Rocke",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536008,
+    "ts_updated_at": 1743041630,
+    "ts_creation_date": 1653765601,
+    "ts_modification_date": 1653765601,
+    "files": {
+        "pdf": "https://archive.orkl.eu/4da1acf23e710c9275069409ac1c8491dd16837e.pdf",
+        "text": "https://archive.orkl.eu/4da1acf23e710c9275069409ac1c8491dd16837e.txt",
+        "img": "https://archive.orkl.eu/4da1acf23e710c9275069409ac1c8491dd16837e.jpg"
+    }
+}

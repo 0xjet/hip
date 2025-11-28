@@ -1,0 +1,62 @@
+{
+    "id": "92b0a0e2-270e-4ad0-bf8d-aeea9a41fe78",
+    "created_at": "2023-01-12T15:04:21.076153Z",
+    "updated_at": "2025-03-27T02:09:17.855023Z",
+    "deleted_at": null,
+    "sha1_hash": "9247d708c8f4b23e4382c21e277691b58de33974",
+    "title": "2021 - Breaking the Ice- Detecting IcedID and Cobalt Strike Beacon with Network Detection and Response (NDR)",
+    "authors": "",
+    "file_creation_date": "2022-06-13T04:02:14Z",
+    "file_modification_date": "2022-06-13T04:02:14Z",
+    "file_size": 662723,
+    "plain_text": "# Breaking the Ice: Detecting IcedID and Cobalt Strike Beacon with Network Detection and Response (NDR)\n\n**[awakesecurity.com/blog/detecting-icedid-and-cobalt-strike-beacon-with-network-detection-and-response/](https://awakesecurity.com/blog/detecting-icedid-and-cobalt-strike-beacon-with-network-detection-and-response/)**\n\nApril 8, 2021\n\n\n-----\n\nBlog Post\n\nIt has become something of an Internet meme that Cobalt Strike is everywhere. Cobalt Strike\nBeacon is seen in a myriad of investigations, so security operations as well as incident\nresponse teams must be able to detect and effectively remediate this heavily utilized post\nexploitation tool. Arista’s Awake Labs team encounters IcedID and Cobalt Strike Beacon\n[both in our incident response and managed network detection and response (MNDR)](https://awakesecurity.com/glossary/incident-response/)\nengagements. In this blog, we provide details of a detection and investigation of Cobalt\nStrike Beacon using the Awake [network detection and response platform, which ultimately](https://awakesecurity.com/white-papers/wp-the-advent-of-advanced-network-traffic-analysis-why-it-matters-white-paper/)\nuncovered an IcedID infection.\n\n## Initial Alert\n\n\n-----\n\nAn adversarial model in the Awake Security Platform alerted the Managed Network Detection\nand Response (MNDR) team to C2: TLS Characteristic of Cobalt Strike to Domain. The\nsame activity also triggered a model that the MNDR team uses to trigger threat hunts – C2:\n**_Multiple Activities to Newly Seen Domain Created Within Last Year._**\n\n### Connection Analysis\n\nThe offending TLS connection was to the domain: mazaksaedr23[.]space. Looking at the\nconnection details, we identified that the self-signed certificate being used by the server had\ndefault values for the certificate attributes (Figure 1). This, along with the recency of the\ncertificate validation date raised our suspicions. Looking up the client JA3 hash indicated the\nconnection may have been initiated from Microsoft Excel.\n\nFigure 1: TLS Characteristics of Initial Connection\n\nWhen analyzing the domain within the Awake platform, we saw that it was first observed\nwithin this customer environment very recently, registered recently, and registered with\n\nPorkbun using Private by Design, LLC (Figure 2).\n\nFigure 2: Domain Registration Details for C2 domain\n\n\n-----\n\nWe also identified ongoing connections to this domain every 5 minutes, a steady and clear\nbeaconing pattern from the source device.\n\n### Timeline Analysis\n\nThe next step was to perform timeline analysis and investigate what caused the initial\nconnection. From the initial connection, we were able to quickly pivot by leveraging the prebuilt +/- 1-minute search window within the Awake platform (Figure 3).\n\nFigure 3: Pivoting to Construct the Attack Timeline\n\nWe identified a prior connection towards lapoedjkeo[.]top – which had the same certificate\ninformation and IP address. We did not see beaconing to this domain during our\ninvestigation. However, a connection to 217roteben[.]online, another highly suspicious\ndomain, closely preceded the connection to the “.top” domain. Figure 4 is a screenshot of the\nPCAP data for that connection, as shown in the Awake platform. The PCAP was also\nexported from the platform for evidence preservation.\n\nFigure 4: PCAP of Traffic to Suspect Domain\n\nThe key pieces of information that raised our suspicions of IcedID are highlighted in Figure 4.\nFirstly, based on threat intelligence we recognized the cookie names and order: __gads,\n**_gat, _ga, _u, __io and _gid to be reminiscent of IcedID. In addition, it was notable that the**\ncontent type shown was ‘application/gzip’. While looking at the PCAP data in hex within the\nAwake platform shows the expected GZIP file header of 0x1f 0x8b (Figure 5), extracting and\nexpanding the contents through normal means failed.\n\n\n-----\n\nFigure 5: PCAP Analysis shows GZIP File Header\n\nWe recognized this activity to be like that documented in the excellent write up from\n[BinaryDefense, also linking IcedID and Cobalt Strike. Using the tool ‘IcedDecrypt’ we were](https://www.binarydefense.com/icedid-gziploader-analysis/)\nable to pull out the IcedID configuration information (Figure 6); useful for investigation and\nhunting on the endpoint side.\n\nFigure 6: IcedID Configuration Information\n\n### Expanding the Scope\n\nNext, we looked at when the first connection to 217roteben[.]online was made and pivoted\naround this connection to identify the cause. We saw HTTP GET requests to three different\nIP addresses that downloaded interestingly named DAT files (Figure 7).\n\nFigure 7: Downloads of IcedID Masquerading as DAT Files\n\nAgain, by looking at the PCAP data, we can see these files were executables. We exported\nthe PCAP and determined this file was IcedID (Figure 8).\n\n\n-----\n\nFigure 8: PCAP Showing the IcedID Executable\n\nWe were able to identify one other device that was compromised later that same day, by\nidentifying the same traffic patterns.\n\nAfter just under 24 hours, the beaconing to mazaksaedr23[.]space stopped. Shortly after this,\nthere was another alert for C2: TLS Characteristic of Cobalt Strike to Domain, this time\nfor a different domain: agitopinaholop[.]uno, which immediately continued the C2 beaconing\npattern. This domain had the same TLS certificate information as mazaksaedr23[.]space,\nwith slightly earlier validity dates.\n\n### Summary and Conclusion\n\nEven without decryption, Cobalt Strike Beacon can be detected on the network side,\nprecisely because TLS was used. Within a very short amount of time, we were able to map\nout the attack from the network side and provide the customer with network and endpoint\nIOCs to aid their investigation and remediation efforts.\n\n### Threat Hunting for IcedID and Cobalt Strike\n\n[Based on this activity, the MNDR team used additional threat hunting models to search](https://awakesecurity.com/glossary/threat-hunting/)\nacross our other customers. Here is what we based these models on:\n\n**Detecting** **Threat hunting triggers**\n\nIcedID HTTP requests with the cookie names: __gads, _gat, _ga, _u, __io,\n_gidin that exact order.\n\nIcedID The .DAT file in the request URI. Here, we can use a regular\nexpression, such as: /^\\/[0-9]{5}\\.[0-9]{10}\\.dat$/This will identify a\nrequest URI with 5 digits, followed by a ‘.’, followed by 10 digits, with a\n‘.dat’ extension\n\n\nCobalt Strike\nBeacon in this\ninstance; could\nbe used by other\nmalware\n\nThe connection\norder seen in\nthis infection\nchain\n\n### Network IOCs\n\n\nTLS connections with anomalies in the server certificate e.g. TLS\nconnections to servers with default certificate information being used\n\nActivity towards domains with uncommon TLDs within a short period of\ntime. In this instance: a domain ending in “.online”, a domain ending in\n“.space”, a domain ending in “.top”.All from the same source device,\nwhere the connections occurred within a 2-minute window.\n\n\nThe following can be used as network IOCs for the described activity:\n\n\n-----\n\n**IOC** **Type** **Detecting**\n\nmazaksaedr23[.]space Domain Cobalt Strike Beacon\n\nagitopinaholop[.]uno Domain Cobalt Strike Beacon\n\nlapoedjkeo[.]top Domain Cobalt Strike Beacon\n\n\n178.128.156[.]142 IPv4\naddress\n\n165.227.28[.]47 IPv4\naddress\n\n\nIPv4 address associated with\nmazaksaedr23[.]space and lapoedjkeo[.]top\n\nIPv4 address associated with\nagitopinaholop[.]uno\n\n\n217roteben[.]online Domain IcedID\n\n\n178.128.243[.]14 IPv4\naddress\n\n188.127.230[.]104 IPv4\naddress\n\n188.119.112[.]114 IPv4\naddress\n\n185.82.219[.]75 IPv4\naddress\n\n188.119.112[.]125 IPv4\naddress\n\n185.82.219[.]80 IPv4\naddress\n\n188.127.230[.]133 IPv4\naddress\n\n[[email protected][.]savps[.]ru](https://awakesecurity.com/cdn-cgi/l/email-protection) Email\naddress\n\n### Host based IOCs\n\n\nIPv4 address associated with 217roteben[.]online\n\nIcedID\n\nIcedID\n\nIcedID\n\nIcedID\n\nIcedID\n\nIcedID\n\nIcedID – Email address from SSL Certificate\nattached to the POP3/110 and IMAP/993 services\non 188.127.230.133\n\n\nThe following can be used as IOCs to hunt for this specific activity on the host, although the\nconfiguration is likely changeable.\n\n**IOC** **Type** **Detecting**\n\nQuarterArctic Directory IcedID\n\nblast_x32.dat DLL file IcedID\n\n\n-----\n\nlicense.dat Associated\nfile\n\n\nIcedID\n\nIcedID\n\nIcedID\n\n\nrundll32.exe “%localappdata%/blast_x32.dat”,update /i\n“QuarterArctic/license.dat”\n\n\nCommand\nline\n\n\nRundll32Execution.txt Associated\nfile\n\n### Subscribe!\n\n\nIf you liked what you just read, subscribe to hear about our threat research and security\nanalysis.\n\nKieran Evans\n\nThreat Hunting and Incident Response Specialist\n\n[LinkedIn](https://www.linkedin.com/in/kieran-evans-77632427/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2021 - Breaking the Ice- Detecting IcedID and Cobalt Strike Beacon with Network Detection and Response (NDR).pdf"
+    ],
+    "report_names": [
+        "2021 - Breaking the Ice- Detecting IcedID and Cobalt Strike Beacon with Network Detection and Response (NDR).pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535861,
+    "ts_updated_at": 1743041357,
+    "ts_creation_date": 1655092934,
+    "ts_modification_date": 1655092934,
+    "files": {
+        "pdf": "https://archive.orkl.eu/9247d708c8f4b23e4382c21e277691b58de33974.pdf",
+        "text": "https://archive.orkl.eu/9247d708c8f4b23e4382c21e277691b58de33974.txt",
+        "img": "https://archive.orkl.eu/9247d708c8f4b23e4382c21e277691b58de33974.jpg"
+    }
+}

@@ -1,0 +1,42 @@
+{
+    "id": "834d7c0e-8e28-46bf-9e49-422af60eb1e3",
+    "created_at": "2023-01-12T15:09:12.691845Z",
+    "updated_at": "2025-03-27T02:06:02.398965Z",
+    "deleted_at": null,
+    "sha1_hash": "f8b3573d5b34d461c2b871e3acd7ba42ebe08819",
+    "title": "2021-09-23 - Detecting and Hunting for the PetitPotam NTLM Relay Attack",
+    "authors": "",
+    "file_creation_date": "2022-05-28T01:58:29Z",
+    "file_modification_date": "2022-05-28T01:58:29Z",
+    "file_size": 148077,
+    "plain_text": "# Detecting and Hunting for the PetitPotam NTLM Relay Attack\n\n**[research.nccgroup.com/2021/09/23/detecting-and-hunting-for-the-petitpotam-ntlm-relay-attack/](https://research.nccgroup.com/2021/09/23/detecting-and-hunting-for-the-petitpotam-ntlm-relay-attack/)**\n\nSeptember 23, 2021\n\n## Overview\n\nDuring the week of July 19th, 2021, information security researchers published a proof of\nconcept tool named “PetitPotam” that exploits a flaw in Microsoft Windows Active Directory\nCertificate Servers with an NTLM relay attack. The flaw allows an attacker to gain\nadministrative privileges of an Active Directory Certificate Server once on the network with\nanother exploit or malware infecting a system.\n\nThe following details are provided to assist organizations in detecting and threat hunting for\nthis and other similar types of threats.\n\n## Preparation\n\n\n-----\n\nThe default settings of Windows logging do not often catch advanced threats. Therefore,\nWindows Advanced Audit Logging must be optimally configured to detect and to be able to\nthreat hunt PetitPotam and similar attacks.\n\nOrganizations should have a standard procedure to configure the Windows Advanced Audit\nPolicies as a part of a complete security program and have each Windows system collect\nlocally significant events. NCC Group recommends using the following resource to configure\nWindows Advanced Audit Policies:\n\n[Malware Archaeology – Windows Logging Cheat Sheets](https://www.malwarearchaeology.com/cheat-sheets)\n\nLog rotation can be another major issue with Windows default log settings. Both the default\nlog size should be increased to support detection engineering and threat hunting.\n\nIdeally, organizations should forward event logs to a log management or SIEM solution to\noperationalize detection alerts and provide a central console where threat hunting can be\nperformed. Alternatively, with optimally configured log sizes, teams can run tools such as\nPowerShell or LOG-MD to hunt for malicious activity against the local log data.\n\n## Detecting and Threat Hunting NTLM Relay Attacks\n\nThe PetitPotam attack targets Active Directory servers running certificate services, so this\nwill be the focus of the detection and hunting. Event log data is needed to detect or hunt for\nPetitPotam. The following settings and events can be used to detect this malicious activity:\n\n## Malicious Logins\n\nPetitPotam will generate an odd login that can be used to detect and hunt for indications of\nexecution. To collect Event ID 4624, the Windows Advanced Audit Policy will need to have\nthe following policy enabled:\n\nLogon/Logoff – Audit Logon = Success and Failure\n\nThe following query logic can be used:\n\nEvent Log = Security\nEvent ID = 4624\nUser = ANONYMOUS LOGON\nAuthentication Package Name = NTLM*\nElevated Token – *1842\n\n### Sample Query\n\nThe following query is based on Elastic’s WinLogBeat version 7 agent.\n\n\n-----\n\nevent.code = 4624 and winlog.event_data.AuthenticationPackageName= NTLM\nand winlog.event_data.ElevatedToken=”*1842″ |\nPackageName:=winlog.event_data.AuthenticationPackageName |\nToken:=winlog.event_data.ElevatedToken |\nWS_Name:=winlog.event_data.WorkstationName |\nLogonProcess:=winlog.event_data.LogonProcessName |\nLogonType:=winlog.event_data.LogonType |\nProcessName:=winlog.event_data.ProcessName |\nUserName:=winlog.event_data.SubjectUserName |\nDomain:=winlog.event_data.SubjectDomainName |\nTargetDomain:=winlog.event_data.TargetDomainName |\nTargetUser:=winlog.event_data.TargetUserName |\nTask:=winlog.event_data.TargetUserName| table([event.code, @timestamp,\nhost.name, event.outcome, WS_Name, UserName, Domain, Token, PackageName,\nLogonProcess, LogonType, ProcessName, TargetDomain, TargetUser, Task])\n\n## Malicious Share Access\n\nPetitPotam will generate odd network share connections that can be used to detect and hunt\nfor indications of execution. To collect Event ID 5145, the Windows Advanced Audit Policy\nwill need to have the following policy enabled:\n\nObject Access – Audit Detailed File Share = Success\nObject Access – File Share = Success\n\nThe following query logic can be used:\n\nEvent Log = Security\nEvent ID = 5145\nObject Name = *IPC*\nTarget Name = (“lsarpc” or “efsrpc” or “lsass” or “samr” or “netlogon”\n\n### Sample Query\n\nThe following query is based on Elastic’s WinLogBeat version 7 agent.\n\n\n-----\n\nevent.code = 5145 and winlog.event_data.ShareName= IPC and ( lsarpc or\n“efsrpc” or “lsass” or “samr” or “netlogon” or “srvsvc”)\n| Status:= keywords[0] | Src_IP:= winlog.event_data.IpAddress | PID:=\nwinlog.process.pid | UserName:=winlog.event_data.SubjectUserName | Domain:=\nwinlog.event_data.SubjectDomainName | Target_File:=\nwinlog.event_data.RelativeTargetName | Path:= winlog.event_data.ShareLocalPath |\nShare:= winlog.event_data.ShareName | ObjectType:=winlog.event_data.ObjectType\n| table([event.code, @timestamp, host.name, Status, Src_IP, PID, UserName, Domain,\ntask, Path, Share, Target_File, ObjectType])\n\nIf you find any false positives, validating them and excluding or refining the query may be\nneeded. We hope this information can assist your detection and threat hunting efforts to\ndetect this and similar types of attacks.\n\n## Additional Reading and Resources\n\n[Windows Logging Cheat Sheets – https://www.malwarearchaeology.com/cheat-sheets](https://www.malwarearchaeology.com/cheat-sheets)\n[Blumira Blog on PetitPotam – https://www.blumira.com/ntlm-relay-attack-petitpotam](https://www.blumira.com/ntlm-relay-attack-petitpotam)\n[PetiPotam POC for testing and assessments – https://github.com/topotam/PetitPotam](https://github.com/topotam/PetitPotam)\nMitigating NTLM Relay Attacks on Active Directory Certificate Services –\nhttps://support.microsoft.com/en-us/topic/kb5005413-mitigating-ntlm-relay-attacks-onactive-directory-certificate-services-ad-cs-3612b773-4043-4aa9-b23d-b87910cd3429\nMitigating NTLM Relay Attacks on Active Directory Certificate Services (AD CS) –\n[https://msrc.microsoft.com/update-guide/vulnerability/ADV210003](https://msrc.microsoft.com/update-guide/vulnerability/ADV210003)\nExtended Protection for Authentication – https://msrcblog.microsoft.com/2009/12/08/extended-protection-for-authentication\nAudit Script PSPKIAudit – [https://github.com/GhostPack/PSPKIAudit](https://github.com/GhostPack/PSPKIAudit)\nAbusing Active Directory Certificate Services –\n[https://www.specterops.io/assets/resources/Certified_Pre-Owned.pdf](https://www.specterops.io/assets/resources/Certified_Pre-Owned.pdf)\nAD CS relay attack – practical guide – https://www.exandroid.dev/2021/06/23/ad-csrelay-attack-practical-guide/\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-09-23 - Detecting and Hunting for the PetitPotam NTLM Relay Attack.pdf"
+    ],
+    "report_names": [
+        "2021-09-23 - Detecting and Hunting for the PetitPotam NTLM Relay Attack.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673536152,
+    "ts_updated_at": 1743041162,
+    "ts_creation_date": 1653703109,
+    "ts_modification_date": 1653703109,
+    "files": {
+        "pdf": "https://archive.orkl.eu/f8b3573d5b34d461c2b871e3acd7ba42ebe08819.pdf",
+        "text": "https://archive.orkl.eu/f8b3573d5b34d461c2b871e3acd7ba42ebe08819.txt",
+        "img": "https://archive.orkl.eu/f8b3573d5b34d461c2b871e3acd7ba42ebe08819.jpg"
+    }
+}

@@ -1,0 +1,53 @@
+{
+    "id": "4e2d35cf-48c8-42e7-acaf-0bd0fdf285b7",
+    "created_at": "2022-10-25T16:48:13.554813Z",
+    "updated_at": "2025-03-27T02:05:56.41435Z",
+    "deleted_at": null,
+    "sha1_hash": "4bd6fa0c0a85f9041cecd54d722decdb4e817fe0",
+    "title": "Leouncia And Orcarat",
+    "authors": "Airbus",
+    "file_creation_date": "2014-10-24T13:58:57Z",
+    "file_modification_date": "2014-10-24T13:58:57Z",
+    "file_size": 119517,
+    "plain_text": "[The PWC-named malware OrcaRat is presented as a new piece of malware but looking at the URI used for C&C communication, it could be an updated version of a well-](http://pwc.blogs.com/cyber_security_updates/2014/10/orcarat-a-whale-of-a-tale.html)\n\nknown and kind of old piece of malware: LeoUncia.\n\n**Status**\n\nLet's face it:\n\npx~NFEHrGXF9QA=2/5mGabiSKSCIqbiJwAKjf+Z81pOurL1xeCaw=1/xXiPyUqR/hBL9DW2nbQQEDwNXIYD3l5EkpfyrdVpVC8kp/4WeCaArZAnd+QEYVSY9QMw=2\n\n_URI taken from an OrcaRat sample._\n\nIt looks a lot like:\n\nqFUtb6Sw/TytLfLsy/HnqI8QCX/ZRfFP9KL/_2yA9GIK/iufEXR2r/e6ZFBfoN/fcgL04f7/ZBzUuV5T/Balrp2Wm\n\n_URI taken from a LeoUncia sample._\n\nWhat about it? Could it be the same kind of things, huh? Let's dig a little deeper inside the code to check if it is just some sort of coincidence or if it is indeed the same code\n\nthat is behind these two pieces of malware.\n\nPWC explain it pretty well: the URI is made of some sort of Base64-encoded strings with the middle one being the seed to be associated to the master key to decrypt the\n\nwhole thing. Actually:\n\nURI = E1/E2/E3/E4/E5\n\nand to obtain Di (the original data that gives us Ei once encrypted), we must perform the following operation:\n\nDi = rc4(md5(custom_debase64(E3)+master_key)).decrypt(Ei)\n\nwhere master_key is “OrcaKiller” for the OrcaRat sample.\n\nWhat can we find in LeoUncia that is to be found in OrcaRat too?\n\n**URI decryption**\n\nFirst, let's have a look at the URI decryption routine.\n\nDealing with OrcaRat, we have seen the following algorithm:\n\nDi = rc4(md5(custom_debase64(E3)+master_key)).decrypt(Ei)\n\n[When we talk about LeoUncia, we can have a look at the blog posts made by FireEye back in December 2010, especially the second one, where some assembly code has](http://www.fireeye.com/blog/technical/malware-research/2010/12/leouncia-yet-another-backdoor-part-2.html)\n\nbeen screenshot from IDA without ever giving the name of the underlying algorithm: yes, it is RC4!\n\nOnce decoded from Base64, the binary data we obtain from the URI is comprised of two parts: the first 16 bytes are the decryption key, and the rest of the data is the\n\ninformation to be decrypted. Putting back pieces together, we have the following algorithm for LeoUncia:\n\nD = rc4(custom_debase64(E)[:16]).decrypt(custom_debase64(E)[16:])\n\nThe two samples both share a \"custom\" Base64 encoding with the use of RC4; nothing fabulous, but it is a start.\n\n**Encoding**\n\nWe dig further with the encoding algorithm: the so-called “custom” Base64.\n\nIn both case, the first goal of the customization is to avoid the presence of some “/” in any encoded data, because it would break down the process of cutting the URI along\n\nwith the “/” separator. For LeoUncia, the Base64 being used is the Base64-URI that replaces “+” and “/” by “.” and “_”, while for OrcaRat, “+” are kept and “/” are\n\nreplaced by “~”.\n\nAdditionally, OrcaRat authors thought it would be great if the URI was a little less obviously Base64-related. So, rather than splitting every eight characters to avoid having\n\n**\" \" i** h h d id d h l i h di **\" \" i** **\"** **\"** d \" **\" i** **\"** **\"** ld b i\n\n\n-----\n\nLet's have a look at one of the feature of LeoUncia: the hibernate feature.\n\nThe feature does the same in OrcaRat: check for some date and time written in a file, and sleep for as long as needed before deleting the aforementioned file. (We would\n\nalso notice that an useless call to FileTimeToSystemTime has been removed meanwhile.)\n\nThe real difference lies in the obfuscation of the filename: LeoUncia was using a plain-text filename (“readx”), whereas OrcaRat is obfuscating (just the same way it\n\nobfuscates the Campaign ID) this data: the filename is “wbt.dat” (obfuscated string XORed character-by-character with the XOR key “product”) and it is located in the “App\n\nData” folder of the user OrcaRat is running with.\n\n_Code seen in a very old LeoUncia sample: plain-text hibernation filename._\n\n_Code seen in a more recent LeoUncia sample: XORing with “hxing” the hibernation filename._\n\n_Code seen in an OrcaRat sample: XORing with “product” the hibernation filename._\n\n**D b** **t i**\n\n\n-----\n\nThe LeoUncia sample studied by FireEye includes a perfect English string:\n\n“\\r\\nThe Remote Shell Execute: %s completed!\\r\\n”\n\nUnfortunately, we cannot find this string in the OrcaRat sample. Bad luck...\n\nBut when we look at a more recent sample of LeoUncia, we have one with the above string and two other interesting strings:\n\n“\\r\\nThe Remote Shell Execute: %s completed!\\r\\n”\n\n“\\r\\nReturnTime Set Error!\\r\\n”\n\n“\\r\\nReturnTime set success!\\r\\n”\n\nThese two strings are linked to the writing in the hibernation file, and indicates to the C&C manager that its command either succeeded or failed.\n\nThat is very interesting because the OrcaRat sample is also using some very similar debug strings to notify its C&C about the hibernate command:\n\n“\\r\\nSet return time error = %d!\\r\\n”\n\n“\\r\\nSet return time success!\\r\\n”\n\nAnd yes, it is always easier to debug your code when you know the error code; that's an improvement!\n\n**Conclusion**\n\nThese two families are most likely linked in the sense that OrcaRat is a nicely updated version of LeoUncia.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "d63ae2b7-445f-460d-965d-2676dacdb6de",
+            "created_at": "2022-10-25T15:59:19.552139Z",
+            "updated_at": "2022-10-25T15:59:19.552139Z",
+            "deleted_at": null,
+            "name": "APTnotes",
+            "url": "https://github.com/aptnotes/data",
+            "description": "APTnotes data",
+            "reports": null
+        },
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://app.box.com/s/737gsokqbgsi9d6yenyob3kgafl8mrc4",
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2014/2014.10.24.LeoUncia_and_OrcaRat/LeoUncia_OrcaRat.pdf"
+    ],
+    "report_names": [
+        "LeoUncia_OrcaRat"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1666716493,
+    "ts_updated_at": 1743041156,
+    "ts_creation_date": 1414159137,
+    "ts_modification_date": 1414159137,
+    "files": {
+        "pdf": "https://archive.orkl.eu/4bd6fa0c0a85f9041cecd54d722decdb4e817fe0.pdf",
+        "text": "https://archive.orkl.eu/4bd6fa0c0a85f9041cecd54d722decdb4e817fe0.txt",
+        "img": "https://archive.orkl.eu/4bd6fa0c0a85f9041cecd54d722decdb4e817fe0.jpg"
+    }
+}

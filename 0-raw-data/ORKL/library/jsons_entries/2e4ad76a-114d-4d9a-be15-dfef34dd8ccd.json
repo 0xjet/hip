@@ -1,0 +1,191 @@
+{
+    "id": "2e4ad76a-114d-4d9a-be15-dfef34dd8ccd",
+    "created_at": "2023-01-12T15:05:19.924786Z",
+    "updated_at": "2025-03-27T02:17:00.692509Z",
+    "deleted_at": null,
+    "sha1_hash": "0395795c4c87a2b7447fe595eaf98ab5727094d5",
+    "title": "2012-12-15 - Disclosure of another 0day malware - Analysis of 2nd Dropper and 3rd Dropper (Part 2)",
+    "authors": "",
+    "file_creation_date": "2022-05-28T17:49:44Z",
+    "file_modification_date": "2022-05-28T17:49:44Z",
+    "file_size": 450335,
+    "plain_text": "# Disclosure of another 0day malware - Analysis of 2nd Dropper and 3rd Dropper (Part 2)\n\n**[malware-reversing.com/2012/12/3-disclosure-of-another-0day-malware_15.html](http://www.malware-reversing.com/2012/12/3-disclosure-of-another-0day-malware_15.html)**\n\n[R136a1](https://www.blogger.com/profile/07912616682352437666) [December 15, 2012](https://www.malware-reversing.com/2012/12/3-disclosure-of-another-0day-malware_15.html) [No comments](https://www.malware-reversing.com/2012/12/3-disclosure-of-another-0day-malware_15.html#comment-form)\n\nIn the second Part of this series we analyze the downloaded file (2nd Dropper) and the dropped file\n[(3rd Dropper). At time of this analysis the files weren't uploaded on Virustotal, so I guess the](http://www.virustotal.com/)\ndetection rates are very low, if at all.\n\n**2nd Dropper**\n\nSample: msmvs.exe\n\nSize: 80.388 Bytes\n\nTimestamp: 25.07.2012 06:51:13\n\nMD5: 66F368CAB3D5E64475A91F636C87AF15\n\n**3rd Dropper**\n\nSample: conhost.dll\n\nSize: 62.976 Bytes\n\nTimestamp: 25.09.2012 08:23:13\n\nMD5: F1704AAF08CD66A2AC6CF8810C9E07C2\n\n**2nd Dropper (msmvs.exe)**\n\nThe file starts with a common Anti Debugging technique by using the GetTickCount() function twice\nand comparing the results. When you run the executable, the code between the two GetTickCount()\nfunctions is executed so fast that the functions return the same results. When you debug the code,\nthe second GetTickCount() result is different from the first and the executable exits without doing\nanything harmful:\n\n\n-----\n\nFigure 1: Simple Anti Debug trick\n\nNext, it retrieves the temporary path with help of the GetTempPath() function and stores it for later\nuse. Note that the temporary path can differ (http://msdn.microsoft.com/enus/library/windows/desktop/aa364992%28v=vs.85%29.aspx):\n\n\"The GetTempPath function checks for the existence of environment variables in the following order\nand uses the first path found:\n\nThe path specified by the TMP environment variable.\n\nThe path specified by the TEMP environment variable.\n\nThe path specified by the USERPROFILE environment variable.\n\nThe Windows directory.\"\n\nThen it gets the fully qualified path for its own file to open it afterwards (GetModuleFileName() +\nCreateFile()). If that fails the Dropper again exits without doing anything malicious. Now the Dropper\nsets a file pointer to the beginning of the file to be dropped (SetFilePointer()) and copies it into a\nbuffer by using ReadFile() function. Thereafter it builds the string \"C:\\Documents and Settings\\\n<Username>\\Local Settings\\Temp\\conhost.dll\" with the before retrieved temporary path. Then it\nchecks if there is already the file \"conhost.dll\" in the temporary folder (probably to check for an older\nversion of the malware) and renames it if it exists to \"conhost.dll.tmp\". There follows the decryption\nof the file in the buffer (file to be dropped) and finally the file is written to disk in the temporary folder\nas \"conhost.dll\". At last the file (.dll) is loaded by forming the string \"rundll32.exe C:\\Documents and\nSettings\\<Username>\\Local Settings\\Temp\\conhost.dll,Start\" and using CreatProcess() function to\nstart rundll32.exe program. Finally \"conhost.dll\" gets deleted from temporary folder to cover the\ntracks.\n\n\n-----\n\nNow let s take a look into the 3rd Dropper.\n\n**3rd Dropper (conhost.dll)**\n\nAt first it also decrypts some function names, library names and other strings for subsequent use.\nThen it again dynamically resolves the API adresses of various functions (LoadLibrary() +\nGetProcAddress()). There follows the same anti (AV) emulation technique (two MMX instructions)\nas it was used in the initial Dropper and the Downloader.\n\nFigure 2: Strings decryption and function address resolving\n\nThere is also the same information retrieved and stored into a string as we saw in the Downloader:\n\n\"<ComputerName><VolumeSerialNumber>-<OSMajorVersion>_<OSMinorVersion>\"\n\nIn the Registry Key\n\"HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\" it creates a\nREG_BINARY entry with name \"IP\" and 6 random hex values (used as Encryption Key) and 14 Null\nbyte values that were created before with help of GetTickCount(), srand() and rand() functions:\n\n[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer] -> \"IP\" =\nhex:2d,3c,3e,1c,84,30,00,00,00,00,00,00,00,00,00,00,00,00,00,00\n\nWith help of this six random bytes the following strings are encrypted and appended to the\nREG_BINARY \"IP\" entry. We can see two more IPs to C&C servers, one is used in the final Payload\n(200.74.244.118), the other isn't available anymore (see Appendix for whois information):\n\n\n-----\n\n600000\n\"600000\"\n\"<ComputerName><VolumeSerialNumber>-<OSMajorVersion>_<OSMinorVersion>\"\n\"200.74.244.118\"\n\"123.100.229.59\"\n\"bint\"\n\"10000\"\n\"600000\"\n\"1\"\n\nIn my case I get the following encrypted binary hex values in \"IP\":\n\n2d 3c 3e 1c 84 30 06 06 14 0e 0e 04 05 06 01 00 00 00 00 00 6e 72 2c 94 6c 54 6e 0d 2f 95 6e 6d\n1a 71 2d 91 0d 66 79 2b 2f d2 7d 79 0f 69 3d 81 79 18 08 79 21 b3 2f 12 5f 1b 3c be 29 02 46 07\n3c b5 2e 7e 6b 12 35 af 3d 68 6a 05 3e b6 3a 06 2b 53 68 ed af 41 79 15 70 9d 90 5f 09 18 0f 85\n\nThe same strings are encrpted and added to the Registry Key\n\"HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\" but with other\n6 random hex values as encryption Key.\n\nFigure 3: Get \"els.dll\" or system file time\n\nAs we already saw in the initial Dropper, the 3rd Dropper also searches for the file \"els.dll\" in system\ndirectory to get its file time and uses system time if it fails. And as we saw in the 2nd Dropper\n(conhost.dll), the 3rd Dropper also uses the same technique to load the file to be dropped (final\nPayload) into a buffer for decryption by using GetModuleFileName(), CreateFile(), SetFilePointer()\nand ReadFile() functions. Then it looks if there is already a netui.dll in system folder\n(C:\\Windows\\System32) and creates the final Payload by writing the bytes from the buffer into the\nnetui.dll file, if this is not the case. Thereafter it sets the file's time to one of the two retrieved before.\nI think the malware author chosed the name \"netui.dll\", because in Windows XP system directory\nthere exist the files \"netui0.dll\", \"netui1.dll\", \"netui2.dll\", so it doesn't look suspicious.\n\nThen the Windows Service \"Network User Interface\" is created with description \"Provides user\nnetwork interface service for secure connections\" and \"netui.dll\" as application. Again as we saw in\nthe initial Dropper this is done by using \"C:\\WINDOWS\\system32\\svchost exe -k NtShvcs\" as\n\n\n-----\n\napplication path and registering NtShvcs as a Service in registry. The following registry keys with\nthe appropriate values are created:\n\nHKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows NT\\CurrentVersion\\svchost\\NtShvcs\n|-> CoInitializeSecurityParam = 0x00000000\n\nHKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\Network User Interface\n|-> parameters\nValue: ServiceDll = C:\\WINDOWS\\system32\\netui.dll\nValue: ServiceDllUnloadOnStop = 0x00000001\n\nHKEY_LOCAL_MACHINE\\software\\microsoft\\windows nt\\currentversion\\svchost\\ntsvcs\nValue: NtShvcs = Network User Interface\n\nThen the service is started by using the StartService() function. If for some reason the Service\ncreation failed, the malware startup is realized by adding its class to the SharedTaskScheduler\nregistry key:\n\nHKEY_LOCAL_MACHINE\\Software\\Classes\\CLSID\\{61113868-6B5D-4195-8966-B26462B909FA}\n|-> InProcServer32 = C:\\WINDOWS\\system32\\netui.dll\nValue: ThreadingModel = Apartment\n\nHKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\SharedTaskScheduler\nValue: {61113868-6B5D-4195-8966-B26462B909FA} = NetWork User Interface\n\nThis way the netui.dll file is automatically loaded on every Windows startup. And if for some reason\nthe creation of this persistency technique also failed, a simple entry of rundll32.exe with the\nappropriate parameter is set to the Run key:\n\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run\nValue: RUNDLL32.EXE \"C:\\WINDOWS\\system32\\netui.dll\",Init1\n\nNow if the installation and setup of the file in the system directory (C:\\Windows\\System32) failed,\nthe malware tries to accomplish the same procedures as above in the local application data folder\n(SHGetFolderPath() -> C:\\Documents and Settings\\<Username>\\Local Settings\\Application Data).\n\nThat's all of the 3rd Dropper's functionality. In this second Part we analyzed the downloaded file\nwhich turned out to be just another Dropper. This file drops yet another Dropper, which in turn drops\nthe final Payload. So let's move to the most interesting part, the final Payload.\n\n**Appendix**\n\n**Whois for 200.74.244.118:**\n\nIP Location:    Panama Panama Panama Cyber Cast International S.a.\nASN:        AS27956\nResolve Host:   host-200-74-244-118.ccipanama.com\n\n\n-----\n\nIP Address:    200.74.244.118 [Whois] [Reverse-Ip] [Ping] [DNS Lookup] [Traceroute]\n\nNetRange:    200.0.0.0 - 200.255.255.255\nCIDR:      200.0.0.0/8\nOriginAS:\nNetName:    LACNIC-200\nNetHandle:   NET-200-0-0-0-1\nParent:\nNetType:    Allocated to LACNIC\nComment:    This IP address range is under LACNIC responsibility for further\nComment:    allocations to users in LACNIC region.\nComment:    Please see http://www.lacnic.net/ for further details, or check the\nComment:    WHOIS server located at http://whois.lacnic.net\nRegDate:    2002-07-27\nUpdated:    2010-07-21\nRef:      http://whois.arin.net/rest/net/NET-200-0-0-0-1\n\nOrgName:    Latin American and Caribbean IP address Regional Registry\nOrgId:     LACNIC\nAddress:    Rambla Republica de Mexico 6125\nCity:      Montevideo\nStateProv:\nPostalCode:   11400\nCountry:    UY\nRegDate:    2002-07-27\nUpdated:    2011-09-24\nRef:      http://whois.arin.net/rest/org/LACNIC\n\nReferralServer: whois://whois.lacnic.net\n\nOrgAbuseHandle: LACNIC-ARIN\nOrgAbuseName:  LACNIC Whois Info\nOrgAbusePhone: 999-999-9999\nOrgAbuseEmail: whois-contact@lacnic.net\nOrgAbuseRef:  http://whois.arin.net/rest/poc/LACNIC-ARIN\n\nOrgTechHandle: LACNIC-ARIN\nOrgTechName:  LACNIC Whois Info\nOrgTechPhone: 999-999-9999\nOrgTechEmail: whois-contact@lacnic.net\nOrgTechRef:  http://whois.arin.net/rest/poc/LACNIC-ARIN\n\n== Additional Information From whois://whois.lacnic.net ==\n\ninetnum:   200.74.240/21\nstatus:    allocated\naut-num:   N/A\n\n\n-----\n\nowner:    Cyber Cast International, S.A.\nownerid:   PA-CCIS-LACNIC\nresponsible: Jorge Moreno\naddress:   Addison House Plaza Suite 20, 507, 264-0852\naddress:   6-3783 - Panama - PA\ncountry:   PA\nphone:    +507 264-0852 []\nowner-c:   CCS2\ntech-c:    CCS2\nabuse-c:   CCS2\ninetrev:   200.74.244/24\nnserver:   NS1.CYBERCASTCO.COM\nnsstat:    20121103 AA\nnslastaa:   20121103\nnserver:   NS2.CYBERCASTCO.COM\nnsstat:    20121103 AA\nnslastaa:   20121103\ncreated:   20090331\nchanged:   20090331\n\nnic-hdl:   CCS2\nperson:    Cyber Cast International, S.A.\ne-mail:    info@ccipanama.com\naddress:   Addison House Plaza Suite 20, 507, 264-0852\naddress:   6-3783 - panama - pa\ncountry:   PA\nphone:    +507 264-0852 []\ncreated:   20050405\nchanged:   20080923\n\n**Whois for 123.100.229.59:**\n\nIP Location: Australia Australia Sydney Ozfrontiers Pty Ltd\nASN:       AS55736\nIP Address:   123.100.229.59 [Whois] [Reverse-Ip] [Ping] [DNS Lookup] [Traceroute]\n\ninetnum:   123.100.228.0 - 123.100.229.255\nnetname:   OZFRONTIERS-COLO-SYD-AU\ncountry:   AU\ndescr:    Ozfrontiers Pty Ltd\ndescr:    A Subsidiary of Webvisions Pte Ltd (Singapore)\ndescr:    Sydney, Australia\ndescr:    Dedicated and Co-location Servers\ndescr:    For spam/abuse issues, please e-mail abuse@webvisions.com\nadmin-c:   IP6-AP\ntech-c:    MH352-AP\n\n\n-----\n\ntech-c:    JK1424-AP\nstatus:    ASSIGNED NON-PORTABLE\nchanged:   jason.koh@webvisions.com 20070123\nmnt-by:    MAINT-SG-WEBVISIONS\nsource:    APNIC\n\nperson:    Indra Pramana\naddress:   Webvisions Pte Ltd\naddress:   75 Science Park Drive\naddress:   #02-06/08 Cintech II\naddress:   Singapore Science Park I\naddress:   Singapore 118255\ncountry:   SG\nphone:    +65-6773-9492\nfax-no:    +65-6773-9389\ne-mail:    indra@webvisions.com\nnic-hdl:   IP6-AP\nmnt-by:    MAINT-SG-WEBVISIONS\nchanged:   indra@webvisions.com 20020719\nsource:    APNIC\n\nperson:    Mohamad Zulkifli Hanafi\nnic-hdl:   MH352-AP\ne-mail:    zukifli@webvisions.com\naddress:   75 Science Park Drive\naddress:   #02-06/08 Cintech II\naddress:   Singapore Science Park I\naddress:   Singapore 118255\nphone:    +65-6773-9550\nfax-no:    +65-6773-9389\ncountry:   SG\nchanged:   indra@webvisions.com 20030303\nmnt-by:    MAINT-SG-WEBVISIONS\nsource:    APNIC\n\nperson:    Jason Koh\nnic-hdl:   JK1424-AP\ne-mail:    jason.koh@webvisions.com\naddress:   75 Science Park Drive\naddress:   #02-06/08 Cintech II\naddress:   Singapore Science Park I\naddress:   Singapore 118255\nphone:    +65-6773-9490\nfax-no:    +65-6773-9389\ncountry:   SG\nchanged:   indra@webvisions.com 20070123\n\n\n-----\n\nmnt-by:    MAINT-SG-WEBVISIONS\nsource:    APNIC\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2012/2012-12-15 - Disclosure of another 0day malware - Analysis of 2nd Dropper and 3rd Dropper (Part 2).pdf"
+    ],
+    "report_names": [
+        "2012-12-15 - Disclosure of another 0day malware - Analysis of 2nd Dropper and 3rd Dropper (Part 2).pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "8309f9cf-9abb-4ce3-aa1e-cda7d7f5c1b3",
+            "created_at": "2022-10-25T16:07:23.729215Z",
+            "updated_at": "2025-03-27T02:02:09.949223Z",
+            "deleted_at": null,
+            "main_name": "Indra",
+            "aliases": [],
+            "source_name": "ETDA:Indra",
+            "tools": [
+                "Stardust"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "219ddb41-2ea8-4121-8b63-8c762f7e15df",
+            "created_at": "2023-01-06T13:46:39.384442Z",
+            "updated_at": "2025-03-27T02:00:03.07071Z",
+            "deleted_at": null,
+            "main_name": "Predatory Sparrow",
+            "aliases": [
+                "Indra",
+                "Gonjeshke Darande"
+            ],
+            "source_name": "MISPGALAXY:Predatory Sparrow",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535919,
+    "ts_updated_at": 1743041820,
+    "ts_creation_date": 1653760184,
+    "ts_modification_date": 1653760184,
+    "files": {
+        "pdf": "https://archive.orkl.eu/0395795c4c87a2b7447fe595eaf98ab5727094d5.pdf",
+        "text": "https://archive.orkl.eu/0395795c4c87a2b7447fe595eaf98ab5727094d5.txt",
+        "img": "https://archive.orkl.eu/0395795c4c87a2b7447fe595eaf98ab5727094d5.jpg"
+    }
+}

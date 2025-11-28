@@ -1,0 +1,42 @@
+{
+    "id": "e4e2f143-cab5-4c4a-8c4b-704409b4bf1a",
+    "created_at": "2023-01-12T15:08:21.161763Z",
+    "updated_at": "2025-03-27T02:05:17.895961Z",
+    "deleted_at": null,
+    "sha1_hash": "7e8b4b10758eee59e9cc1f5c566f25ab48abc368",
+    "title": "2021-01-26 - DPRK Malware Targeting Security Researchers",
+    "authors": "",
+    "file_creation_date": "2022-05-28T17:33:55Z",
+    "file_modification_date": "2022-05-28T17:33:55Z",
+    "file_size": 1162419,
+    "plain_text": "# DPRK Malware Targeting Security Researchers\n\n**[norfolkinfosec.com/dprk-malware-targeting-security-researchers/](https://norfolkinfosec.com/dprk-malware-targeting-security-researchers/)**\n\nnorfolk January 26, 2021\n\nEarlier today, Adam Weidemann from Google’s Threat Analysis Group (TAG) published\nresearch regarding a threat actor targeting security analysts following a social engineering\ncampaign. Google attributes this activity to DPRK threat actors. This blog has no evidence to\ncorroborate or refute this claim, but considers Google to be a reputable source of\ninformation.\n\nAccording to the published research, the threat actors would engage in a social engineering\neffort in which they would attempt to collaborate with security analysts on a Visual Studio\nproject, ultimately leading to them delivering a malicious DLL that the researcher would\nunknowingly launch.\n\nThis post examines that DLL and parts of its second-stage workflow.\n\n**Technical Analysis**\n\nMD5: 56018500f73e3f6cf179d3b853c27912\n\nSHA-1: a3060a3efb9ac3da444ef8abc99143293076fe32\n\nSHA-256: 4c3499f3cc4a4fdc7e67417e055891c78540282dccc57e37a01167dfe351b244\n\nThis file is a DLL that expects to be executed under the following conditions to initiate the\nmalicious workflow:\n\n– The operating system must be 64-bit\n\n– The correct export must be called\n\n– Exactly two additional command line arguments must be supplied alongside this export\n\nAlthough Google provided multiple hashes, the file above was selected as a starting point\nbecause its exports matched the export shown in an image in Google’s post\n(CMS_dataFinal). The post used this image how the malware would execute in normal\ncircumstances, which in turn allows us to supply two additional critical parameters to the file:\n\n– Bx9yb37GEcJNK6bt\n\n– 4901\n\nUnder the attacker’s workflow, these would have been supplied through a PowerShell\ncommand initiated through a Visual Studio Build Event, but these can also be supplied\nthrough a normal command line.\n\n\n-----\n\nOnce executed under the specified conditions, the malware will move an encoded set of\nstrings into memory and decode them.\n\nThe malware uses these strings to call the CreateDirectory API at C:\\ProgramData\\VMWare\nand later to specify a filename at this location for a dropped payload (vmnat-update.bin).\nThese decoded strings also contain an export and an additional parameter for this dropped\npayload.\n\n\n-----\n\nAfter this, the malware enumerates running processes via NtQuerySystemInformation and\nchecks for the presence of avp.exe (Kaspersky) and avastui.exe (Avast). If either of these\ntwo processes are found, the malware will gracefully exit. If not, it continues with its workflow.\n\nNtQuerySystemInformation Resolution (top\n\nand avp.exe and avastui.exe (bottom)\nFollowing this step, the malware decodes a second set of strings. These are used to create\npersistence via the CurrentVersion\\Run key under an entry named “OneDrive Update.”\n\n\n-----\n\nOnce the malware has created persistence key, it writes a second-stage DLL to the\n“C:\\ProgramData\\VMWare\\” directory and calls it using the previously decoded parameters.\n\n**Second Stage**\n\n_Analysis of the second-stage payload is in-flight and additional details beyond what is listed_\n_below will be provided when available. It is possible (and perhaps likely, due to time_\n_constraints) that another researcher will complete this analysis before I do, in which case_\n_those details will be corroborated and added below for completeness, along with the_\n_appropriate credit._\n\nMD5 – f5475608c0126582081e29927424f338\n\nSHA-1 – 8e88fd82378794a17a4211fbf2ee2506b9636b02\n\nSHA-256 – a75886b016d84c3eaacaf01a3c61e04953a7a3adf38acf77a4a2e3a8f544f855\n\nThe second-stage malware performs a similar command line check to verify that it is running\nwith two supplied parameters. The first of these parameters, lxUi5CZ0IV45j89Y, is used as to\ncreate a mutex to ensure that only one copy of the malware is running at a time. If the mutex\nalready exists, the malware will exit.\n\nThe malware then resolves a long list of API calls before jumping in to a section in memory.\nWhile this list is extensive, they indicate potential functionality, including C2 operations\n(HttpOpenRequest, HttpAddRequestHeaders, etc) and host-based operations\n(GetDesktopWindow, WriteFile).\n\n\n-----\n\nThe sample examined contains multiple C2 domains and URLs, each of which contain a\ndifferent endpoint for communication.\n\nhxxps:// codevexillium[.]org/image/download/download.asp\nhxxps:// www.dronerc[.]it/shop_testbr/upload/upload.php\nhxxps:// transplugin[.]io/upload/upload.asp\n\nThe malware uses the OpenSSL library and communicates to these endpoints via POST\nrequest:\n\n**HTTP request (right click and open in new tab to zoom in)**\n\nAs part of the POST request, the malware transmits the date and time of the malware’s\nexecution to the C2 server (encoded in Base64 format). This may be used for additional\nfiltering by the attackers, to ensure that too much time hasn’t passed between the malware’s\nexecution and communication (which could be indicative of an active debugging/reverse\nengineering effort).\n\nAt this stage, the actions available to the malware as a response to this POST request\nremain under analysis, although the malware presumably at a minimum provides basic\nreconnaissance and a channel for command-line execution (either directly or through\ncreation of another payload). These are assumptions based on common malware\ncharacteristics, however, and not observed activity.* (Updated below)\n\n*Update (1/26):\n\n\n-----\n\nOver the course of the last 24 hours, a lot of great research and analysis came to light from\nvarious parties. Most notably, I’d like to direct readers to three posts that offer additional\ncontext and demonstrate that the final action after this POST request is to download an\nadditional payload onto the disk:\n\n[360 Threat Intelligence Center provides additional operational context for these](https://mp.weixin.qq.com/s/W-C_tKVnXco8C3ctgAjoNQ)\nattacks, including social engineering. This may be particularly valuable for threat\nhunters or threat intelligence practitioners. It also offers more details regarding\nthe POST request and next-stage DLL in similar samples.\n[Qi’anxin Threat Intelligence Center identified similar activity (and malware) from](https://mp.weixin.qq.com/s/2sV-DrleHiJMSpSCW0kAMg)\nthis adversary in September 2020.\n[Anheng Threat Intelligence Center provides additional context regarding the](https://mp.weixin.qq.com/s/UBD0hyXUooYuDrpsz8-MtQ)\nsocial engineering and Visual Studio stages of this attack.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-01-26 - DPRK Malware Targeting Security Researchers.pdf"
+    ],
+    "report_names": [
+        "2021-01-26 - DPRK Malware Targeting Security Researchers.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673536101,
+    "ts_updated_at": 1743041117,
+    "ts_creation_date": 1653759235,
+    "ts_modification_date": 1653759235,
+    "files": {
+        "pdf": "https://archive.orkl.eu/7e8b4b10758eee59e9cc1f5c566f25ab48abc368.pdf",
+        "text": "https://archive.orkl.eu/7e8b4b10758eee59e9cc1f5c566f25ab48abc368.txt",
+        "img": "https://archive.orkl.eu/7e8b4b10758eee59e9cc1f5c566f25ab48abc368.jpg"
+    }
+}

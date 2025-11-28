@@ -1,0 +1,100 @@
+{
+    "id": "945c273b-56b0-4eb0-8aa2-56d011a1b9d2",
+    "created_at": "2023-01-12T15:03:33.722936Z",
+    "updated_at": "2025-03-27T02:11:00.237766Z",
+    "deleted_at": null,
+    "sha1_hash": "6dae7b658e683020e7baeb2f16b27d60fb4e424a",
+    "title": "2022-07-19 - PrestaShop Skimmer Concealed in One Page Checkout Module",
+    "authors": "",
+    "file_creation_date": "2022-08-18T03:28:19Z",
+    "file_modification_date": "2022-08-18T03:28:19Z",
+    "file_size": 3621007,
+    "plain_text": "# Sucuri Blog\n\n**[blog.sucuri.net/2022/07/prestashop-skimmer-concealed-in-one-page-checkout-module.html](https://blog.sucuri.net/2022/07/prestashop-skimmer-concealed-in-one-page-checkout-module.html)**\n\nMatt Morrow July 19, 2022\n\nPrestaShop is a popular freemium open source e-commerce platform used by hundreds of\nthousands of webmasters to sell products and services to website visitors. While\nPrestaShop’s CMS market share is [only 0.8%, it should still come as no surprise that](https://w3techs.com/technologies/overview/content_management)\nattackers have been crafting malware to specifically target environments who use this\nsoftware.\n\nIn this post, I’ll document how I recently came across an infected PrestaShop website\ncontaining an interesting injection found overriding the site’s existing credit card payment\nform — and outline the steps you can take to protect your site from these types of attacks.\n\n## Script Injected Into payment.tpl\n\nAs I launched my investigation, I noted that the website owner was using the One Page\nCheckout module which allows website owners to configure and compile popular ecommerce\nfeatures on the purchase page, including functionalities for personalization, shipping and\nbilling details, and order summaries.\n\nInspecting the site revealed a script injection located within the module in\n**modules/onepagecheckoutps/views/templates/front/payment.tpl.**\n\nThis js/dfsasdf3124sfcad2.js script was found injected on the payment.tpl file and\nappeared to load every time a user navigated to the purchase process:\n\n\n-----\n\nA cursory review of this dfasdf3124sfcad2.js file revealed some obfuscated code, which\nimmediately piqued my curiosity.\n\nOnce decoded, results unveiled a customized fake payment form which was being inserted\ninto the checkout process to override the legitimate form.\n\nThe overlaid form did not appear to contain any suspicious features or typos which might flag\na victim’s attention as they’re navigating the infected site.\n\n\n-----\n\nLet’s examine how the injection works.\n\nThe checkout page loads the legitimate\nmodules/onepagecheckoutps/views/js/front/onepagecheckoutps.js file which happens to\ncontain the following obfuscated injection.\n\nOnce decoded, the injection reveals itself to belong to a credit card skimmer.\n\n\n-----\n\nAs seen above on line 24, the malicious JavaScript skims the data from the payment form,\nbase64-encodes it, and then sends it to the site’s own /index.php?pop=7.\n\nWhile the /index.php file is not infected per se, it is the main PrestaShop file responsible for\nloading the rest of the CMS scripts on the website — including\n**controllers/front/IndexController.php and classes/tools.php which happen to contain the**\nserver-side part of the malware.\n\nLet’s take a look at how the attacker processes and exfiltrates the stolen credit card data.\n\nA single line of malicious code found injected in IndexController.php file is responsible for\nchecking and intercepting requests for payment details before passing them along for\nprocessing. You can see it below on line 40.\n\nThis malicious code is used to detect requests containing credit card details by checking the\n**pop= request parameter. If pop=7, the malware activates the function that processes the**\nstolen data by calling the Tools::redirectErrorPage() that is defined by the attacker in\n\n\n-----\n\n**classes/tools.php.**\n\nThe redirectErrorPage() function first encrypts the data using openssl_public_encrypt\nwith the attacker’s public key. It then initiates a curl request to exfiltrate the harvested credit\ncard information to hxxps://fastfixtuning[.]nl/cache/cache.php via POST request.\n\nTo make detection and troubleshooting more challenging for the website owner, the malware\nsets the following cookie and displays the warning “Selected payment method is currently\nunavailable, please try again.” as soon as the payment details have been stolen:\n```\nPresta_Shop=433e5179e5aa1923.1653055359.1.1653055379.1653055359\n\n```\nOnce set, users with this cookie will no longer see the fake payment form during the\ncheckout process.\n\n## Website Backdoor in config/alias.php\n\n[Attackers regularly plant backdoors in compromised environments to maintain access long](https://blog.sucuri.net/2022/05/examining-emerging-backdoors.html)\nafter the initial infection has occurred. Backdoors can come in a variety of flavors — and may\nuse HTTP requests to upload files and web shells or remotely execute code.\n\nDuring our analysis, we also found the following line of code in the website’s\n**config/alias.php file.**\n\n\n-----\n\nWhile small and easily confused for normal code, this snippet allows the attacker to upload a\nwebshell or execute malicious code in a POST request onto the compromised environment.\n\nIt’s worth noting that while the eval function itself isn’t malicious, searching for eval( can in\nfact help you identify many backdoors on your website; attackers regularly use this method\nto inject malicious content or run malicious code on the server. But since backdoors come in\nso many shapes and sizes, it’s not likely to find everything.\n\n## Attack & Exfiltration Sequence\n\nOur analysis revealed five distinct parts to this skimming attack.\n\n1. Initial injection into the compromised environment.\n\nThe attacker injects malicious obfuscated dfasdf3124sfcad2.js script into the\n**payment.tpl file.**\n2. JavaScript creates and overlays form.\n\nThe contents of dfasdf3124sfcad2.js create a fake form which is overlaid on top of the\nexisting checkout cart.\n3. Second JavaScript skims data.\n\nA skimmer from onepagecheckoutps.js monitors changes in the payment form and\nsends the payment details to the server-side part of the malware.\n4. Injected code checks for parameter and activates function.\n\nA single line of malicious code injected into IndexController.php file checks and\nintercepts POST requests containing payment details and activates the function\n**redirectErrorPage().**\n5. Function exfiltrates data to a third party server.\n\nThe redirectErrorPage() function from tools.php encrypts harvested data then\ninitiates a curl request to send stolen credit card details to the hacker controlled\n**hxxps://fastfixtuning[.]nl/cache/cache.php via POST request.**\n\n## Conclusion & Mitigation Steps\n\nIt’s not typical for the same skimmer to be found on thousands of websites. Credit card\nskimming attacks are often highly targeted and customized campaigns — and we regularly\nfind malware hand-crafted for just one (or a small handful) of sites.\n\nAttackers clearly went to great lengths to craft this swiper specifically for this particular\nPrestaShop installation. The customized credit card form and handler function to process\nstolen data along with obfuscation techniques and naming conventions to evade detection\nshowcase the steps that attackers will take to steal sensitive information from e-commerce\nwebsites.\n\n\n-----\n\nFortunately, there are a number of initiatives you can take to protect your website, checkout\nprocess, and customers from targeted skimmer attacks like these.\n\n**Always keep your website software updated with the latest patches.**\n\nIt cannot be stressed enough how important patching your software is. Regardless of\nwhat CMS you use, you should always keep all of your website software up-to-date\nwith the latest patches and security updates — including modules, plugins, themes,\nand core CMS.\n**Use strong passwords.**\n\nAlways use unique, complex passwords for your CMS, database, FTP/SSH, hosting\nand cPanel accounts to protect against brute force and dictionary attacks.\n**Follow the principle of least privilege.**\n\nEnsure that all user accounts are only assigned to their needed roles by following the\n[principle of least privilege.](https://blog.sucuri.net/2017/04/the-principle-of-least-privilege.html)\n**Check your file integrity regularly.**\n\nMonitoring for changes on your website is an important component of identifying\nindicators of compromise. There are a number of tools you can use to alert you of any\nunexpected changes to your website’s files or environment.\n**Use a web application firewall.**\n\nLeverage a firewall to filter traffic between your server and visitors and virtually patch\nknown vulnerabilities in the event that you forget to patch an update.\n\nAs always, if you think your website has been hacked or may contain a credit card skimmer\n[and you need a hand cleaning it up, we’re here to help.](https://sucuri.net/website-hack-protection/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-07-19 - PrestaShop Skimmer Concealed in One Page Checkout Module.pdf"
+    ],
+    "report_names": [
+        "2022-07-19 - PrestaShop Skimmer Concealed in One Page Checkout Module.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "3fad11c6-4336-4b28-a606-f510eca5452e",
+            "created_at": "2022-10-25T16:07:24.346573Z",
+            "updated_at": "2025-03-27T02:02:10.183211Z",
+            "deleted_at": null,
+            "main_name": "Turbine Panda",
+            "aliases": [
+                "APT 26",
+                "Black Vine",
+                "Bronze Express",
+                "Group 13",
+                "JerseyMikes",
+                "KungFu Kittens",
+                "PinkPanther",
+                "Shell Crew",
+                "Turbine Panda",
+                "WebMasters"
+            ],
+            "source_name": "ETDA:Turbine Panda",
+            "tools": [
+                "Agent.dhwf",
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Derusbi",
+                "Destroy RAT",
+                "DestroyRAT",
+                "FF-RAT",
+                "FormerFirstRAT",
+                "Hurix",
+                "Kaba",
+                "Korplug",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "Mivast",
+                "PlugX",
+                "RbDoor",
+                "RedDelta",
+                "RibDoor",
+                "Sakula",
+                "Sakula RAT",
+                "Sakurel",
+                "Sogu",
+                "StreamEx",
+                "TIGERPLUG",
+                "TVT",
+                "Thoper",
+                "Winnti",
+                "Xamtrav",
+                "cobeacon",
+                "ffrat"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535813,
+    "ts_updated_at": 1743041460,
+    "ts_creation_date": 1660793299,
+    "ts_modification_date": 1660793299,
+    "files": {
+        "pdf": "https://archive.orkl.eu/6dae7b658e683020e7baeb2f16b27d60fb4e424a.pdf",
+        "text": "https://archive.orkl.eu/6dae7b658e683020e7baeb2f16b27d60fb4e424a.txt",
+        "img": "https://archive.orkl.eu/6dae7b658e683020e7baeb2f16b27d60fb4e424a.jpg"
+    }
+}

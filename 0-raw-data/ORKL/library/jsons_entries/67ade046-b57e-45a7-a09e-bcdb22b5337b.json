@@ -1,0 +1,70 @@
+{
+    "id": "67ade046-b57e-45a7-a09e-bcdb22b5337b",
+    "created_at": "2023-01-12T15:01:02.684797Z",
+    "updated_at": "2025-03-27T02:16:39.995197Z",
+    "deleted_at": null,
+    "sha1_hash": "7fb93dea2c0b83764c8c63ee99a9202f94d6d5d2",
+    "title": "2021-03-12 - DotNET Loaders",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:32:46Z",
+    "file_modification_date": "2022-05-28T19:32:46Z",
+    "file_size": 2741998,
+    "plain_text": "# DotNET Loaders\n\n**blog.reversinglabs.com/blog/dotnet-loaders**\n\n[Threat Research | March 12, 2021](https://blog.reversinglabs.com/blog/tag/threat-research)\n\n\n-----\n\nBlog Author\nRobert Simmons, Independent malware researcher and threat researcher at\n[ReversingLabs. Read More...](https://blog.reversinglabs.com/blog/author/robert-simmons)\n\n\n-----\n\nMany families of remote access trojan (RAT) are .NET executables. As was observed in the\nblog post 1 from one year ago about RevengeRAT among others, much of this malware is\ndelivered in another .NET executable with the payload encoded as an embedded text string.\nThese RATs when they're encoded as text and posted to pastebin like sites are tracked by\nScumbots .2 An additional method of hunting for this type of dropper or loader is to leverage\nthe dotnet module in YARA. This module is a parser for .NET executables and presents the\nparsed components that it finds as a dataset inside YARA that can then be leveraged in the\nconditions section of a rule. In the following analysis, this parsed dataset and the user strings\n\n3 entry in particular are used to identify .NET executables that have another PE executable\n\nencoded as one of those user strings.\n\n\n## Making the Rule\n\nThe first step is to examine one of the .NET loaders in question 4. The examples here show a\nsample that delivers RevengeRAT 5 according to Malpedia analysis of the payload contained\nwithin it. This embedded and encoded PE file can be seen in the screenshot of the loader as\nanalyzed by dnSpy 6 shown in Figure 1.\n\n\n-----\n\nFigure 1: PE File Encoded as Text and Embedded in .NET Code\n\nThis encoded string is also visible in the debug data returned by YARA on the command line.\nThe \"-D\" command line switch shows all the data that any loaded modules have available 7.\nThis is an extremely powerful feature for building rules because one can essentially see what\nYARA sees in a file and use that to build conditions for your new rules. The output from this\ncommand line switch when applied to the .NET sample above is shown in Figure 2. The\nstring with the encoded payload is highlighted.\n\nFigure 2: Debugging Output from YARA's Dotnet Module\n\nAs can be seen in the debugging output, the string is interspersed with null bytes, therefore\nthese must be included when building the regular expression. Therefore, the characters to be\nused in the regular expression are the following\n\n\n-----\n\nUsing these characters, the base of the regular expression is the following.\n\n/4\\x00D\\x005\\x00A\\x00/\n\nIn addition to the above, two constraints can be included to reduce false positives. First, the\ncarrot metacharacter \"^\" is added as the first character in the regex to make sure that only\nmatches at the beginning of the string are possible. Second, a dot wildcard that matches any\ncharacter with a repetition of 186 or more times is added to the end of the regular\nexpression. The number chosen here for the repetition is based on research done on the\nsmallest possible PE file with that size being 97 bytes 8. This number is doubled because of\nthe interspersed null bytes and the four characters of the PE magic number along with its\naccompanying null bytes are subtracted from the total.\n\n186 = (2 * 97) - 8\n\nPutting these parts together, the regular expression is the following.\n\n/^4\\x00D\\x005\\x00A\\x00.{186,}/\n\nNext we need to account for capitalization. Some of the samples use an all lowercase\nalphabet to encode the embedded PE file. To account for that, two small character sets must\nbe used in place of the \"D\" and \"A\" characters in the regular expression. After making this\nchange, the regular expression is the following.\n\n/^4\\x00[dD]\\x005\\x00[aA]\\x00.{186,}/\n\n\nFinally, this regular expression needs to be applied to each of the user strings that YARA's\ndotnet module parses out of a file. With the release of YARA 4.0, the syntax for iterating over\nthis type of structure is really simple and easy to use 9. Since the user strings are a zerobased array, one can iterate over them directly. The condition that iterates over each entry in\nthis array and applies the regular expression to each entry in the array is the following.\n\nfor any str in dotnet.user_strings : (\n\nstr matches /^4\\x00[dD]\\x005\\x00[aA]\\x00.{186,}/\n\n)\n\nPutting this all together yields the YARA rule shown in Figure 3. This rule is provided at the\nend of the blog.\n\n\n-----\n\nFigure 3: YARA Rule to Match Files with an Embedded PE Executable\n\nIf one is using an older version of YARA, the following syntax achieves the same results.\n\nfor any i in (0..dotnet.number_of_user_strings-1) : (\n\ndotnet.user_strings[i] matches\n\n/^4\\x00[dD]\\x005\\x00[aA]\\x00.{186,}/\n\n)\nRunning this rule as a retro hunt in the Titanium Platform results in thousands of files that are\ndetected as malicious or suspicious with very few files that are undetected. The hunting\nresults are shown in Figure 4.\n\nFigure 4: YARA Retro Hunting Results\n\nOne question to ask when presented with good results like this is whether this technique is\nused in legitimate software. According to a question of how to include a windows DLL in a\n.NET project posted on StackOverflow, this data should be packaged as a resource10. The\ntechnique analyzed in these samples is definitely non-standard.\n\n\n-----\n\n## Static Extraction\n\nThe next step is to extract all the embedded payloads from all these files and see what is\nthere. To do this, a fascinating feature of the yara-python package is used: the\nmodules_callback parameter of a YARA rule match object 11. The beauty of this parameter is\nthat it allows a function with whatever code one wants to run to be executed if a rule\nmatches. Inside that function, the data returned from a YARA module is made available to\nthe function in the form of a data dictionary. The specific callback function used to extract\nmany of the payloads from the hunting results dataset is shown in Figure 5.\n\nFigure 5: Callback Function to Extract Payloads\n\nThis callback function extracts the very most basic form of encoding encountered in these\nfiles. There are additional obfuscation techniques observed in the dataset where additional\ncharacter replacements are required to recover the payload in its original form. These\nadditional techniques will be examined in a future blog post, but many of the resulting\nextractions from these techniques are included in the IOC data provided below.\n\n## Correcting the Record\n\nAfter as many files as can be extracted with the python callback function as possible have\nbeen analyzed along with their parent loaders, the resulting analysis dataset is loaded into\nan Elasticsearch instance for easier analysis. Sorting the parent loaders by the threat level\nreveals a few files with a zero score. The example shown in Figure 6 is a really old file, so\nthe detection may be stale.\n\n\n-----\n\nFigure 6: Zero Threat Level on Very Old File\n\nRunning this file in a sandbox shows that it is some type of hacking tool and definitely\nsomething that one would consider at least suspicious if not malicious. A screenshot of this\nsandbox session is shown in Figure 7.\n\n\n-----\n\nFigure 7: Hacking Tool User Interface in Sandbox\n\nTherefore, the Titanium Platform provides a way to correct the record and freshen an old\nanalysis result such as this. To do this, open the file in the A1000, and click the \"Reanalyze\"\nbutton. This button is shown in Figure 8. As can be seen also in Figure 8, the threat level is\nnow shown to be 2 rather than zero.\n\n\n-----\n\nFigure 8: Reanalyze Sample\n\n## General Analysis\n\nAs mentioned above, there are a few files that use more complex obfuscation techniques in\naddition to the embedding analyzed here. Even with these files excluded, a group of 1,641\nloaders and their corresponding payloads are identified. A few files from this dataset along\nwith the timeframe of the results from 2011 to now is shown in Figure 9.\n\nFigure 9: Extraction Results\n\n\n-----\n\nThe cluster IDs shown above are assigned per unique payload to the payload and each of\nthe unique parent files that have the same embedded payload. These cluster IDs are\nrandomly generated UUIDs per payload. The full dataset including the cluster data and threat\nnames is provided at the end of the blog. The breakdown of the embedded files by file type\naccording to libmagic is shown in Figure 10 with the files fairly evenly split between DLLs and\nEXEs.\n\nFigure 10: Libmagic Analysis of Embedded Payloads\n\n## Conclusion\n\nThe technique of encoding an executable as a text string using various encoding techniques\nis widely used by the adversaries who post the resulting strings on pastebin-like sites. It is\ninteresting that some of the same string encoding techniques used by these adversaries to\nhide payloads on download sites across the internet are also found inside the delivery\nbinaries. This obfuscation can definitely provide some cover from detection. To identify\nbinaries that leverage this technique, YARA's dotnet module provides the best methods\navailable. What was shown above is just the most simple and basic encoding technique.\nFurther research into other encodings such as Base64 will be the topic of future blog posts.\n\n## YARA Rule\n\nimport \"dotnet\"\n\n\n-----\n\nrule DotNet_EmbeddedPE\n{\nmeta:\nauthor = \"Malware Utkonos\"\ndate = \"2021-01-18\"\ndescription = \"This detects a PE embedded in a .NET executable.\"\ncondition:\nfor any str in dotnet.user_strings : ( str matches\n/^4\\x00[dD]\\x005\\x00[aA]\\x00.{186,}/ )\n\n}\nReferences:\n\n1. [https://blog.reversinglabs.com/blog/rats-in-the-library](https://blog.reversinglabs.com/blog/rats-in-the-library)\n2. [https://twitter.com/ScumBots](https://twitter.com/ScumBots)\n3. [https://yara.readthedocs.io/en/stable/modules/dotnet.html#c.user_strings](https://yara.readthedocs.io/en/stable/modules/dotnet.html#c.user_strings)\n4. 0efe600018208dd66107727362dd8f7498813755ce14f76fa19f0964c654e14a\n5. [https://malpedia.caad.fkie.fraunhofer.de/details/win.revenge_rat](https://malpedia.caad.fkie.fraunhofer.de/details/win.revenge_rat)\n6. [https://github.com/dnSpy/dnSpy](https://github.com/dnSpy/dnSpy)\n7. [https://yara.readthedocs.io/en/stable/commandline.html#cmdoption-yara-d](https://yara.readthedocs.io/en/stable/commandline.html#cmdoption-yara-d)\n8. https://webserver2.tecgraf.puc-rio.br/~ismael/Cursos/YC++/apostilas/win32_xcoff_pe/tyneexample/Tiny%20PE.htm\n9. [https://yara.readthedocs.io/en/stable/writingrules.html#iterators](https://yara.readthedocs.io/en/stable/writingrules.html#iterators)\n10. https://stackoverflow.com/questions/72264/how-can-a-c-windows-dll-be-merged-into-a-csharp-application-exe\n11. [https://yara.readthedocs.io/en/stable/yarapython.html#yara.Rules](https://yara.readthedocs.io/en/stable/yarapython.html#yara.Rules)\n\n### MORE BLOG ARTICLES\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-03-12 - DotNET Loaders.pdf"
+    ],
+    "report_names": [
+        "2021-03-12 - DotNET Loaders.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "2864e40a-f233-4618-ac61-b03760a41cbb",
+            "created_at": "2023-12-01T02:02:34.272108Z",
+            "updated_at": "2025-03-27T02:02:10.209072Z",
+            "deleted_at": null,
+            "main_name": "WildCard",
+            "aliases": [],
+            "source_name": "ETDA:WildCard",
+            "tools": [
+                "RustDown",
+                "SysJoker"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "256a6a2d-e8a2-4497-b399-628a7fad4b3e",
+            "created_at": "2023-11-30T02:00:07.299845Z",
+            "updated_at": "2025-03-27T02:00:03.257794Z",
+            "deleted_at": null,
+            "main_name": "WildCard",
+            "aliases": [],
+            "source_name": "MISPGALAXY:WildCard",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535662,
+    "ts_updated_at": 1743041799,
+    "ts_creation_date": 1653766366,
+    "ts_modification_date": 1653766366,
+    "files": {
+        "pdf": "https://archive.orkl.eu/7fb93dea2c0b83764c8c63ee99a9202f94d6d5d2.pdf",
+        "text": "https://archive.orkl.eu/7fb93dea2c0b83764c8c63ee99a9202f94d6d5d2.txt",
+        "img": "https://archive.orkl.eu/7fb93dea2c0b83764c8c63ee99a9202f94d6d5d2.jpg"
+    }
+}

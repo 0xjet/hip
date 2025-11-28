@@ -1,0 +1,145 @@
+{
+    "id": "284681b7-a745-469f-9c04-e912f2ced6b4",
+    "created_at": "2023-01-12T15:05:38.387571Z",
+    "updated_at": "2025-03-27T02:15:35.775472Z",
+    "deleted_at": null,
+    "sha1_hash": "d3a581c51858bfa0983adf3af859fe6962d5f5c9",
+    "title": "2022-08-30 - ChromeLoader Browser Hijacker",
+    "authors": "",
+    "file_creation_date": "2022-09-01T10:30:18Z",
+    "file_modification_date": "2022-09-01T10:30:18Z",
+    "file_size": 3311575,
+    "plain_text": "# Chromeloader browser hijacker\n\n**cybergeeks.tech/chromeloader-browser-hijacker**\n\n**Summary**\n\nWe analyzed a new version of ChromeLoader (also known as Choziosi Loader) that was seen in the wild in recent\nweeks.\n\nThis ChromeLoader campaign that appears to have started in December 2021 has become widespread and has\nspawned multiple versions, making atomic indicators ineffective for detections.\n\nIn our analysis we will be discussing the capabilities of this loader, as well as trying to dig a little deeper, in order\nto find some indicators that will be more difficult for the threat actor to alter without making significant changes to\nthe malware’s architecture (at least compared to extracting domains, IP and hashes as only IOCs)\n\nWe will be starting our analysis with the execution of the obfuscated powershell that ultimately downloads the\nmalicious extension on the host.\n\nWe have managed to extract some interesting strings from the different stages of the malware, as well as\ndiscovering a few modules that are not in use at the moment (or are not working properly), but could give a hint on\nwhat functionality will be added to the malware in the future.\n\nWe will not be talking about the dropper in this analysis, as it is already quite well documented and no significant\nchanges were seen for new versions of Chromeloader.\n\nFor more information on the dropper, a collection of atomic indicators and a comparison between different\nversions seen in the wild, we recommend you read the article put out by Unit42, as it is quite extensive:\n\n[https://unit42.paloaltonetworks.com/chromeloader-malware/#post-123828-_rk3otl9durd](https://unit42.paloaltonetworks.com/chromeloader-malware/#post-123828-_rk3otl9durd)\n\nOk, let’s get to it.\n\n**Static Analysis**\n\nWe start our analysis with a powershell command that will connect to the C2 server used for the installation\n(different from the C2 used for data exfil) to download the first malicious payload, as well as set the ground for the\nextension’s installation.\n\nWhile the initial powershell is heavily obfuscated, there are a few strings of interest that we can identify with little\neffort. One of them is the function that builds the URL for the installation C2 server. We can also see the `Invoke-`\n```\nExpression cmdlet.\n\n```\n\n-----\n\nImage 1 – Installer URL visible in the initial Powershell\n\nBy changing one of the visible iex expressions to Write-Output, we were able to make good progress without\nbothering with decrypting the script.\n\nImage 2\n\nNOTE: this method is a lot faster than manual deobfuscation, but can miss details that could be relevant for the\nanalysis ( there could be multiple “invokeExpressions” that were obfuscated and we could not see for instance).\nJust something to keep in mind.\n\nRunning the script like this downloads a C# script from the installation server present in the command. During\nnormal execution it would then invoke it.\n\nThe C# script gives us some good hints about the capability of the malware.\n\nSome interesting function names:\n\ngetGoogSearchUri\nhookSearchNavigation\nrunChromeOrEdge\nrunFirefox\nrunThread\n\nSome interesting methods:\n\npaneConditionChromeOrEdge\neditConditionChromeOrEdge\ntoolbarConditionFirefox\ncomboboxConditionFirefox\neditboxConditionFirefox\n\n\n-----\n\nWhile previous analysis of the malware concluded that it would only affect Chrome browsers, we can see here\nthat it checks to see if Chrome, Edge or Firefox is installed and can hook any of these.\n\nIt seems to be mostly interested in the user’s search history, as it intercepts searches done on google and then\nredirects them to Bing .\n\nIt also intercepts keyboard keys to account for the users that use the keyboard to navigate the results.\n\n\n-----\n\nImage 3 – the extension is\n\nlooking for Google search links Image 4 – the\n\nextension can intercept keystrokes\n\n\n-----\n\nImage 5 – methods exist for both\n\n\nChromium browsers and Firefox\n\nImage 6 – the C2 url is dynamic and built with variables extracted from the script and user environment\n\nIn the string from image 6, the URL is built using the following variables:\n\nDomain\nTID is a hardcoded value in the script; the value was the same every time for this version of the malware so\nmaybe it is used for versioning\nU is an unique identifier for the user\nWe could not determine what “ist” is at this time\n\nOnce the C# code finishes, it is followed by a series of additional Powershell commands that will build it, load it\ninto memory and run it.\n\nPowershell is used again to build the URL from which the next payload will be downloaded.\n\n\nImage 7 – Powershell is used to build the C# code\n\nThe commands suggest that a new archived file will be downloaded and expanded in a new folder made in the\nuser’s APPDATA, that is randomly generated by the script via an XOR operation.\n\nThe following function sets up the key for the encryption:\n\n\n-----\n\nImage 8 – It uses a random number\n\nand the current date to always provide a new encryption key\n\nIt looks like the script is testing multiple possible paths to see if they exist before finally settling on one and\ndownloading the corresponding archive:\n\n\nImage 9 – C2 URL is built with variables extracted from the script and the host, same for the installation path\n\n**Dynamic Analysis**\n\nIndeed, after arming the sample and detonating it, we can see a new folder in AppData called “chrome_glass”:\n\n\n-----\n\nImage 10 – a fairly simple Chrome extension\n\nBefore creating the folder, the malware verifies if one of the following paths already exists:\n\n%AppData%\\Local\\chrome_metric\n%AppData%\\Local\\chrome_pref\n%AppData%\\Local\\chrome_settings\n%AppData%\\Local\\chrome_tools\n%AppData%\\Local\\chrome_storage\n%AppData%\\Local\\chrome_configuration\n%AppData%\\Local\\chrome_bookmarks\n%AppData%\\Local\\chrome_flags\n%AppData%\\Local\\chrome_history\n%AppData%\\Local\\chrome_cast\n%AppData%\\Local\\chrome_view\n%AppData%\\Local\\chrome_tab\n%AppData%\\Local\\chrome_panel\n%AppData%\\Local\\chrome_window\n%AppData%\\Local\\chrome_control\n%AppData%\\Local\\chrome_glass\n%AppData%\\Local\\chrome_nav\n\nWe can see how the script downloaded the C# code and then built it into a .dll in the Temp folder:\n\n\n-----\n\nImage 11\n\n\n– the stager is built and executed in the user’s Temp folder, and then deleted\n\nThere are also some evasion mechanisms here that are worth pointing out:\n\nThe files are downloaded, ran and then deleted\nThe PSScript Policy test runs to ensure that the Temp folder is writable and that the files can be deleted\nA new directory is created with a randomly generated name, to ensure that the files cannot be retrieved by\ntools such as DirWatch\n\nLet`s also look at registry changes. We have caught hints from the powershell script from earlier that the installer\nwill also write a value in “HKCU:\\Software\\CodeSector\\”.\n\nAnd indeed, we see a new registry Key being added:\n\n\nImage 12 – A new registry key is added\n\nIt is unclear at this time why the registry key is added, as there was no followup activity for this key. Perhaps it\nserves as a mutex of some sort for the attacker, to avoid infecting the same host.\n\nNow let’s look a bit at the items that were unpacked from the archive .\n\nThis is a Chrome extension; We can see that quite a few permissions are requested (manifest.json):\n\n\n-----\n\nImage 13\n\nImage 14 – the .js file is heavily obfuscated, to hinder the analysis\n\n[Using an online deobfuscator (https://deobfuscate.io/), we get a more readable code, but still hard to follow. We](https://deobfuscate.io/)\ndid manage however to extract an URL and an interesting base64-encoded string. We also noticed a function that\nseems to be modifying some Chrome settings:\n\n\n-----\n\nImage 15\n\nThe Javascript contains multiple switch statements, in an attempt to make the analysis of the code as hard as\npossible. At this point it is possible to start decoding the code manually, but it would be quite cumbersome.\n\nSince our goal is to identify some unique indicators that we can use for detection, we will just note a few\ninteresting functions that will give us a hint about what the extensions is trying to do, and instead we will attempt\nsome basic dynamic analysis.\n\nOnce the sample detonates, we see the request for the domain that we found in the JS file:\n\nImage 16 – DNS queries for\n\nthe C2 Image 17 –\n\nThe traffic is sent (and encrypted) via QUIC Protocol.\n\n\n-----\n\nImage 18\n\n\n– Procmon shows how Chrome succesfully loads the libraries used for encryption\n\nImage 19 – Establishing connection (notice the full URL and the base64 encrypted key that was identified in the JS –“bmpmcHdXUldDQl9cUERDWFtVSUBYX1UMTltYUEFBEltQRkZcXF9AR1kWFQUVBw4=” ; this looks to be an identifier of sorts)\n\nImage 20 – Cookies are made persistent\n\nImage 21\n\n**Network indicators:**\n\nWe know that the extension is using QUIC as a transport protocol for fast and encrypted communication. But,\nsince we control the execution, we can force Chrome to dump the SSL Keys so we can load them in Wireshark\nand decrypt the traffic.\n\n\n-----\n\nImage 22 – Decrypted\n\n\nQUIC traffic\n\nSuspicious DNS Queries and responses:\n\ngoog.withyourrety[.]xyz: type A, class IN, addr 104.21.70.206\n\ngoog.withyourrety[.]xyz: type A, class IN, addr 172.67.139.75\n\nFreychang[.]fun: type A, class IN, addr 104.21.45.207\n\nFreychang[.]fun: type A, class IN, addr 172.67.218.221\n\nUsing the IPs extracted from the DNS queries, the following interesting strings were identified:\n\nGREASE is the word\n\nHEX:\n9b8d047b7db70d45ca16cf225df6e36ce3dcb0bec41dee190f8f20c859de8861967d771e2f4d572f4f7f5dfc04d5d5\n\nThe same “GREASE” string appears in other packets and is a setting for the HTTP3 communication;\n\nSettings are a new registry used in HTTP3\n\nImage 23 Image 24\n\n\n-----\n\nA 302 redirect status response code:\n\n<html>\n\n<head><title>302 Found</title></head>\n\n<body>\n\n<center><h1>302 Found</h1></center>\n\n<hr><center>openresty/1.15.8.3</center>\n\n</body>\n\n</html>\n\nWhile the page gives a code 302, it redirects back to goog[.]withyourrety[.]xyz so this is probably a redundancy if\none of the IPs the domain resolves to is no longer reachable.\n\nImage 25\n\nWhile the page gives a code 302, it redirects back to goog[.]withyourrety[.]xyz so this is probably a redundancy if\none of the IPs the domain resolves to is no longer reachable.\n\n**Running Chrome:**\n\nUsing the browser once the malicious extension was installed does indeed reflect what we have seen up to this\npoint :\n\nAny search made on google.com is redirected to Withyourrety[.]xyz, and then eventually to Bing (image 25)\nThe extension messes with the Google settings and does not allow the user to view the Extensions pane.\nWhen trying to do so, the user is redirected to the main settings page\nThe extension is hidden by default and cannot be turned off, but can be removed by right clicking on it and\nremoving from browser\nWe can see the hardcoded cookies that we have encountered earlier (image 27)\n\nImage 26\n\n\n-----\n\nImage 27\n\nAt this time the implant for Firefox does not seem to function. When attempting to install the extension on a host\nwithout any Chromium browser, the process hunged and no Firefox instance was started.\n\n**Indicators of Compromise:**\n\n# Files:\n\n6A84FE906EBBEED933D7776731FE7118E1E028C1 – *background.js\n\nB7CD274E9C4036DC3F27D347A8428B40437A7AFA – *manifest.json\n\nE1DCD96B5D14141E2F6EE50246E68EE7499E4D87 – %AppData%\\Local\\data.zip\n\n# Paths:\n\n%AppData%\\Local\\chrome_metric\n\n%AppData%\\Local\\chrome_pref\n\n%AppData%\\Local\\chrome_settings\n\n%AppData%\\Local\\chrome_tools\n\n%AppData%\\Local\\chrome_storage\n\n%AppData%\\Local\\chrome_configuration\n\n%AppData%\\Local\\chrome_bookmarks\n\n%AppData%\\Local\\chrome_flags\n\n%AppData%\\Local\\chrome_history\n\n%AppData%\\Local\\chrome_cast\n\n%AppData%\\Local\\chrome_view\n\n%AppData%\\Local\\chrome_tab\n\n\n-----\n\n%AppData%\\Local\\chrome_panel\n\n%AppData%\\Local\\chrome_window\n\n%AppData%\\Local\\chrome_control\n\n%AppData%\\Local\\chrome_glass\n\n%AppData%\\Local\\chrome_nav\n\n%AppData%\\Local\\Temp\\[a-zA-Z0-9]{8}\n\n%AppData%\\Local\\Temp\\[a-zA-Z0-9]{8}\\[a-zA-Z0-9]{8}.cs\n\n%AppData%\\Local\\Temp\\[a-zA-Z0-9]{8}\\[a-zA-Z0-9]{8}.dll\n\n%AppData%\\Local\\Temp\\[a-zA-Z0-9]{8}\\[a-zA-Z0-9]{8}.cmdline\n\n%AppData%\\Local\\Temp\\[a-zA-Z0-9]{8}\\[a-zA-Z0-9]{8}.out\n\n# Domains:\n\nMplayeran[.]autos\n\nWithyourrety[.]xyz\n\nFreychang[.]fun\n\n# Registry:\n\nComputer\\HKEY_CURRENT_USER\\SOFTWARE\\CodeSector\\Tera Copy\n\n# IPs:\n\n104.21.70.206\n\n172.67.139.75\n\n172.67.218.221\n\n104.21.51.237\n\n172.67.191.177\n\n# Network Indicators:\n\nString: GREASE is the word\n\nHEX:\n9b8d047b7db70d45ca16cf225df6e36ce3dcb0bec41dee190f8f20c859de8861967d771e2f4d572f4f7f5dfc04d5d5\n\n# Scriptblock and Memory\n\ngetGoogSearchUri\n\nhookSearchNavigation\n\nrunChromeOrEdge\n\n\n-----\n\nrunFirefox\n\nrunThread\n\nhxxps://$d/e?iver=$iv&u=$u&is=$is&ed=$di\n\nhxxps://$d/e?iver=$iv&did=$dd&ver=$ver&ed=$di\n\nhxxps://$d/err?iver=$iv&did=$dd&ver=$ver\n\nhxxps://$dl/err?iver=$iv&u=$u&is=$is\n\nhxxps://$d/x?u=$u&is=$is&lv=$lv&rv=$v\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-08-30 - ChromeLoader Browser Hijacker.pdf"
+    ],
+    "report_names": [
+        "2022-08-30 - ChromeLoader Browser Hijacker.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "9f101d9c-05ea-48b9-b6f1-168cd6d06d12",
+            "created_at": "2023-01-06T13:46:39.396409Z",
+            "updated_at": "2025-03-27T02:00:03.074969Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "CHROMIUM",
+                "ControlX",
+                "Red Dev 10",
+                "RedHotel",
+                "Red Scylla",
+                "TAG-22",
+                "BRONZE UNIVERSITY",
+                "AQUATIC PANDA",
+                "Charcoal Typhoon",
+                "BountyGlad"
+            ],
+            "source_name": "MISPGALAXY:Earth Lusca",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "6abcc917-035c-4e9b-a53f-eaee636749c3",
+            "created_at": "2022-10-25T16:07:23.565337Z",
+            "updated_at": "2025-03-27T02:02:09.868522Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Bronze University",
+                "Charcoal Typhoon",
+                "Chromium",
+                "Red Dev 10",
+                "Red Scylla"
+            ],
+            "source_name": "ETDA:Earth Lusca",
+            "tools": [
+                "Agentemis",
+                "AntSword",
+                "BIOPASS",
+                "BIOPASS RAT",
+                "BadPotato",
+                "Behinder",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Doraemon",
+                "FRP",
+                "Fast Reverse Proxy",
+                "FunnySwitch",
+                "HUC Port Banner Scanner",
+                "KTLVdoor",
+                "Mimikatz",
+                "NBTscan",
+                "POISONPLUG.SHADOW",
+                "PipeMon",
+                "RbDoor",
+                "RibDoor",
+                "RouterGod",
+                "SAMRID",
+                "ShadowPad Winnti",
+                "SprySOCKS",
+                "WinRAR",
+                "Winnti",
+                "XShellGhost",
+                "cobeacon",
+                "fscan",
+                "lcx",
+                "nbtscan"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d53593c3-2819-4af3-bf16-0c39edc64920",
+            "created_at": "2022-10-27T08:27:13.212301Z",
+            "updated_at": "2025-03-27T02:00:55.529662Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Earth Lusca",
+                "TAG-22",
+                "Charcoal Typhoon",
+                "CHROMIUM",
+                "ControlX"
+            ],
+            "source_name": "MITRE:Earth Lusca",
+            "tools": [
+                "Mimikatz",
+                "PowerSploit",
+                "Tasklist",
+                "certutil",
+                "Cobalt Strike",
+                "Winnti for Linux",
+                "Nltest",
+                "NBTscan",
+                "ShadowPad"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535938,
+    "ts_updated_at": 1743041735,
+    "ts_creation_date": 1662028218,
+    "ts_modification_date": 1662028218,
+    "files": {
+        "pdf": "https://archive.orkl.eu/d3a581c51858bfa0983adf3af859fe6962d5f5c9.pdf",
+        "text": "https://archive.orkl.eu/d3a581c51858bfa0983adf3af859fe6962d5f5c9.txt",
+        "img": "https://archive.orkl.eu/d3a581c51858bfa0983adf3af859fe6962d5f5c9.jpg"
+    }
+}

@@ -1,0 +1,42 @@
+{
+    "id": "907a25dd-85d7-4489-af61-0c0df15e6305",
+    "created_at": "2023-01-12T14:59:37.215212Z",
+    "updated_at": "2025-03-27T02:06:13.894888Z",
+    "deleted_at": null,
+    "sha1_hash": "63bcaa9290127af21af862fd635dedfd51d62653",
+    "title": "2021-03-29 - Jumping into Shellcode",
+    "authors": "",
+    "file_creation_date": "2022-05-28T15:57:56Z",
+    "file_modification_date": "2022-05-28T15:57:56Z",
+    "file_size": 449672,
+    "plain_text": "# SANS ISC: Jumping into Shellcode - SANS Internet Storm Center SANS Site Network Current Site SANS Internet Storm Center Other SANS Sites Help Graduate Degree Programs Security Training Security Certification Security Awareness Training Penetration Testing Industrial Control Systems Cyber Defense Foundations DFIR Software Security Government OnSite Training SANS ISC InfoSec Forums\n\n**[isc.sans.edu/forums/diary/Jumping+into+Shellcode/27256/](https://isc.sans.edu/forums/diary/Jumping+into+Shellcode/27256/)**\n\nMalware analysis is exciting because you never know what you will find. In previous\n[diaries[1], I already explained why it's important to have a look at groups of interesting](https://isc.sans.edu/forums/diary/Malware+Triage+with+FLOSS+API+Calls+Based+Behavior/26156)\nWindows API call to detect some behaviors. The classic example is code injection. Usually, it\nis based on something like this:\n\n1. You allocate some memory\n\n2. You get a shellcode (downloaded, extracted from a specific location like a section, a\nresource, ...)\n\n3. You copy the shellcode in the newly allocated memory region\n4. You create a new threat to execute it.\n\nBut it's not always like this! Last week, I worked on an incident involving a malicious DLL that\nI analyzed. The technique used to execute the shellcode was slightly different and therefore\ninteresting to describe it here.\n\nThe DLL was delivered on the target system with an RTF document. This file contained the\nshellcode:\n\n\n-----\n\n```\nremnux@remnux:/MalwareZoo/20210318$ rtfdump.py suspicious.rtf\n  1 Level 1    c=  3 p=00000000 l=  1619 h=   143;    5 b=    0 \nu=   539 \\rtf1\n  2 Level 2    c=  2 p=00000028 l=   91 h=    8;    2 b=    0 \nu=   16 \\fonttbl\n  3  Level 3   c=  0 p=00000031 l=   35 h=    3;    2 b=    0 \nu=    5 \\f0\n  4  Level 3   c=  0 p=00000056 l=   44 h=    5;    2 b=    0 \nu=   11 \\f1\n  5 Level 2    c=  0 p=00000087 l=   33 h=    0;    4 b=    0 \nu=    2 \\colortbl\n  6 Level 2    c=  0 p=000000ac l=   32 h=   13;    5 b=    0 \nu=    5 \\*\\generator\n  7 Remainder    c=  0 p=00000655 l= 208396 h=  17913;    5 b=    0 \nu= 182176 \n   Whitespace = 4878 NULL bytes = 838 Left curly braces = 832 Right curly\nbraces = 818\n\n```\nThis file is completely valid from an RTF format point of view, will open successfully, and\nrender a fake document. But the attacker appended the shellcode at the end of the file (have\na look at stream 7 which has a larger size and a lot of unexpected characters (\"u=\"). Let's try\nto have a look at the shellcode:\n```\nremnux@remnux:/MalwareZoo/20210318$ rtfdump.py suspicious.rtf -s 7 | head -20\n00000000: 0D 0A 00 6E 07 5D A7 5E 66 D2 97 1F 65 31 FD 7E ...n.].^f...e1.~\n00000010: D9 8E 9A C4 1C FC 73 79 F0 0B DA EA 6E 06 C3 03 ......sy....n...\n00000020: 27 7C BD D7 23 84 0B BD 73 0C 0F 8D F9 DF CC E7 '|..#...s.......\n00000030: 88 B9 97 06 A2 F9 4D 8C 91 D1 5E 39 A2 F5 9A 7E ......M...^9...~\n00000040: 4C D6 C8 A2 2D 88 D0 C4 16 E6 2B 1C DA 7B DD F7 L...-.....+..{..\n00000050: C4 FB 61 34 A6 BE 8E 2F 9D 7D 96 A8 7E 00 E2 E8 ..a4.../.}..~...\n00000060: BB A2 D9 53 1C F3 49 81 77 93 30 16 11 9D 88 93 ...S..I.w.0.....\n00000070: D2 6C 9D 56 60 36 66 BA 29 3E 73 45 CE 1A BE E3 .l.V`6f.)>sE....\n00000080: 5A C7 96 63 E0 D7 DF C9 21 2F 56 81 BD 84 6C 2D Z..c....!/V...l00000090: CF 4C 4E BE 90 23 47 DC A7 A9 8E A2 C3 A3 2E D1 .LN..#G.........\n\n```\nIt looks encrypted and a brute force of a single XOR encoding was not successful. Let's see\nhow it works in a debugger.\n\nFirst, the RTF file is opened to get a handle and its size is fetched with `GetFileSize() .`\nThen, a classic `VirtualAlloc() is used to allocate a memory space equal to the size of`\nthe file. Note the \"push 40\" which means that the memory will contain executable code\n(PAGE_EXECUTE_READWRITE):\n\n\n-----\n\nUsually, the shellcode is extracted from the file by reading the exact amount of bytes. The\nmalware jumps to the position of the shellcode start in the file and reads bytes until the EOF.\nIn this case, the complete RTF file is read then copied into the newly allocated memory:\n\nThis is the interesting part of the code which processes the shellcode:\n\n\n-----\n\nThe first line \" mov word ptr ss:[ebp-18], 658 \" defines where the shellcode starts in the\nmemory map. In a loop, all characters are XOR'd with a key that is generated in the function\n```\ndesktop.70901100 . The next step is to jump to the location of the decoded shellcode:\n\n```\nThe address where to jump is based on the address of the newly allocated memory\n(0x2B30000) + the offset (658). Let's have a look at this location (0x2B30658):\n\n\n-----\n\nSounds good, we have a NOP sled at this location + the string \"MZ\". Let's execute the\nunconditional JMP:\n\nWe reached our shellcode! Note the NOP instructions and also the method used to get the\nEIP:\n```\n02B30665 | E8 00000000 | call 2B3066A | call $0\n02B3066A | 5B     | pop ebx   |\n\n```\nNow the shellcode will execute and perform the next stages of the infection...\n\n[1] https://isc.sans.edu/forums/diary/Malware+Triage+with+FLOSS+API+Calls+Based+Beha\nvior/26156\n\n\n-----\n\nXavier Mertens (@xme)\nSenior ISC Handler - Freelance Cyber Security Consultant\n[PGP Key](https://keybase.io/xme/key.asc)\n\nI will be teaching next: Reverse-Engineering Malware: Malware Analysis Tools and\nTechniques - SANS London June 2022\nXme\n\n687 Posts\nISC Handler\nMar 29th 2021\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-03-29 - Jumping into Shellcode.pdf"
+    ],
+    "report_names": [
+        "2021-03-29 - Jumping into Shellcode.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673535577,
+    "ts_updated_at": 1743041173,
+    "ts_creation_date": 1653753476,
+    "ts_modification_date": 1653753476,
+    "files": {
+        "pdf": "https://archive.orkl.eu/63bcaa9290127af21af862fd635dedfd51d62653.pdf",
+        "text": "https://archive.orkl.eu/63bcaa9290127af21af862fd635dedfd51d62653.txt",
+        "img": "https://archive.orkl.eu/63bcaa9290127af21af862fd635dedfd51d62653.jpg"
+    }
+}

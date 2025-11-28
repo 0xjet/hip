@@ -1,0 +1,174 @@
+{
+    "id": "60fb62e2-cdea-4a1a-8b6e-0b269d3dfe88",
+    "created_at": "2023-01-12T15:01:45.50005Z",
+    "updated_at": "2025-03-27T02:13:16.661453Z",
+    "deleted_at": null,
+    "sha1_hash": "26ae1502e942d59f5dab35cf91af01757efcb178",
+    "title": "2021-05-26 - A Deep Dive into Packing Software CryptOne",
+    "authors": "",
+    "file_creation_date": "2022-05-29T01:39:01Z",
+    "file_modification_date": "2022-05-29T01:39:01Z",
+    "file_size": 255449,
+    "plain_text": "# A Deep Dive into Packing Software CryptOne\n\n**[deepinstinct.com/2021/05/26/deep-dive-packing-software-cryptone/](https://www.deepinstinct.com/2021/05/26/deep-dive-packing-software-cryptone/)**\n\nMay 26, 2021\n\n## 100% Prevention Score in the 2022 MITRE ATT&CK Evaluation for\n Enterprise\n\n[Learn more](https://www.deepinstinct.com/news/deep-instinct-shows-100-percent-score-in-mitre-evaluations)\n\nMay 26, 2021 | [Ron Ben Yizhak](https://www.deepinstinct.com/author/ron-ben-yizhak)\n\nThreat actors are continuously developing and refining methods to evade detection from\ncybersecurity professionals. One of the more creative ways to disguise threat activity comes\nin the form of packing software – a technique that applies a packing algorithm on malware to\n\n\n-----\n\nproduce a file that is harder to detect, analyze, and prevent. While packers are legitimate and\nquite useful in helping developers protect their code against illegal copying and reverse\nengineering, in the wrong hands packing software can be used for more sinister purposes.\n\nA packing software called CryptOne became popular recently among some major threat\nactors. It was first reported by [Fox-IT that the group behind Wastedlocker has begun using it,](https://blog.fox-it.com/2020/06/23/wastedlocker-a-new-ransomware-variant-developed-by-the-evil-corp-group/)\nas well as Netwalker, Gozi ISFB v3, ZLoader, and Smokeloader.\n\nThe CryptOne packer caught our attention when Emotet started using it. We followed the\nEmotet group closely and published multiple articles about the malware until the operation\n[was disrupted and taken down. Some of the most recent samples that were generated](https://www.europol.europa.eu/newsroom/news/world%E2%80%99s-most-dangerous-malware-emotet-disrupted-through-global-action)\nbefore the takedown were packed by CryptOne.\n\nAs we began analyzing the packed samples we found more malware families that are using\nCryptOne that weren’t reported by Fox-IT, such as Dridex, Qakbot and Cobaltstrike.\n\nIn this blog post we will describe the features of this packer that made it so popular among\nthreat actors, outline the unpacking process, and detail indicators that can determine if a\nsample was packed with CryptOne.\n\n## Features\n\n1. Multiple stages\n\nThe unpacking process is composed of two stages until the destined malware is executed.\nThe first stage is the DLL that is created by the packing software. This DLL contains\nencrypted data in one of its sections, which is copied to a RWX buffer and then decrypted.\nThis data contains a shellcode and another block of encrypted data. The shellcode is\ndescribed in greater detail later.\n\n\n-----\n\nBeginning of the\n\nshellcode after the decryption\n**2. Reduced entropy**\n\nAs mentioned, the payload is concealed as an encrypted resource. Encrypted data increase\nthe entropy of the data and causes the loader to look more suspicious. These samples\nallocate a buffer with RWX permissions, but the encrypted data is not copied to it as is.\nRather, it is copied in chunks while some bytes are skipped over. The bytes that are skipped\nover all have the same value. The reason for that might be to make the reverse engineering\nprocess more difficult, but our assumption is that the padding exists to reduce the entropy of\nthe encrypted data and make the loader less suspicious.\n\n\n-----\n\nEncrypted data padded with chunks of the same value.\n\n**3. Sandbox evasion:**\n\nSandboxes let the malware execute for a limited time. If the malware stays inactive until the\nanalysis is finished, it could avoid detection. Sandbox solutions are aware of this problem, so\nthey don’t allow the Sleep function to be used for extended periods of time.The loader\ncreated by the CryptOne software simulates Sleep. It contains small chunks of useless code\nthat runs in loops and performs system calls that are irrelevant for the malware's\nfunctionality. In some loaders, this code executed very quickly, but the Emotet loaders took\nalmost a minute to execute this code.Another explanation for this behavior is to fill the\nsandbox report with useless information so it will be harder to spot important alerts. Usually,\neach system call is logged by the sandbox and added to the report. The packer performs\nmany system calls to create a report that will be difficult to process.\n\n\n-----\n\n**4. Static analysis subversion**\n\n: The loader attempts to break static analysis by inserting code blocks that will never be\nexecuted and won’t interrupt the unpacking process but might confuse some disassembly\nalgorithms. For example, a function that contains infinite recursion that will always be\nskipped over.\n\n\n-----\n\n**5. Killswitch**\n\n[This characteristic was reported by Fox-IT](https://research.nccgroup.com/2020/06/23/wastedlocker-a-new-ransomware-variant-developed-by-the-evil-corp-group/)\n\nThe loader checks for the existence of the registry key: interface\\{b196b287-bab4-101a_b69c-00aa00341d07}_\n\nThe loader then enters an infinite loop if the key does not exist.The loader attempts to hide\nthe parameters that are sent to RegOpenKey. An arbitrary value is stored in a global\nvariable. This value is then copied to a register and decreased to reach the actual value that\nis required for the API call. This technique was observed in multiple families. Also, in some\nsamples the string of the registry key was decrypted in run-time.This killswitch might be a\nprecaution to avoid infecting the control servers. Another killswitch was found only in the\nEmotet loaders. It exits if it is executed under the user “JhD.”\n\n\n-----\n\n## The Shellcode\n\nThe data that is decrypted by the loader has the following structure: names of WinAPI,\nencrypted PE file, and then the shellcode. The shellcode decrypts the PE which is the\ndestined malware, and then performs reflective loading using the following steps:\n\n1. Resolve the addresses of the WinAPI names. This is performed using the DLL\n\nkernelbase. This is unusual as most shellcodes use kernel32. This might be to evade\ndetection by security products since it is known that many products place hooks inside\nfunctions from kernel32.\n2. Unmap the loader image using UnmapViewOfFile. This is another uncommon\n\ntechnique. Usually, a new buffer will be allocated at a random address, but the\nshellcode of CryptOne attempts to copy the destined malware to the same address that\nthe loader was in.\n3. Copy the PE headers and sections\n4. Fix the Import Address Table with the correct addresses\n5. Perform the relocations listed in the relocation table\n6 Change the memory protection of each section according to its characteristics\n\n\n-----\n\n7. Update the following fields in the LDR entry of the image: entry point, DLL base, and\n\nsize of image\n8. Update the image base address field in the PEB structure\n\nAfter all these steps are performed, the shellcode jumps to the entry point of the destined\nmalware.\n\n## Conclusion\n\nCryptOne is a sophisticated packer and presents a unique set of challenges to detect. It is\ncomposed of multiple stages of execution and attempts to evade detection by subverting\nstatic analysis, reducing the entropy of the data, and confusing disassembly algorithms. It\nalso tries to avoid sandbox detection and cause damage by staying inactive for a long\nduration and filling the report with useless information.\n\nThese features make it attractive for attackers that need to reduce the detection rate of their\nmalware, and we might see more threat actors use it in the near future.\n\nIf you’d like to hear more about our industry-leading approach to stopping malware, please\n[contact us and we’ll set up a demo.](https://www.deepinstinct.com/contact-us/)\n\n[/blog/why-emotets-latest-wave-is-harder-to-catch-than-ever-before](https://www.deepinstinct.com/blog/why-emotets-latest-wave-is-harder-to-catch-than-ever-before)\n\n[/blog/why-emotets-latest-wave-is-harder-to-catch-than-ever-before-part-2/](https://www.deepinstinct.com/blog/why-emotets-latest-wave-is-harder-to-catch-than-ever-before-part-2)\n\n[/blog/emotet-malware-2020/](https://www.deepinstinct.com/blog/emotet-malware-2020/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-05-26 - A Deep Dive into Packing Software CryptOne.pdf"
+    ],
+    "report_names": [
+        "2021-05-26 - A Deep Dive into Packing Software CryptOne.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "6c4f98b3-fe14-42d6-beaa-866395455e52",
+            "created_at": "2023-01-06T13:46:39.169554Z",
+            "updated_at": "2025-03-27T02:00:03.011739Z",
+            "deleted_at": null,
+            "main_name": "Evil Corp",
+            "aliases": [
+                "GOLD DRAKE"
+            ],
+            "source_name": "MISPGALAXY:Evil Corp",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "50068c14-343c-4491-b568-df41dd59551c",
+            "created_at": "2022-10-25T15:50:23.253218Z",
+            "updated_at": "2025-03-27T02:00:55.408128Z",
+            "deleted_at": null,
+            "main_name": "Indrik Spider",
+            "aliases": [
+                "Indrik Spider",
+                "Evil Corp",
+                "Manatee Tempest",
+                "DEV-0243",
+                "UNC2165"
+            ],
+            "source_name": "MITRE:Indrik Spider",
+            "tools": [
+                "Mimikatz",
+                "PsExec",
+                "Dridex",
+                "WastedLocker",
+                "BitPaymer",
+                "Cobalt Strike"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "9806f226-935f-48eb-b138-6616c9bb9d69",
+            "created_at": "2022-10-25T16:07:23.73153Z",
+            "updated_at": "2025-03-27T02:02:09.950784Z",
+            "deleted_at": null,
+            "main_name": "Indrik Spider",
+            "aliases": [
+                "Blue Lelantos",
+                "DEV-0243",
+                "Evil Corp",
+                "Gold Drake",
+                "Gold Winter",
+                "Manatee Tempest",
+                "UNC2165"
+            ],
+            "source_name": "ETDA:Indrik Spider",
+            "tools": [
+                "Advanced Port Scanner",
+                "Agentemis",
+                "Babuk",
+                "Babuk Locker",
+                "Babyk",
+                "BitPaymer",
+                "Bugat",
+                "Bugat v5",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Cridex",
+                "Dridex",
+                "EmPyre",
+                "EmpireProject",
+                "FAKEUPDATES",
+                "FakeUpdate",
+                "Feodo",
+                "FriedEx",
+                "Hades",
+                "IEncrypt",
+                "LINK_MSIEXEC",
+                "MEGAsync",
+                "Macaw Locker",
+                "Metasploit",
+                "Mimikatz",
+                "PayloadBIN",
+                "Phoenix Locker",
+                "PowerShell Empire",
+                "PowerSploit",
+                "PsExec",
+                "QNAP-Worm",
+                "Raspberry Robin",
+                "RaspberryRobin",
+                "SocGholish",
+                "Vasa Locker",
+                "WastedLoader",
+                "WastedLocker",
+                "cobeacon",
+                "wp_encrypt"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "b296f34c-c424-41da-98bf-90312a5df8ef",
+            "created_at": "2024-06-19T02:03:08.027585Z",
+            "updated_at": "2025-03-27T02:05:17.350153Z",
+            "deleted_at": null,
+            "main_name": "GOLD DRAKE",
+            "aliases": [
+                "Indrik Spider ",
+                "Evil Corp"
+            ],
+            "source_name": "Secureworks:GOLD DRAKE",
+            "tools": [
+                " Cobalt Strike",
+                " Covenant",
+                " Donut",
+                " Dridex",
+                " Hades",
+                " Koadic",
+                " LockBit",
+                " Macaw Locker",
+                " Mimikatz",
+                " Payload.Bin",
+                " Phoenix CryptoLocker",
+                " PowerSploit",
+                " Powershell Empire",
+                " SocGholish",
+                " WastedLocker",
+                "BitPaymer"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535705,
+    "ts_updated_at": 1743041596,
+    "ts_creation_date": 1653788341,
+    "ts_modification_date": 1653788341,
+    "files": {
+        "pdf": "https://archive.orkl.eu/26ae1502e942d59f5dab35cf91af01757efcb178.pdf",
+        "text": "https://archive.orkl.eu/26ae1502e942d59f5dab35cf91af01757efcb178.txt",
+        "img": "https://archive.orkl.eu/26ae1502e942d59f5dab35cf91af01757efcb178.jpg"
+    }
+}

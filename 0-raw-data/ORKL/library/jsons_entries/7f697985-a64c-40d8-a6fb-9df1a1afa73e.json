@@ -1,0 +1,81 @@
+{
+    "id": "7f697985-a64c-40d8-a6fb-9df1a1afa73e",
+    "created_at": "2023-01-12T15:03:51.315666Z",
+    "updated_at": "2025-03-27T02:09:18.686504Z",
+    "deleted_at": null,
+    "sha1_hash": "689315c1c35b99929295341696b9badf1ef4f12e",
+    "title": "2022-01-19 - Extracting Cobalt Strike Beacon Configurations",
+    "authors": "",
+    "file_creation_date": "2022-05-27T23:21:03Z",
+    "file_modification_date": "2022-05-27T23:21:03Z",
+    "file_size": 2542861,
+    "plain_text": "# Extracting Cobalt Strike Beacon Configurations\n\n**[elastic.github.io/security-research/intelligence/2022/01/03.extracting-cobalt-strike-beacon/article/](https://elastic.github.io/security-research/intelligence/2022/01/03.extracting-cobalt-strike-beacon/article/)**\n\n[Cobalt Strike](https://elastic.github.io/security-research/tags/#cobalt-strike)\n\n\n-----\n\n-----\n\n2022-01-19\n\n[Please check out our previous post on how to collect Cobalt Strike beacon implants. We’ll build on](https://elastic.github.io/security-research/intelligence/2022/01/02.collecting-cobalt-strike-beacons/article/)\nthat information to extract the configurations from the beacons.\n\nIn this post, we’ll walk through manually analyzing a Cobalt Strike C2 configuration from a binary\n[beacon payload using the excellent Cobalt Strike Configuration Extractor (CSCE). We’ll also cover](https://github.com/strozfriedberg/cobaltstrike-config-extractor)\nenabling some newer features of the Elastic Stack that will allow you to do this at scale across all your\nmonitored endpoints, by extracting the beacons from memory.\n\nShout Out\n\n[The team at Blackberry has a tremendous handbook called “Finding Beacons in the Dark”](https://www.blackberry.com/us/en/forms/enterprise/ebook-beacons-in-the-dark)\n(registration required) that dives extensively into Cobalt Strike beacon configurations. We’ll discuss a\nfew fields in the configurations here, but if you’re interested in learning about how beacons function,\nwe strongly recommend checking that resource out.\n\n## Cobalt Strike Configuration Extractor¶\n\nThe [Cobalt Strike Configuration Extractor (CSCE) by Stroz Friedberg is a “python library and set of](https://github.com/strozfriedberg/cobaltstrike-config-extractor)\nscripts to extract and parse configurations from Cobalt Strike beacons”.\n\nTo use the CSCE, we’ll create a Python virtual environment, activate it, and install the CSCE Python\npackage.\n\nSetting up the Cobalt Strike Configuration Extractor\nNext, we can run the CSCE on the beacon payload we extracted from memory to see if there’s any\ninteresting information stored we can collect (we’ll add the `--pretty flag to make the output easier`\nto read as a JSON document).\n\nViewing the atomic indicators of the CS beacon configuration\n\n\n-----\n\n```\n(csce) $ csce pretty beacon.exe\n{\n \"beacontype\": [\n  \"HTTPS\"\n ],\n \"sleeptime\": 45000,\n \"jitter\": 37,\n \"maxgetsize\": 1403644,\n \"spawnto\": \"GNEtW6h/g4dQzm0dOkL5NA==\",\n \"license_id\": 334850267,\n \"cfg_caution\": false,\n \"kill_date\": \"2021-12-24\",\n \"server\": {\n  \"hostname\": \"clevelandclinic[.]cloud\",\n  \"port\": 443,\n  \"publickey\": \"MIGfMA0GCSqGSIb3DQEBAQUAA4G...\n...truncated...\n\n```\nImmediately, we can see that the beacon uses HTTPS to communicate and that the domain is\n```\nclevelandclinic[.]cloud . This gives us an atomic indicator that we can do some analysis on.\n\n```\n[Looking at the Malleable Command and Control documentation, we can get a description of the](https://www.cobaltstrike.com/help-malleable-c2)\nconfiguration variables.\n\nAs an example, we can see that the `sleeptime is` `450000 milliseconds, which changes the default`\nbeacon check in from every 60-seconds to 450-seconds, or 7 ½ minutes. Additionally, we see a jitter\nof `37 meaning that there is a random jitter of 37% of` `450000 milliseconds ( 166,500`\nmilliseconds), so the beacon check-in could be between `283,000 and` `450,000 milliseconds (4.7 -`\n7.5 minutes).\n\nAdditionally, the `publickey field is used by the Cobalt Strike Team Server to encrypt`\ncommunications between the server and the beacon. This is different from normal TLS certificates\nused when accessing the C2 domain with a browser or data-transfer libraries, like `cURL . This field is`\nof note because the Team Server uses the same publickey for each beacon, so this field is valuable in\nclustering beacons with their perspective Team Server because threat actors often use the same\nTeam Server for multiple campaigns, so this data from the configuration can be used to link threat\nactors to multiple campaigns and infrastructure.\n\nContinuing to look at the configuration output, we can see another interesting section around the\n```\nprocess-inject nested field, stub :\n\n```\nViewing the process-inject.stub field\n\n\n-----\n\n```\n(csce) $ csce pretty beacon.exe\n...truncated...\n \"process-inject\": {\n  \"allocator\": \"NtMapViewOfSection\",\n  \"execute\": [\n   \"CreateThread 'ntdll!RtlUserThreadStart'\",\n   \"CreateThread\",\n   \"NtQueueApcThread-s\",\n   \"CreateRemoteThread\",\n   \"RtlCreateUserThread\"\n  ],\n  \"min_alloc\": 17500,\n  \"startrwx\": false,\n  \"stub\": \"IiuPJ9vfuo3dVZ7son6mSA==\",\n  \"transform-x86\": [\n   \"prepend '\\\\x90\\\\x90'\"\n  ],\n...\n\n```\nThe `stub field contains the Base64 encoded MD5 file hash of the Cobalt Strike Java archive. To`\nconvert this, we can again use CyberChef, this time add the “From Base64” and “To Hex” [recipes.](https://gchq.github.io/CyberChef/#recipe=From_Base64('A-Za-z0-9%2B/%3D',true)To_Hex('None',0)),%20ensure%20you%0Achange%20the%20%22Delimiter%22%20to%20%22None%22%20in%20the%20%22To%20Hex%22%20recip)\n\nNow that we have the MD5 value of the Java archive ( 222b8f27dbdfba8ddd559eeca27ea648 ), we\ncan check that against online databases like VirusTotal to get additional information, specifically, the\nSHA256 hash ( 7af9c759ac78da920395debb443b9007fdf51fa66a48f0fbdaafb30b00a8a858 ).\n\n\n-----\n\nFinally, we can verify the SHA256 hash with CobaltStrike to identify the version of the Java archive by\ngoing to [https://verify.cobaltstrike.com and searching for the hash.](https://verify.cobaltstrike.com/)\n\nNow we know that this beacon was created using a licensed version of Cobalt Strike 4.4.\n\nAnother field from the configuration that is helpful in clustering activity is the `license_id field.`\n\n\n-----\n\nViewing Cobalt Strike watermark\nThis is commonly referred to as the Watermark and is a 9-digit value that is unique per license. While\nthis value can be modified, it can still be used in conjunction with the `process-inject.stub and`\n```\npublickey fields (discussed above) to cluster infrastructure and activity groups.\n\n```\nThese are just a few fields that can be used to identify and cluster activities using configurations\nextracted from the Cobalt Strike beacon. If you’re interested in a very in-depth analysis of the\nconfiguration, we recommend you check out the Finding Beacons in the Dark Cobalt Strike handbook\nby the team at Blackberry.\n\n## Putting Analysis to Action¶\n\nTo test out our analyst playbook for collecting Cobalt Strike beacon payloads, their configurations, and\nmetadata contained within; we can apply those to more data to identify clusters of activity.\n\n\n-----\n\nIn the above illustration, we can cluster threat actors based on their shared uses of the beacon\npayload public key, which as we described above, is unique per Team Server. This would allow us to\ngroup multiple beacon payload hashes, infrastructure, and campaigns to a single Threat Actor.\n\nAs always, using the atomic indicators extracted from the beacon payload configurations\n( clevelandclinic[.]cloud in our example) allow you to identify additional shared infrastructure,\ntarget verticals, and threat actor capabilities.\n\n### This time at full speed¶\n\n[All of the steps that we’ve highlighted in this release, as well as the previous release, can be](https://elastic.github.io/security-research/intelligence/2022/01/02.collecting-cobalt-strike-beacons/article/)\n[automated and written into Elasticsearch using the Cobalt Strike Beacon Extraction project.](https://elastic.github.io/security-research/tools/cobalt-strike-extractor/)\n\n## Summary¶\n\nIn this post, we highlighted new features in the Elastic Stack that can be used to collect Cobalt Strike\nMalleable C2 beacon payloads. Additionally, we covered the processes to build Fleet policies to\nextract beacon payloads from memory and their configurations.\n\nThese Fleet policies and processes enable security analysts to collect Cobalt Strike beacon payloads\nand their configurations to identify threat actor controlled infrastructure and cluster activity.\n\n## Artifacts¶\n\n**Observable** **Type** **Note**\n\n`697fddfc5195828777622236f2b133c0a24a6d0dc539ae7da41798c4456a3f89` SHA256 Cobalt\nStrike\nMalleable\nC2\nbeacon\npayload\n\n\n-----\n\n**Observable** **Type** **Note**\n\n`7475a6c08fa90e7af36fd7aa76be6e06b9e887bc0a6501914688a87a43ac7ac4` SHA256 Cobalt\nStrike\nMalleable\nC2\nbeacon\npayload\n\n`f9b38c422a89d73ebdab7c142c8920690ee3a746fc4eea9175d745183c946fc5` SHA256 Cobalt\nStrike\nMalleable\nC2\nbeacon\npayload\n\n\n`clevelandclinic[.]cloud` domainname\n\n`104[.]197[.]142[.]19` ipv4addr\n\n`192[.]64[.]119[.]19` ipv4addr\n\n## Artifacts¶\n\n\nCobalt\nStrike\nMalleable\nC2\ndomain\n\nCobalt\nStrike\nMalleable\nC2 IP\naddress\n\nCobalt\nStrike\nMalleable\nC2 IP\naddress\n\n\nArtifacts are also available for download in both ECS and STIX format in a combined zip bundle.\n\n[Download indicators.zip](https://elastic.github.io/security-research/intelligence/2022/01/03.extracting-cobalt-strike-beacon/indicators.zip)\n\nLast update: January 31, 2022\nCreated: January 19, 2022\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-01-19 - Extracting Cobalt Strike Beacon Configurations.pdf"
+    ],
+    "report_names": [
+        "2022-01-19 - Extracting Cobalt Strike Beacon Configurations.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "5d2bd376-fcdc-4c6a-bc2c-17ebbb5b81a4",
+            "created_at": "2022-10-25T16:07:23.667223Z",
+            "updated_at": "2025-03-27T02:02:09.916086Z",
+            "deleted_at": null,
+            "main_name": "GCHQ",
+            "aliases": [
+                "Government Communications Headquarters",
+                "Operation Socialist"
+            ],
+            "source_name": "ETDA:GCHQ",
+            "tools": [
+                "Prax",
+                "Regin",
+                "WarriorPride"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535831,
+    "ts_updated_at": 1743041358,
+    "ts_creation_date": 1653693663,
+    "ts_modification_date": 1653693663,
+    "files": {
+        "pdf": "https://archive.orkl.eu/689315c1c35b99929295341696b9badf1ef4f12e.pdf",
+        "text": "https://archive.orkl.eu/689315c1c35b99929295341696b9badf1ef4f12e.txt",
+        "img": "https://archive.orkl.eu/689315c1c35b99929295341696b9badf1ef4f12e.jpg"
+    }
+}

@@ -1,0 +1,42 @@
+{
+    "id": "94d9676e-180a-4a23-bed2-d70b7a868941",
+    "created_at": "2023-01-12T15:00:39.339531Z",
+    "updated_at": "2025-03-27T02:05:41.253412Z",
+    "deleted_at": null,
+    "sha1_hash": "5be3565e5698cb9b87c2abfb86fc9b5ad4317fcc",
+    "title": "2018-09-02 - Weekend Project- A Custom IDA Loader Module For The Hidden Bee Malware Family",
+    "authors": "",
+    "file_creation_date": "2022-05-28T18:26:38Z",
+    "file_modification_date": "2022-05-28T18:26:38Z",
+    "file_size": 193418,
+    "plain_text": "# Weekend Project: A Custom IDA Loader Module for the Hidden Bee Malware Family\n\n**msreverseengineering.com/blog/2018/9/2/weekend-project-a-custom-ida-loader-module-for-the-hidden-bee-malware-**\nfamily\n\nSeptember 2, 2018\n\nSeptember 2, 2018 [Rolf Rolles](http://10.10.0.46/blog?author=5111cf9ee4b0a36262da10df)\n\nHere's a half-day project that I did this weekend for my own edification. Perhaps someone\n[will benefit from the source code in the future.](https://github.com/RolfRolles/HiddenBeeLoader/blob/master/HBLoad.py)\n\nWhile reading hasherezade's research on the Hidden Bee malware family's custom file\n[format (samples here), I was struck with the thought that this use-case seemed particularly](https://github.com/InQuest/malware-samples)\nwell-suited for an IDA custom loader module. The IDA loader module approach has a few\nadvantages over the previous approach: it's fully automated, requiring no additional\nprograms, plugins, or scripts; the imports have proper names and type information, allowing\nIDA's ordinary P.I.T. algorithms to propagate the information; and the user can relocate the\ndatabase to an arbitrary base address.\n\n\n-----\n\nGiven that custom loaders are the only variety of IDA plugin that I haven t yet written, this\nseemed like a nice small-scope project for the weekend to round out my knowledge. My\nvery minor contribution with this entry is the IDA custom loader for the Hidden Bee format,\n[which can be found on my GitHub. The IDAPython code requires that Ero Carrera's pefile](https://github.com/RolfRolles/HiddenBeeLoader/blob/master/HBLoad.py)\nmodule be installed, say via pip.\n\n## Hidden Bee\n\nIn brief, the Hidden Bee malware family distributes payloads in a customized file format,\nwhich is a majorly stripped-down version of the PE file format. You can see all of the details\nin [hasherezade's write-up. I did no original malware analysis for this project; I merely read](https://blog.malwarebytes.com/threat-analysis/2018/08/reversing-malware-in-a-custom-format-hidden-bee-elements/)\nher blog entry, figured out how to convert the details into a loader plugin, and then\ndebugged it against the sample links she gave. As usual, Chris Eagle's The IDA Pro Book,\n2nd Edition was useful. Some details about the loader API have changed with the IDA 7.x\nAPI port, but [Hex-Rays' porting guide was informative, and the loader examples in the IDA](https://www.hex-rays.com/products/ida/7.0/docs/api70_porting_guide.shtml)\n7.1 SDK have also been ported to the newest API.\n\n## IDA Loader Modules in Brief\n\nAn IDA loader module is simply an IDA plugin with a well-defined interface. IDA loader\nmodules will be called when loading any file into IDA. They have two primary\nresponsibilities:\n\n1. Given access to the bytes of a file, determine whether the file is of a format that the\n\nloader module can handle. Every IDA loader module must export a function named\naccept_file for this purpose. This function returns 0 if it can't recognize the file format,\nor a non-zero value if it can.\n2. If the file type can be loaded by the module, and the user chooses to use this module\n\nto load the file, perform the actual loading process e.g. creating segments within the\nIDB, copying bytes out of the file into the segments, processing relocations, parsing\nimports, adding entrypoints, and so on. Every IDA loader module must export a\nfunction named load_file for this purpose.\n\n[Both of these functions take as input an \"linput_t *\" object that behaves like a C FILE *](https://www.hex-rays.com/products/ida/support/idapython_docs/ida_idaapi.loader_input_t-class.html)\nobject, which supports seeking to specified positions, reading byte arrays out of the file, and\nso on. Since Hidden Bee's format includes relocations, I chose to implement a third,\noptional IDA loader module function: move_segm. This function will be called by the IDA\nkernel when the user requests that the database be relocated to another address.\n\n## Writing a Loader Module for Hidden Bee\n\nAfter reading the aforementioned write-up, I figured that the only difficulties in loading\nHidden Bee images in IDA would be A) that the Hidden Bee customized header specifies\nAPI imports via hash rather than by name and B) that it includes relocation information\n\n\n-----\n\nRelocations and import lookup via hash are simple enough conceptually, but the precise\ndetails about how best to integrate them with IDA are not obvious. Sadly, I did not feel\nconfident in these tasks even after reading the loader module examples in the SDK. Four\nout of the five hours I spent on this project were reverse engineering\n%IDADIR%\\loaders\\pe.dll -- the loader module for the PE file format -- focusing in particular\non its handling of relocations and imports. As expected, the results are idiosyncratic and I\ndon't expect them to generalize well.\n\n## Imports\n\nFor dealing with the imports by hash, hasherezade's toolchain ultimately generates a textual\nfile with the addresses of the import hash names and their corresponding plaintext API\nstring. Then, she uses one of her other plugins to create repeating comments at the\naddresses of the import hash DWORDs. Instead, I wanted IDA to show me the import\ninformation the same way it would in a normal binary -- i.e., I wanted IDA to set the proper\ntype signature on each import. I figured this might be difficult, but after a few hours reverse\nengineering the virtual functions for the pe_import_visitor_t class (partially documented in\n%IDASDK%\\ldr\\pe\\common.hpp), it turns out that all you have to do to trigger this\nfunctionality is simply to set the name of the DWORD to something from a loaded type\nlibrary.\n\nHere's a screenshot showing IDA successfully applying the type information to the APIs:\n\n## Relocations\n\nFor the IMAGE_REL_BASED_HIGHLOW relocations common in PE files, each can\nultimately be processed via straightforward translation of the relocation information into\nIDA's fixup_data_t data structures, and then passing them to the set_fixup API. The SDK\nexamples did not give a straightforward idea of what I needed to do to handle PE\nIMAGE_REL_BASED_HIGHLOW relocations properly, so I reverse engineered pe.dll to\n\n\n-----\n\nfigure out exactly what needed to happen with the relocations. (Fortunately, reverse\nengineering IDA is trivial due to the availability of its SDK.) If you wish, you can see the\nresults in the do_reloc function. Don't ask me to explain why it works; however, it does work.\n\nHere's a before and after comparison of rebasing the database from base address 0x0 to\nbase address 0x12340000. Note particularly that the red underlined bytes change. Before:\n\nAfter:\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2018/2018-09-02 - Weekend Project- A Custom IDA Loader Module For The Hidden Bee Malware Family.pdf"
+    ],
+    "report_names": [
+        "2018-09-02 - Weekend Project- A Custom IDA Loader Module For The Hidden Bee Malware Family.pdf"
+    ],
+    "threat_actors": [],
+    "ts_created_at": 1673535639,
+    "ts_updated_at": 1743041141,
+    "ts_creation_date": 1653762398,
+    "ts_modification_date": 1653762398,
+    "files": {
+        "pdf": "https://archive.orkl.eu/5be3565e5698cb9b87c2abfb86fc9b5ad4317fcc.pdf",
+        "text": "https://archive.orkl.eu/5be3565e5698cb9b87c2abfb86fc9b5ad4317fcc.txt",
+        "img": "https://archive.orkl.eu/5be3565e5698cb9b87c2abfb86fc9b5ad4317fcc.jpg"
+    }
+}

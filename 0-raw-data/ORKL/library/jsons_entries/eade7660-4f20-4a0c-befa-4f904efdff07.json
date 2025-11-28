@@ -1,0 +1,160 @@
+{
+    "id": "eade7660-4f20-4a0c-befa-4f904efdff07",
+    "created_at": "2023-04-05T02:09:49.783278Z",
+    "updated_at": "2025-03-27T02:13:37.118642Z",
+    "deleted_at": null,
+    "sha1_hash": "0b340e028aa50ca774da3b1b37fce282b88ff682",
+    "title": "2023-03-14 - Magniber ransomware actors used a variant of Microsoft SmartScreen bypass",
+    "authors": "",
+    "file_creation_date": "2023-04-03T08:32:47Z",
+    "file_modification_date": "2023-04-03T08:32:47Z",
+    "file_size": 272502,
+    "plain_text": "# Magniber ransomware actors used a variant of Microsoft SmartScreen bypass\n\n**[blog.google/threat-analysis-group/magniber-ransomware-actors-used-a-variant-of-microsoft-smartscreen-bypass/](https://blog.google/threat-analysis-group/magniber-ransomware-actors-used-a-variant-of-microsoft-smartscreen-bypass/)**\n\nBenoit Sevens March 14, 2023\n\nThreat Analysis Group\n\nGoogle’s Threat Analysis Group (TAG) recently discovered usage of an unpatched security\nbypass in Microsoft’s SmartScreen security feature, which financially motivated actors are\nusing to deliver the Magniber ransomware without any security warnings. The attackers are\ndelivering MSI files signed with an invalid but specially crafted Authenticode signature. The\nmalformed signature causes SmartScreen to return an error that results in bypassing the\nsecurity warning dialog displayed to users when an untrusted file contains a Mark-of-the-Web\n(MotW), which indicates a potentially malicious file has been downloaded from the internet.\n\nTAG reported its findings to Microsoft on February 15, 2023. The security bypass was\n[patched today as CVE-2023-24880 in Microsoft’s Patch Tuesday release.](https://msrc.microsoft.com/update-guide/vulnerability/CVE-2023-24880)\n\nTAG has observed over 100,000 downloads of the malicious MSI files since January 2023,\nwith over 80% to users in Europe — a notable divergence from Magniber’s typical targeting,\nwhich usually focuses on South Korea and Taiwan. [Google Safe Browsing displayed user](https://security.googleblog.com/2022/12/enhanced-protection-strongest-level-of.html)\nwarnings for over 90% of these downloads.\n\n## The Previous SmartScreen Bypass: CVE-2022-44698\n\nIn September 2022, Magniber ransomware was delivered using JScript files. In October, HP\n[Threat Research blogged about these Magniber campaigns, upon which a security](https://threatresearch.ext.hp.com/magniber-ransomware-switches-to-javascript-targeting-home-users-with-fake-software-updates/)\n[researcher noticed a bug in SmartScreen that allowed an attacker to use a malformed](https://twitter.com/wdormann/status/1582466468968792064)\nAuthenticode signature to bypass SmartScreen security warnings. On October 28, 0patch\n[published additional research and patch recommendations.](https://blog.0patch.com/2022/10/free-micropatches-for-bypassing-motw.html)\n\nIn mid-November, other threat actors adopted the same bypass to spread the Qakbot\nmalware. The Authenticode signatures in the November 2022 Qakbot campaigns were\nstrikingly similar to those used by Magniber, suggesting the two operators either purchased\nthe bypasses from the same provider, or copied each others’ technique. Microsoft patched\n[the security bypass in December 2022 as CVE-2022-44698.](https://msrc.microsoft.com/update-guide/en-US/vulnerability/CVE-2022-44698)\n\nSimilar to the bypass occurring now, Magniber ransomware actors used CVE-2022-44698\nbefore a patch was made available. However, the Magniber actors used JScript files during\nthe previous campaigns, whereas in the current campaign they are using MSI files with a\n\n\n-----\n\ndifferent type of malformed signature.\n\n## Security Bypass Details\n\n**CVE-2022-44698**\n\n**_Root cause analysis_**\n\n[As described in 0patch’s blog, when the explorer.exe process runs a file, the shdocvw.dll](https://blog.0patch.com/2022/10/free-micropatches-for-bypassing-motw.html)\nmodule will perform a request to the AppReputationService interface implemented in\nsmartscreen.exe to get a verdict.\n\nflow chart of a security warning dialog logic\nHigh level overview of security warning dialog logic\n\nBy default, shdocvw.dll’s DoSafeOpenPromptForShellExec will not display a security\nwarning, and if the smartscreen.exe request returns an error for whatever reason,\nDoSafeOpenPromptForShellExec proceeds with using the default option and runs the file\nwithout displaying any security warnings to the user.\n\nan image showing code\nshdocvw.dll’s DoSafeOpenPromptForShellExec pseudocode\n\nIn CVE-2022-44698’s case, a JScript file with a malformed signature was used to force the\nSmartScreen request to return an error, triggering the behavior described above to bypass\nthe security warning. The error was raised while parsing the file’s signature in the function\nwindows::security::signature_info::retrieve of smartscreen.exe.\n\nan image of code\nsmartscreen.exe’s windows::security::signature_info::retrieve pseudocode\n\nSpecifically, this function will first call WTGetSignatureInfo in wintrust.dll to retrieve a\n[CERT_CONTEXT structure pointer cert_context and a HANDLE wvt_state_data. The](https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/ns-wincrypt-cert_context)\ncert_context, for a well formed signature, will point to the signer certificate, which is the first\ncertificate in the certificate chain.\n\nNext, the function calls [WTHelperProvDataFromStateData on wvt_state_data, which returns](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/nf-wintrust-wthelperprovdatafromstatedata)\na [CRYPT_PROVIDER_DATA structure pointer crypt_provider_data. Now, if](https://learn.microsoft.com/en-us/windows/win32/api/wintrust/ns-wintrust-crypt_provider_data)\ncrypt_provider_data and its member hMsg are non-NULL, but cert_context is NULL, an\nE_INVALIDARG error is raised.\n\n**_Bypass_**\n\n\n-----\n\n[Authenticode signatures are encoded in PKCS #7 SignedData structures. A SignedData](https://datatracker.ietf.org/doc/html/rfc2315#section-9.1)\nstructure contains amongst other things a list of certificates that are required to validate the\n[signature and a SignerInfo structure. The SignerInfo structure in its turn contains the issuer](https://datatracker.ietf.org/doc/html/rfc2315#section-9.2)\nand serial number of the signer certificate, which can then be looked up in the SignedData\ncertificates.\n\nIn practice, the attackers achieved a NULL cert_context by providing an Authenticode\nsignature where the SignerInfo certificate serial number can not be found among the\nSignedData certificates. This leads to wintrust.dll not being able to find the certificate for the\nsigner, in which case WTGetSignatureInfo will return a NULL value for cert_context.\n\nimage of code\nMagniber used CVE-2022-44698 by providing a signer certificate serial number that is not\npresent in the signature certificates.\n\nIt’s noteworthy that the signatures in the November 2022 Qakbot campaigns are highly\nsimilar to the Magniber signatures, except for a few randomized fields.\n\nan image showing code\nComparison between the certificates included in a Magniber and Qakbot signature\n\n**CVE-2023-24880**\n\n**_Root cause analysis_**\n\nMicrosoft patched CVE-2022-44698 in smartscreen.exe, by not raising an error in this\nspecific case, but rather taking an alternative path.\n\nimage of code\nCVE-2022-44698 patch of windows::security::signature_info::retrieve\n\nThe problem with this patch is that THROW_HR is called from many other places in\nsmartscreen.exe when different errors are encountered. Every one of these is a potential\nopportunity for an attacker to return an error to shdocvw.dll, which will fail open and not\ndisplay a security warning.\n\nThis is exactly the route the attackers took with the new bypass. The signature in this case\nleads to a valid cert_context, so the CVE-2022-44698 patch is not applicable. Further on\nwindows::security::signature_info::retrieve calls\nwindows::security::authenticode_information::create. This function checks if\ncrypt_provider_data->pPDSip->psIndirectData is non-NULL. If not, it calls THROW_HR\nwhich will again return an error to shdocvw.dll.\n\nimage of code\nsmartscreen.exe’s windows::security::authenticode_information::create pseudocode\n\n\n-----\n\n**_Bypass_**\n\nTo obtain a NULL crypt_provider_data->pPDSip->psIndirectData, the attackers corrupted the\nASN1 numerical identifier (NID) of the SPC_INDIRECT_DATA_OBJID, a Authenticode\nspecific Object Identifier (OID) which contains, for example, the message digest of the\nsigned file.\n\nimage of code\nMagniber corrupted the SPC_INDIRECT_DATA_OBJID NID, which leads to\ncrypt_provider_data->pPDSip->psIndirectData being NULL and an error being raised.\n\n## Conclusion\n\n[This security bypass is an example of a larger trend Project Zero](https://googleprojectzero.blogspot.com/2022/06/2022-0-day-in-wild-exploitationso-far.html) [has highlighted previously:](https://googleprojectzero.blogspot.com/2021/02/deja-vu-lnerability.html)\nvendors often release narrow patches, creating an opportunity for attackers to iterate and\ndiscover new variants. When patching a security issue, there is tension between a localized,\nreliable fix, and a potentially harder fix of the underlying root cause issue. Because the root\ncause behind the SmartScreen security bypass was not addressed, the attackers were able\nto quickly identify a different variant of the original bug. Project Zero has written and\npresented extensively on this trend, and recommends several practices to ensure bugs are\n[correctly and comprehensively fixed.](https://googleprojectzero.blogspot.com/2022/06/2022-0-day-in-wild-exploitationso-far.html)\n\n## Indicators of compromise (IoCs)\n\nad89fb8819f98e38cddf6135004e1d93e8c8e4cba681ba16d408c4d69317eb47 (CVE2022-44698, Magniber)\n77e3a3bc905f9a172e95ba70bf01c3236e6c6423f537fa728b1bda5a40a77fe3 (CVE2022-44698, Qakbot)\n8efb4e8bc17486b816088679d8b10f8985a31bc93488c4b65116f56872c1ff16 (CVE2023-24880, Magniber)\n\nPOSTED IN:\n\n[Threat Analysis Group](https://blog.google/threat-analysis-group/%20)\n\nRelated stories\n\nThreat Analysis Group\n**TAG Bulletin: Q1 2023**\n\nThreat Analysis Group shares their Q1 2023 bulletin.\n\nBy Shane Huntley\n\nMar 30, 2023\n\n\n-----\n\nThreat Analysis Group\n**Spyware vendors use 0-days and n-days against popular platforms**\n\nGoogle’s Threat Analysis Group (TAG) tracks actors involved in information operations\n(IO), government backed attacks and financially motivated abuse. For years, TAG\nhas…\n\nBy Clement Lecigne\n\nMar 29, 2023\n\nThreat Analysis Group\n**Fog of war: how the Ukraine conflict transformed the cyber threat landscape**\n\nBy Shane Huntley\n\nFeb 16, 2023\nThreat Analysis Group\n**Over 50,000 instances of DRAGONBRIDGE activity disrupted in 2022**\n\nAn update on TAG's work to disrupt the information operation network\nDRAGONBRIDGE.\n\nBy Zak Butler Jonas Taege\n\nJan 26, 2023\n\n\n-----\n\nThreat Analysis Group\n**TAG Bulletin: Q4 2022**\n\nThreat Analysis Group shares their Q4 bulletin.\n\nBy Shane Huntley\n\nJan 25, 2023\nThreat Analysis Group\n**Internet Explorer 0-day exploited by North Korean actor APT37**\n\nGoogle’s Threat Analysis Group describes a new 0-day vulnerability attributed to North\n[Korean government-backed actors known as APT37.](https://blog.google/threat-analysis-group/internet-explorer-0-day-exploited-by-north-korean-actor-apt37/)\n\nBy Clement Lecigne\nBenoit Sevens\n\nDec 07, 2022\n.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2023/2023-03-14 - Magniber ransomware actors used a variant of Microsoft SmartScreen bypass.pdf"
+    ],
+    "report_names": [
+        "2023-03-14 - Magniber ransomware actors used a variant of Microsoft SmartScreen bypass.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bbe36874-34b7-4bfb-b38b-84a00b07042e",
+            "created_at": "2022-10-25T15:50:23.375277Z",
+            "updated_at": "2025-03-27T02:00:55.457787Z",
+            "deleted_at": null,
+            "main_name": "APT37",
+            "aliases": [
+                "APT37",
+                "InkySquid",
+                "ScarCruft",
+                "Group123",
+                "TEMP.Reaper",
+                "Ricochet Chollima"
+            ],
+            "source_name": "MITRE:APT37",
+            "tools": [
+                "BLUELIGHT",
+                "CORALDECK",
+                "KARAE",
+                "SLOWDRIFT",
+                "ROKRAT",
+                "SHUTTERSPEED",
+                "POORAIM",
+                "HAPPYWORK",
+                "Final1stspy",
+                "Cobalt Strike",
+                "NavRAT",
+                "DOGCALL",
+                "WINERACK"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "552ff939-52c3-421b-b6c9-749cbc21a794",
+            "created_at": "2023-01-06T13:46:38.742547Z",
+            "updated_at": "2025-03-27T02:00:02.906537Z",
+            "deleted_at": null,
+            "main_name": "APT37",
+            "aliases": [
+                "ScarCruft",
+                "Venus 121",
+                "Moldy Pisces",
+                "Group 123",
+                "APT 37",
+                "Group123",
+                "Operation Daybreak",
+                "Operation Erebus",
+                "Red Eyes",
+                "TA-RedAnt",
+                "InkySquid",
+                "Reaper Group",
+                "Ricochet Chollima",
+                "ATK4",
+                "G0067"
+            ],
+            "source_name": "MISPGALAXY:APT37",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "a90ae795-3c01-4419-8365-07b68df72661",
+            "created_at": "2024-07-02T02:00:04.158227Z",
+            "updated_at": "2025-03-27T02:00:03.394622Z",
+            "deleted_at": null,
+            "main_name": "Dragonbridge",
+            "aliases": [
+                "Spamouflage Dragon"
+            ],
+            "source_name": "MISPGALAXY:Dragonbridge",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f0bccc3d-ad77-49c4-8dfd-8a8a8d6fba26",
+            "created_at": "2024-05-01T02:03:08.134022Z",
+            "updated_at": "2025-03-27T02:05:17.415028Z",
+            "deleted_at": null,
+            "main_name": "NICKEL FOXCROFT",
+            "aliases": [
+                "Group 123 ",
+                "Moldy Pisces ",
+                "RICOCHET CHOLLIMA ",
+                "Reaper ",
+                "ScarCruft ",
+                "APT37 "
+            ],
+            "source_name": "Secureworks:NICKEL FOXCROFT",
+            "tools": [
+                "ROKRAT"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1680660589,
+    "ts_updated_at": 1743041617,
+    "ts_creation_date": 1680510767,
+    "ts_modification_date": 1680510767,
+    "files": {
+        "pdf": "https://archive.orkl.eu/0b340e028aa50ca774da3b1b37fce282b88ff682.pdf",
+        "text": "https://archive.orkl.eu/0b340e028aa50ca774da3b1b37fce282b88ff682.txt",
+        "img": "https://archive.orkl.eu/0b340e028aa50ca774da3b1b37fce282b88ff682.jpg"
+    }
+}

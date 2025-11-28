@@ -1,0 +1,181 @@
+{
+    "id": "41c4ecd7-a534-47f8-a7b3-2ebeb8ab5ecc",
+    "created_at": "2023-01-12T15:07:04.686553Z",
+    "updated_at": "2025-03-27T02:09:18.618583Z",
+    "deleted_at": null,
+    "sha1_hash": "91aac2772c947f251299211b4a3c32f7a4170ee6",
+    "title": "2022-10-31 - ICEDIDs network infrastructure is alive and well",
+    "authors": "",
+    "file_creation_date": "2022-11-28T18:58:11Z",
+    "file_modification_date": "2022-11-28T18:58:11Z",
+    "file_size": 1201832,
+    "plain_text": "# ICEDIDs network infrastructure is alive and well\n\n**elastic.co/security-labs/icedids-network-infrastructure-is-alive-and-well**\n\n## Key takeaways\n\nICEDID is a full-featured trojan that uses TLS certificate pinning to validate C2 infrastructure.\nWhile the trojan has been tracked for several years, it continues to operate relatively unimpeded.\nA combination of open source collection tools can be used to track the C2 infrastructure.\n\nAdditional ICEDID resources\n\nFor information on the ICEDID configuration extractor and C2 infrastructure validator, check out our posts detailing this:\n\n[ICEDID configuration extractor](https://www.elastic.co/security-labs/icedid-configuration-extractor)\n[ICEDID network infrastructure checking utility](https://assets.contentstack.io/v3/assets/bltefdd0b53724fa2ce/bltb86bffd1aef20c5b/6351aba34e565f1cdce29da5/icedid-checker.tar.gz)\n\n## Preamble\n\n[ICEDID, also known as Bokbot, is a modular banking trojan first discovered in 2017 and has remained active over the last several years. It has](https://malpedia.caad.fkie.fraunhofer.de/details/win.icedid)\nbeen recently known more for its ability to load secondary payloads such as post-compromise frameworks like Cobalt Strike, and has been\n[linked to ransomware activity.](https://www.trendmicro.com/en_us/research/21/a/expanding-range-and-improving-speed-a-ransomexx-approach.html)\n\nICEDID is implemented through a multistage process with different components. Initial access is typically gained through phishing campaigns\nleveraging malicious documents or file attachments.\n\nWe’ll be discussing aspects of ICEDID in the next couple of sections as well as exploring our analysis technique in tracking ICEDID\ninfrastructure.\n\nInitial access\nCommand and control\nPersistence\nCore functionality\nNetwork infrastructure\n\nResearch focus\n\nAs mentioned in the Preamble, ICEDID has been around for many years and has a rich feature set. As the malware has been analyzed\nmultiple times over the years, we are going to focus on some of the more interesting features.\n\n## Initial access\n\nICEDID infections come in many different forms and have been adjusted using different techniques and novel execution chains to avoid\ndetection and evade antimalware products. In this sample, ICEDID was delivered through a phishing email. The email contains a ZIP archive\nwith an embedded ISO file. Inside the ISO file is a Windows shortcut (LNK) that, when double-clicked, executes the first stage ICEDID loader\n(DLL file).\n\nInitial infection \nWindows shortcut & DLL\n\n\n-----\n\ne do s s o tcut ta get a ue s co gu ed to e ecute % **d %\\syste** **3 \\ u d 3** **e e o as us d,** **ug** **t ca** g t e **ug** **t**\nexport, which starts the initial stage of the ICEDID infection. This stage is responsible for decrypting the embedded configuration, downloading\na GZIP payload from a C2 server, writing an encrypted payload to disk (license.dat), and transferring execution to the next stage.\n\nWindows shortcut command-line\n\nThe first ICEDID stage starts off by deciphering an encrypted configuration blob of data stored within the DLL that is used to hold C2 domains\nand the campaign identifier. The first 32 bytes represent the XOR key; the encrypted data is then deciphered with this key.\n\nConfiguration decryption function\n\n## Command and control\n\nICEDID constructs the initial HTTP request using cookie parameters that contain hexadecimal data from the infected machine used for\nfingerprinting the victim machine. This request will proceed to download the GZIP payload irrespective of any previous identifying information.\n\n[eSentire has published research that describes in detail how the gads, gat, ga, u, and io cookie parameters are created.](https://www.esentire.com/blog/esentire-threat-intelligence-malware-analysis-gootloader-and-icedid)\n\nICEDID HTTP request\n\n\n-----\n\ne o a e t e coo e pa a ete s a d e a p e assoc ated a ues be d t e\n\n**Parameter** **Example Data** **Note**\n\n__gads 3000901376:1:16212:134 Contains ca\nflag, GetTick\nnumber of ru\nprocesses\n\n__gat 10.0.19044.64 OS version,\narchitecture\n\n__ga 1.591594.1635208534.76 Hypervisor/p\ninformation\nCPUID/Swit\nfunction\n\n__u 4445534B544F502D4A4B4738455432:6A6F656C2E68656E646572736F6E:33413945354637303742414339393534 Stores comp\nusername, a\n\n__io 21_3990468985_3832573211_2062024380 Security Ide\n\n__gid 006869A80704 Encrypted M\naddress\n\nThe downloaded GZIP payload contains a custom structure with a second loader (hollow.dat) and the encrypted ICEDID core payload\n(license.dat). These two files are written to disk and are used in combination to execute the core payload in memory.\n\nICEDID\n\nwriting the second stage loader and payload\nThe next phase highlights a unique element with ICEDID in how it loads the core payload (license.dat) by using a custom header structure\ninstead of the traditional PE header. Memory is allocated with the sections of the next payload looped over and placed into their own virtual\n[memory space. This approach has been well documented and serves as a technique to obstruct analysis.](https://www.malwarebytes.com/blog/news/2019/12/new-version-of-icedid-trojan-uses-steganographic-payloads)\n\nICEDID loading custom structure (header/sections)\nEach section has its memory protection modified by the VirtualProtect function to enable read-only or read/write access to the committed\nregion of memory using the PAGE_READWRITE constant.\n\n\n-----\n\nICEDID using the\n\nPAGE_READWRITE constant\n[Once the image entry point is set up, the ICEDID core payload is then loaded by a call to the rax x86 register.](https://www.cs.uaf.edu/2017/fall/cs301/lecture/09_11_registers.html#:~:text=rax%20is%20the%2064%2Dbit,processors%20with%20the%2080386%20CPU.)\n\nICEDID loading its core payload\n\n## Persistence\n\nICEDID will attempt to set up persistence first using a scheduled task, if that fails it will instead create a Windows Registry run key. Using the\nBot ID and RDTSC instruction, a scheduled task or run key name is randomly generated. A scheduled task is created using taskschd.dll,\nconfigured to run at logon for the user, and is triggered every 1 hour indefinitely.\n\nICEDID scheduled task\n\n## Core functionality\n\nThe core functionality of the ICEDID malware has been well documented and largely unchanged. To learn more about the core payload and\nfunctionality, check out the [Malpedia page that includes a corpus of completed research on ICEDID.](https://malpedia.caad.fkie.fraunhofer.de/details/win.icedid)\n\nThat said, we counted 23 modules during the time of our analysis including:\n\nMitM proxy for stealing credentials\nBackconnect module\nCommand execution (PowerShell, cmd)\nShellcode injection\n\n\n-----\n\nCo ect\n\nRegistry key data\nRunning processes\nCredentials\nBrowser cookies\nSystem information (network, anti-virus, host enumeration)\nSearch and read files\nDirectory/file listing on user’s Desktop\n\n## ICEDID configuration extractor\n\nElastic Security Labs has released an open source tool, under the Apache 2.0 license, that will allow for configurations to be extracted from\n[ICEDID samples. The tool can be downloaded here.](https://assets.contentstack.io/v3/assets/bltefdd0b53724fa2ce/blt95ce19ae8cffda29/6351abcf20f42038fb989fae/icedid-config-extractor.tar.gz)\n\nIcedID configuration decryption tool output\n\n## TLS certificate pinning\n\nPrevious [research into the ICEDID malware family has highlighted a repetitive way in how the campaigns create their self-signed TLS](https://research.checkpoint.com/2021/melting-ice-tracking-icedid-servers-with-a-few-simple-steps/)\ncertificates. Of particular note, this technique for creating TLS certificates has not been updated in approximately 18 months. While speculative\nin nature, this could be reflective of the fact that this C2 infrastructure is not widely tracked by threat data providers. This allows ICEDID to\nfocus on updating the more transient elements of their campaigns (file hashes, C2 domains, and IP addresses).\n\nThe team at Check Point published in-depth and articulate research on tracking ICEDID infrastructure using ICEDID’s TLS certificate pinning\nfeature. Additionally, Check Point [released a script that takes an IP address and port, and validates the suspect TLS serial number against a](https://research.checkpoint.com/2021/melting-ice-tracking-icedid-servers-with-a-few-simple-steps/#Appendix-A:~:text=147.228.198%0A91%5B.%5D193.19.251-,Appendix%20A,-Testing%20a%20server)\nvalue calculated by the ICEDID malware to confirm whether or not the IP address is currently using an ICEDID TLS certificate.\n\nWe are including a wrapper that combines internet scanning data from Censys, and ICEDID C2 infrastructure conviction from the Check Point\n[script. It can be downloaded here.](https://assets.contentstack.io/v3/assets/bltefdd0b53724fa2ce/bltb86bffd1aef20c5b/6351aba34e565f1cdce29da5/icedid-checker.tar.gz)\n\n### Dataset\n\nAs reported by Check Point, the TLS certificate information uses the same Issuer and Subject distinguished names to validate the C2 server\nbefore sending any data.\n\nICEDID C2 TLS certificate pinning\n[To build our dataset, we used the Censys CLI tool to collect the certificate data. We needed to make a slight adjustment to the query from](https://censys-python.readthedocs.io/en/stable/quick-start.html)\nCheck Point research, but the results were similar.\n\n\n-----\n\n```\nservices.tls.certificates.leaf_data.issuer_dn:\"CN=localhost, C=AU, ST=Some-State, O=Internet Widgits Pty Ltd\" and\nservices.port=443'\n\n[\n\n {\n\n  \"ip\": \"103.208.85.237\",\n\n  \"services\": [\n\n   {\n\n    \"port\": 22,\n\n    \"service_name\": \"SSH\",\n\n    \"transport_protocol\": \"TCP\"\n\n   },\n\n   {\n\n    \"port\": 80,\n\n    \"service_name\": \"HTTP\",\n\n    \"transport_protocol\": \"TCP\"\n\n   },\n\n   {\n\n    \"port\": 443,\n\n    \"service_name\": \"HTTP\",\n\n    \"certificate\": \"c5e7d92ba63be7fb2c44caa92458beef7047d7f987aaab3bdc41161b84ea2850\",\n\n    \"transport_protocol\": \"TCP\"\n\n   }\n\n  ],\n\n  \"location\": {\n\n   \"continent\": \"Oceania\",\n\n   \"country\": \"New Zealand\",\n\n   \"country_code\": \"NZ\",\n\n…truncated…Read more\n\n```\nThis provided us with 113 IP addresses that were using certificates we could begin to attribute to ICEDID campaigns.\n\n### JARM / JA3S\n\n[When looking at the data from Censys, we also identified other fields that are useful in tracking TLS communications: JARM and](https://github.com/salesforce/jarm) [JA3S, both](https://github.com/salesforce/ja3)\nTLS fingerprinting tools from the Salesforce team.\n\nAt a high-level, JARM fingerprints TLS servers by actively collecting specific elements of the TLS Server Hello responses. JA3S passively\ncollects values from the TLS Server Hello message. JARM and JA3S are represented as a 62-character or 32-character fingerprint,\nrespectively.\n\nJARM and JA3S TLS fingerprints in Kibana\nJARM and JA3S add additional data points that improve our confidence in connecting the ICEDID C2 infrastructure. In our research, we\nidentified 2ad2ad16d2ad2ad22c2ad2ad2ad2adc110bab2c0a19e5d4e587c17ce497b15 as the JARM and\n**e35df3e00ca4ef31d42b34bebaa2f86e as the JA3S fingerprints.**\n\nJARM and JA3S\n\nIt should be noted that JARM and JA3S are frequently not uncommon enough to convict a host by themselves. As an example, in the Censys\ndataset, the JARM fingerprint identified over 15k hosts, and the JA3S fingerprint identified over 3.3M hosts. Looking at the JARM and JA3S\nvalues together still had approximately 8k hosts. These are data points on the journey to an answer, not the answer itself.\n\n### ICEDID implant defense\n\nBefore ICEDID communicates with its C2 server, it performs a TLS certificate check by comparing the certificate serial number with a hash of\nthe certificate's public key. As certificate serial numbers should all be unique, ICEDID uses a self-signed certificate and an expected certificate\nserial number as a way to validate the TLS certificate. If the hash of the public key and serial number do not match, the communication with\nthe C2 server does not proceed.\n\n\n-----\n\nICEDID certificate\n\nvalidation function\nWe used the Check Point Python script (which returns a true or false result for each passed IP address) to perform an additional check to\nimprove our confidence that the IP addresses were part of the ICEDID C2 infrastructure and not simply a coincidence in having the same\nsubject and issuer information of the ICEDID TLS certifications. A true result has a matching ICEDID fingerprint and a false result does not.\nThis resulted in 103 IPs that were confirmed as having an ICEDID TLS certificate and 10 that did not (as of October 14, 2022).\n\n\n-----\n\nICEDID TLS certificate confirmation\n\n### Importing into Elasticsearch\n\nNow that we have a way to collect IPs based on the TLS certificate elements and a way to add additional context to aid in conviction; we can\nwrap the logic in a Bash script as a way to automate this process and parse the data for analysis in Elasticsearch.\n\n\n-----\n\n```\nset -o pipefail\n\nSEARCH='services.tls.certificates.leaf_data.subject_dn:\"CN=localhost, C=AU, ST=Some-State, O=Internet Widgits Pty Ltd\" and\nservices.tls.certificates.leaf_data.issuer_dn:\"CN=localhost, C=AU, ST=Some-State, O=Internet Widgits Pty Ltd\" and\nservices.port=443'\n\nwhile read -r line; do\n\n  _ts=$(date -u +%FT%TZ)\n\n  _ip=$(echo ${line} | base64 -d | jq '.ip' -r)\n\n  _port=$(echo ${line} | base64 -d | jq '.port' -r)\n\n  _view=$(censys view \"${_ip}\" | jq -c)\n\n  _is_icedid=$(python3 -c \"import icedid_checker; print(icedid_checker.test_is_icedid_c2('${_ip}','${_port}'))\")\n\n  echo \"${_view}\" | jq -S --arg is_icedid \"${_is_icedid}\" --arg timestamp \"${_ts}\" '. + {\"@timestamp\": $timestamp, \"threat\":\n{\"software\": {\"icedid\": {\"present\": $is_icedid}}}}'\n\ndone < <(censys search --pages=-1 \"${SEARCH}\" | jq '.[] | {\"ip\": .ip, \"port\": (.services[] | select(.certificate?).port)} |\n@base64' -r) | tee icedid_infrastructure.ndjsonRead more\n\n```\nThis outputs the data as an NDJSON document called icedid_infrastructure.ndjson that we can upload into Elasticsearch.\n\nIdentified ICEDID IP infrastructure\nIn the above image, we can see that there are hosts that have the identified JARM fingerprint, the identified TLS issuer and subject elements,\nbut did not pass the Check Point validation check. Additionally, one of the two hosts has a different JA3S fingerprint. This highlights the value\nof the combination of multiple data sources to inform confidence scoring.\n\nWe are also [providing this script for others to use.](https://assets.contentstack.io/v3/assets/bltefdd0b53724fa2ce/bltb86bffd1aef20c5b/6351aba34e565f1cdce29da5/icedid-checker.tar.gz)\n\n## Observed adversary tactics and techniques\n\nElastic uses the MITRE ATT&CK framework to document common tactics, techniques, and procedures that advanced persistent threats use\nagainst enterprise networks.\n\nAs stated above, ICEDID has been extensively analyzed, so below we are listing the tactics and techniques that we observed and are covered\nin this research publication. If you’re interested in the full set of MITRE ATT&CK tactics and techniques, you can check out MITRE’s [page on](https://attack.mitre.org/software/S0483/)\nICEDID.\n\n## Detections and preventions\n\n### Preventions\n\nMalicious Behavior Detection Alert: Command Shell Activity\nMemory Threat Detection Alert: Shellcode Injection\nMalicious Behavior Detection Alert: Unusual DLL Extension Loaded by Rundll32 or Regsvr32\nMalicious Behavior Detection Alert: Suspicious Windows Script Interpreter Child Process\nMalicious Behavior Detection Alert: RunDLL32 with Unusual Arguments\nMalicious Behavior Detection Alert: Windows Script Execution from Archive File\n\n### YARA\n\n[Elastic Security has created YARA rules to identify this activity. Below is a YARA rule specifically to identify the TLS certificate pinning function](https://github.com/elastic/protections-artifacts/blob/main/yara/rules/Windows_Trojan_IcedID.yar)\nused by ICEDID.\n\n\n-----\n\n```\n  meta:\n\n    author = \"Elastic Security\"\n\n    creation_date = \"2022-10-17\"\n\n    last_modified = \"2022-10-17\"\n\n    threat_name = \"Windows.Trojan.IcedID\"\n\n    arch_context = \"x86\"\n\n    license = \"Elastic License v2\"\n\n    os = \"windows\"\n\n  strings:\n\n          $cert_pinning = { 74 ?? 8B 50 ?? E8 ?? ?? ?? ?? 48 8B 4C 24 ?? 0F BA F0 ?? 48 8B 51 ?? 48 8B 4A ?? 39 01 74 ?? 35\n14 24 4A 38 39 01 74 ?? }\n\n  condition:\n\n    $cert_pinning\n\n}Read more\n\n## Indicators\n\n```\nThe indicators observed in this research are posted below. All artifacts (to include those discovered through TLS certificate pinning) are also\n[available for download in both ECS and STIX format in a combined zip bundle.](https://assets.contentstack.io/v3/assets/bltefdd0b53724fa2ce/bltc090b3574bb4e7be/633615e4a920fd42f67e7534/ref2731-indicators.zip)\n\n**Indicator** **Type** **Note**\n\ndb91742b64c866df2fc7445a4879ec5fc256319e234b1ac5a25589455b2d9e32 SHA256 ICEDID malware\n\nyolneanz[.]com domain ICEDID C2 domain\n\n51.89.190[.]220 ipv4-addr ICEDID C2 IP address\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-10-31 - ICEDIDs network infrastructure is alive and well.pdf"
+    ],
+    "report_names": [
+        "2022-10-31 - ICEDIDs network infrastructure is alive and well.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536024,
+    "ts_updated_at": 1743041358,
+    "ts_creation_date": 1669661891,
+    "ts_modification_date": 1669661891,
+    "files": {
+        "pdf": "https://archive.orkl.eu/91aac2772c947f251299211b4a3c32f7a4170ee6.pdf",
+        "text": "https://archive.orkl.eu/91aac2772c947f251299211b4a3c32f7a4170ee6.txt",
+        "img": "https://archive.orkl.eu/91aac2772c947f251299211b4a3c32f7a4170ee6.jpg"
+    }
+}

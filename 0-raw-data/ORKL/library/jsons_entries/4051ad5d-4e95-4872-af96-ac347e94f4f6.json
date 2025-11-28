@@ -1,0 +1,243 @@
+{
+    "id": "4051ad5d-4e95-4872-af96-ac347e94f4f6",
+    "created_at": "2023-01-12T15:09:19.775592Z",
+    "updated_at": "2025-03-27T02:13:25.109422Z",
+    "deleted_at": null,
+    "sha1_hash": "1cd1555e0366e7ee526c2f46c4473eed4ab8376b",
+    "title": "2020-11-18 - Panda’s New Arsenal- Part 2 Albaniiutas",
+    "authors": "",
+    "file_creation_date": "2022-05-28T02:18:56Z",
+    "file_modification_date": "2022-05-28T02:18:56Z",
+    "file_size": 1021256,
+    "plain_text": "# Panda’s New Arsenal: Part 2 Albaniiutas\n\n**insight-jp.nttsecurity.com/post/102gkfp/pandas-new-arsenal-part-2-albaniiutas**\n\nHiroki Hada\n\n## はじめに\n\n前回のブログでは、TA428が使用する新たなマルウェアであるTmangerについて紹介しました。Tmangerは横展開後に実行され、典型的な\nRATとして活動するマルウェアです。Tmangerにはたくさんのバージョンがありますが、それとは様々な実装が異なるものの、明らかに関連\nしていると思われるマルウェアが存在します。今回はそうしたTmangerに関連するマルウェアの中から、Albaniiutasを紹介します。\n\n## Albaniiutas\n\n2020年7月、私達はこれまでのTmangerと若干挙動が異なるマルウェアを発見しました。これまでに発見したTmangerは全て極めて類似した\n実装でしたが、今回発見したマルウェアはそれとは明らかに異なるものです。私達は発見時のファイル名から、このマルウェアをAlbaniiutas\nと呼んでいます。\n\nしかし、標的やタイムスタンプ（IOCの章で後述します）、リソース領域の命名規則、3つのパートから成り立つこと、マルウェア内で使用\nされているディレクトリ名がTmangerと類似しています。これらのことからこのマルウェアは私達が観測したTmangerの亜種か、あるいは同\n一の作成者によって作られたものであると考えています。\n\n\n-----\n\n図 1 Tmangerのリソースデータ\n\n図 2 Albaniiutas のリソースデータ\n\n## Analysis Result\n\n攻撃はalbaniiutas.rarというファイルから始まります。このRARファイルを解凍すると utas.xlsx .exeという名前のファイルが得られます。\nXLSXファイルのように偽装されていますがEXEファイルです。このファイルを実行すると、リソース領域に保存されているXLSXファイルと\nEXEファイルが作成され、開かれます。\n\n作成されたXLSXファイルにはモンゴルのCitizens’ Representative Huralのメンバーの連絡先が書かれていました。このことから、攻撃者はモ\nンゴルの政治系の組織を標的としていると考えられます。これはTA428の特徴と一致します。\n\nEXEファイルはcssrs.exeという名前で C:\\MSBuild\\WindowsUpdate\\S-1-2\\ というディレクトリに作成されました。このファイルを起点にい\nくつかのファイルが生成されますが、その役割はTmangerと極めて類似しています。\n\n**Albaniiutas File** **Tmanger Type**\n\ncssrs.exe SetUp\n\n(2nd) vjsc.dll, XpEXPrint.dll MloadDll\n\nClientX.dll Client\n\n各ファイルは図 3のように実行されていきます。\n\n\n-----\n\n図3 全体の流れ（Adminではない場合）\n\n### cssrs.exe\n\nまずCreateEventWで {F14E0EF3-E26A-4551-8F84-08E738AEC912} という名前のイベントを作成します。これはTmangerが作成するイベン\nト名の規則に一致します。\n\nその後、IsUserAdminでユーザの権限を確認し、処理を分岐します。\n\n### Adminの場合\n\nまずRC4を使ってデータをデコードします。使用された暗号鍵は **L!Q@W#E$R%T^Y&U*A|}t~k** です。デコードされたデータは\nXpEXPrint.dll で、以降で作成するDLLの名前となっています。\n\n次に、リソース領域から 162 というデータを取得します。このデータをWinAPIのCrypto系のAPIを使って、AES-256でデコードします。その\nときの鍵を生成するために e4e5276c00001ff5 という文字列が使用されます。復号すると、deflateされたデータになります。それをinflate\nし、XpEXPrint.dllという名前でSystem32へ保存します。\n\nその後、同様にリソース領域からデータを取得します。取得するデータは 163 と 165 です。取得したデータは\n**L!Q@W#E$R%T^Y&U*A|}t~k** を鍵としてRC4でデコードされます。163は vjsc.dll というファイル名で、165は Scrpt.exe という名前で\nSystem32へ保存されます。\n\nファイルへ書き込むとき、vjsc.dllには C:\\Users\\power\\AppData\\Local\\Microsoft\\Internet Explorer\\CXXX.dll という文字列が含まれています\nが、その部分を自分自身のファイルパスに書き換えます。このパスは攻撃者がマルウェアを作成する際に使用している可能性があります。続\nいて、ファイルの更新時刻を10年前の値に設定します。これはSystem32でファイルが目立たないようにするためだと考えられます。\n\n図 4 ファイルの更新時刻を書き換え\n\nそしてScrpt.exeをShellExecuteExWで実行します。Scrpt.exeはMicrosoftのVisual J#のコマンドラインツールで、電子署名が付与されている\n正規バイナリです。Scrpt.exeは実行時に同じディレクトリにある vjsc.dll をサイドロードし、VJSCCommandLineCompile というエクスポー\nト関数を実行します。\n\n\n-----\n\n図 5 Scrpt.exeのプロパティ\n\n図 6 Scrpt.exeが呼び出すvjsc.dllの関数\n\nvjsc.dllは、まずXOR 0x88でデータをデコードします。デコードされた文字列は以下のとおりです。\n\nDFS Replication\nFTP Publishing Service\nReadyBoost\nSoftware Licensing\nSL UI Notification Service\nTerminal Services Configuration\nWindows Media Center Extender Service\nWindows Media Center Service Launcher\nSOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Svchost\nRegOpenKeyExA\nnetsvcs\nRegQueryValueExA\nOpenSCManagerA\n%SystemRoot%\\System32\\svchost.exe -k netsvcs\nMACHINE\\SYSTEM\\CurrentControlSet\\Services\\\nRegSetValueExA\nGetSystemDirectoryA\n\nその後、XpEXPrint.dllをランダムな4文字のファイル名でコピーします。そして、先にデコードした文字列を使って、サービスとして登録\nし、起動します。\n\n### Adminではない場合\n\nリソース領域から 161 と 164 と 165 を読み込み、RC4でデコードします。そのときに使用する暗号鍵は **L!Q@W#E$R%T^Y&U*A|}t~k** で\nす。161は vjsc.dll、164は Xwreg.exe、165は Scrpt.exe というファイル名で AppData\\Local\\Microsoft\\Internet Explorer へ書き込まれます。\n\nその際、vjsc.dllは C:\\Users\\Waston\\AppData\\Local\\Microsoft\\Internet Explorer\\FindX.exe を、Xwreg.exeは\nC:\\Users\\Waston\\AppData\\Local\\Microsoft\\Internet Explorer\\WSMprovhost.exe という文字列を含んでいますが、これらを自分自身のパスに置\nき換えます。 C:\\Users\\Waston はTmangerのPDBのパスと一致しており、攻撃者がマルウェアを作成する際に使用している環境であると推測\nできます。その後、ファイルの更新時刻を10年前の値に設定します。\n\nその後、ShellExecuteExWでScrpt.exeを実行し、同じディレクトリに存在する vjsc.dll をサイドロードします。\n\n\n-----\n\njsc d の内部名は eg dd d で、その名のとおり同じディレクトリに存在する eg e e をレジストリのCu e t e s o \\ u を使って自動\n起動の設定を行います。\n\n次にcssrs.exeはvjsc.dllを削除し、リソース領域から 162 を読み込み、AES-256でデコードします。デコードする際はWinAPIのCrypto系の\nAPIを使用します。鍵を生成する文字列は e4e5276c00001ff5 です。得られたデータは vjsc.dll という名前で先程と同じように\nAppData\\Local\\Microsoft\\Internet Explorer へ書き込まれます。\n\n最後に、再びShellExecuteExWでScrpt.exeを実行し、同じディレクトリに存在する vjsc.dll をサイドロードします。\n\n### XpEXPrint.dll\n\nAdminの場合に起動される XpEXPrint.dll と、Adminではない場合にScrpt.exe経由で実行される vjsc.dllは同一のファイルです。\n\nServiceMainから起動した場合、 {A24D0DC3-E26A-4551-8F84-08E738AEC718} というイベントを作成します。その後の挙動は同一です。\n\nまず、リソース領域に保存されている T というデータの 104 を読み込みます。これを e4e5276c00001ff5 をいう文字列を鍵の生成データと\nしてAES-256でデコードします。そうすると、DLLファイルが得られ、それをロードして実行します。そのDLLの内部名は ClientX.dll でし\nた。\n\n### ClientX.dll\n\nClientX.dllはTmangerのClientと同様にRAT本体です。まず、L!Q@W#E$R%T^Y&U*A|}t~k を鍵としたRC4でconfigをデコードします。得ら\nれたconfigは以下のとおりです。\n\nhttp[:]//go.vegispaceshop[.]org/shop.htm\n0\nAppData\nRoaming\n0.0.0.0:\n\n同様にUser-AgentをRC4でデコードします。その後、gethostnameでホスト名を取得し、User-Agentに追加します。以下のようなUser-Agent\nが使用されます。\n\nMozilla/5.0 (Windows NT 6.1; Win64; x64; rv:71.0) Gecko/20100101 Firefox/71.0 [HOSTNAME])\n\nRC4のデコードが完了した後、デコードされたURLに対してアクセスし、ダウンロードしたHTMLファイルから新しいC&CサーバーのIPアド\nレスをデコードします。デコードされたC&CサーバーのIPアドレスは、この後説明する、感染端末の情報送信やコマンド実行をする際に使用\nされます。\n\n図 7 ダウンロードされたHTMLファイル\n\n\n-----\n\nimport sys\n\ndef main():\n\ninput_bin = read_htmlfile()\n\nextracted_data = extract_data(input_bin)\n\nresult = decode_bin(extracted_data)\n\nwith open(\"result.bin\",\"wb\") as f:\n\nfor b in result:\n\nf.write(b.to_bytes(1,byteorder=\"big\"))\n\ndef extract_data(input_bin):\n\nindex = 0\n\ndata = list()\n\nwhile index+2 < len(input_bin):\n\nif input_bin[index] != 0x3E or input_bin[index+1] != 0x9:\n\nindex = index + 1\n\ncontinue\n\nindex = index + 2\n\nsub_bin_ary = get_unitl_cr(input_bin[index:])\n\nif len(sub_bin_ary) == 0:\n\nreturn list()\n\ndata = data + sub_bin_ary\n\nindex = index + len(sub_bin_ary) + 1\n\nreturn data\n\ndef get_unitl_cr(bin_ary):\n\nif len(bin_ary) == 0 or bin_ary[0] == 0x0d:\n\nreturn list()\n\nlast_index = len(bin_ary) -1\n\nret = list()\n\nfor ii in range(0,len(bin_ary)-1):\n\nif bin_ary[ii] == 0x0d:\n\nbreak\n\nif bin_ary[ii] == 0x0a:\n\nreturn list()\n\nret.append(bin_ary[ii])\n\nreturn ret\n\ndef decode_bin(bin_ary):\n\nret = list()\n\nfor ii in range(0,len(bin_ary)//8):\n\nret.append(0)\n\nstart_index = 0\n\nfor ii in range(7,-1,-1):\n\nkk = 0\n\nwhile kk < (len(bin_ary)//8):\n\nval = bin_ary[kk*8+start_index]\n\nret[kk] += ( val & 0x1 ) << ii\n\nkk += 1\n\nstart_index = start_index + 1\n\nreturn ret\n\ndef read_htmlfile():\n\nwith open(sys.argv[1],\"rb\") as f:\n\nreturn f.read()\n\nif __name__ == \"__main__\":\n\nmain()\n\n図 8 新しいC&Cサーバーをデコードするロジック\n\nIPアドレスのデコード後、ClientX.dllは感染端末の情報やコマンド処理に必要な情報をC&Cサーバーに送信します。送信されるURLは下記の\nような形式となっており、URLのパス部に感染端末の情報やコマンド処理の通信暗号化に必要な情報が含まれています。URLのパス部の末尾\nは、「hostnameコマンドの実行結果」と「CoCreateGuid()で生成されたGUID」と「GetTickCount()の戻り値」がAES256で暗号化され、\nBase64でエンコードした文字列です。この暗号化された文字列を復号するコードは以下の通りです。以下のコードの変数encryptedに暗号化\nされた文字列を設定することで、復号することができます。\n\n① 新しく取得したC&CサーバーのIPアドレス\n\n\n-----\n\n② “home”という固定の文字列\n\n③ システム時間を基にしたランダムな値であり、\n\nコマンド実行の際に利用される\n\n④ ⑤の文字数を10進数で表した数値\n\n⑤ 暗号化された文字列\n\n図9 感染端末の情報やコマンド実行の際に必要な情報を送信する際のURL\n\n図10 URLパスに含まれる暗号化された文字列のデータ構造\n\nimport hashlib\n\nfrom Crypto.Cipher import AES\n\nfrom binascii import a2b_hex\n\nimport base64\n\nBS = 16\n\ndef aes_decrypt(hash_seed,encrypted_data):\n\naes_key = hashlib.sha256(hash_seed).hexdigest()\n\nencrypted_data = pcks_pad(encrypted_data)\n\ncipher_aes = AES.new(key=a2b_hex(aes_key),mode=AES.MODE_CBC,IV=b\"\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x\nreturn cipher_aes.decrypt(encrypted_data)\n\ndef pcks_pad(raw):\n\nresult = list(raw)\n\npad_ch = BS - len(result) % BS\n\nfor ii in range(0,pad_ch):\n\nresult.append(pad_ch)\n\nreturn bytes(result)\n\nhash_seed = \"3033303432373663663466333133343500000000000000000000000000000000\"\n\nencrypted =\n\"426d62484c4d2f495a734a6c444a716d335037784e6451534c6a534761636a6954694864454d4636776a6347366e71692f43457a52366e5a5834\nencrypted = a2b_hex(encrypted)\n\nplain = aes_decrypt(a2b_hex(hash_seed),base64.b64decode(encrypted))\n\nprint(\"DecryptedData:\" + bytes.hex(plain))\n\n図 11 URLのパス部に含まれる暗号化された文字列を復号するコード\n\nその後、ClientX.dllはC&Cサーバーから受信したデータを基にコマンドを実行します。cmd.exeの実行の他、ファイルのアップロードやダウ\nンロードを実行できます。\n\nコマンドID オプション 説明\n\n(コマンド) コマンドの引数 cmd.exeを用いてコマンドを実行し、結果をC&Cサーバーに返す。\n\n\n-upload 感染端末上のファイルパス\nアップロード時のURLのパス部\n\n\nファイルをアップロードする\n\n\n-----\n\n-download ダウンロードURL\n保存先のファイルパス\n\n\nファイルをダウンロードする\n\n\n-exit 何もしない\n\n図 12 コマンドのリスト\n\nコマンド実行する際の通信はAES256で暗号化されており、ClientX.dllは下記のような処理でデータを復号していました。CryptHashData()の\n第2引数には図 8で説明したGUIDが指定されます。\n\n図 13 コマンド実行時の通信を復号する処理\n\nコマンド実行時に受信するデータの形式は下記のようになっています。また、各コマンドについて、受信するデータの例を示します。\n\n① コマンドを複数回実行する場合、前回と異なる値を指定しないとコマンドが実行されない。\n\n② 区切り文字\n\n③ 図 7の③の値と一致していない場合、コマンドが実行されない。\n\n④ コマンドIDとコマンドのオプションを意味しており、スペースで区切られている。\n\n図 14 コマンド実行時に受信するデータの形式\n\n図 15 cmd.exeを実行する場合のデータ例\n\n図 16 ファイルをアップロードする場合のデータ例\n\n図 17 ファイルをダウンロードする場合のデータ例\n\n\n-----\n\n図 18 何もしない場合のデータ例\n\n## さいごに\n\n今回はTmangerに関連すると思われるマルウェアの中から、Albaniiutasを紹介しました。AlbaniiutasはTmangerに類似していますが、C&Cサ\nーバーとの通信処理やコマンド処理などの細部では大きな差が存在します。コンパイルタイムやリソース名を比較することで分かりますが、\nAlbaniiutasはTmangerと同じ人物によって実装されたマルウェアであり、Tmangerを参考にして作成された可能性が高いです。このようなマ\nルウェアはAlbaniiutas以外にも存在し、今後様々な攻撃に利用される恐れがあります。今後の動向に注視すべきでしょう。次回はAlbaniiutas\nと同じようにTmangerに関連すると思われるマルウェアの中から、Smanagerについて紹介します。\n\n## IOC\n\n### C&C Server\n\nhttp[:]//go.vegispaceshop[.]org/shop.html\nhttp[:]//209[.]250.239.96/index.html\nhttp[:]//209[.]250.239.96/home/\n\n### File Hash\n\n**SHA256** **Timestamp**\n\n\n5eb4a19fbd25ecdabf2a456a23251f13\n\nfa938400cb32cfe87a62e8c168f9b841\n\n29152de94199d77b0da9fc89d5b80bd4\n\n692f4aadf9e8362a2aee0a3b455c4e76\n\nfd43fa2e70bcc3b60236366756049422\n\n9287bf4716638477889ae3f816efc705\n\ncf36344673a036f5a96c1c63230c9c15\nbb5e4f440eafd4ba0dc01d44bb1df3bf\n\nd94f404b2b5bafa0d9ce66219b268418\n\n6715f5ef20a69f036a06d465177d5769\n\n71750c58eee35107db1a8e4d583f3b1a\n\n918dbffbd42a6c870b100a98fd0342e0\n\n\n(UTC) 2025-12-10 23:12:16\n\n(UTC) 2025-12-10 23:12:21\n\n(UTC) 2025-12-21 03:43:51\n\n(UTC) 2025-12-22 13:21:31\n\n(UTC) 2025-12-23 10:06:11\n\n(UTC) 2025-12-23 11:00:09\n\n\n-----",
+    "language": "JA",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-11-18 - Panda’s New Arsenal- Part 2 Albaniiutas.pdf"
+    ],
+    "report_names": [
+        "2020-11-18 - Panda’s New Arsenal- Part 2 Albaniiutas.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "a4aca3ca-9e04-42d1-b037-f7fb3fbab0b1",
+            "created_at": "2023-01-06T13:46:39.042499Z",
+            "updated_at": "2025-03-27T02:00:02.984002Z",
+            "deleted_at": null,
+            "main_name": "TA428",
+            "aliases": [
+                "Colourful Panda",
+                "BRONZE DUDLEY"
+            ],
+            "source_name": "MISPGALAXY:TA428",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "2f07a03f-eb1f-47c8-a8e9-a1a00f2ec253",
+            "created_at": "2022-10-25T16:07:24.277669Z",
+            "updated_at": "2025-03-27T02:02:10.157972Z",
+            "deleted_at": null,
+            "main_name": "TA428",
+            "aliases": [
+                "Operation LagTime IT",
+                "Operation StealthyTrident",
+                "ThunderCats"
+            ],
+            "source_name": "ETDA:TA428",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "Agent.dhwf",
+                "Albaniiutas",
+                "BlueTraveller",
+                "Chymine",
+                "Cotx RAT",
+                "CoughingDown",
+                "Darkmoon",
+                "Destroy RAT",
+                "DestroyRAT",
+                "Gen:Trojan.Heur.PT",
+                "Kaba",
+                "Korplug",
+                "LuckyBack",
+                "PhantomNet",
+                "PlugX",
+                "Poison Ivy",
+                "RedDelta",
+                "RoyalRoad",
+                "SManager",
+                "SPIVY",
+                "Sogu",
+                "TIGERPLUG",
+                "TManger",
+                "TVT",
+                "Thoper",
+                "Xamtrav",
+                "pivy",
+                "poisonivy"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "c416260c-7ff6-4a74-a5ba-a15f40d3543f",
+            "created_at": "2024-05-01T02:03:07.939268Z",
+            "updated_at": "2025-03-27T02:05:17.25652Z",
+            "deleted_at": null,
+            "main_name": "BRONZE DUDLEY",
+            "aliases": [
+                "Temp.Hex ",
+                "Vicious Panda ",
+                "TA428 "
+            ],
+            "source_name": "Secureworks:BRONZE DUDLEY",
+            "tools": [
+                "PoisonIvy"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536159,
+    "ts_updated_at": 1743041605,
+    "ts_creation_date": 1653704336,
+    "ts_modification_date": 1653704336,
+    "files": {
+        "pdf": "https://archive.orkl.eu/1cd1555e0366e7ee526c2f46c4473eed4ab8376b.pdf",
+        "text": "https://archive.orkl.eu/1cd1555e0366e7ee526c2f46c4473eed4ab8376b.txt",
+        "img": "https://archive.orkl.eu/1cd1555e0366e7ee526c2f46c4473eed4ab8376b.jpg"
+    }
+}

@@ -1,0 +1,314 @@
+{
+    "id": "d05f28d2-60e8-4c21-baf4-b0348bd968ec",
+    "created_at": "2022-10-25T16:48:25.071984Z",
+    "updated_at": "2025-03-27T02:16:43.0025Z",
+    "deleted_at": null,
+    "sha1_hash": "ea6ce067a3a25f585984e9931b76131e254fc714",
+    "title": "",
+    "authors": "",
+    "file_creation_date": "2022-04-27T07:49:34Z",
+    "file_modification_date": "2022-04-27T07:49:34Z",
+    "file_size": 824748,
+    "plain_text": "# New Milestones for Deep Panda: Log4Shell and Digitally Signed Fire Chili Rootkits\n\n**[fortinet.com/blog/threat-research/deep-panda-log4shell-fire-chili-rootkits](https://www.fortinet.com/blog/threat-research/deep-panda-log4shell-fire-chili-rootkits)**\n\nMarch 30, 2022\n\n## FortiGuard Labs Research\n\n**Affected Platforms: Windows**\n\n**Impacted Users: Windows Users**\n\n**Impact: Collects sensitive information from victim machines**\n\n**Severity Level: Critical**\n\nDuring the past month, FortiEDR detected a campaign by Deep Panda, a Chinese APT group.\n[The group exploited the infamous Log4Shell vulnerability in VMware Horizon servers. The](https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2021-44228)\nnature of targeting was opportunistic insofar that multiple infections in several countries and\nvarious sectors occurred on the same dates. The victims belong to the financial, academic,\ncosmetics, and travel industries.\n\nFollowing exploitation, Deep Panda deployed a backdoor on the infected machines. Following\nforensic leads from the backdoor led us to discover a novel kernel rootkit signed with a stolen\ndigital certificate. We found that the same certificate was also used by another Chinese APT\ngroup, named Winnti, to sign some of their tools.\n\nIn this blog, we share our analysis of the flow of infection, the backdoor, and new rootkit, along\nwith our attribution of this campaign to these Chinese nation-state threat actors.\n\n## Chain of Attack\n\nWhile examining customer alerts and telemetry, we noticed several infiltrations into victim\nnetworks that were achieved via a Log4Shell exploitation of vulnerable VMware Horizon servers.\nThese attacks spawned a new PowerShell process to download and execute a chain of scripts that\nended with the installation of a malicious DLL.\n\n\n-----\n\nFigure 1: Flow of events from Log4Shell exploitation to execution of the final payload\nThe encoded PowerShell command downloads another PowerShell script from a remote server\nand executes it.\n\nFigure 2: The decoded PowerShell command\nThe next stage PowerShell script downloads three additional files from the same server: 1.bat,\nsyn.exe and 1.dll.\n\n\n-----\n\nFigure 3: Content of the p.txt PowerShell script downloaded from the server\nThe script then executes 1.bat, which in turn executes syn.exe and proceeds to delete all three\nfiles from the disk.\n\nFigure 4: Content of 1.bat script downloaded from the server\nsyn.exe is a program that loads its first command-line argument using LoadLibrary, in this case,\n1.dll. The 1.dll module is the final payload, a backdoor that we have dubbed Milestone. Its code is\n[based on the leaked source code of Gh0st RAT/Netbot Attacker and is packed with Themida.](https://github.com/sin5678/gh0st)\n\nThe backdoor copies itself to %APPDATA%\\newdev.dll and creates a service named\nmsupdate2 by creating the service entry directly in the registry. Several other service names and\ndescriptions have been observed among different samples.\n\nFigure 5: “msupdate2” service registered by Milestone\nWhile it has the same name as the legitimate Microsoft newdev.dll, it has only two of the real\nnewdev.dll's exports plus an additional ServiceMain export.\n\nFigure 6: Exports of the malicious Milestone\n\n\n-----\n\nOverall, the backdoor has capabilities similar to Gh0st RAT’s, with notable differences. Its C2\ncommunication is uncompressed, unlike Gh0st RAT communication which is zlib-compressed.\nThere are differences in commands as well. For example, in the CMD command, some variants\nfirst copy cmd.exe to dllhost.exe to avoid detection by security products that monitor CMD\nexecutions. Additionally, the backdoor supports a command that sends information about the\ncurrent sessions on the system to the server. This command does not exist in the original Gh0st\nRAT source code.\n\nAmong the many backdoor samples we hunted down, there are two distinguishable versions:\nbinaries compiled in 2016 contain the version string MileStone2016, while those compiled in\n2017 contain MileStone2017. The samples used in the recent infections we detected are only the\n2017 variants.\n\nThere are several differences between the 2016 and 2017 Milestones. First, 2017 Milestones are\ntypically packed with Themida, while 2016 ones are unpacked. Secondly, although 2016\nMilestones have plausible timestamps, all 2017 Milestones share an identical timestamp, which\nleads us to believe they are forged. Combined with the fact that 2017 backdoors are used in\nattacks to this day, it is uncertain whether they were compiled in 2017 or much later.\n\nThe two versions also slightly differ in commands and communication. 2016 Milestones apply\nXOR encryption to their communication, as well as support a command to execute as a new user\nwith administrator privileges. To do so, the backdoor first creates a new administrator user on\nthe system, with the username ANONYMOUS and the password MileSt0ne2@16. It then\nexecutes another instance of itself as that user with CreateProcessAsUser and proceeds to\nremove the user from the system immediately thereafter.\n\n## A Stone’s Throw Away\n\nIn addition to the backdoors, we obtained a third type of sample – a dropper. It writes three files\nto the disk:\n\nBenign executable – %APPDATA%\\syn.exe\nMilestone loader – %APPDATA%\\newdev.dll\nDriver – C:\\Windows\\system32\\drivers\\crtsys.sys\n\nThe payloads above are stored XOR-encrypted and LZMA-compressed. The XOR key is a\nhardcoded DWORD that changes between samples.\n\nThe dropper carries two builds of the driver for 32-bit and 64-bit systems. Using the Service\nControl Manager (SCM) API, it installs the build compliant with the operating system\narchitecture as a driver named FSFilter-Min.\n\nThe dropper patches the .data section of the loader binary to add its configuration before it\nwrites it to disk. Next, the dropper executes syn.exe, a benign executable signed by Synaptics, in\norder to side-load the newdev.dll loader module.\n\nThe loader also contains a XOR-encrypted and LZMA-compressed payload, which is a Milestone\nbackdoor. It decrypts the configuration with XOR 0xCC ​​ and, like the dropper, patches the\nbackdoor’s .data section with it. The configuration contains the backdoor’s version, C2 server\n\n\n-----\n\naddress and service parameters.\n\nFinally, the loader reflectively loads the Milestone backdoor and calls its exports.\n\nFigure 7: Example of a decrypted configuration\n\n## Fire Chili Rootkit\n\nAs part of our research, we have collected four driver samples — two pairs of 32-bit and 64-bit\nsamples. One pair was compiled in early August 2017 and the second pair was compiled ten days\nlater. All four driver samples are digitally signed with stolen certificates from game development\ncompanies, either the US-based Frostburn Studios or the Korean 433CCR Company (433씨씨알\n주식회사). The signatures made with Frostburn Studios’ certificate are even timestamped.\n\nFigure 8: Digital signature of a crtsys.sys driver\nTwo of the samples are on VirusTotal and have a very low detection rate.\n\n\n-----\n\nFigure 9: Detection rates of the rootkit samples from VirusTotal\nThe rootkit starts by ensuring the victim machine is not running in safe mode. It then checks the\noperating system version. The rootkit uses Direct Kernel Object Modification (DKOM), which\ninvolves undocumented kernel structures and objects, for its operations. For this reason, it relies\non specific OS builds as otherwise it may cause the infected machine to crash. In general, the\nlatest supported build is Windows 10 Creators Update (Redstone 2), released in April 2017.\n\nThe purpose of the driver is to hide and protect malicious artifacts from user-mode components.\nThis includes four aspects: files, processes, registry keys and network connections. The driver has\nfour global lists, one for each aspect, that contain the artifacts to hide. The driver’s IOCTLs allow\ndynamic configuration of the lists through its control device \\Device\\crtsys. As such, the dropper\nuses these IOCTLs to hide the driver’s registry key, the loader and backdoor files, and the loader\nprocess.\n\nIOCTL Action Description\n\n0xF3060000 Hide file Add a path to global file list\n\n0xF3060004 Stop hiding file Remove a path from global file list\n\n0xF3060008 Hide\\protect process Add a file path or PID to global process list\n\n\n-----\n\n0xF306000C Stop hiding\\protecting\nprocess\n\n\nRemove a file path or PID from global process\nlist\n\n\n0xF3060010 Hide registry key Add a key to global registry list\n\n0xF3060014 Stop hiding registry key Remove a key from global registry list\n\n0xF3060018 Hide network connections Add a file path or port number to global network\nlist\n\n\n0xF306001C Stop hiding network\nconnections\n\nFiles\n\n\nRemove a file path or port number from global\nnetwork list\n\n\nThe rootkit implements a filesystem minifilter using code based on Microsoft’s official driver\ncode samples. Prior to registering the minifilter instance, it dynamically creates an instance in\nthe registry named Sfdev32TopInstance with altitude 483601.\n\nThe rootkit sets only one callback for a postoperation routine for\nIRP_MJ_DIRECTORY_CONTROL. When it receives an IRP with a minor function of\nIRP_MN_QUERY_DIRECTORY and a filename from the global file list, the callback changes the\nfilename to “.” and the filename length to 0 (in the FILE_BOTH_DIR_INFORMATION\nstructure).\n\nThe global file list is initialized with the path of the driver by default\n(*\\SYSTEM32\\DRIVERS\\CRTSYS.SYS).\n\nProcesses\n\nThere are two mechanisms pertaining to processes:\n\nPreventing process termination.\nHiding a process.\n\nTo prevent the termination of a process, the rootkit denies the PROCESS_TERMINATE access\nright of the processes it protects. Using ObRegisterCallbacks, it registers a preoperation callback\nroutine that triggers whenever a handle to a process or thread is created or duplicated in the\nsystem. When the handle access originates from user-mode and the image path or PID of the\nhandle target are in the global process list, the driver removes the PROCESS_TERMINATE\npermission from the DesiredAccess parameter. This results in restricting user-mode processes\nfrom acquiring the permissions needed to terminate the threat actor’s malicious processes using\nstandard APIs.\n\n\n-----\n\nFigure 10: Unsetting the PROCESS_TERMINATE bit of DesiredAccess\nTo hide a process, the rootkit monitors all newly created processes on the system by registering a\ncallback using the PsSetCreateProcessNotifyRoutine API. Whenever a new process is created on\nthe system, the rootkit checks if its path is in the global process list. If so, the process is removed\nfrom the ActiveProcessLinks list of the EPROCESS structure, which is a circular doubly-linked\nlist of all running processes on the system. The driver removes the process’s list entry from\nActiveProcessLinks ​​by linking its Flink (the next entry) to its Blink (the previous entry). As a\nresult, the process is hidden from utilities such as Task Manager.\n\nFigure 11: Removing a process from ActiveProcessLinks\nSince the EPROCESS structure changes between Windows builds, the rootkit resolves the\nActiveProcessLinks offset dynamically during runtime. It traverses the process’s EPROCESS ​​\nstructure, comparing each member to its PID, to locate the offset of the UniqueProcessId field.\n\n\n-----\n\nWhen found, the ActiveProcessLinks offset is also easily located as it is the next field in the\nEPROCESS structure. The older rootkit samples use the hiding mechanism on Windows 8 and\nbelow, while the newer samples use it on only Windows 7 and below.\n\nBy default, the global process list is initialized with the path *\\qwerty.exe. However, we have not\nobserved any file with this name related to the campaign.\n\nRegistry Keys\n\nThe rootkit hides registry keys from users using Microsoft’s Registry Editor. The code is based on\n[an open-source project published by a Chinese developer.](https://github.com/geemion/Record/blob/master/HideReg.c)\n\nThe HHIVE->GetCellRoutine functions of keys in the global registry keys list are replaced with a\nfilter function. When the path of the querying process is *\\WINDOWS\\REGEDIT.EXE, the\nfunction simply returns 0 in place of the key node.\n\nBy default, the global registry list is initialized with the rootkit’s registry key\n(\\REGISTRY\\MACHINE\\SYSTEM\\CURRENTCONTROLSET\\SERVICES\\CRTSYS).\n\nNetwork Connections\n\nThe rootkit is capable of hiding TCP connections from tools such as netstat. Much of the code for\n[this part seems to be copied from an open-source project.](https://github.com/bowlofstew/rootkit.com/blob/master/cardmagic/PortHidDemo_Vista.c)\n\nThe rootkit attaches to nsiproxy.sys’s device stack and intercepts IOCTLs of type\nIOCTL_NSI_GETALLPARAM (0x12000B) that are sent to it. This IOCTL is used to retrieve\ninformation about the active network connections on the system. When it is intercepted, the\ndriver replaces the IoCompletion routine with a function that filters the results to hide its own\nnetwork connections.\n\nIOCTL_NSI_GETALLPARAM returns the information about network connections in an\nNSI_PARAM structure. NSI_PARAM contains connection data such as IP, port, connection\nstate, and process IDs of the executables in charge of creating the connection. The filter function\niterates this structure, searching for connections involving a process or port number from its\nglobal network list. All identified connections are removed from the structure, rendering them\nhidden from the process that sent the IOCTL. It is interesting to note that the newer build of the\n64-bit rootkit added support to filter IOCTLs from 32-bit processes as well.\n\nIf attaching to nsiproxy.sys fails, the rootkit attaches to \\Device\\Tcp instead, intercepting\nIOCTL_TCP_QUERY_INFORMATION_EX (0x120003) and hiding network connections in a\nsimilar manner.\n\nBy default, the global network list is initialized with the following process paths:\n\n*\\SYN.EXE\n*\\SVCHOST.EXE\n\nAs a result, TCP connections of all services running under svchost.exe are hidden, not just the\nones of the Milestone backdoor.\n\n## Attribution\n\n\n-----\n\nThe Milestone backdoor is actually the same Infoadmin RAT that was used by Deep Panda back\n[in the early 2010s, referenced in blogs from 2013 and 2015. Although many backdoors are based](https://paper.seebug.org/papers/APT/APT_CyberCriminal_Campagin/2014/AdversaryIntelligenceReport_DeepPanda_0%20%281%29.pdf)\non Gh0st RAT code, Milestone and Infoadmin are distinguishable from the rest. Besides having\nprofoundly similar code, both backdoors incorporate identical modifications of Gh0st RAT code\nnot seen in other variants.\n\nBoth backdoors share a XOR encryption function for encrypting communication and have\nabandoned the zlib compression of the original Gh0st RAT. Both also modified Gh0st RAT code\nin an identical way, specifically the CMD and screen capture functions. Moreover, the backdoors\nshare two commands that are not present in other Gh0st RAT variants: the session enumeration\ncommand and the command to execute as an administrative user.\n\nAdditional evidence indicates affiliation to Winnti. The rootkits are digitally signed with\ncertificates stolen from game development companies, which is a known characteristic of Winnti.\nSearching for more files signed with one of the certificates led to a malicious DLL uploaded to\nVirusTotal with the name winmm.dll. Further examination revealed it as the same tool\n[referenced in a blog about Winnti that was published in 2013. Yet another connection to Winnti](https://securelist.com/winnti-1-0-technical-analysis/37002/)\nis based on a C2 domain. Two of the newdev.dll loaders are configured with the server\n[gnisoft[.]com, which was attributed to Winnti in 2020.](https://www.welivesecurity.com/2020/05/21/no-game-over-winnti-group/)\n\n## Conclusion\n\nIn this blog, we have attributed a series of opportunistic Log4Shell infections from the past\nmonth to Deep Panda. Though previous technical publications on Deep Panda were published\n[more than half a decade ago, this blog also relates to a more recent report about the Milestone](https://www.ahnlab.com/kr/site/securityinfo/secunews/secuNewsView.do?menu_dist=2&seq=29904)\nbackdoor, which shows that their operations have continued throughout all these years.\n\nFurthermore, we introduced the previously unknown Fire Chili rootkit and two compromised\ndigital signatures, one of which we also directly linked to Winnti. Although both Deep Panda and\nWinnti are known to use rootkits as part of their toolset, Fire Chili is a novel strain with a unique\ncode base different from the ones previously affiliated with the groups.\n\nThe reason these tools are linked to two different groups is unclear at this time. It’s possible that\nthe groups’ developers shared resources, such as stolen certificates and C2 infrastructure, with\neach other. This may explain why the samples were only signed several hours after being\ncompiled.\n\n## Fortinet Solutions\n\nFortiEDR detects and blocks these threats out-of-the-box without any prior knowledge or special\nconfiguration. It does this using its post-execution prevention engine to identify malicious\nactivities:\n\n\n-----\n\nFigure 12: FortiEDR blocking communication for download & execute after Log4Shell\nexploitation\n\nFigure 13: FortiEDR blocking the backdoor from communicating with the C2 post-infection\nAll network IOCs have been added to the FortiGuard WebFiltering blocklist.\n\nThe FortiGuard Antivirus service engine is included in Fortinet’s FortiGate, FortiMail,\nFortiClient, and FortiEDR solutions. FortiGuard Antivirus has coverage in place as follows:\n\nW32/Themida.ICD!tr\n\nBAT/Agent.6057!tr\n\nW64/Agent.A10B!tr\n\nW32/Agent.0B37!tr\n\nW32/GenKryptik.FQLT!tr\n\nW32/Generic.AC.F834B!tr\n\nW32/GenKryptik.ATCY!tr\n\nW32/Generic.AP.33C2D2!tr\n\nW32/GenKryptik.AQZZ!tr\n\nW32/Generic.HCRGEJT!tr\n\nW32/Agent.DKR!tr\n\nW32/Agent.QNP!tr\n\nW32/Agent.RXT!tr\n\nW32/Agentb.BXIQ!tr\n\nW32/Agent.DA3E!tr\n\nW32/Agent.D584!tr\n\nW32/Agent.0F09!tr\n\nW32/Agent.3385!tr\n\nW64/Agent.D87B!tr.rkit\n\nW32/Agent.69C1!tr.rkit\n\nIn addition, as part of our membership in the Cyber Threat Alliance, details of this threat were\nshared in real-time with other Alliance members to help create better protections for customers.\n\n## Appendix A: MITRE ATT&CK Techniques\n\nID Description\n\nT1190 Exploit Public-Facing Application\n\nT1569.002 System Services: Service Execution\n\n\n-----\n\nT1059.001 Command and Scripting Interpreter: PowerShell\n\nT1027 Obfuscated Files or Information: Software Packing\n\nT1041 Exfiltration Over C2 Channel\n\nT1082 System Information Discovery\n\nT1036 Masquerading\n\nT1083 File and Directory Discovery\n\nT1059.003 Command and Scripting Interpreter: Windows Command Shell\n\nT1592 Gather Victim Host Information\n\nT1588.003 Obtain Capabilities: Code Signing Certificates\n\nT1014 Rootkit\n\nT1574.002 Hijack Execution Flow: DLL Side-Loading\n\nT1620 Reflective Code Loading\n\nT1113 Screen Capture\n\n## Appendix B: IOCs\n\nIOC Type Details\n\nece45c25d47ba362d542cd0427775e68396bbbd72fef39823826690b82216c69 SHA256 Backdoor\n\n517c1baf108461c975e988f3e89d4e95a92a40bd1268cdac385951af791947ba SHA256 Backdoor\n\na573a413cbb1694d985376788d42ab2b342e6ce94dd1599602b73f5cca695d8f SHA256 Backdoor\n\n9eeec764e77bec58d366c2efc3817ed56371e4b308e94ad04a6d6307f2e12eda SHA256 Backdoor\n\nd005a8cf301819a46ecbb1d1e5db0bf87951808d141ada5e13ffc4b68155a112 SHA256 Backdoor\n\n\n-----\n\n69c69d71a7e334f8ef9d47e7b32d701a0ecd22ce79e0c11dabbc837c9e0fedc2 SHA256 Backdoor\n\ndfd2409f2b0f403e82252b48a84ff4d7bc3ebc1392226a9a067adc4791a26ee7 SHA256 Backdoor\n\n07c87d036ab5dca9947c20b7eb7d15c9434bb9f125ac564986b33f6c9204ab47 SHA256 Backdoor\n\nc0a2a3708516a321ad2fd68400bef6a3b302af54d6533b5cce6c67b4e13b87d3 SHA256 Backdoor\n\nf8b581393849be5fc4cea22a9ab6849295d9230a429822ceb4b8ee12b1d24683 SHA256 Backdoor\n\n14930488158df5fca4cba80b1089f41dc296e19bebf41e2ff6e5b32770ac0f1e SHA256 Backdoor\n\na9fa8e8609872cdcea241e3aab726b02b124c82de4c77ad3c3722d7c6b93b9b5 SHA256 Backdoor\n\ne92d4e58dfae7c1aadeef42056d5e2e5002814ee3b9b5ab1a48229bf00f3ade6 SHA256 Backdoor\n\n855449914f8ecd7371bf9e155f9a97969fee0655db5cf9418583e1d98f1adf14 SHA256 Backdoor\n\na5fd7e68970e79f1a5514630928fde1ef9f2da197a12a57049dece9c7451ed7b SHA256 Backdoor\n\nf5eb8949e39c8d3d70ff654a004bc8388eb0dd13ccb9d9958fd25aee47c1d3ae SHA256 Backdoor\n\n64255ff02e774588995b203d556c9fa9e2c22a978aec02ff7dea372983b47d38 SHA256 Backdoor\n\nb598cb6ba7c99dcf6040f7073fe313e648db9dd2f6e71cba89790cc45c8c9026 SHA256 Backdoor\n\n2d252c51a29f86032421df82524c6161c7a63876c4dc20faffa47929ec8a9d60 SHA256 Backdoor\n\n2de6fb71c1d5ba0cd8d321546c04eaddddbf4a00ce4ef6ca6b7974a2a734a147 SHA256 Backdoor\n\nbd5d730bd204abaddc8db55900f307ff62eaf71c0dc30cebad403f7ce2737b5c SHA256 Backdoor\n\n412464b25bf136c3780aff5a5a67d9390a0d6a6f852aea0957263fc41e266c8b SHA256 Backdoor\n\n0d096d983d013897dbe69f3dae54a5f2ada8090b886ab68b74aa18277de03052 SHA256 Backdoor\n\ncfba16fa9aa7fdc7b744b2832ef65558d8d9934171f0d6e902e7a423d800b50f SHA256 Backdoor\n\na71b3f06bf87b40b1559fa1d5a8cc3eab4217f317858bce823dd36302412dabc SHA256 Backdoor\n\n\n-----\n\n235044f58c801955ed496f8c84712fdb353fdd9b6fda91886262234bdb710614 SHA256 Backdoor\n\ne1a51320c982179affb26f417fbbba7e259f819a2721ab9eb0f6d665b6ea1625 SHA256 Backdoor\n\nd1be98177f8ae2c64659396277e7d5c8b7dba662867697feb35282149e3f3cbb SHA256 Backdoor\n\nab3470a45ec0185ca1f31291f69282c4a188a46e SHA1 Backdoor\n\n10de515de5c970385cd946dfda334bc10a7b2d65 SHA1 Backdoor\n\neb231f08cce1de3e0b10b69d597b865a7ebac4b3 SHA1 Backdoor\n\n66c3dfcb2cc0dfb60e40115e08fc293276e915c2536de9ed6a374481279b852b SHA256 Loader\n\n73640e8984ad5e5d9a1fd3eee39ccb4cc695c9e3f109b2479296d973a5a494b6 SHA256 Loader\n\n7777bd2bdeff2fd34a745c350659ee24e330b01bcd2ee56d801d5fc2aceb858c SHA256 Loader\n\n8bf4e301538805b98bdf09fb73e3e370276a252d132e712eae143ab58899763e SHA256 Loader\n\n18b2e1c52d0245824a5bac2182de38efb3f82399b573063703c0a64252a5c949 SHA256 Loader\n\nd5c1a2ca8d544bedb0d1523db8eeb33f0b065966f451604ff4715f600994bc47 SHA256 ZIP\n\n0939b68af0c8ee28ed66e2d4f7ee6352c06bda336ccc43775fb6be31541c6057 SHA256 BAT\n\n0595a719e7ffa77f17ac254134dba2c3e47d8c9c3968cda69c59c6b021421645 SHA256 Dropper\n\n7782fdc84772c6c5c505098707ced6a17e74311fd5c2e2622fbc629b4df1d798 SHA256 Dropper\n\n18751e47648e0713345552d47752209cbae50fac07895fc7dd1363bbb089a10b SHA256 Driver 64bit\n\ne4e4ff9ee61a1d42dbc1ddf9b87223393c5fbb5d3a3b849b4ea7a1ddf8acd87b SHA256 Driver 64bit\n\n395dbe0f7f90f0ad55e8fb894d19a7cc75305a3d7c159ac6a0929921726069c1 SHA256 Driver 32bit\n\nbefc197bceb3bd14f44d86ff41967f4e4c6412604ec67de481a5e226f8be0b37 SHA256 Driver 32bit\n\n\n-----\n\n1c617fd9dfc068454e94a778f2baec389f534ce0faf786c7e24db7e10093e4fb SHA256 Legitimate\nSynaptics\nSetup.exe\n\nbde7b9832a8b2ed6d33eb33dae7c5222581a0163c1672d348b0444b516690f09 SHA256 syn.exe\n\n8b88fe32bd38c3415115592cc028ddaa66dbf3fe024352f9bd16aed60fd5da3e SHA256 syn.exe\n\nba763935528bdb0cc6d998747a17ae92783e5e8451a16569bc053379b1263385 SHA256 syn.exe\n\n9908cb217080085e3467f5cedeef26a10aaa13a1b0c6ce2825a0c4912811d584 SHA256 syn.exe\n\nc6bcde5e8185fa9317c17156405c9e2c1f1887d165f81e31e24976411af95722 SHA256 winmm.dll\n\n3403923f1a151466a81c2c7a1fda617b7fbb43b1b8b0325e26e30ed06b6eb936 SHA256 Backdoor\n\n\n9BCD82563C72E6F72ADFF76BD8C6940C6037516A Certificate\nthumbprint\n\n2A89C5FD0C23B8AF622F0E91939B486E9DB7FAEF Certificate\nthumbprint\n\n\n\n\n\n192.95.36[.]61 Network \nvpn2.smi1egate[.]com Network \nsvn1.smi1egate[.]com Network \ngiga.gnisoft[.]com Network \ngiga.gnisoft[.]com Network \n104.223.34[.]198 Network \n103.224.80[.]76 Network \nhxxp://104.223.34[.]198/111.php Network \nhxxp://104.223.34[.]198/1dll.php Network \nhxxp://104.223.34[.]198/syn.php Network \n\n-----\n\nhxxp://104.223.34[.]198/p.txt Network \n\nmsupdate2 Service\nname\n\nWebService Service\nname\n\nalg Service\nname\n\nmsupdate Service\nname\n\nmsupdateday Service\nname\n\nDigaTrack Service\nname\n\n\n\n\n\n\n\n\n\ncrtsys.sys File name \n%APPDATA%\\syn.exe File name \n%APPDATA%\\newdev.dll File name \n_[Learn more about Fortinet’s FortiGuard Labs threat research and intelligence organization](https://www.fortinet.com/fortiguard/labs?utm_source=blog&utm_campaign=fortiguard-labs)_\n_[and the FortiGuard Security Subscriptions and Services portfolio.](https://www.fortinet.com/fortiguard/labs?tab=security-bundles&utm_source=blog&utm_campaign=security-bundles)_\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2022/2022.03.30.Deep_Panda_New_Milestones/New%20Milestones%20for%20Deep%20Panda_%20Log4Shell%20and%20Digitally%20Signed%20Fire%20Chili%20Rootkits.pdf"
+    ],
+    "report_names": [
+        "New Milestones for Deep Panda_ Log4Shell and Digitally Signed Fire Chili Rootkits"
+    ],
+    "threat_actors": [
+        {
+            "id": "7a9a7873-8e41-40ae-9d06-b27c92bb54e4",
+            "created_at": "2022-10-25T16:47:55.568362Z",
+            "updated_at": "2025-03-27T02:05:17.264615Z",
+            "deleted_at": null,
+            "main_name": "BRONZE FIRESTONE",
+            "aliases": [
+                "C0d0s0",
+                "Deep Panda ",
+                "Pupa ",
+                "TG-3551 ",
+                "APT19 "
+            ],
+            "source_name": "Secureworks:BRONZE FIRESTONE",
+            "tools": [
+                " Alice's Rabbit Hole",
+                " Briba",
+                " Cobalt Strike",
+                " Derusbi",
+                " PlugX",
+                " PoisonIvy",
+                " Powershell Empire",
+                " Zuguo",
+                "9002"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "5bbced13-72f7-40dc-8c41-dcce75bf885e",
+            "created_at": "2022-10-25T15:50:23.695735Z",
+            "updated_at": "2025-03-27T02:00:55.525839Z",
+            "deleted_at": null,
+            "main_name": "Winnti Group",
+            "aliases": [
+                "Winnti Group"
+            ],
+            "source_name": "MITRE:Winnti Group",
+            "tools": [
+                "PipeMon",
+                "Winnti for Windows",
+                "PlugX"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "945a572f-ebe3-4e2f-a288-512fe751cfa8",
+            "created_at": "2022-10-25T16:07:24.413971Z",
+            "updated_at": "2025-03-27T02:02:10.212853Z",
+            "deleted_at": null,
+            "main_name": "Winnti Group",
+            "aliases": [
+                "Wicked Panda",
+                "Winnti Group"
+            ],
+            "source_name": "ETDA:Winnti Group",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "FunnySwitch",
+                "RbDoor",
+                "RibDoor",
+                "RouterGod",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "2f07a03f-eb1f-47c8-a8e9-a1a00f2ec253",
+            "created_at": "2022-10-25T16:07:24.277669Z",
+            "updated_at": "2025-03-27T02:02:10.157972Z",
+            "deleted_at": null,
+            "main_name": "TA428",
+            "aliases": [
+                "Operation LagTime IT",
+                "Operation StealthyTrident",
+                "ThunderCats"
+            ],
+            "source_name": "ETDA:TA428",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "Agent.dhwf",
+                "Albaniiutas",
+                "BlueTraveller",
+                "Chymine",
+                "Cotx RAT",
+                "CoughingDown",
+                "Darkmoon",
+                "Destroy RAT",
+                "DestroyRAT",
+                "Gen:Trojan.Heur.PT",
+                "Kaba",
+                "Korplug",
+                "LuckyBack",
+                "PhantomNet",
+                "PlugX",
+                "Poison Ivy",
+                "RedDelta",
+                "RoyalRoad",
+                "SManager",
+                "SPIVY",
+                "Sogu",
+                "TIGERPLUG",
+                "TManger",
+                "TVT",
+                "Thoper",
+                "Xamtrav",
+                "pivy",
+                "poisonivy"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "64ca1755-3883-4173-8e0a-6e5cf92faafd",
+            "created_at": "2022-10-25T15:50:23.636456Z",
+            "updated_at": "2025-03-27T02:00:55.51077Z",
+            "deleted_at": null,
+            "main_name": "Deep Panda",
+            "aliases": [
+                "Deep Panda",
+                "Shell Crew",
+                "KungFu Kittens",
+                "PinkPanther",
+                "Black Vine"
+            ],
+            "source_name": "MITRE:Deep Panda",
+            "tools": [
+                "Mivast",
+                "StreamEx",
+                "Sakula",
+                "Tasklist",
+                "Derusbi"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "46a151bd-e4c2-46f9-aee9-ee6942b01098",
+            "created_at": "2023-01-06T13:46:38.288168Z",
+            "updated_at": "2025-03-27T02:00:02.794118Z",
+            "deleted_at": null,
+            "main_name": "APT19",
+            "aliases": [
+                "Black Vine",
+                "TEMP.Avengers",
+                "PinkPanther",
+                "G0073",
+                "KungFu Kittens",
+                "Group 13",
+                "Shell Crew",
+                "BRONZE FIRESTONE",
+                "G0009",
+                "Sunshop Group",
+                "DEEP PANDA",
+                "Codoso"
+            ],
+            "source_name": "MISPGALAXY:APT19",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "4c68ccd0-caba-4189-9ead-86ac4c2d9b70",
+            "created_at": "2024-05-01T02:03:07.930196Z",
+            "updated_at": "2025-03-27T02:05:17.251237Z",
+            "deleted_at": null,
+            "main_name": "BRONZE ATLAS",
+            "aliases": [
+                "Axiom",
+                "BARIUM ",
+                "Blackfly ",
+                "CTG-2633",
+                "GREF",
+                "Group 72 ",
+                "Red Kelpie ",
+                "TG-2633 ",
+                "Wicked Panda ",
+                "Winnti",
+                "APT41 "
+            ],
+            "source_name": "Secureworks:BRONZE ATLAS",
+            "tools": [
+                " CCleaner v5.33 backdoor",
+                " ChinaChopper",
+                " Cobalt Strike",
+                " Dicey MSDN",
+                " ForkPlayground",
+                " HUC Proxy Malware (Htran)",
+                " Mimikatz",
+                " PipeMon",
+                " PlugX",
+                " PortReuse",
+                " Powershell Empire",
+                " RCMD",
+                " RbDoor",
+                " SPEEDBOAT",
+                " ShadowPad",
+                " Sidewalk",
+                " Speculoos",
+                " TeamViewer",
+                " Winnkit",
+                " Winnti",
+                " reg save",
+                " vssadmin",
+                "Acehash"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "0639667a-fb3f-43d9-a38c-6c123fd19c7f",
+            "created_at": "2022-10-25T16:07:23.335869Z",
+            "updated_at": "2025-03-27T02:02:09.743237Z",
+            "deleted_at": null,
+            "main_name": "APT 19",
+            "aliases": [
+                "APT 19",
+                "Bronze Firestone",
+                "C0d0so0",
+                "Codoso",
+                "Deep Panda",
+                "Operation Kingslayer",
+                "Red Pegasus",
+                "Sunshop Group",
+                "TG-3551"
+            ],
+            "source_name": "ETDA:APT 19",
+            "tools": [
+                "Agentemis",
+                "C0d0so0",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Derusbi",
+                "EmPyre",
+                "EmpireProject",
+                "Fire Chili",
+                "PowerShell Empire",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1666716505,
+    "ts_updated_at": 1743041803,
+    "ts_creation_date": 1651045774,
+    "ts_modification_date": 1651045774,
+    "files": {
+        "pdf": "https://archive.orkl.eu/ea6ce067a3a25f585984e9931b76131e254fc714.pdf",
+        "text": "https://archive.orkl.eu/ea6ce067a3a25f585984e9931b76131e254fc714.txt",
+        "img": "https://archive.orkl.eu/ea6ce067a3a25f585984e9931b76131e254fc714.jpg"
+    }
+}

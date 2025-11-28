@@ -1,0 +1,206 @@
+{
+    "id": "f445235a-ecbf-4eae-abee-16ef83faa7a7",
+    "created_at": "2023-01-12T15:03:15.514391Z",
+    "updated_at": "2025-03-27T02:14:02.908222Z",
+    "deleted_at": null,
+    "sha1_hash": "8977290a5c4ccd0401d62b014914ebb1e84c7c99",
+    "title": "2020-11-24 - Stantinko’s Proxy After Your Apache Server",
+    "authors": "",
+    "file_creation_date": "2022-05-28T15:51:33Z",
+    "file_modification_date": "2022-05-28T15:51:33Z",
+    "file_size": 1741289,
+    "plain_text": "# Stantinko’s Proxy After Your Apache Server\n\n**[intezer.com/blog/research/stantinkos-proxy-after-your-apache-server/](https://www.intezer.com/blog/research/stantinkos-proxy-after-your-apache-server/)**\n\nWritten by Avigayil Mechtinger - 24 November 2020\n\n### Get Free Account\n\nJoin Now\n\n## Intro\n\n\nNovember 24, 2020\n\n\nIt is common for threat actors to evolve their Linux malware. BlackTech with their new\n[ELF_PLEAD malware and Winnti’s](https://blogs.jpcert.or.jp/en/2020/11/elf-plead.html) [PWNLNX tool are recent examples. On par with this](https://twitter.com/IntezerLabs/status/1308740144120213506)\ntrend, we have discovered a new version of a Linux proxy trojan related to Stantinko\n**group. The malware has just one detection in VirusTotal at the time of this publication.**\n\n\n-----\n\nStantinko group is known for targeting Windows operating systems with ongoing campaigns\ndating back to 2012. The group’s malware mainly consists of coin-miners and adware\nbotnets.\n\n[In a 2017 white paper summarizing Stantinko’s operations, researchers at ESET analyzed a](https://www.welivesecurity.com/wp-content/uploads/2017/07/eset_stantinko_whitepaper_final.pdf)\nLinux trojan proxy. Up until now, this was the only known Linux malware belonging to\nStantinko.\n\nWe have identified a new version of this Linux trojan masqueraded as httpd. httpd is\nApache Hypertext Transfer Protocol Server, a commonly used program on Linux servers.\nThe sample’s version is 2.17, and the older version is 1.2*.\n\nWe believe this malware is part of a broader campaign that takes advantage of\ncompromised Linux servers. Below we provide a technical analysis of the malware and\ncompare it to its previous version.\n\n## Technical Analysis\n\nThe new proxy version file name is httpd and it has only one detection in VirusTotal at the\ntime of this writing. Figure 1 below depicts the result from VirusTotal. The sample was\nuploaded on November 7, 2020 from Russia, one of Stantinko’s main target countries. The\nsample is an unstripped 64-bit ELF binary.\n\n_Figure 1: The sample’s detection report in VirusTotal_\n_(7d2a840048f32e487f8a61d7fc1a0c39)._\n\n## Malware Flow\n\nUpon execution, the malware will validate a configuration file which is delivered together\nwith the malware on the infected machine. The malware expects the configuration file to be\nlocated at “/etc/pd.d/proxy.conf”. If the configuration file does not exist, or if it lacks the\n\n\n-----\n\nrequired structure, the malware exits without conducting any additional malicious activity.\nFigure 2 below is a snippet from the configuration parsing logic. The configurations are\nstored as key/value pairs.\n\n_Figure 2: ParseConfigElement function is used to parse the configuration file._\n\nThe configuration file is expected to have the following keys: proxy_ip, port, redirect_url,\nlocalhost, ip_header and request_header_log_files.\n\nAfter validating and parsing the configuration file structure, the start_demon function is\ncalled and the proxy daemonizes itself. Then, it creates a socket and a listener to accept\nconnections from a client. We believe the clients who interact with this Trojan are other\ninfected machines that are part of the campaign. Figure 3 is a snippet taken from the main\nfunction showing the general code flow described above\n\n\n-----\n\n_Figure 3: Main function flow snippet_\n\nOnce a client connects to the listener, the program calls the on_client_connect function.\nFirst, it checks if the request method is GET, POST or NOTIFY.\n\nIf the request method is GET, the program will reply with a 301 redirect HTTP response\ncontaining the redirect_url parameter from the configuration file. This means that if the\nC&C IP is simply searched, using a browser for instance, the response could be misleading\nby redirecting to a benign website, leaving no trace of an extra payload that is used in the\nattack. If the request method is POST or NOTIFY, the malware will build a POST request to\nsend to the C&C server based on the client’s HTTP request headers and content, using the\n**create_post_data function. The program will then call the mysql_server_do_request**\nfunction which is in charge of sending the POST request to the C&C. Figure 4 shows a\nsnippet from the on_client_connect function.\n\n\n-----\n\n_Figure 4: Snippet from on_client_connect function_\n\nThe POST request is sent to one of the following paths on the C&C server:\n\n/kbdmai/index.php\n/kbdmai/dht/index.php\n/kbdmai/DRTIPROV/index.php\n/kbdmai/winsvc/index.php\n/kbdmai/anti_rstrui/index.php\n\nThe path is selected in the detect_proxy_script function based on the data sent from the\nclient. We believe that each path delivers a different payload as part of the\ncampaign’s attack chain. The C&C IP address is stored as the proxy_ip parameter in the\nconfig file. Finally, the proxy forwards the C&C response back to the client. Figure 5\nemphasizes the attack flow at a high level.\n\n\n-----\n\n_Figure 5: Attack Flow_\n\n1. An infected client sends a POST or NOTIFY HTTP request to the proxy\n2. The proxy parses the request and passes on a POST request to the attacker’s server\n3. The attacker’s server replies to the proxy and the proxy passes on the response to the\n\nclient\n4. A non-infected machine sends a GET request to the proxy\n5. The proxy replies with a 301 Redirect to a preconfigured URL\n\n## Versions Comparison\n\nWith a nearly three year difference between the two versions, the trojan proxies have similar\npurpose but they are not identical. In this section we will compare version 1.2* and 2.17\nbased on three criteria: Parameters, functionality, and ELF structure.\n\n## Parameters\n\nThe new version (2.17) uses a configuration file that is dropped on the victim’s machine\ntogether with the malware. The configuration file contains the C&C IP address together with\nother parameters. In the old version (1.2*) the C&C is hardcoded in the binary, making it\neasier to block the campaign’s traffic once the binary is detected.\n\n## Functionality\n\n\n-----\n\nIn addition to the proxy functionality, the old version receives files and self update\ncommands from the C&C. The new version is more simple in that it only functions as a\nproxy.\n\n## ELF Structure\n\nBoth versions 1.2* and 2.17 are unstripped and include debug symbols. The old version is\nstatically linked, whereas the new version is dynamically linked.\n\n## The Stantinko Connection\n\nAfter uploading the file to Intezer Analyze we noticed that the new variant shares several\nfunction names with the old one. These functions, such as get_binary_full_path and\n**read_variable_string, are not called statically in the new version. We are almost certain**\nthese functions are leftover from the previous variant.\n\n_Figure 6: String reuse between the Linux versions_\n\nInterestingly, the C&C paths hint at some of Stantinko’s earlier campaigns based on ESET’s\nresearch. An example of the hard coded paths is shown in Figure 7. The root directory\nname is kbdmai. “KDBMAI.dll” is a malware filename used by Stantinko in 2012. Also, the\n\n\n-----\n\nmalware s C&C was hosted on kdbmai[.]net. Another interesting directory is DRTIPROV.\nDRTIPROV is part of a Program Database (pdb) path from one of the group’s Windows\nmalware.\n\n_Figure 7: Path hard coded in the detect_proxy_script function_\n\n## Wrap-Up\n\nStantinko is the latest malware targeting Linux servers to fly under the radar, joining threats\nsuch as [Doki,](https://www.intezer.com/container-security/watch-your-containers-doki-infecting-docker-servers-in-the-cloud/) [IPStorm and](https://www.intezer.com/blog/research/a-storm-is-brewing-ipstorm-now-has-linux-malware/) [RansomEXX.](https://securelist.com/ransomexx-trojan-attacks-linux-systems/99279/)\n\nThe code from the new Stantinko sample is now indexed in Intezer’s Genome Database.\n[Sign up for the Intezer Protect community edition to defend your Linux cloud servers in](https://www.intezer.com/join-intezer-protect-community-edition/)\nruntime against the latest Linux threats.\n\n**I want to thank Nicole Fishbein and Joakim Kennedy for their contributions to this**\n**analysis.**\n\n## IOCs\n\n**New version: 2.17**\n\n1de81bf6ee490b6bebe9f27d5386a48700e8431f902f4f17d64ddc5d8509ca7a\n\n**Old version: 1.2***\n\n889aa5a740a3c7441cdf7759d4b1c41c98fd048f4cf7e18fcdda49ea3911d5e5\n\n968b41b6ca0e12ea86e51e0d9414860d13599cd127ad860e1c52c2678f4f2cb9\n\n\n-----\n\n43a6894d5953b37f92940d5c783c9977690f358b5e25bba8c096fa54657bb2e5\n\na305d488733d50ea92a2794cb6e0aa9d1d176e2c8906305ea48ff503fc2eb276\n\n**Avigayil Mechtinger**\nAvigayil is a product manager at Intezer, leading Intezer Analyze product lifecycle. Prior to\nthis role, Avigayil was part of Intezer's research team and specialized in malware analysis\nand threat hunting. During her time at Intezer, she has uncovered and documented different\nmalware targeting both Linux and Windows platforms.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-11-24 - Stantinko’s Proxy After Your Apache Server.pdf"
+    ],
+    "report_names": [
+        "2020-11-24 - Stantinko’s Proxy After Your Apache Server.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "2646f776-792a-4498-967b-ec0d3498fdf1",
+            "created_at": "2022-10-25T15:50:23.475784Z",
+            "updated_at": "2025-03-27T02:00:55.479958Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "BlackTech",
+                "Palmerworm"
+            ],
+            "source_name": "MITRE:BlackTech",
+            "tools": [
+                "Kivars",
+                "PsExec",
+                "TSCookie",
+                "Flagpro",
+                "Waterbear"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "d3a7123c-f519-49a0-a234-de24a1ef052a",
+            "created_at": "2022-10-25T16:47:55.545211Z",
+            "updated_at": "2025-03-27T02:05:17.254744Z",
+            "deleted_at": null,
+            "main_name": "BRONZE CANAL",
+            "aliases": [
+                "CTG-6177 ",
+                "Circuit Panda ",
+                "Palmerworm ",
+                "Shrouded Crossbow ",
+                "BlackTech"
+            ],
+            "source_name": "Secureworks:BRONZE CANAL",
+            "tools": [
+                " DRIGO",
+                " Flagpro",
+                " Gh0stTimes",
+                " PLEAD",
+                " Spiderpig",
+                " Waterbear",
+                "Bifrose"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "75024aad-424b-449a-b286-352fe9226bcb",
+            "created_at": "2023-01-06T13:46:38.962724Z",
+            "updated_at": "2025-03-27T02:00:02.964002Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "CIRCUIT PANDA",
+                "Temp.Overboard",
+                "G0098",
+                "Red Djinn",
+                "HUAPI",
+                "Palmerworm",
+                "T-APT-03",
+                "Manga Taurus",
+                "Earth Hundun"
+            ],
+            "source_name": "MISPGALAXY:BlackTech",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "efa7c047-b61c-4598-96d5-e00d01dec96b",
+            "created_at": "2022-10-25T16:07:23.404442Z",
+            "updated_at": "2025-03-27T02:02:09.781478Z",
+            "deleted_at": null,
+            "main_name": "BlackTech",
+            "aliases": [
+                "BlackTech",
+                "Circuit Panda",
+                "Earth Hundun",
+                "Manga Taurus",
+                "Operation PLEAD",
+                "Operation Shrouded Crossbow",
+                "Operation Waterbear",
+                "Palmerworm",
+                "Radio Panda",
+                "Red Djinn",
+                "T-APT-03",
+                "TEMP.Overboard"
+            ],
+            "source_name": "ETDA:BlackTech",
+            "tools": [
+                "BIFROST",
+                "BUSYICE",
+                "BendyBear",
+                "Bluether",
+                "CAPGELD",
+                "DRIGO",
+                "Deuterbear",
+                "Flagpro",
+                "GOODTIMES",
+                "Gh0stTimes",
+                "IconDown",
+                "KIVARS",
+                "LOLBAS",
+                "LOLBins",
+                "Linopid",
+                "Living off the Land",
+                "TSCookie",
+                "Waterbear",
+                "XBOW",
+                "elf.bifrose"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "4c68ccd0-caba-4189-9ead-86ac4c2d9b70",
+            "created_at": "2024-05-01T02:03:07.930196Z",
+            "updated_at": "2025-03-27T02:05:17.251237Z",
+            "deleted_at": null,
+            "main_name": "BRONZE ATLAS",
+            "aliases": [
+                "Axiom",
+                "BARIUM ",
+                "Blackfly ",
+                "CTG-2633",
+                "GREF",
+                "Group 72 ",
+                "Red Kelpie ",
+                "TG-2633 ",
+                "Wicked Panda ",
+                "Winnti",
+                "APT41 "
+            ],
+            "source_name": "Secureworks:BRONZE ATLAS",
+            "tools": [
+                " CCleaner v5.33 backdoor",
+                " ChinaChopper",
+                " Cobalt Strike",
+                " Dicey MSDN",
+                " ForkPlayground",
+                " HUC Proxy Malware (Htran)",
+                " Mimikatz",
+                " PipeMon",
+                " PlugX",
+                " PortReuse",
+                " Powershell Empire",
+                " RCMD",
+                " RbDoor",
+                " SPEEDBOAT",
+                " ShadowPad",
+                " Sidewalk",
+                " Speculoos",
+                " TeamViewer",
+                " Winnkit",
+                " Winnti",
+                " reg save",
+                " vssadmin",
+                "Acehash"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535795,
+    "ts_updated_at": 1743041642,
+    "ts_creation_date": 1653753093,
+    "ts_modification_date": 1653753093,
+    "files": {
+        "pdf": "https://archive.orkl.eu/8977290a5c4ccd0401d62b014914ebb1e84c7c99.pdf",
+        "text": "https://archive.orkl.eu/8977290a5c4ccd0401d62b014914ebb1e84c7c99.txt",
+        "img": "https://archive.orkl.eu/8977290a5c4ccd0401d62b014914ebb1e84c7c99.jpg"
+    }
+}

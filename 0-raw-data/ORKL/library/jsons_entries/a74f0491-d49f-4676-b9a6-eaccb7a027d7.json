@@ -1,0 +1,243 @@
+{
+    "id": "a74f0491-d49f-4676-b9a6-eaccb7a027d7",
+    "created_at": "2023-01-12T15:01:41.508776Z",
+    "updated_at": "2025-03-27T02:16:01.134364Z",
+    "deleted_at": null,
+    "sha1_hash": "d3af456c6b50360e9ae28cc49f436c3031d95355",
+    "title": "2020-10-15 - Panda’s New Arsenal- Part 1 Tmanger",
+    "authors": "",
+    "file_creation_date": "2022-05-28T02:18:53Z",
+    "file_modification_date": "2022-05-28T02:18:53Z",
+    "file_size": 283312,
+    "plain_text": "# Panda’s New Arsenal: Part 1 Tmanger\n\n**[insight-jp.nttsecurity.com/post/102gi9b/pandas-new-arsenal-part-1-tmanger](https://insight-jp.nttsecurity.com/post/102gi9b/pandas-new-arsenal-part-1-tmanger)**\n\nHiroki Hada\n\n## はじめに\n\n2020年2月、私達はAPT攻撃グループ”TA428”による攻撃キャンペーン”Operation LagTime IT”についてリサーチ\nを行っていました。攻撃者は私達の監視しているシステムに侵入し、様々な侵害活動を行いました。彼らは\nPoison IvyやCotx RATを使ってコンピュータのコントロールを得た後、更に侵害を深めるために横展開を行いま\nした。攻撃者はEternal Blueを悪用して同一ネットワーク上のいくつかのホストに移動することに成功すると、\nそのうちの1つのホスト上で興味深いマルウェアを動かし始めました。PDBに Tmanger と書かれたRATは今まで\nに見たことがない未知のマルウェアでした。\n\n\n-----\n\nこのときの侵害について、極めて詳細な調査結果をVB2020 localhostにて発表しました[1]が、ここでは全3回に\n分けてTmangerとそれに関連すると思われるマルウェアについて紹介します。第1回目である今回はTmangerを\n扱います。\n\n## Tmanger\n\nTmangerはTA428によって利用されているRATです。図 1に示すように、PDBにTmangerと書かれていたことか\nら、私たちはそう呼んでいます。Tmangerはおそらく Tmanager の打ち間違いです。次回以降の記事で紹介し\nますが、Tmangerに関連すると思われるものに Smanager というマルウェアが存在することが理由の1つです。\nこのマルウェアの作者は意図しているのかは分かりませんが、このような打ち間違いが他にもいくつか見られま\nす。例えば Entery や Waston という文字列もその1つです。\n\n図1 TmangerのPDB情報\n\nTmangerは非常に活発に開発が続いており、関連すると思われる検体も存在します。Tmangerは私達が観測した\n攻撃以外にも、TA428の本来の標的であるモンゴルや、一帯一路政策に関わるベトナムに対しても利用されてい\nる可能性があります。\n\nTA428はTickやTontoなどの他のAPTグループとRoyal Road RTF Weaponizerを共有していることが報告されてい\nます[2][3]が、Tmangerも他のAPTグループと共有されている可能性があります。しかし、その明確な証拠は発\n見していません。\n\n## Analysis Result\n\n私達はTmangerをバージョン1.0 ~ 4.5まで観測しています。基本的にTmangerは SetUp、MloadDll、Client の3\nつのパートから成ります。それぞれのパートでいくつかの挙動バリエーションがありますが、基本的な役割は以\n下のとおりです。\n\n名称 概要\n\nSetUp MloadDllを展開し、実行する\n\nMloadDll Clientを展開し、実行する\n\nClient RAT本体\n\n名称はそれぞれのEXEやDLLの内部名やPDBから付けており、攻撃者も私達の分類と同じように扱っていると考\nえられます。それでは、それぞれについて詳しく見ていきましょう。\n\n### SetUp\n\n\n-----\n\nMloadDllやClientにも存在する挙動ですが、はじめにCreateEventで特定のイベント名を作成し、その成功の可否\nで挙動を変えます。成功した場合は実行を継続しますが、失敗した場合はその時点で終了します。これは多重起\n動を防ぐ目的であると考えられます。このとき、イベント名は様々ですが、私達が観測した全てのTmangerは以\n下の正規表現を満たします。\n\n/[0-9a-f]{8}-[0-9a-f]{4}-4551-8f84-08e738aec[0-9a-f]{3}/\n\n次に、IsUserAdminでユーザの権限を確認します。これ以降、Adminの場合とそうではない場合で処理が分岐し\nます。Adminの場合とそうではない場合で、永続化の方法が異なっています。\n\n### Adminの場合\n\nまず、XOR 0x88で以下のようなデータをデコードします。これらは後でサービス登録を行う際に使用されま\nす。\n\nDFS Replication\nFTP Publishing Service\nReadyBoost\nSoftware Licensing\nSL UI Notification Service\nTerminal Services Configuration\nWindows Media Center Extender Service\nWindows Media Center Service Launcher\nSOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Svchost\nnetsvcs\n%SystemRoot%\\System32\\svchost.exe -k netsvcs\nMACHINE\\SYSTEM\\CurrentControlSet\\Services\\\n\nその後、同様にXOR 0x88でデータをデコードし、得られたAPIを解決します。\n\nRegOpenKeyEx\nRegQueryValueEx\nOpenSCManager\nRegOpenKeyExA\nRegQueryValueExA\nRegSetValueExA\nGetSystemDirectoryA\nRegCloseKey\n\n次に、deflateされているデータをinflateし、ランダムな4文字から成るファイル名でSystem32にDLLとして保存\nします。このDLLはMloadDllです。\n\n再びXOR 0x88でAPI名をデコードし、解決します。これによって解決されたAPIはCreateServiceAです。さら\nに、同じ方法で以下のデータを得ます。\n\nSYSTEM\\CurrentControlSet\\Services\\\nDescription\nDisplayName\nServiceDll\n\\Parameters\n\nこれまでにデコードした文字列を使って、先程System32に作成したDLLをサービスとして登録します。最後\nに、そのサービスを起動します。\n\n\n-----\n\n### Adminではない場合\n\nはじめにTempディレクトリにRahoto.exeというファイルがあるか確認します。存在しない場合、自分自身を\nRahoto.exeという名前でTempディレクトリにコピーし、レジストリのCurrentVersion\\Runを使って自動起動の\n設定を行います。\n\nその後、MloadDllとして動作します。\n\n### MloadDll\n\nMloadDllはEnteryとServiceMainがエクスポート関数として実装されています。ServiceMainから実行された場合\nでも、最終的にEnteryが実行されるため、基本的な挙動は同一です。\n\nはじめに図 2のようにRC4の鍵データを生成します。この処理はTmangerで共通するものです。\n\n図2 暗号鍵を生成する処理\n\n鍵データを生成すると、それを使ってconfigデータを復号します。図 3のように、configデータにはC&Cサーバ\nーのアドレスとポート番号が含まれています。\n\n図3 configデータ\n\nその後、deflateされているデータをinflateします。それによって得られるデータがClientです。最後に、Clientの\nエクスポート関数であるcallfuncを呼び出します。\n\n### Client\n\nCreateEventなどの処理を行った後、以下のような端末情報を収集します。\n\nOSやアーキテクチャ情報\nドライブ情報\nホスト情報\nユーザ情報\n\nその後、スレッドが作成され、一連のループを繰り返します。はじめに、ソケットを作成し、成功すると\nCreateMutexで以下のMutexを作成します。\n\n\n-----\n\nsock_hmutex\ncmd_hmutex\n\n次に、C&Cサーバーとの接続が確立するかチェックを行います。接続できた場合、C&Cサーバーからのコマン\nド操作を待ちます。コマンドのリストは以下のとおりです。\n\nコマンド 説明\n\n1, 17 特定のプロセスの起動\n\n2 ディレクトリ情報の取得\n\n3, 19, 35 クライアントからC&Cサーバーへファイルの送信\n\n4 ファイル情報の取得\n\n18 ファイルの削除\n\n20, 52 メモリなどのクリーンアップ\n\n34 CreateProcessによるプロセスの起動\n\n36 ファイルの書き込み\n\n50 ファイルのコピー\n\n80, 81 キーログの取得\n\n96 画面キャプチャの取得\n\nそれ以外 Sleep\n\nトラフィックはRC4によって暗号化されていますが、それをデコードすると図 4のような構造になっています。\n\n\n-----\n\n図4 トラフィックの構造\n\nデコード後のデータの先頭に存在するIDはプロセスIDから生成されます。生成処理は以下のとおりです。\n\nこのIDによってプロセスとトラフィックを管理しています。\n\n## ツール\n\nTmangerがC&Cサーバーと通信する際、データは暗号化されています。私達はそれをデコードし、トラフィッ\nクをパースするツールを作成しました。関連するマルウェアの解析やインシデント調査にご活用ください。\n\n[https://www.nttsecurity.com/ja-jp/Resources](https://www.nttsecurity.com/ja-jp/Resources)\n\n## さいごに\n\n今回はTA428がOperation LagTime ITの中で使用したTmangerというRATについて紹介しました。Tmangerは活\n発に開発が行われており、いくつかの関連マルウェアも存在します。今後もTmangerの動向を注視していくべき\nでしょう。次回はTmangerに関連すると思われるマルウェアAlbaniiutasについて紹介します。\n\n## IOC\n\n### C&Cサーバー\n\n172[.]105.39.67\n136[.]244.82.179\n\n### ファイル情報\n\n**SHA256** **Timestamp** **PDB**\n\n\n977bd4b7e054b84b4b62e84875ff3277\n\ndd8c039cf3ee0ded435b41025d0d2b21\n\n88ffb081f6924261df32322f343ccb9078\n\nee45eaa369660892585037baf59078\n\n8987b9587c1d4f6fbf2fa49eb11bb20b8\n\nb30b82d5bc988f5c882501b1f76b82a\n\n85a53a2525643a84509b10d439734509\n\n203a2a74e1a167d5c3494e37a47c8c8c\n\n\n(UTC)\n2020-03-16\n13:30:57\n\n(UTC)\n2020-03-16\n13:38:19\n\n(UTC)\n2020-03-20\n05:04:56\n\n(UTC)\n2025-06-23\n04:54:29\n\n\nC:\\Users\\sxpolaris\\Desktop\\2020\\TM VS2015\\TM_NEW\n4.5\\Release\\MloadDll.pdb\n\nC:\\Users\\sxpolaris\\Desktop\\2020\\TM VS2015\\TM_NEW\n4.5\\Release\\SetUp.pdb\n\n\n-----\n\n86297be195acaa36ec042523a5484d9e\n\n14fd9fb4cbd977f709e75207358a3f86\n\n5d3db73458eeeb6439ab921159ba447\n\nb01c7a12f7291eb4b5cf510e29a8137c6\n\nebe05801d32985dc954e754aed63b5ce\n\ne6e889f26533b1635c1f47e42bcb483a\n\nc60490f6fbda0a2cf1a8cd401b2f3ce926\n\n2e600268264229122a4d80e327ed4b\n\n6fdd004d0835577749e8742c91e9f1720\n\n953faa8ecd55d3b203eddd4d6db5568\n\n6fdd004d0835577749e8742c91e9f172\n\n0953faa8ecd55d3b203eddd4d6db5568\n\n71fe3edbee0c27121386f9c01b723e1cf\n\nb416b7af093296bd967bbabdc706393\n\n8109a33c573e00e7849ba2d63714703\n\ne2e7bd65dee1c2c6454951f7fc4b2f275\n\n7807c0177cf37bce6e38ef534f804935f\n\n505a24d735baa53a18e2da766ec136b\n\n4fcb79a73f5286ed8f2bc671b64c76dac\n\n4971a0cce10936f63d210e8e17c5fd5\n\ne494c8916e93295338a7368f86c42fce0\n\n916b559e63d462bd1b3265b6009bf9b\n\nd4b339f502119d4cf10d48c8c7297bba\n\nebb22387eb7cc4447540b666d27ba166\n\n078498d02775b64c5660ccbfdf12f31f3\n\nb810ed612e10c3dd50660cfa03ad470\n\n\n(UTC)\n2025-08-19\n12:08:44\n\n(UTC)\n2025-09-06\n23:19:33\n\n(UTC)\n2025-09-07\n14:15:16\n\n(UTC)\n2025-09-25\n17:28:16\n\n(UTC)\n2025-09-25\n17:29:26\n\n(UTC)\n2025-09-25\n17:29:26\n\n(UTC)\n2025-09-25\n17:36:46\n\n(UTC)\n2025-09-25\n17:36:46\n\n(UTC)\n2025-09-29\n13:02:13\n\n(UTC)\n2025-10-01\n15:47:24\n\n(UTC)\n2025-10-01\n15:47:26\n\n(UTC)\n2025-10-01\n15:47:26\n\n(UTC)\n2025-10-01\n20:09:43\n\n\nC:\\Users\\Waston\\Desktop\\20190403_Tmanger\\20191118\nTM_NEW 1.0\\Release\\MloadDll.pdb\n\nC:\\Users\\Waston\\Desktop\\20190403_Tmanger\\20191118\nTM_NEW 4.0\\Release\\MloadDll.pdb\n\nC:\\Users\\Waston\\Desktop\\20190403_Tmanger\\20191118\nTM_NEW 4.4\\Release\\MloadDll.pdb\n\nC:\\Users\\Waston\\Desktop\\20190403_Tmanger\\20191118\nTM_NEW 4.4\\Release\\MloadDll.pdb\n\nC:\\Users\\Waston\\Desktop\\20190403_Tmanger\\20191118\nTM_NEW 4.4\\Release\\SetUp.pdb\n\n\n-----\n\nafd457592715bdef21d02c4e4d0e80dd\n\n70cf801a9d4d9afed795494012994372\n\n772e69b3d66ef5b4fdda49d3ca39a545\n\n9b8c3afce77c24ebda698aef5bdbc5c3\n\n8e9fc7bd0673a88a04583dda7d42f278\n\n013aa7abc4e26de86e953cc4a6825708\n\n2999e5209cf1d7fb484832278e11e4c4\n\n950ef40e8f52a44329ed4230135f9b64\n\n## 参考文献\n\n\n(UTC)\n2025-10-05\n00:17:56\n\n(UTC)\n2025-10-05\n15:34:41\n\n(UTC)\n2025-10-06\n08:33:38\n\n(UTC)\n2025-10-06\n19:16:45\n\n\nC:\\Users\\Waston\\Desktop\\20190403_Tmanger\\20191118\nTM_NEW 4.4\\x64\\Release\\MloadDll.pdb\n\nC:\\Users\\Waston\\Desktop\\20190403_Tmanger\\20191118\nTM_NEW 4.4\\Release\\MloadDll_REG.pdb\n\nC:\\Users\\Waston\\Desktop\\20190403_Tmanger\\20191118\nTM_NEW 4.5\\Release\\MloadDll_REG_DLL.pdb\n\nC:\\Users\\Waston\\Desktop\\20190403_Tmanger\\20191118\nTM_NEW 4.5\\Release\\ttt.pdb\n\n\n\n[1] [VB2020 localhost, Operation LagTime IT: colorful Panda footprint](https://vblocalhost.com/presentations/operation-lagtime-it-colourful-panda-footprint/)\n\n[2] Proofpoint, Chinese APT “Operation LagTime IT” Targets Government Information Technology Agencies in\nEastern Asia\n\n[3] [nao_sec, An Overhead View of the Royal Road](https://nao-sec.org/2020/01/an-overhead-view-of-the-royal-road.html)\n\n\n-----",
+    "language": "JA",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-10-15 - Panda’s New Arsenal- Part 1 Tmanger.pdf"
+    ],
+    "report_names": [
+        "2020-10-15 - Panda’s New Arsenal- Part 1 Tmanger.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "a4aca3ca-9e04-42d1-b037-f7fb3fbab0b1",
+            "created_at": "2023-01-06T13:46:39.042499Z",
+            "updated_at": "2025-03-27T02:00:02.984002Z",
+            "deleted_at": null,
+            "main_name": "TA428",
+            "aliases": [
+                "Colourful Panda",
+                "BRONZE DUDLEY"
+            ],
+            "source_name": "MISPGALAXY:TA428",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "2f07a03f-eb1f-47c8-a8e9-a1a00f2ec253",
+            "created_at": "2022-10-25T16:07:24.277669Z",
+            "updated_at": "2025-03-27T02:02:10.157972Z",
+            "deleted_at": null,
+            "main_name": "TA428",
+            "aliases": [
+                "Operation LagTime IT",
+                "Operation StealthyTrident",
+                "ThunderCats"
+            ],
+            "source_name": "ETDA:TA428",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "Agent.dhwf",
+                "Albaniiutas",
+                "BlueTraveller",
+                "Chymine",
+                "Cotx RAT",
+                "CoughingDown",
+                "Darkmoon",
+                "Destroy RAT",
+                "DestroyRAT",
+                "Gen:Trojan.Heur.PT",
+                "Kaba",
+                "Korplug",
+                "LuckyBack",
+                "PhantomNet",
+                "PlugX",
+                "Poison Ivy",
+                "RedDelta",
+                "RoyalRoad",
+                "SManager",
+                "SPIVY",
+                "Sogu",
+                "TIGERPLUG",
+                "TManger",
+                "TVT",
+                "Thoper",
+                "Xamtrav",
+                "pivy",
+                "poisonivy"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "c416260c-7ff6-4a74-a5ba-a15f40d3543f",
+            "created_at": "2024-05-01T02:03:07.939268Z",
+            "updated_at": "2025-03-27T02:05:17.25652Z",
+            "deleted_at": null,
+            "main_name": "BRONZE DUDLEY",
+            "aliases": [
+                "Temp.Hex ",
+                "Vicious Panda ",
+                "TA428 "
+            ],
+            "source_name": "Secureworks:BRONZE DUDLEY",
+            "tools": [
+                "PoisonIvy"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535701,
+    "ts_updated_at": 1743041761,
+    "ts_creation_date": 1653704333,
+    "ts_modification_date": 1653704333,
+    "files": {
+        "pdf": "https://archive.orkl.eu/d3af456c6b50360e9ae28cc49f436c3031d95355.pdf",
+        "text": "https://archive.orkl.eu/d3af456c6b50360e9ae28cc49f436c3031d95355.txt",
+        "img": "https://archive.orkl.eu/d3af456c6b50360e9ae28cc49f436c3031d95355.jpg"
+    }
+}

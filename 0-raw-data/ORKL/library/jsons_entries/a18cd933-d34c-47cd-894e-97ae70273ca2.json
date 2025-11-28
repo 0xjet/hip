@@ -1,0 +1,224 @@
+{
+    "id": "a18cd933-d34c-47cd-894e-97ae70273ca2",
+    "created_at": "2023-01-12T15:00:08.677573Z",
+    "updated_at": "2025-03-27T02:16:16.8221Z",
+    "deleted_at": null,
+    "sha1_hash": "b2c8424e2f8125bbb2888397f7dd1c3294bf1880",
+    "title": "2020-11-27 - Analyzing Organizational Invasion Ransom Incidents Using Dtrack",
+    "authors": "",
+    "file_creation_date": "2022-05-28T21:43:10Z",
+    "file_modification_date": "2022-05-28T21:43:10Z",
+    "file_size": 587700,
+    "plain_text": "# Dtrackを使った組織侵入型ランサムインシデントの分析 - セキュリティ研究センターブ ログ\n\n**blog.macnica.net/blog/2020/11/dtrack.html**\n\n竹\n内 寛\n\n\n[竹内](https://security.macnica.co.jp/blog/author/author31bfd/) 寛\n\n2020年11月27日 17:44\n\n## Dtrackを使った組織侵入型ランサムインシデントの分析\n\n[APT](https://security.macnica.co.jp/blog/apt/)\n[インテリジェンス](https://security.macnica.co.jp/blog/intelligence/)\n\n[ツイート](https://twitter.com/share)\n\nパソコン等の端末やサーバ上のデータの暗号化等を行い、それらを復旧する事を引き換えに金銭を要求するランサムウェア攻撃。従来の\nメール経由でマルウェアに感染させる手口に加え、VPN等のネットワーク機器やインターネットからアクセス可能な管理サーバから企業\nネットワークに侵入し内部システムを把握した後に重要サーバを使用不可にする手口も多く観測されています。これにより金銭搾取を目\n的とし脅迫を行うランサム攻撃は、企業にとって更に深刻なものになっています。\n\n本記事では、弊社が過去対応を行った国内企業の海外拠点でネットワークに侵入された後に基幹システムサーバのデータ暗号化・金銭を\n要求されたインシデントの分析結果について共有し、対策の検討に活用していただく事を目指し記載しています。\n\n### インシデント概要\n\nインシデント対応は、3月上旬に基幹システムのサーバにリモートアクセスできない事象が発覚した事から始まりました。調べた所、サ\nーバのデスクトップ上に脅迫内容が記載されたファイルが見つかり、数十台のサーバでシステムドライブを除いた全ボリュームが暗号化\nされた事が分かりました。更にデータのバックアップも暗号化されていました。\n\n\n-----\n\nransom.png\n\n\n図1. 攻撃者が残した脅迫文\n\n脅迫文の文面は、公開情報によると2018年頃に観測されたTimisoaraHackerTeam (THT) Ransomwareと呼ばれている攻撃者グループに\nよる活動で使われた文面と一致していました。攻撃者グループの要求額は、数千万円相当のビットコインでした。\n\nここからは、侵入・内部活動・脅迫の各フェーズで使われた攻撃者のTTPs(Tactics, Techniques and Procedures)について解説をします。\n\n### 侵入\n\nインターネットからアクセス可能であるZoho ManageEngine Desktop Centralサーバに内在していた脆弱性 CVE-2020-10189が悪用され\nました。この脆弱性によりサーバに2つのファイルが設置、実行されました。\n\ninstall.bat\nstoresyncsvc.dll\n\ninstall.batは、storesyncsvc.dllをサービス登録するバッチファイルで、 storesyncsvc.dllは、メモリ上に商用ペネトレーションツールの\nCobalt StrikeのRAT Beaconを動作させるものでした。\n\n\n-----\n\nbat.png\n\n\n図2. install.bat\n\nCobalt Strikeで遠隔操作を可能とするコンポーネントは2種類の形態があります。１つは、StagerでRAT機能を持つコンポーネン\nト\"beacon\"をTeam Serverからダウンロードしてメモリ上で実行します。\n\n\n-----\n\nスクリ ンショット 2020 11 26 15.25.08.png\n\n\n図3. Stager\n\nもう１つの形態は、Stageless で、ファイルに内部に暗号化されたbeaconのコードが埋め込まれており、実行時にメモリ上にbeaconが\n展開されます。\n\n\nスクリーンショット 2020-11-26 15.24.49.png\n\n\n図4. Stageless\n\n\n-----\n\nこの段階で設置されたものはStagelessの形態でした。以下がbeaconの設定情報(コンフィグ)です。\n\n\nbeacon-config.png\n\n\n図5. storesyncsvc.dll(beacon) コンフィグ\n\nこのbeaconは、Cobalt StrikeのTeam Server(C2サーバ)とのHTTPS通信を本来のTeam Server (exchange.dumb1[.]com)ではなく、\ncdn.bootcss[.]com宛の通信に偽装する設定になっていました。Cobalt Strikeは、Team Serverとの通信を容易に偽装できるMalleable C2\nProfile機能を有しています。\n\n\n-----\n\nmalleable.png\n\n\n図6. Malleable C2 Profileで偽装された通信\n\nこれにより、攻撃者は最初の足場固めに成功しました。\n\n### 内部活動\n\nZoho ManageEngine Desktop Centralサーバ上に足場固めをした後に、攻撃者は、新たなCobalt Strike Stagerをダウンロードしました。\nこのStagerは、商用パッカーのVMProtectでパックされていました。\n\nここまで読まれた方の中には、気づいた方もいらっしゃるかもしれませんが、これまで解説した手口は、FireEye社のブログで解説され\nているAPT41/Winnti Groupの攻撃キャンペーンの手口と同一のものです。我々がインシデント対応をしている時に記事が公開され、こ\nの記事を読み本インシデントもATP41による可能性が高いと考えました。\n\nFireEye 解析記事: [This Is Not a Test: APT41 Initiates Global Intrusion Campaign Using Multiple Exploits](https://www.fireeye.com/blog/threat-research/2020/03/apt41-initiates-global-intrusion-campaign-using-multiple-exploits.html)\n\n**APT41 + Dtrack = ?**\n\nしかし、調査を進めていく中で同じサーバ上に別のマルウェアが、Windowsの機能の１つであるBITS(Background Intelligent Transfer\nService)でダウンロードされていたのを発見しました。ファイル名はmsupdate.exeで、解析の結果、Lazarusが使うRemote\nAdministration Tool (RAT) の１つ であるDtrackである事が分かりました。\n\n\n-----\n\nmsupdate.exe の内部に暗号化されたDtrackが埋め込まれており、実行時にメモリ上に展開されます。埋め込まれている文字列の大部分\nがRC4で暗号化されています。実装されているC2コマンドは、Kaspersky社の解析内容とほぼ一致していました。\n\nKaspersky 解析記事: [Hello! My name is Dtrack](https://securelist.com/my-name-is-dtrack/93338/)\n\n\ncommand.png\n\n\n図7. Dtrack C2コマンド受信処理部分\n\n表1. Dtrackコマンド一覧\n\nコマンドID 命令\n\n1003 感染機器へファイルアップロード\n\n1005 感染機器情報をC2サーバへアップロード\n\n1006 C2サーバへファイルダウンロード\n\n1007 全ディスクボリュームデータをC2サーバへアップロード\n\n1008 指定ディスクボリュームデータをC2サーバへアップロード\n\n1018 コマンドチェックインターバル値の更新\n\n1023 自身をアンインストール\n\n上記以外 任意コマンドの実行\n\n以下スクリプトは、文字列を復号するIDAPython スクリプト(Python3)です。\n\n\n-----\n\n```\ndef rc4_init(key):\n  index1 = index2 = 0\n  box = bytearray(range(256))\n  for i in range(256):\n    index2 = (key[index1] + box[i]+ index2) & 0xFF\n    box[i], box[index2] = box[index2], box[i]\n    index1 += 1\n    if(index1 == len(key)):\n      index1 = 0\n  return box\ndef rc4_crypt(buffer, box):\n  x = y = 0\n  for i in range(len(buffer)):\n    x = (x+1)&0xFF\n    y = (box[x] + y) & 0xFF\n    box[x], box[y] = box[y], box[x]\n    buffer[i] ^= box[(box[x] + box[y]) & 0xFF]\n  return bytes(buffer)\ndef rc4(buffer,key):\n  S = rc4_init(key)\n  out = rc4_crypt(buffer,S)\n  return out\nenc = get_bytes(here() + 2, get_wide_word(here()), 0)\nkey = b\"\\x66\\x6D\\x35\\x68\\x6B\\x62\\x66\\x78\\x79\\x68\\x64\\x34\"\nbuffer = bytearray(enc)\ndec = rc4(buffer, key)\nprint(dec)\nset_cmt(here(), dec.decode('utf-8'), 1)\n\n```\n\n-----\n\ndecrypt.png\n\n\n図8. RC4で暗号化された文字列\n\nDtrackが発見された事により、攻撃の主体がAPT41ではなくLazarusである可能性も考える必要が出てきました。\n\nその後に攻撃者はドメイン管理者アカウント権限を奪取しました。調査からは、攻撃者がどのように権限を奪取したかを特定する事はで\nきませんでした。攻撃者は、ドメイン管理者アカウントを不正利用し、RDP(リモートデスクトップ)を使い他サーバへの侵入を拡大させ\nていきました。\n\n感染拡大の中で数台のサーバにPowerShellスクリプトのStagerをサービス登録していき、その中にはドメインコントローラも含まれてい\nました。PowerShellで実行されるコマンドは、Base64、GZIP、XOR を使い暗号化されています。\n\n\n-----\n\neventid.png\n\n\n図9. Stagerを起動するサービスがインストールされた際のイベントログ\n\n掌握したドメインコントローラを起点に、更に数十台のサーバへ活動範囲を広げていきます。\n\n### 脅迫\n\n攻撃者は、正規ツールであるJetico BestCryptを使い、サーバのディスクをボリューム単位で暗号化し、脅迫メッセージのファイルを残\nしていきました。この手口は、公開情報にあるTHT Ransomwareと全く同一です。侵入からこの脅迫に至るまでの期間は、5日間でし\nた。\n\n本インシデントで分かった攻撃者のTTPをまとめると以下の通りです。\n\n\n-----\n\nまとめ.png\n\n\n図10. 各フェーズで使われた攻撃テクニック\n\n### 総括\n\n今回のインシデント対応からの気づきとして以下が挙げられます。\n\n侵入された後の早期検出\n\n今回悪用された脆弱性も修正パッチリリース日とほぼ同時期に悪用され侵入をされています。侵入対策、早期のクリティカルパッチ適用\nは重要ですが、万が一侵入された場合に攻撃者が目的を達成する前に早期に見つける事が可能であるかを確認しておく事も重要であると\n考えられます。\n\n**Cobalt Strikeが発見された場合の対応**\n\nCobalt Strikeの機能が充実している事からも、攻撃者に悪用されるケースは続く傾向にあると考えています。\n\n\n-----\n\n上述の通り、Team Serverとの通信偽装を容易にするMalleable C2 Profile機能があるため、Cobalt Strikeが発見された場合は、可能であ\nれば内部もしくは外部の専門家に解析を依頼しコンフィグを確認し対応に活用するのが望ましいと考えられます。セキュリティベンダー\nSentinel-Oneからは、コンフィグを抽出するツールが公開されています。\n\n[CobaltStrikeParser](https://github.com/Sentinel-One/CobaltStrikeParser)\n\nコンフィグにあるUser-Agent が、組織内で使われていないものであれば、それもインディケータとして活用する事ができます。\n\n足場固め後の正規ツールの悪用(マルウェアを使わない)\n\n今回のインシデントでは、最初の足場固めと内部活動時の数台のサーバを除けば暗号化を含めマルウェアは使われていません。最初に侵\n入したネットワーク以降の活動ではマルウェアではなく侵害した機器にあるものや外部から正規ツールをアップロードし目的を達成する\n傾向が見られます。その為、マルウェア検知だけではなくエンドポイント、ネットワーク、ログベースで正常時の基準から外れたアノマ\nリな活動を検知するしくみを検討する事も重要と考えられます。\n\n攻撃者の帰属という観点では、なぜDtrackが使われたのかという点については、APT41とLazarusの間でツールの共有等の連携している\n可能性が考えられますが、現状では憶測の域を出ていません。\n\n### インディケータ情報\n\nファイル名 SHA256 備考\n\ninstall.bat de9ef08a148305963accb8a64eb22117916aa42ab0eddf60ccb8850468a194fc storesyncsvc.dllをサービス登録\n\nstoresyncsvc.dll f91f2a7e1944734371562f18b066f193605e07223aab90bd1e8925e23bbeaa1c Cobalt Strike beacon\n\nmsupdate.exe 85d8822ea120dc87321400d03b527ce14fc308abec3da2d9e6ddff77a810319d Dtrack\n\nWindowsUpdate.exe b72c2c98b4679c05706a07e069d75fb2a07a95c5c9009bb953a4ee414fa56e15 Cobalt Strike Stager\n(VMProtected)\n\nbcfmgr.exe 859f845ee7c741f34ce8bd53d0fe806eccc2395fc413077605fae3db822094b4 正規暗号化ツール BestCrypt\n\n通信先 備考\n\nhttp[:]//66.42.98[.]220:12345/test/install.bat install.bat ダウンロード元URL\n\nhttp[:]//66.42.98[.]220:12345/test/storesyncsvc.dll Cobalt Striek beacon ダウンロード元URL\n\nhttps[:]//mail.gietriangle[.]org/public/src3.png Dtrack ダウンロード元URL\n\nhttp[:]//91.208.184[.]78/2.exe Cobalt Strike Stager ダウンロード元URL\n\nexchange.dumb1[.]com storesyncsvc.dll の通信先\n\nhttp[:]//ussainc[.]org/includes/database/mysql/libssh.php msupdate.exeの通信先\n\nhttp[:]//www.tastygoodness[.]net/modules/dashboard/dashboard.module.php msupdate.exeの通信先\n\nhttp[:]//176.123.3[.]108/9ioK WindowsUpdate.exeの通信先\n\nhttp[:]//176.123.3.108/px3A PowerShell Stagerの通信先\n\n[ツイ](https://twitter.com/share) ト\n\n\n-----\n\nこの記事の筆者\n\n\n竹内 寛\n\n\n[竹内](https://security.macnica.co.jp/blog/author/author31bfd/) 寛\n\nリバースエンジニアリング（マルウェア解析）を担当。彼の手に渡ったマルウェアはまさに“まな板の上の鯉”と同じ。あとは解析される\nがまま。最近の楽しみは、ハイボールを片手に海外ドラマを鑑賞するか、マントノン侯爵夫人に会うこと。好きなマシン語は、EB FE。\n\n前へ\n\nFlare-On 7 Challenge Writeup\n\n次へ\n\nvCenter Serverの脆弱性まとめとSHODANでの観測状況\n\n\n-----",
+    "language": "JA",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-11-27 - Analyzing Organizational Invasion Ransom Incidents Using Dtrack.pdf"
+    ],
+    "report_names": [
+        "2020-11-27 - Analyzing Organizational Invasion Ransom Incidents Using Dtrack.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "5bbced13-72f7-40dc-8c41-dcce75bf885e",
+            "created_at": "2022-10-25T15:50:23.695735Z",
+            "updated_at": "2025-03-27T02:00:55.525839Z",
+            "deleted_at": null,
+            "main_name": "Winnti Group",
+            "aliases": [
+                "Winnti Group"
+            ],
+            "source_name": "MITRE:Winnti Group",
+            "tools": [
+                "PipeMon",
+                "Winnti for Windows",
+                "PlugX"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "945a572f-ebe3-4e2f-a288-512fe751cfa8",
+            "created_at": "2022-10-25T16:07:24.413971Z",
+            "updated_at": "2025-03-27T02:02:10.212853Z",
+            "deleted_at": null,
+            "main_name": "Winnti Group",
+            "aliases": [
+                "Wicked Panda",
+                "Winnti Group"
+            ],
+            "source_name": "ETDA:Winnti Group",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "FunnySwitch",
+                "RbDoor",
+                "RibDoor",
+                "RouterGod",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "4c68ccd0-caba-4189-9ead-86ac4c2d9b70",
+            "created_at": "2024-05-01T02:03:07.930196Z",
+            "updated_at": "2025-03-27T02:05:17.251237Z",
+            "deleted_at": null,
+            "main_name": "BRONZE ATLAS",
+            "aliases": [
+                "Axiom",
+                "BARIUM ",
+                "Blackfly ",
+                "CTG-2633",
+                "GREF",
+                "Group 72 ",
+                "Red Kelpie ",
+                "TG-2633 ",
+                "Wicked Panda ",
+                "Winnti",
+                "APT41 "
+            ],
+            "source_name": "Secureworks:BRONZE ATLAS",
+            "tools": [
+                " CCleaner v5.33 backdoor",
+                " ChinaChopper",
+                " Cobalt Strike",
+                " Dicey MSDN",
+                " ForkPlayground",
+                " HUC Proxy Malware (Htran)",
+                " Mimikatz",
+                " PipeMon",
+                " PlugX",
+                " PortReuse",
+                " Powershell Empire",
+                " RCMD",
+                " RbDoor",
+                " SPEEDBOAT",
+                " ShadowPad",
+                " Sidewalk",
+                " Speculoos",
+                " TeamViewer",
+                " Winnkit",
+                " Winnti",
+                " reg save",
+                " vssadmin",
+                "Acehash"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "4d5f939b-aea9-4a0e-8bff-003079a261ea",
+            "created_at": "2023-01-06T13:46:39.04841Z",
+            "updated_at": "2025-03-27T02:00:02.985296Z",
+            "deleted_at": null,
+            "main_name": "APT41",
+            "aliases": [
+                "G0096",
+                "Grayfly",
+                "BARIUM",
+                "BRONZE ATLAS",
+                "BRONZE EXPORT",
+                "Red Kelpie",
+                "HOODOO",
+                "Brass Typhoon",
+                "TA415",
+                "WICKED SPIDER",
+                "WICKED PANDA",
+                "G0044",
+                "Earth Baku"
+            ],
+            "source_name": "MISPGALAXY:APT41",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "e698860d-57e8-4780-b7c3-41e5a8314ec0",
+            "created_at": "2022-10-25T15:50:23.287929Z",
+            "updated_at": "2025-03-27T02:00:55.43005Z",
+            "deleted_at": null,
+            "main_name": "APT41",
+            "aliases": [
+                "APT41",
+                "Wicked Panda",
+                "Brass Typhoon",
+                "BARIUM"
+            ],
+            "source_name": "MITRE:APT41",
+            "tools": [
+                "ASPXSpy",
+                "BITSAdmin",
+                "PlugX",
+                "Impacket",
+                "gh0st RAT",
+                "netstat",
+                "PowerSploit",
+                "ZxShell",
+                "KEYPLUG",
+                "ipconfig",
+                "sqlmap",
+                "China Chopper",
+                "ShadowPad",
+                "MESSAGETAP",
+                "Mimikatz",
+                "certutil",
+                "njRAT",
+                "Cobalt Strike",
+                "pwdump",
+                "BLACKCOFFEE",
+                "ROCKBOOT",
+                "dsquery",
+                "Winnti for Linux",
+                "DUSTTRAP",
+                "Derusbi",
+                "ftp"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535608,
+    "ts_updated_at": 1743041776,
+    "ts_creation_date": 1653774190,
+    "ts_modification_date": 1653774190,
+    "files": {
+        "pdf": "https://archive.orkl.eu/b2c8424e2f8125bbb2888397f7dd1c3294bf1880.pdf",
+        "text": "https://archive.orkl.eu/b2c8424e2f8125bbb2888397f7dd1c3294bf1880.txt",
+        "img": "https://archive.orkl.eu/b2c8424e2f8125bbb2888397f7dd1c3294bf1880.jpg"
+    }
+}

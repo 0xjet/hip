@@ -1,0 +1,145 @@
+{
+    "id": "57080c27-4d4e-4f36-bd7d-0cddbb2225f8",
+    "created_at": "2023-01-12T14:59:20.190986Z",
+    "updated_at": "2025-03-27T02:15:35.487993Z",
+    "deleted_at": null,
+    "sha1_hash": "134006403a304ae3261e5b0a9f4156ec5b6042a4",
+    "title": "2022-03-23 - MS Office Files Involved Again in Recent Emotet Trojan Campaign – Part II",
+    "authors": "",
+    "file_creation_date": "2022-05-29T10:47:02Z",
+    "file_modification_date": "2022-05-29T10:47:02Z",
+    "file_size": 262761,
+    "plain_text": "# MS Office Files Involved Again in Recent Emotet Trojan Campaign – Part II\n\n**[fortinet.com/blog/threat-research/ms-office-files-involved-again-in-recent-emotet-trojan-campaign-part-ii](https://www.fortinet.com/blog/threat-research/ms-office-files-involved-again-in-recent-emotet-trojan-campaign-part-ii)**\n\nMarch 23, 2022\n\nFortinet’s FortiGuard Labs recently captured more than 500 Microsoft Excel files involved in\na campaign to deliver a fresh Emotet Trojan onto the victim’s device.\n\nEmotet, known as a modular Trojan, was first discovered in the middle of 2014. Since then, it\nhas become very active, continually updating itself. It has also been highlighted in\ncybersecurity news from time to time. Emotet uses social engineering, like email, to lure\nrecipients into opening attached document files (including Word, Excel, PDF, etc.) or to click\nlinks within the content of the email that downloads the latest Emotet variant onto the victim’s\ndevice and then executes it.\n\nIn [Part I of this post, I explained how this variant of Emotet is spread by malicious VBA code](https://www.fortinet.com/blog/threat-research/ms-office-files-involved-in-emotet-trojan-campaign-pt-one)\nin Excel documents, how the downloaded Emotet malware runs within a Rundll32 program,\nwhat kind of anti-analysis techniques this variant uses., how it encrypts and submits its\n\n\n-----\n\nvictim s data to its C2 server., what Emotet does when it receives response data from the C2\nserver, and what Emotet does to enable persistence on the victim’s device.\n\nIn this post, you will learn what the data in response packets with malicious modules look\nlike, what modules have been received from the C2 server for the current Emotet campaign,\nand how they are deployed in the victim’s device. You will also discover what sensitive data\nthose modules steal from a victim’s device.\n\n**Affected platforms: Microsoft Windows**\n**Impacted parties: 64-bit Windows Users**\n**Impact: Controls a victim’s device and collects sensitive information**\n**Severity level: Critical**\n\n## When X.dll Receives a Response with a Module\n\nOnce the C2 server has processed and detected the first submitted packet that includes\ncritical data—such as the victim’s device system version, Windows architecture, etc.—it\nreplies with malicious modules for Emotet to execute in the victim’s device. All the received\nmodules are fileless. That is, they only exist in memory and are processed by the X.dll (the\ncore of Emotet) running in Rundll32.exe.\n\nFigure 1.1 – A decrypted module in the packet\n\nFigure 1.1 is a screenshot of X.dll’s code and memory. The bottom is a C2’s response\npacket, just decrypted in memory by calling a function of 10012371. Referring to Figure 5.3\nin [part I of this series will help you understand the structure of the packet.](https://www.fortinet.com/blog/threat-research/ms-office-files-involved-in-emotet-trojan-campaign-pt-one)\n\nThe box marked in red is the verification data (99 DE … DD A5), a signed hash of the rest\ndata of the packet. The following dword, 0x00000000, marked in yellow, is a flag that tells\nEmotet how to run the replied module. 0x00 tells it to execute the module in a newly-created\nthread. The binary block in blue is the module. It starts with the module size, 0x79400 in this\nexample, and the rest part is the module binary data (4D 5A 90 00 …).\n\nEmotet has to verify the decrypted data, as shown in Figure 1.1, using the 40H verification\ndata.\n\nIt then deploys the received module into memory and prepares to execute it. It then calls its\nentry point in a newly created thread. This post will refer to this module as a “thread-module.”\nIts primary purposes are to extract and execute the final functional module that steals\nsensitive data from the victim’s device and to submit the stolen data to its C2 server, which\nwill be discussed later in this analysis. Figure 1.2 shows where the thread function ASM code\ncalls the entry point of the deployed thread-module.\n\nFigure 1.2 – Emotet thread function to call the thread-module’s entry point\n\n\n-----\n\n## Thread-Module — Performs Process Hollowing\n\nThe thread-module proceeds to decrypt a PE file, the final functional module, from its .text\nsection into memory. To execute this module, it performs process hollowing. It does this by\ncopying a Windows file, “certutil.exe”, from either “%Windir%\\SysWOW64\\certutil.exe” or\n“%Windir%\\system32\\certutil.exe” into the “%temp%” folder. It then renames it to a random\nfile name, like “uvbubqj.exe”. Next, the thread-module creates a suspended process with this\nfile.\n\nFigure 2.1 – Call API CreateProcessW() to create a suspended process\n\nAs you may see in the command line string in Figure 2.1, “uvbubqj.exe” is the copied\n“certutil.exe”, “/scomma” and the subsequent temporary file\n—“C:\\Users\\Bobs\\AppData\\Local\\Temp\\60B2.tmp” — are the parameters for the process.\nThe temporary file name is generated by calling the API GetTempFileNameW(). The path of\nthe temporary file “60B2.tmp” is read by the functional module and used to save stolen\ninformation. The sixth argument to CreateProcessW() is 0x00000004, which is a creation flag\nindicating “CREATE_SUSPENDED” with which CreateProcessW() creates a process and\nenters suspended status.\n\nIt then calls a group of APIs, like GetThreadContext(), VirtualAllocEx(),\nReadProcessMemory(), WriteProcessMemory(), and so on, to inject the final functional\nmodule into the new process’ memory. The API SetThreadContext() is called later to set the\nnew process EIP register pointing to the entry point of the functional module, which is\ninvoked after calling the API ResumeThread().\n\nAfterward, the thread-module starts to monitor the temporary file in a loop until it is created\nwith the stolen information from the victim’s device.\n\n## Looking at the Functional Modules\n\nIn the above analysis, I explained how a C2 module is loaded and executed in the victim’s\ndevice.\n\nThe C2 server can return many modules, each going through the same process as described\nabove. They will have a thread-module, run in their thread, and perform their own process\nhollowing.\n\nI received three C2 modules. I will elaborate on how they work on the victim’s device in the\nfollowing sections.\n\n### Module1 - Stealing Credentials from a Victim’s Browsers\n\nA Self-Extracting packer protects this module. It decrypts a PE file when it runs, overrides the\nexisting code of “certutil.exe”, and then gets it executed.\n\n\n-----\n\n[The unpacked PE file is a freeware called WebBrowserPassView developed by NirSoft. It](https://www.nirsoft.net/utils/web_browser_password.html)\nwas designed as a password recovery tool but has been abused by malicious actors to steal\nthe victim’s credentials. A user interface displays the saved credentials stored within several\nweb browsers.\n\nFigure 3.1 – Open the WebBrowserPassView module\n\nFigure 3.1 shows what this module looks like when I open it in my test environment. This\nEmotet variant uses WebBrowserPassView v2.06.\n\nIts thread-module passes command line parameters like “/scomma\nC:\\Users\\Bobs\\AppData\\Local\\Temp\\7B3C.tmp” to the process, which can switch\nWebBrowserPassView to a No-Window mode and save the retrieved credentials to a given\ntemporary file.\n\nFrom its code, I learned it could collect the credentials from a variety of web browsers:\n\n**Microsoft IE, Microsoft Edge, Google Chrome, Mozilla Firefox, Opera, Apple Safari,**\n**SeaMonkey, Yandex, Vivaldi, Waterfox, and all other Chromium-based browsers.**\n\nThe stolen credentials contain the following information:\n\n- URL: The URLs that credentials are saved for\n\n- Web Browser: The browser name that holds the credentials\n\n- User Name, Password: The credentials\n\n- Password Strength: Strong or weak\n\n- User Name Field: The control name type into the user name field\n\n- Password Field: The string entered in the password field\n\n- Created Time: When it was saved\n\n- Modified Time: Time when credentials were updated\n\n- Filename: What file it has stolen the credentials from\n\nAll the credentials are saved in a temporary file.\n\n### Module2 - Stealing Email Contact Information\n\nThis module steals its victim’s email contacts from their email folders inside Microsoft\nOutlook by going through the victim’s emails one by one. It keeps the gathered contact\ninformation in a doubly-linked chain structure.\n\nFigure 4.1 shows one email contact obtained from an email within my test Outlook account\nthat was then added into the doubly-linked chain, as shown at the bottom. The collected data\nshows the Person name and Email address of the email sender. In this example, it collected\n“Outlook” and “outlook@email2.office.com” from the displayed email message.\n\nFigure 4 1 – One stolen contact in a doubly-linked chain\n\n\n-----\n\nThis module enumerates all collected emails and puts the unique email contact information\ninto the doubly linked chain. To collect Outlook’s data, it has to call several APIs, including\nMAPIInitialize(), MAPILogonEx(), and MAPIFreeBuffer(), as well as create some COM\nobjects by calling the API CoCreateInstance(), such as OlkAccountManager and OlkMail.\n\nFinally, it retrieves those email contacts from the linked chain one by one and saves them\ninto the temporary file that comes from the command line parameter. Figure 4.2 shows a\nscreenshot of the temporary file, “%temp%\\6827.tmp” in this example, along with the\ncollected email contacts.\n\nFigure 4.2 – The temporary file with stolen email contact information\n\n### Module3 - Stealing Account Settings of Victim’s Email Clients\n\nThis functional module focuses on stealing its victim’s email account settings and the\ncredentials from their email clients. It is also a packer-protected module, so it does the same\nthing as Module1 when its entry point is called.\n\nAccording to my analysis, the unpacked PE file is an EXE file that is another freeware from\n[NirSoft called “Mail PassView”. It was originally designed as a small password recovery tool](https://www.nirsoft.net/utils/mailpv.html)\nfor email clients. Emotet is using the latest version—v1.92. Figure 5.1 is a screenshot of this\nsoftware running on my test environment.\n\nFigure 5.1 – Open Mail PassView in my test environment\n\nGoing through its code and constant strings, we learned it could obtain email account\nsettings and credentials from the following email clients or other clients that could save email\ncredentials:\n\n**Mozilla Thunderbird, Eudora, Microsoft Outlook, Microsoft Outlook Express, Windows**\n**Mail, MSNMessenger, Windows Live Mail, Group Mail, IncrediMail, Yahoo! Mail, Yahoo!**\n**Messenger, Hotmail, Google Desktop, and Google Talk.**\n\nIt collects the settings and credentials from both the system registry and the local\nconfiguration files of these email clients. Figure 5.2 is a segment of the ASM code from a\ncommon function that has predefined many value names.\n\nThe software repeatedly reads User Name, Server Address, Server Port, and similar\ninformation from the system registry through these value-names under the subkeys\n\"HKCU\\Software\\Microsoft\\Internet Account Manager\\Accounts\" and\n\"HKCU\\Software\\Microsoft\\Office\\Outlook\\OMI Account Manager\\Accounts\", which are the\nplaces to save the settings and credentials for Microsoft Outlook and Microsoft Outlook\nExpress.\n\nFigure 5.2 – Defined value-names for reading from the system registry\n\n\n-----\n\nThis time, the command line parameter string to this software is /scomma\nC:\\Users\\Bobs\\AppData\\Local\\Temp\\8042.tmp\", where \"/scomma\" allows the process to run\nwithout a window and save the retrieved information to the temporary file followed.\n\n### Thread-Module – Submit Stolen Data\n\nWith the functional modules working to steal sensitive data, the thread-module keeps\nmonitoring the temporary file until it is created with the stolen information.\n\nIt then loads the stolen data from the temporary file to memory and then deletes the file.\nBefore submitting the stolen data to the C2 server, it compresses the data and encrypts it.\n\nFigure 6.1 – Call BCryptEncrypt() to encrypt the stolen data\n\nThis example, shown in Figure 6.1, is where it was about to call the API BCryptEncrypt() to\nencrypt the packet, which begins from 4790E0. The section outlined in red is like the packet\nheader. It contains the packet type (0x3EA) that tells the C2 server what kind of data is in the\npacket, a sha256 hash code (69 35 … 3C 4A) of the data, a module ID (0x14), as well as the\nVictim’s ID. The subsequent data, marked in blue, starts with a data size (0x398) of the\nfollowing data (from 10 55 52 4C … to the end), which are the compressed web browser\ncredentials.\n\nThis thread-module uses eleven C2 servers to receive data stolen from the victim’s device.\nThe IP and Ports of these C2 servers are encrypted in memory and get decrypted before\nsubmitting the stolen data. The three downloaded modules have the same C2 server list,\nwhich can be found in the “IOC” section at the end of this analysis.\n\nFigure 6.2 – Display of a captured packet to C2 server with encrypted data\n\nFigure 6.2 is a screenshot of a proxy tool showing how the packet with the stolen victim’s\nsensitive data is sent to its C2 server.\n\nIt uses the HTTP Post method with a randomized URL to submit the stolen data in the body,\nwhich consists of a 40H-long exported key at the beginning with the encrypted data\nfollowing, as shown in Figure 6.2. The C2 server can decrypt the submitted data using the\n40H exported key.\n\n## Conclusion\n\nIn Part II of this analysis, I started with a received module packet from a C2 server and\nexplained the structure of the packet. Next, I showed how the module (thread-module) is\nexecuted in a newly created thread. We then walked through how the thread-module\nperforms process hollowing to execute the functional modules.\n\n\n-----\n\nIn discussing the three received modules, I elaborated on what kind of data Emotet can steal\nfrom the victim’s device, such as email contact information from the victim’s email account,\nthe email account’s settings, credentials from the victim’s email client, and credentials saved\nin a wide range of web browsers.\n\nFinally, going back to the thread-module, Emotet reads the stolen information from the given\ntemporary files. It then compresses and encrypts the data, which is ultimately submitted\nusing the HTTP Post method to the C2 server.\n\n## Fortinet Protections\n\nFortinet customers are already protected from this malware by FortiGuard’s Web Filtering,\nAntiVirus, FortiMail, FortiClient, FortiEDR, and CDR (content disarm and reconstruction)\nservices, as follows:\n\nThe malicious Macro inside the Excel sample mentioned in Part I of the post can be\ndisarmed by the FortiGuard CDR (content disarm and reconstruction) service.\n\nAll relevant URLs have been rated as \"Malicious Websites\" by the FortiGuard Web Filtering\nservice.\n\nThe captured Excel sample and the downloaded Emotet dll file are detected as\n\"VBA/Emotet.2826!tr.dldr \" and \" W32/Emotet.B185!tr\" and are blocked by the FortiGuard\nAntiVirus service.\n\nFortiEDR detects both the Excel file and Emotet dll file as malicious based on its behavior.\n\nIn addition to these protections, Fortinet also provides multiple solutions designed to help\ntrain users in detecting and understanding phishing threats:\n\n[We encourage organizations to have their end users take our FREE NSE Training:](https://training.fortinet.com/?utm_source=blog&utm_campaign=nse-institute) NSE 1 –\nInformation Security Awareness. It includes a module on Internet threats designed to help\nend-users learn how to identify and protect themselves from various types of phishing\nattacks.\n\nThis training can then be reinforced using our FortiPhish phishing simulation service. It uses\nreal-world attack scenarios to train users, test awareness and vigilance, and reinforce proper\npractices for handling phishing incidents.\n\n## IOCs\n\n**C2 Server List in the three thread-modules:**\n\n144[.]217[.]88[.]125:443\n\n67[ ]205[ ]162[ ]68:8080\n\n\n-----\n\n54[.]36[.]98[.]59:7080\n\n45[.]184[.]36[.]10:8080\n\n47[.]110[.]149[.]223:8080\n\n159[.]65[.]1[.]71:8080\n\n51[.]178[.]186[.]134:443\n\n131[.]100[.]24[.]199:8080\n\n51[.]91[.]142[.]158:80\n\n51[.]79[.]205[.]117:8080\n\n176[.]31[.]163[.]17:8080\n\n_[Learn more about FortiGuard Labs global threat intelligence and research and the](https://www.fortinet.com/fortiguard/labs?utm_source=blog&utm_campaign=FortiGuardLabs)_\n_[FortiGuard Security Subscriptions and Services portfolio.](https://www.fortinet.com/support/support-services/fortiguard-security-subscriptions/fortiguard-services-bundles.html?utm_source=blog&utm_campaign=fortiguard-service-bundles)_\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-03-23 - MS Office Files Involved Again in Recent Emotet Trojan Campaign – Part II.pdf"
+    ],
+    "report_names": [
+        "2022-03-23 - MS Office Files Involved Again in Recent Emotet Trojan Campaign – Part II.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "9f101d9c-05ea-48b9-b6f1-168cd6d06d12",
+            "created_at": "2023-01-06T13:46:39.396409Z",
+            "updated_at": "2025-03-27T02:00:03.074969Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "CHROMIUM",
+                "ControlX",
+                "Red Dev 10",
+                "RedHotel",
+                "Red Scylla",
+                "TAG-22",
+                "BRONZE UNIVERSITY",
+                "AQUATIC PANDA",
+                "Charcoal Typhoon",
+                "BountyGlad"
+            ],
+            "source_name": "MISPGALAXY:Earth Lusca",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "6abcc917-035c-4e9b-a53f-eaee636749c3",
+            "created_at": "2022-10-25T16:07:23.565337Z",
+            "updated_at": "2025-03-27T02:02:09.868522Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Bronze University",
+                "Charcoal Typhoon",
+                "Chromium",
+                "Red Dev 10",
+                "Red Scylla"
+            ],
+            "source_name": "ETDA:Earth Lusca",
+            "tools": [
+                "Agentemis",
+                "AntSword",
+                "BIOPASS",
+                "BIOPASS RAT",
+                "BadPotato",
+                "Behinder",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "Doraemon",
+                "FRP",
+                "Fast Reverse Proxy",
+                "FunnySwitch",
+                "HUC Port Banner Scanner",
+                "KTLVdoor",
+                "Mimikatz",
+                "NBTscan",
+                "POISONPLUG.SHADOW",
+                "PipeMon",
+                "RbDoor",
+                "RibDoor",
+                "RouterGod",
+                "SAMRID",
+                "ShadowPad Winnti",
+                "SprySOCKS",
+                "WinRAR",
+                "Winnti",
+                "XShellGhost",
+                "cobeacon",
+                "fscan",
+                "lcx",
+                "nbtscan"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "d53593c3-2819-4af3-bf16-0c39edc64920",
+            "created_at": "2022-10-27T08:27:13.212301Z",
+            "updated_at": "2025-03-27T02:00:55.529662Z",
+            "deleted_at": null,
+            "main_name": "Earth Lusca",
+            "aliases": [
+                "Earth Lusca",
+                "TAG-22",
+                "Charcoal Typhoon",
+                "CHROMIUM",
+                "ControlX"
+            ],
+            "source_name": "MITRE:Earth Lusca",
+            "tools": [
+                "Mimikatz",
+                "PowerSploit",
+                "Tasklist",
+                "certutil",
+                "Cobalt Strike",
+                "Winnti for Linux",
+                "Nltest",
+                "NBTscan",
+                "ShadowPad"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535560,
+    "ts_updated_at": 1743041735,
+    "ts_creation_date": 1653821222,
+    "ts_modification_date": 1653821222,
+    "files": {
+        "pdf": "https://archive.orkl.eu/134006403a304ae3261e5b0a9f4156ec5b6042a4.pdf",
+        "text": "https://archive.orkl.eu/134006403a304ae3261e5b0a9f4156ec5b6042a4.txt",
+        "img": "https://archive.orkl.eu/134006403a304ae3261e5b0a9f4156ec5b6042a4.jpg"
+    }
+}

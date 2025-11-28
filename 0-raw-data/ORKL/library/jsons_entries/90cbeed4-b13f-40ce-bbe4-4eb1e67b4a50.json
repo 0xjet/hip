@@ -1,0 +1,175 @@
+{
+    "id": "90cbeed4-b13f-40ce-bbe4-4eb1e67b4a50",
+    "created_at": "2023-01-12T15:05:07.24691Z",
+    "updated_at": "2025-03-27T02:15:41.700428Z",
+    "deleted_at": null,
+    "sha1_hash": "1065fabc9298fd01a6391b254d2ca02765b2baec",
+    "title": "2018-12-12 - Zero-day in Windows Kernel Transaction Manager (CVE-2018-8611)",
+    "authors": "",
+    "file_creation_date": "2022-05-28T05:09:27Z",
+    "file_modification_date": "2022-05-28T05:09:27Z",
+    "file_size": 764728,
+    "plain_text": "# Zero-day in Windows Kernel Transaction Manager (CVE- 2018-8611)\n\n**[securelist.com/zero-day-in-windows-kernel-transaction-manager-cve-2018-8611/89253/](https://securelist.com/zero-day-in-windows-kernel-transaction-manager-cve-2018-8611/89253/)**\n\n[Research](https://securelist.com/category/research/)\n\n[Research](https://securelist.com/category/research/)\n\n12 Dec 2018\n\nminute read\n\n\n-----\n\nAuthors\n\nBoris Larin\n\n[Vladislav Stolyarov](https://securelist.com/author/vladislavstolyarov/)\n\nAnton Ivanov\n\n## Executive summary\n\nIn October 2018, our AEP (Automatic Exploit Prevention) systems detected an attempt to\nexploit a vulnerability in the Microsoft Windows operating system. Further analysis led us to\nuncover a zero-day vulnerability in ntoskrnl.exe. We reported it to Microsoft on October 29,\n[2018. The company confirmed the vulnerability and assigned it CVE-2018-8611. Microsoft](https://portal.msrc.microsoft.com/en-US/security-guidance/advisory/CVE-2018-8611)\njust released a patch, part of its December update, crediting Kaspersky Lab researchers\n**Boris Larin** [(Oct0xor) and Igor Soumenkov](https://twitter.com/oct0xor) [(2igosha) with the discovery.](https://twitter.com/2igosha)\n\n\n-----\n\nThis is the third consecutive exploited Local Privilege Escalation vulnerability in Windows we\ndiscovered this autumn using our technologies. Unlike the previously reported vulnerabilities\n[in win32k.sys (CVE-2018-8589 and](https://securelist.com/a-new-exploit-for-zero-day-vulnerability-cve-2018-8589/88845/) [CVE-2018-8453), CVE-2018-8611 is an especially](https://securelist.com/cve-2018-8453-used-in-targeted-attacks/88151/)\ndangerous threat – a vulnerability in the Kernel Transaction Manager driver. It can also be\nused to escape the sandbox in modern web browsers, including Chrome and Edge, since\nsyscall filtering mitigations do not apply to ntoskrnl.exe system calls.\n\nJust like with CVE-2018-8589, we believe this exploit is used by several threat actors\nincluding, but possibly not limited to, FruityArmor and SandCat. While FruityArmor is known\nto have used zero-days before, SandCat is a new APT we discovered only recently. In\naddition to this zero-day and CHAINSHOT, SandCat also uses the FinFisher / FinSpy\nframework.\n\nKaspersky Lab products detected this exploit proactively through the following technologies:\n\n1. Behavioral detection engine and Automatic Exploit Prevention for endpoint products\n2. Advanced Sandboxing and Anti Malware engine for Kaspersky Anti Targeted Attack\n\nPlatform (KATA)\n\nKaspersky Lab verdicts for the artifacts used in this and related attacks are:\n\nHEUR:Exploit.Win32.Generic\nHEUR:Trojan.Win32.Generic\nPDM:Exploit.Win32.Generic\n\n## Brief details – CVE-2018-8611 vulnerability\n\n[CVE-2018-8611 is a race condition that is present in the Kernel Transaction Manager due to](https://docs.microsoft.com/en-us/windows-hardware/drivers/kernel/using-kernel-transaction-manager)\nimproper processing of transacted file operations in kernel mode.\n\nThis vulnerability successfully bypasses modern process mitigation policies, such as Win32k\nSystem call Filtering that is used, among others, in the Microsoft Edge Sandbox and the\n[Win32k Lockdown Policy employed in the Google Chrome Sandbox. Combined with a](https://docs.google.com/document/d/1gJDlk-9xkh6_8M_awrczWCaUuyr0Zd2TKjNBCiPO_G4/edit)\ncompromised renderer process, for example, this vulnerability can lead to a full Remote\nCommand Execution exploit chain in the latest state-of-the-art web-browsers.\n\nWe have found multiple builds of exploit for this vulnerability. The latest build includes\nchanges to reflect the latest versions of the Windows OS\n\n\n-----\n\nA check for the latest build at the time of discovery: Windows 10 Redstone 4 Build 17133\n\nSimilarly to CHAINSHOT, this exploit heavily relies on the use of C++ exception handling\nmechanisms with custom error codes.\n\nTo abuse this vulnerability exploit first creates a named pipe and opens it for read and write.\n[Then it creates a pair of new transaction manager objects,](https://docs.microsoft.com/en-us/windows-hardware/drivers/kernel/transaction-manager-objects) [resource manager objects,](https://docs.microsoft.com/en-us/windows-hardware/drivers/kernel/resource-manager-objects)\n[transaction objects and creates a big number of enlistment objects for what we will call](https://docs.microsoft.com/en-us/windows-hardware/drivers/kernel/transaction-objects)\n“Transaction #2”. Enlistment is a special object that is used for association between a\ntransaction and a resource manager. When the transaction state changes associated\nresource manager is notified by the KTM. After that it creates one more enlistment object\nonly now it does so for “Transaction #1” and commits all the changes made during this\ntransaction.\n\nAfter all the initial preparations have been made exploit proceeds to the second part of\nvulnerability trigger. It creates multiple threads and binds them to a single CPU core. One of\n[created threads calls NtQueryInformationResourceManager in a loop, while second thread](https://docs.microsoft.com/en-us/windows-hardware/drivers/ddi/content/wdm/nf-wdm-ntqueryinformationresourcemanager)\ntries to execute [NtRecoverResourceManager once. But the vulnerability itself is triggered in](https://docs.microsoft.com/en-us/windows-hardware/drivers/ddi/content/wdm/nf-wdm-ntrecoverresourcemanager)\n[the third thread. This thread uses a trick of execution NtQueryInformationThread to obtain](https://docs.microsoft.com/en-us/windows/desktop/api/winternl/nf-winternl-ntqueryinformationthread)\ninformation on the latest executed syscall for the second thread. Successful execution of\n[NtRecoverResourceManager will mean that race condition has occurred and further](https://docs.microsoft.com/en-us/windows-hardware/drivers/ddi/content/wdm/nf-wdm-ntrecoverresourcemanager)\nexecution of [WriteFile on previously created named pipe will lead to memory corruption.](https://docs.microsoft.com/en-us/windows/desktop/api/fileapi/nf-fileapi-writefile)\n\n\n-----\n\nProof of concept: execution of WriteFile with buffer set to 0x41\n\nAs always, we provided Microsoft with a proof of concept for this vulnerability, along with\nsource code. And it was later shared through Microsoft Active Protections Program (MAPP).\n\nMore information about SandCat, FruityArmor and CVE-2018-8611 is available to customers\n[of Kaspersky Intelligence Reports. Contact: intelreports@kaspersky.com](http://10.10.0.46/mailto:intelreports@kaspersky.com)\n\n[APT](https://securelist.com/tag/apt/)\n[Microsoft Windows](https://securelist.com/tag/microsoft-windows/)\n[Proof-of-Concept](https://securelist.com/tag/proof-of-concept/)\n[Targeted attacks](https://securelist.com/tag/targeted-attacks/)\n[Zero-day vulnerabilities](https://securelist.com/tag/zero-day-vulnerabilities/)\n\nAuthors\n\nBoris Larin\n\n[Vladislav Stolyarov](https://securelist.com/author/vladislavstolyarov/)\n\nAnton Ivanov\n\nZero-day in Windows Kernel Transaction Manager (CVE-2018-8611)\n\nYour email address will not be published. Required fields are marked *\n\nGReAT webinars\n\nFrom the same authors\n\n\n-----\n\n### MysterySnail attacks with Windows zero-day\n\n Zero-day vulnerability in Desktop Window Manager (CVE-2021-28310) used in the wild\n\n\n-----\n\n### Operation PowerFall: CVE-2020-0986 and variants\n\n Internet Explorer and Windows zero-day exploits used in Operation PowerFall\n\n\n-----\n\n### GReAT thoughts: Awesome IDA Pro plugins\n\nSubscribe to our weekly e-mails\n\nThe hottest research right in your inbox\n\n\n-----\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2018/2018-12-12 - Zero-day in Windows Kernel Transaction Manager (CVE-2018-8611).pdf"
+    ],
+    "report_names": [
+        "2018-12-12 - Zero-day in Windows Kernel Transaction Manager (CVE-2018-8611).pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "d90307b6-14a9-4d0b-9156-89e453d6eb13",
+            "created_at": "2022-10-25T16:07:23.773944Z",
+            "updated_at": "2025-03-27T02:02:09.974695Z",
+            "deleted_at": null,
+            "main_name": "Lead",
+            "aliases": [
+                "Casper",
+                "TG-3279"
+            ],
+            "source_name": "ETDA:Lead",
+            "tools": [
+                "Agentemis",
+                "BleDoor",
+                "Cobalt Strike",
+                "CobaltStrike",
+                "RbDoor",
+                "RibDoor",
+                "Winnti",
+                "cobeacon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "0f47a6f3-a181-4e15-9261-50eef5f03a3a",
+            "created_at": "2022-10-25T16:07:24.228663Z",
+            "updated_at": "2025-03-27T02:02:10.145238Z",
+            "deleted_at": null,
+            "main_name": "Stealth Falcon",
+            "aliases": [
+                "FruityArmor",
+                "Project Raven",
+                "Stealth Falcon"
+            ],
+            "source_name": "ETDA:Stealth Falcon",
+            "tools": [
+                "Deadglyph",
+                "StealthFalcon"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "67ac502c-8cf8-46cb-98e8-c249e0f0298d",
+            "created_at": "2022-10-25T16:07:24.149987Z",
+            "updated_at": "2025-03-27T02:02:10.124302Z",
+            "deleted_at": null,
+            "main_name": "SandCat",
+            "aliases": [],
+            "source_name": "ETDA:SandCat",
+            "tools": [
+                "CHAINSHOT",
+                "FinFisher",
+                "FinFisher RAT",
+                "FinSpy"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "77aedfa3-e52b-4168-8269-55ccec0946f7",
+            "created_at": "2023-01-06T13:46:38.453791Z",
+            "updated_at": "2025-03-27T02:00:02.837384Z",
+            "deleted_at": null,
+            "main_name": "Stealth Falcon",
+            "aliases": [
+                "FruityArmor",
+                "G0038"
+            ],
+            "source_name": "MISPGALAXY:Stealth Falcon",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "80cf66b8-27d2-4e87-b0d1-5bacacd9bb3d",
+            "created_at": "2023-01-06T13:46:38.931567Z",
+            "updated_at": "2025-03-27T02:00:02.954922Z",
+            "deleted_at": null,
+            "main_name": "SandCat",
+            "aliases": [],
+            "source_name": "MISPGALAXY:SandCat",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "c0cedde3-5a9b-430f-9b77-e6568307205e",
+            "created_at": "2022-10-25T16:07:23.528994Z",
+            "updated_at": "2025-03-27T02:02:09.847683Z",
+            "deleted_at": null,
+            "main_name": "DarkHotel",
+            "aliases": [
+                "APT-C-06",
+                "ATK 52",
+                "CTG-1948",
+                "Dubnium",
+                "Fallout Team",
+                "Higaisa",
+                "Luder",
+                "Operation DarkHotel",
+                "Operation Daybreak",
+                "Operation Inexsmar",
+                "Operation PowerFall",
+                "Operation The Gh0st Remains the Same",
+                "SIG25",
+                "Shadow Crane",
+                "T-APT-02",
+                "Tungsten Bridge",
+                "Zigzag Hail"
+            ],
+            "source_name": "ETDA:DarkHotel",
+            "tools": [
+                "Asruex",
+                "DarkHotel",
+                "DmaUp3.exe",
+                "GreezeBackdoor",
+                "Karba",
+                "Nemain",
+                "Nemim",
+                "Ramsay",
+                "Retro",
+                "Tapaoux",
+                "Trojan.Win32.Karba.e",
+                "Virus.Win32.Pioneer.dx",
+                "igfxext.exe",
+                "msieckc.exe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535907,
+    "ts_updated_at": 1743041741,
+    "ts_creation_date": 1653714567,
+    "ts_modification_date": 1653714567,
+    "files": {
+        "pdf": "https://archive.orkl.eu/1065fabc9298fd01a6391b254d2ca02765b2baec.pdf",
+        "text": "https://archive.orkl.eu/1065fabc9298fd01a6391b254d2ca02765b2baec.txt",
+        "img": "https://archive.orkl.eu/1065fabc9298fd01a6391b254d2ca02765b2baec.jpg"
+    }
+}

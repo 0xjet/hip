@@ -1,0 +1,119 @@
+{
+    "id": "229ae2ba-de25-487a-b1ce-b7e2713d3285",
+    "created_at": "2023-01-12T15:10:19.024385Z",
+    "updated_at": "2025-03-27T02:17:00.795323Z",
+    "deleted_at": null,
+    "sha1_hash": "eb6626c801d5d51c094419c5964403388d67be12",
+    "title": "2022-01-26 - Netskope Threat Coverage- WhisperGate",
+    "authors": "",
+    "file_creation_date": "2022-05-28T17:13:13Z",
+    "file_modification_date": "2022-05-28T17:13:13Z",
+    "file_size": 1759169,
+    "plain_text": "# Netskope Threat Coverage: WhisperGate\n\n**[netskope.com/blog/netskope-threat-coverage-whispergate](https://www.netskope.com/blog/netskope-threat-coverage-whispergate)**\n\nGustavo Palazolo January 26, 2022\n\n## Summary\n\n[A new destructive malware called WhisperGate](https://malpedia.caad.fkie.fraunhofer.de/details/win.whispergate) [was discovered in mid-January 2022](https://www.microsoft.com/security/blog/2022/01/15/destructive-malware-targeting-ukrainian-organizations/)\n[targeting Ukrainian organizations. This threat emerged during geopolitical conflicts in](https://thehackernews.com/2022/01/ukrainian-government-officially-accuses.html)\nUkraine, masquerading as ransomware. However, this malware has a more destructive\nnature: wiping files and corrupting disks to prevent the OS from loading. Ukraine has\nsuffered other cyberattacks that seem to be connected to WhisperGate, such as the\n[defacement of many websites connected to their governments.](https://www.washingtonpost.com/national-security/ukraine-russia-cyberattacks/2022/01/18/79590750-78a1-11ec-bf97-6eac6f77fba2_story.html)\n\nThis is a multi-stage malware, where one of the payloads is hosted on a Discord server. The\npreference of attackers to use cloud services for malicious purposes is increasingly common,\nas pointed out in an analysis of a threat campaign that uses multiple cloud services\n[throughout the attack. The threat group behind WhisperGate is being tracked as DEV-0586,](https://bazaar.abuse.ch/browse/tag/DEV-0586/)\nand so far there isn’t any association between this attack to known APT groups. In this threat\ncoverage, we analyzed all four stages of WhisperGate to demonstrate how it works.\n\n## Analysis\n\n### Stage 01\n\n\n-----\n\nWhisperGate s first stage is a small executable compiled with MinGW, responsible for\n[corrupting the disk by writing code into the Master Boot Record (MBR), which is a small](https://www.ntfs.com/mbr.htm)\nsection on disk that contains the Partition Table and an executable code related to the boot\nloader.\n\nBinary information about WhisperGate’s first stage\n[Corrupting the MBR is a simple technique to prevent any Operating System from loading, as](https://www.ntfs.com/mbr-virus.htm)\nthe assembly code is executed before the OS.\n\nThe entire code for the first stage of WhisperGate can fit in a single screenshot, where the\nmalware loads the MBR data that will be written to disk, opens a handle to the physical drive\nwith CreateFileW, and uses WriteFile to writes the 512 bytes to MBR, which is located in the\nfirst sector of the disk.\n\n\n-----\n\nDisassembled code of WhisperGate’s first stage.\nThe MBR stub written to disk includes a 16-bit assembly code and a message.\n\n\n-----\n\nData written on disk by WhisperGate\nIf we load this data into the disassembler, we can analyze the 16-bit assembly that will be\nexecuted once the computer is rebooted, which doesn’t do anything but display a message.\n\nCode that is executed once the computer is infected with WhisperGate.\nOnce the computer is infected, as soon as it restarts, the message is displayed and the OS\nis prevented from loading. The message says the hard drive was corrupted and demands a\npayment of $10,000 via Bitcoin to a specific walled address.\n\n\n-----\n\nComputer infected with the first stage of WhisperGate.\nThis is the only action performed by the first stage of WhisperGate. The following stages\nwere created probably to add a certain resilience to the attack in case the first stage fails, as\nsystems may use [GUID Partition Table (GPD), which is MBR’s successor.](https://www.ntfs.com/guid-part-table.htm)\n\n### Stage 02\n\nIn this stage, we have a simple .NET downloader for stage 03. The binary contains an\nexpired signature from Microsoft, and although it is not shown by identification tools, the file\nis obfuscated with NetReactor, as pointed out by [OALabs.](https://github.com/OALabs/Lab-Notes/blob/main/WhisperGate/WhisperGate.ipynb)\n\nBinary information about WhisperGate’s second stage.\nOnce running, it downloads the third stage from a Discord server, named “Tbopbh.jpg”.\n\n\n-----\n\nWhisperGate’s .NET downloader.\nAfter the download, the malware loads the binary as a .NET assembly and executes the\nmethod named “Ylfwdwgmpilzyaph”.\n\nMalware executing\n\nthe third stage of WhisperGate\n\n### Stage 03\n\nHere we have a 32-bit DLL, also developed in .NET. Since this file is directly loaded by the\nsecond stage as a .NET assembly, the DLL doesn’t have an entry point, which requires\nsome adjustments to make dynamic analysis feasible.\n\n\n-----\n\nBinary information about WhisperGate’s third stage.\nAs shown in the image above, the file is protected with Eazfuscator, likely to hinder\nresearchers’ analysis. Searching throughout the decompiled code, we can find the same\nmethod that is executed by the second stage.\n\nMain function from the third stage of WhisperGate.\nOnce running, it checks if the process is running as an Administrator. If it’s not the case, it\nlaunches itself with elevated permissions and exits the process.\n\nMalware checking for administrative permissions.\nThen, it drops a VBS named “Nmddfrqqrbyjeygggda.vbs” into the Windows temporary\nfolder, containing a simple PowerShell code that adds the path “C:\\” to Windows Defender’s\nexclusion list.\n\n\n-----\n\nSimple VBS / PowerShell to bypass Windows Defender.\nIt also drops an executable named “AdvancedRun.exe” to the same directory, which is a\n[tool from NirSoft to execute programs with different settings. WhisperGate uses this tool to](https://www.nirsoft.net/utils/advanced_run.html)\nexecute commands in the “TrustedInstaller” group context.\n\nUsage of AvancedRun tool, by NirSoft.\nIt executes two commands with this tool, both as an attempt to disable Windows Defender.\nThe first one tries to stop Defender’s service, and the second tries to delete its respective\nfolder.\n\nCommands executed with AdvancedRun.\nThen, WhisperGate copies “InstallUtil.exe” to Windows temporary folder, which is a binary\nfrom .NET Framework.\n\nCopying InstallUtil executable to Windows temporary folder.\nAnd finally, WhisperGate’s last stage is injected into an instance of the InstallUtil’s process.\nThe payload is stored within an encrypted resource, where all the bytes are reversed and\n[compressed with Gzip.](https://www.gnu.org/software/gzip/)\n\n\n-----\n\nMalware loading WhisperGate’s last stage.\n\n### Stage 04\n\nThe binary used in this stage is quite similar to the first one in terms of compiler and linker.\n\nWhisperGate’s last stage.\nLooking at the main function of the malware, we have two functions being called prior to the\nend of the execution.\n\n\n-----\n\n_WhisperGate’s main function._\n\nAt the function we named “mw_main_routine”, the malware starts by listing the drives with\n[the help of GetLogicalDrives API.](https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getlogicaldrives)\n\nMalware listing OS drives.\n\nThen, it uses [GetDriveTypeW to check if the drive is either fixed or remote. If that’s the case,](https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getdrivetypew)\nit starts the function that will wipe the files.\n\n\n-----\n\nMalware checking the\n\ndrive type.\nWithin the function we named “mw_wipe_files”, it starts by listing all the files in the root path\n[of the drive with FindFirstFileW.](https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-findfirstfilew)\n\n\n-----\n\nMalware listing all the files\n\nin the current directory.\nIf the current object is a directory, the “mw_wipe_files” function is called recursively with the\nidentified directory as a parameter. This is verified by calling the “_wstat” function and\n[checking the st_mode bits.](https://docs.microsoft.com/en-us/previous-versions/visualstudio/visual-studio-2013/14h5k7ff(v=vs.120))\n\nMalware checking if the current object is a directory.\nWhisperGate does not wipe files in the Windows directory.\n\n\n-----\n\nWhisperGate\n\nskipping Windows folder.\nThe last verification is related to the file’s extension, where the malware iterates over a list of\ntargeted extensions and, if the file name matches, a function we named\n“mw_write_bytes_to_file” is called.\n\n\n-----\n\nWhisperGate checking for targeted extensions.\nWhisperGate targets many files with extensions related to websites, such as “.html”, “.php”,\n“.asp”, “.jsp”, as well as common documents like “.doc”, “.xls”, “.ppt”, etc. A complete list of\n[targeted extensions can be found in our GitHub repository.](https://github.com/netskopeoss/NetskopeThreatLabsIOCs/tree/main/WhisperGate/IOCs)\n\n\n-----\n\nWhisperGate’s targeted extensions.\n\nAnd finally, if the file matches the criteria, WhisperGate wipes the file by replacing its content\nwith a sequence of 0x100000 bytes of 0xCC.\n\nWhisperGate wiping system’s\n\nfiles.\nAlso, a random extension is appended to the file’s name.\n\n\n-----\n\nFiles wiped by WhisperGate.\nOnce it’s over, WhisperGate deletes itself through a simple command line, where “%s” is the\n[file path obtained with GetModuleFileNameA.](https://docs.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-getmodulefilenamea)\n\nThis is the only behavior of WhisperGate’s last stage. Paying the ransom demanded would\nbe fruitless because the MBR and files were simply overwritten, not encrypted like they\nwould be by ransomware.\n\n## Conclusions\n\nWhisperGate is a multi-stage destructive malware that has emerged in the midst of the\n[geopolitical conflict that is still unfolding in Ukraine. Netskope Threat Labs is on the lookout](https://www.washingtonpost.com/politics/2022/01/04/fears-mount-about-russian-cyberattacks-ukraine/)\nfor any malware that may appear with an apparent political motivation, especially ones that\nmay disrupt essential services, such as infrastructure. It’s also interesting to see this threat\nusing Discord to host one of the payloads, showing again the preference of cloud apps\n[usage by cyber attackers. We echo CISA’s recommendations released in this note to](https://www.cisa.gov/sites/default/files/publications/CISA_Insights-Implement_Cybersecurity_Measures_Now_to_Protect_Against_Critical_Threats_508C.pdf)\nimplement cybersecurity measures for critical infrastructure.\n\n## Protection\n\nNetskope Threat Labs is actively monitoring this campaign and has ensured coverage for all\nknown threat indicators and payloads.\n\n**Netskope Threat Protection**\n\nWin32.Trojan.WhisperGate\nWin32.Network.WhisperGate\nByteCode-MSIL.Trojan.WhisperGate\n\n\n-----\n\n**Netskope Advanced Threat Protection provides proactive coverage against this**\nthreat.\n\nGen.Malware.Detect.By.StHeur indicates a sample that was detected using static\nanalysis\nGen.Malware.Detect.By.Sandbox indicates a sample that was detected by our\ncloud sandbox\n\n## IOCs\n\n[A full list of IOCs and Yara rules can be found in our GitHub repository.](https://github.com/netskopeoss/NetskopeThreatLabsIOCs/tree/main/WhisperGate)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-01-26 - Netskope Threat Coverage- WhisperGate.pdf"
+    ],
+    "report_names": [
+        "2022-01-26 - Netskope Threat Coverage- WhisperGate.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "025b7171-98f8-4391-adc2-66333629c715",
+            "created_at": "2023-06-23T02:04:34.120175Z",
+            "updated_at": "2025-03-27T02:02:09.797581Z",
+            "deleted_at": null,
+            "main_name": "Cadet Blizzard",
+            "aliases": [
+                "DEV-0586",
+                "Operation Bleeding Bear",
+                "Ruinous Ursa"
+            ],
+            "source_name": "ETDA:Cadet Blizzard",
+            "tools": [
+                "GO Simple Tunnel",
+                "GOST",
+                "Impacket",
+                "LOLBAS",
+                "LOLBins",
+                "Living off the Land",
+                "P0wnyshell",
+                "PAYWIPE",
+                "Ponyshell",
+                "Pownyshell",
+                "WhisperGate",
+                "WhisperKill",
+                "netcat",
+                "reGeorg"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "c28760b2-5ec6-42ad-852f-be00372a7ce4",
+            "created_at": "2022-10-27T08:27:13.172734Z",
+            "updated_at": "2025-03-27T02:00:55.511386Z",
+            "deleted_at": null,
+            "main_name": "Ember Bear",
+            "aliases": [
+                "Ember Bear",
+                "UNC2589",
+                "Bleeding Bear",
+                "DEV-0586",
+                "Cadet Blizzard",
+                "Frozenvista",
+                "UAC-0056"
+            ],
+            "source_name": "MITRE:Ember Bear",
+            "tools": [
+                "P.A.S. Webshell",
+                "CrackMapExec",
+                "ngrok",
+                "WhisperGate",
+                "Saint Bot",
+                "PsExec",
+                "Rclone",
+                "Impacket",
+                "OutSteel"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        },
+        {
+            "id": "bdbf873a-048d-4c5d-9d92-922327cc83a8",
+            "created_at": "2023-01-06T13:46:39.387696Z",
+            "updated_at": "2025-03-27T02:00:03.071819Z",
+            "deleted_at": null,
+            "main_name": "DEV-0586",
+            "aliases": [
+                "Ruinous Ursa",
+                "Cadet Blizzard"
+            ],
+            "source_name": "MISPGALAXY:DEV-0586",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536219,
+    "ts_updated_at": 1743041820,
+    "ts_creation_date": 1653757993,
+    "ts_modification_date": 1653757993,
+    "files": {
+        "pdf": "https://archive.orkl.eu/eb6626c801d5d51c094419c5964403388d67be12.pdf",
+        "text": "https://archive.orkl.eu/eb6626c801d5d51c094419c5964403388d67be12.txt",
+        "img": "https://archive.orkl.eu/eb6626c801d5d51c094419c5964403388d67be12.jpg"
+    }
+}

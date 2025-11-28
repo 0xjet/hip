@@ -1,0 +1,57 @@
+{
+    "id": "126721ef-d581-46ac-8ea4-3ff05c066819",
+    "created_at": "2023-01-12T15:04:04.11206Z",
+    "updated_at": "2025-03-27T02:08:00.042576Z",
+    "deleted_at": null,
+    "sha1_hash": "3658d241bb858bdaa42db4dca5e69ba59a108b2b",
+    "title": "2019-04-22 - Dissecting Emotet’s network communication protocol",
+    "authors": "",
+    "file_creation_date": "2022-05-27T21:30:40Z",
+    "file_modification_date": "2022-05-27T21:30:40Z",
+    "file_size": 559282,
+    "plain_text": "# Dissecting Emotet’s network communication protocol\n\n**[int0xcc.svbtle.com/dissecting-emotet-s-network-communication-protocol](https://int0xcc.svbtle.com/dissecting-emotet-s-network-communication-protocol)**\n\nApril 22, 2019\n\n**_Request Packet format_**\n\nCommunication protocol for any malware lies at the core of its functionality . It is the\nessential way for any malware to communicate and receive further commands . Emotet has\na complex communication format .\n\nIts peculiarities are the way the protocol is built and sent across the network . Knowing\ninternal details of its communication format is essential to keep tabs on it . In this post we are\ngoing to analyze Emotet communication format .\n\nwe will be skipping the unpacking and reconstruction part, as it is irrelevant to this topic of\ndiscussion .\n\nIn this post, we will be specifically looking for areas of interest in the binary, there will be\nsome parts that are analyzed preemptively .\n\nAn unpacked emotet sample has around ~100 functions, as populated by IDA . Going\nthrough each of them to look for communication subroutines would be “A short in the dark” .\nThe easiest way would be to look for network API calls and xrefs would sort out most of the\ndirty work for us\n\n\n-----\n\nLuckily in emotet., there is only one xref to this API call, which perhaps would be the\nsubroutine where the communication to c2 server happens . This subroutine receives an\nencrypted and compressed packet with parameters like c2 server, port and sends it out .\nXrefing back few subroutines would land us to the place where the packet is formulated . For\ncomprehension, let’s name this subroutine as ConnectAndSend\n\n\n-----\n\nTracking back xfrefs, we finally reach to the subroutine where the packet is generated . And\n, based on API calls and variables used, we can easily name few local variables and\nsubroutines used, for example Botid, crc32, etc\n\nBased on how stack variable are set, we get an idea that a struct is formulated . The\ndefinition of the structure would be as following\n\n\n-----\n\n```\nstruct Emotet_BotInfo\n{\n  DWORD Uptime; \n  BYTE *BotID;\n  DWORD BotIDLen;\n  DWORD MajMinOSversion;\n  DWORD TermSessID;\n  DWORD Crc32HashBinary;\n  BYTE *ProcList;\n  DWORD ProlistLen;\n  DWORD PluginsInstalled[];\n  DWORD PluginsLen;\n};\n\n```\nUptime - Measure of uptime of the infection\n_BotID - Botnet Identifier (unique per infection)_\n_BotIDLen - Length of BotID_\n_MajMinOSversion *- Operating system identifier_\n_*TerminalSessID - Terminal Session ID_\n_Crc32HashBinary - CRC32 hash of binary_\n_ProcList - List of running processes ( comma segregated )_\n_PluginsInstalled - Array of DWORD consisting of MODID’s of plugins installed_\n\nThis structure is passed on to a function that calculates total round size based on some bit\nshifts . This shifting gives us a clue about the format of the packet . Lets look at these\npatterns\n\n\n-----\n\nTranslating it to a code snippet would roughly be equivalent to\n```\ntowrite = number & 0x7f\nnumber >>= 7\n\n```\nThis code encodes an integer to LEB128 or Little Endian Base 128 format (VARINT). And\none of the serialized buffer formats that support it is the google protobuf format, this clue\nagain makes the reversing equation easy for us . Some old emotet analysis blogs support\nour assumption\n\n\n-----\n\nEmotet has two packets one being encapsulated in the other . The inner layer lets call it base\npacket. Base packet fundamentally is a group of entries with metadata information .\nMetadata includes type of data and an index number particular to the entry . Entries have a\nsimple structure, but varies according to the type of entry\n```\nStruct EmotetEntry\n{\n  VARINT ULEB128_EntryLength ;\n  BYTE Data[ULEB128_EntryLength];\n}\n\n```\nEmotet’s base packet has three type of data entries, and are marked by numbers in the\nmetadata\n\nType of element and type of data entry is specified in the metadata field\n\nso, the complete definition of base packet would be something like this\n```\nstruct BaseEmotetPacket \n{\n  BYTE MetaData\n  Struct EmotetEntry\n  {\n    VARINT ULEB128_EntryLength ;\n    BYTE Data[ULEB128_EntryLength];\n  }\n}[n];\n\n```\nMetaData is a bitfield data type, which consists of\n_**0-3 bits - Type of data field *_ _**3-7 bits - Index Number of Data field **_\n\nWhere index is a incremental number and type is an enum\n```\nEnum Type\n{\n  Type 5 : Machine dependent endian WORD size integer \n  Type 2 : Buffer Struct { VARINT ULEN128_Size, BYTE data[ULEN128_Size];\n  Type 0 : ULEN128 encoded variant \n }\n\n```\nThe code to add an entry in base packet can be defined in python as\n\n\n-----\n\n```\ndef AppendElement(protoBuf, type, value, itemNum):\n  protoBuf = protoBuf + struct.pack(\"B\", ( (itemNum << 3) | type ) & 0xff)\n  if type == 5: #DWORD Copy 32bit integer as it is\n    return protoBuf + struct.pack(\"I\", value)\n  if type == 2: # Memory Buffer struct {VARINT ULEB128_Size, void * buf}\n    return protoBuf + encode(len(value)) + value\n  if type == 0: # encode DWORD in ULEB128\n    return protoBuf + encode(value)\n\n```\nLater on, base packet is compressed and further more encapsulated in another packet\n\nThe definition of the final packet is almost the same as the base packet, but the only subtle\ndifference is that it only has one field, which is the encapsulated base packet\n```\nstruct FinalPacket\n{\n  BYTE MetaData;\n  Struct BaseEmotetPacket BasePacket;\n};\n\n```\n\n-----\n\nThis data is sent to c2 server immediately after encrypting the final packet .\n\n**_Response Packet format_**\n\n\n-----\n\nResponse data from c2 from received is decompressed, and the plain text data is supplied\nto a subroutine for deserialization .\n\nThe response data field uses the same variable length integer encoding and is almost\nstructured in the same way .\n\nResponse format is complex and tentative for each type of request and bot configuration .\n\nSimilarly like base request packet, this structure consists of a type and number bitfield,\nwhich determines which type of data field is it . In case of response, it has three of them\n\n\n-----\n\n_1 : Main module packet_\n_*2 : Binary update data_\n_3 : Deliverables data_\n```\nstruct EmotetResponse\n{\n  unsigned char Number : 4;\n  unsigned char Type : 4;\n  unsigned char ModID; // Each module has modid ( 0 for main module)\n  unsigned char Number : 4;\n  unsigned char Type : 4;\n  VARINT UpdateBinLen; // Varint Type ULEB128 Encoded\n  BYTE BinaryBlob[UpdateBinLen]; // Update Binary PE FILE\n  unsigned char Number : 4;\n  unsigned char Type : 4;\n  VARINT deliverablesLen;\n    struct deliverables_\n    {\n      unsigned char Number : 4;\n      unsigned char Type : 4;\n      unsigned char ModID; // PluginModid\n      unsigned char ExeFlag; // \"\" 3 - Plugin, 2 - WriteElevatedExecute, 1 writeExecute\"\"\"\n      VARINT PluginLen; // Varint Type ULEB128 Encoded\n      BYTE PluginBinaryBlob[PluginLen]; // Update Binary PE FILE\n    }\n}\n\n```\n29\n\nKudos\n\n29\n\nKudos\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-04-22 - Dissecting Emotet’s network communication protocol.pdf"
+    ],
+    "report_names": [
+        "2019-04-22 - Dissecting Emotet’s network communication protocol.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "b740943a-da51-4133-855b-df29822531ea",
+            "created_at": "2022-10-25T15:50:23.604126Z",
+            "updated_at": "2025-03-27T02:00:55.505366Z",
+            "deleted_at": null,
+            "main_name": "Equation",
+            "aliases": [
+                "Equation"
+            ],
+            "source_name": "MITRE:Equation",
+            "tools": null,
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535844,
+    "ts_updated_at": 1743041280,
+    "ts_creation_date": 1653687040,
+    "ts_modification_date": 1653687040,
+    "files": {
+        "pdf": "https://archive.orkl.eu/3658d241bb858bdaa42db4dca5e69ba59a108b2b.pdf",
+        "text": "https://archive.orkl.eu/3658d241bb858bdaa42db4dca5e69ba59a108b2b.txt",
+        "img": "https://archive.orkl.eu/3658d241bb858bdaa42db4dca5e69ba59a108b2b.jpg"
+    }
+}

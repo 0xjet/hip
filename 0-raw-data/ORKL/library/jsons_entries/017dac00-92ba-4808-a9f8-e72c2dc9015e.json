@@ -1,0 +1,78 @@
+{
+    "id": "017dac00-92ba-4808-a9f8-e72c2dc9015e",
+    "created_at": "2023-01-12T15:02:02.102911Z",
+    "updated_at": "2025-03-27T02:05:58.166507Z",
+    "deleted_at": null,
+    "sha1_hash": "81fc8d1873e2bdef1bc13f87506dcc99a50a3370",
+    "title": "2019-11-11 - Revenge Is A Dish Best Served… Obfuscated-",
+    "authors": "",
+    "file_creation_date": "2022-05-27T23:16:24Z",
+    "file_modification_date": "2022-05-27T23:16:24Z",
+    "file_size": 1341169,
+    "plain_text": "# Revenge is a Dish Best Served… Obfuscated?\n\n**[binarydefense.com/revenge-is-a-dish-best-served-obfuscated](https://www.binarydefense.com/revenge-is-a-dish-best-served-obfuscated)**\n\nNovember 11, 2019\n\nResearching new and emerging cyber threats is common practice for the Binary Defense\nThreat Hunting team. Recently, the threat hunters came across an interesting multi-stage vbs\ndownloader, which was used to distribute RevengeRAT and WSHRAT. This infection starts\nfrom an MHT file contained in a zip document sent over email, which communicates back to the\nfollowing open directory server: http://newdocreviewonline.3utilities[.]com/\n\nContained on this server are two files, Review.php, which downloads Microsoft.hta. Upon\nreviewing the hta file, we found that it is a JavaScript file full of URL encoded characters:\n\njs file\n\nDecoding the characters shows an html file with some VBScript code inside of it that essentially\ncreates a new script called A6p.vbs (stored in AppData/Local) which it then uses to pull down\nand execute the stage2, a new script called Microsoft.vbs. This stage2 is downloaded from:\n\nhttps://scisolinc[.]com/wp-includes/Text/microsoft.vbs and is heavily obfuscated.\n\n## Digging into the Stage2\n\n\n-----\n\nObfuscated File\n\nAs seen in the above image, there’s a large buffer of Base64 encoded text, and a replace call.\nThe replace call replaces “(!” in the Base64 buffer with “A”, which allows the buffer to be\ndecoded successfully. Decoding the Base64 buffer shows a more informative script, along with\nlarge blocks of junk code:\n\nExample of junk code\n\nSince the de-obfuscation work is still not done, it is necessary to strip out the junk code so that\nthe script can be easily read. In doing so, the file size is reduced from 113KB to 75KB, which is\na fairly large amount of junk code:\n\nLooking at the now readable stage2, two things jump out. First, a Base64 encoded PE file is\nseen (evident by the TVqQAAMAAAA), which is the RevengeRAT executable. Next, a second\nlarge Base64 encoded string is noticed. This string is interesting and will be discussed later.\n\n\n-----\n\n## Loading RevengeRAT\n\nAn initial glance may have overlooked the readable stage2, but the Base64 encoded portable\nexecutable (PE) file is still obfuscated. Scattered around the Base64 string are @ symbols,\nwhich need to be replaced with “0” in order for the PE to be decoded properly. However, it\ndoesn’t do this immediately.\n\nIn order to maintain persistence, the script first copies Microsoft.vbs from AppData/Local/Temp\nto Appdata/Roaming, and then saves a run key called “microsoft” with the value set to\n“C:\\User\\%USER%\\Appdata\\Roaming\\microsoft.vbs”\n\nScreenshot from Binary Defense MDR after it detected the installation\n\nThis allows the vbs to run at startup. Next, the script saves the obfuscated PE file into\nHKCU:\\Software\\Microsoft\\microsoft as a string. The script then reads the previously saved key\ninto memory and de-obfuscates the PE file before finally executing the file. This allows\nRevengeRAT to run in memory and not drop any files onto the system—a technique known as\n“fileless.”\n\nSee bottom of analysis for IOCs:\n\n## Digging into the “Interesting” Base64 String\n\nCircling back around to the other Base64 string contained in the stage2 reveals a few things.\nFirst, unlike all other Base64 encountered so far, this string is not obfuscated. Additionally, the\nstage2 decodes the Base64 before saving the now decoded Base64 string to a file in\nAppdata/Roaming called GXxdZDvzyH.vbs, which it then executes with wscript /b. The /b flag\nspecifies batch mode, which does not result in errors or input prompts.\n\nDecoding the Base64 string gives us a file that strongly resembles the original obfuscated\nstage2:\n\n\n-----\n\nDe-obfuscating the Base64 string contained in GXxdZDvzyH.vbs, reveals WSHRat.\n\n## WSHRAT\n\nOut of all samples discussed in this analysis, the WSHRAT drop was the most surprising.\nWSHRAT is a relatively new stealer written entirely in VBScript. This RAT is fairly modular, but\nin its base state can steal computer information like computer name and antivirus provider. It\ncan also steal passwords from popular web browsers like Chrome, Internet Explorer, and\nFirefox. Additionally, besides installing as a Run key, the malware also seems to have the\nability to create lnk files that pose as legitimate shortcuts but in reality, also execute the\nmalware before executing the specified file.\n\nIf the malware detects that it is running as admin, it will also attempt to disable UAC so that it\ncan always escalate to admin without prompting the user.\n\n**Commands**\n\n**_Name_** **_Description_**\n\n**disconnect** Closes the malware\n\n**reboot** Reboots the computer\n\n**shutdown** Shuts the computer off\n\n**exececute** Executes whatever command/file is specified in the supplied parameter\n\n\n-----\n\n**install-sdk** Download the wshsdk.zip file from C2, consists of a standalone python\ninstallation\n\n**get-pass** Grab password from specified file\n\n\n**get-pass-**\n**offline**\n\n\nGrab passwords from browsers along with specified file\n\n\n**update** Update the malware\n\n**uninstall** Uninstall the malware\n\n**up-n-exec** Download and update the malware\n\n**bring-log** Send wshlogs\\ to the C2\n\n**down-n-exec** Download and execute new malware\n\n**filemanager** File manager plugin using “fm-plugin.exe”\n\n**rdp** RDP plugin using “rd-plugin.exe”\n\n**keylogger** Keylogger plugin using “kl-plugin.exe”\n\n\n**offline-**\n**keylogger**\n\n\nKeylogger plugin using “kl-plugin.exe”\n\n\n**browse-logs** Browse logs generated by the rat\n\n**cmd-shell** Open a CMD shell\n\n**get-processes** List all processes\n\n**disable-uac** Disable UAC checks\n\n**check-eligible** Check eligibility for supplied file\n\n**force-eligible** Force eligibility for supplied file\n\n**elevate** Elevate to admin\n\n**if-elevate** Check elevation status\n\n**kill-process** Kill specified process\n\n**sleep** Sleep for specified amount of time\n\n## Remediation\n\nUnfortunately, as this file is resident in the registry, full removal is a bit more challenging than\njust removing a file. The first thing that should be removed are the two files stored in\n%APPDATA%, which are microsoft.vbs and GXxdZDvzyH.vbs. This will stop the malware from\n\n\n-----\n\nexecuting. If any errors are received during deletion, the computer will need to be restarted in\nsafe mode to try to delete those files again—and stay in safe mode—so that the registry can be\nedited without worrying about the malware executing.\n\nIn the registry, locate the Run key\n(HKEY_LOCAL_MACHINE:Software\\Microsoft\\Windows\\CurrentVersion\\Run) and delete the\nvalue “microsoft” as well as the value “GXxdZDvzyH”. Additionally, navigate to\nHKCU:Software\\Microsoft\\, find the value “microsoft” (should consist of the Base64 encoded\nPE file), and delete that value.\n\nAfter following these steps, the computer should be safe to reboot in normal mode.\n\n## IOCs\n\n_RevengeRAT IOCs_\n\n**Hash: 9ada62e4b06f7e3a61d819b8a74f29f589b645a7a32fd6c4e3f4404672b20f24**\n\n**Mutex: RV_MUTEX-toqqNLCGRFbTXZ**\n\n**ID: House**\n\n**Registry Location: HKCU:Software\\Microsoft\\microsoft**\n\n**C2(s): 193.56.28.134:5478, 185.84.181.102:5478**\n\n_WSHRAT IOCs (pulled from config, mainly)_\n\n**Hash: d86081a0795a893ef8dc251954ec88b10033166f09c1e65fc1f5368b2fd6f809**\n\n**C2: britianica.uk[.]com:4132**\n\n**Registry**\n**Location: HKEY_LOCAL_MACHINE:Software\\Microsoft\\Windows\\CurrentVersion\\Run\\**\nGXxdZDvzyH\n\n_Loader IOCs_\n\n**Hash**\n**(microsoft.vbs): c229c614c9bd2b347fd24ad12e3c157c686eb86bc0a02df1c7080cf40b659e10**\n\n**Hash**\n**(GXxdZDvzyH.vbs): ced8be6a20b38f5f4d5af0f031bd69863a60be53b9d6434deea943bf668ac8d8**\n\n**Downloader Addresses:** https://scisolinc[.]com/wpincludes/Text/microsoft.vbs, http://newdocreviewonline.3utilities[.]com/\n\n\n-----\n\n**_Real People Detecting Real Threats in Real Time. The above article covers risks related to_**\ninformation security. This threat has been witnessed, monitored, and analyzed by the\ncybersecurity specialists at Binary Defense. Those who currently subscribe to our SOC-as-a[Service offerings including SIEM monitoring,](https://binarydefense.com/security-information-event-management/) [Managed Detection & Response, and /](https://binarydefense.com/endpoint-detection/)\nor [Counterintelligence services are already being actively protected against the threat(s). To](https://binarydefense.com/threat-intelligence/)\nlearn more about how we can protect you from new and emerging cyberattacks, please contact\nus.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2019/2019-11-11 - Revenge Is A Dish Best Served… Obfuscated-.pdf"
+    ],
+    "report_names": [
+        "2019-11-11 - Revenge Is A Dish Best Served… Obfuscated-.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "aa73cd6a-868c-4ae4-a5b2-7cb2c5ad1e9d",
+            "created_at": "2022-10-25T16:07:24.139848Z",
+            "updated_at": "2025-03-27T02:02:10.120505Z",
+            "deleted_at": null,
+            "main_name": "Safe",
+            "aliases": [],
+            "source_name": "ETDA:Safe",
+            "tools": [
+                "DebugView",
+                "LZ77",
+                "OpenDoc",
+                "SafeDisk",
+                "TypeConfig",
+                "UPXShell",
+                "UsbDoc",
+                "UsbExe"
+            ],
+            "source_id": "ETDA",
+            "reports": null
+        },
+        {
+            "id": "a6c351ea-01f1-4c9b-af75-cfbb3b269ed3",
+            "created_at": "2023-01-06T13:46:39.390649Z",
+            "updated_at": "2025-03-27T02:00:03.072899Z",
+            "deleted_at": null,
+            "main_name": "Kinsing",
+            "aliases": [
+                "Money Libra"
+            ],
+            "source_name": "MISPGALAXY:Kinsing",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535722,
+    "ts_updated_at": 1743041158,
+    "ts_creation_date": 1653693384,
+    "ts_modification_date": 1653693384,
+    "files": {
+        "pdf": "https://archive.orkl.eu/81fc8d1873e2bdef1bc13f87506dcc99a50a3370.pdf",
+        "text": "https://archive.orkl.eu/81fc8d1873e2bdef1bc13f87506dcc99a50a3370.txt",
+        "img": "https://archive.orkl.eu/81fc8d1873e2bdef1bc13f87506dcc99a50a3370.jpg"
+    }
+}

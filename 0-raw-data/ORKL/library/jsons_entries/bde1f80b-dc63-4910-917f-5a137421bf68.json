@@ -1,0 +1,79 @@
+{
+    "id": "bde1f80b-dc63-4910-917f-5a137421bf68",
+    "created_at": "2023-01-12T15:04:23.138279Z",
+    "updated_at": "2025-03-27T02:13:29.361174Z",
+    "deleted_at": null,
+    "sha1_hash": "155b093a5ed25744eb40e65e67df22769500daa0",
+    "title": "2022-02-13 - Kovter Analysis",
+    "authors": "",
+    "file_creation_date": "2022-05-28T16:04:43Z",
+    "file_modification_date": "2022-05-28T16:04:43Z",
+    "file_size": 5988599,
+    "plain_text": "# Kovter\n\n**[github.com/itaymigdal/malware-analysis-writeups/blob/main/Kovter/Kovter.md](https://github.com/itaymigdal/malware-analysis-writeups/blob/main/Kovter/Kovter.md)**\n\nitaymigdal\n\nmain\n\n## malware-analysis-writeups/Kovter/Kovter.md\n\nCannot retrieve contributors at this time\n\n\n**Malware**\n**Name**\n\n\n**File**\n**Type** **SHA256**\n\n\nKovter x32\nexe\n\n## Intro\n\n\n40050153dceec2c8fbb1912f8eeabe449d1e265f0c8198008be8b34e5403e731\n\n\nProbably this is the piece of malware that blew my mind the hardest of all malwares i\nhave ever touched (still they are not a lot though 😅). days and nights i spent on it and\nit is not even close to be enough to fully comprehend the whole picture of it. it uses\n\n\n-----\n\ntons of tricks against analysts, and it has brilliant persistence mechanism. the malware\nessence is special as well - it is a Click-Fraud Malware, and i could not explain it better\n[then \"eWhite Hats\" did on their \"KOVTER UNCOVERED\" paper:](https://raw.githubusercontent.com/ewhitehats/kovterTools/master/KovterWhitepaper.pdf)\n\nBlogs display ads in the hope that their readers will see an advertisement that\ninterests them and click on it. The click is tracked by the ad network (such as\nGoogle AdWords) and the blog is financially rewarded for the number of readers\nthat click on ads while reading their blog. Click fraud malware infects a computer\nand uses that computer as a host to perform fraudulent clicks. In this way, the\ngroup running the malware campaign can make money at the expense of the ad\nnetwork and the advertisers, since the advertisers pay for the clicks, whether\nlegitimate or not. The malware group registers fake websites with the ad\nnetwork. The fraudulent clicks are for ads these websites “displayed.” The ad\nnetwork cannot differentiate between these “clicks” for ads that were never seen\nby anyone and legitimate clicks, so the malware group is paid for the fake clicks\non their fake sites.\n\nAdditionly, the malware is written in Delphi which is harder to analyze then the usual\nC/C++.\n\n## Analysis process\n\nThe initial executable which contains all the upcoming badness inside of it has a very\ncreepy icon:\n\nOf course it is packed:\n\nAs i do always, i'm executing the malware under Procmon to see the main malware\nactions. the file is sleeping for few minutes and then:\n\nFew processes are spawned with very interesting command line:\n\n\n-----\n\nThe process tree by AnyRun:\n\nA huge amount of data is written to the registry by almost all of the processes:\n\nA huge ammount of connections are made to variety of destinations by\nRegsvr32.exe (as you already guess - this is the click fruad activity):\n\n\n-----\n\n### Persistence Mechanism\n\nAfter the computer was well infected, we will follow the persistence chain.\n\nWe'll try to locate anything suspicious in Autoruns, and we found it:\n\nSuspicious batch file was written to a the run key. navigating to the location in Explorer:\n\nBesided the batch file we see another file with a very suspicious extention. the content\nof the batch file is:\n\n\n-----\n\nThe batch file executes the other weird file (the first argument of `start is the title of`\nthe new window). looking at the content of the file:\n\nIt looks encrypted..\n\nSo now you must ask, how Windows suppose to know how to deal with this \".c0ded\"\nextention?\n\nThe answer lies in the following registry location (Which was written by the malware of\ncourse):\n\nThis key describes how to treat this \".c0ded\" file, and the answer here is - treat it like it\nwas a \"a5ef\" file.\n\nAnd how to treat this extention?\n\nBy executing the above command. here is the command after a bit cleaning:\n\nThe command reads the registry value in `HKCU\\software\\vmwbcodxx\\eznyhwwfez`\n[and runs it as Javascript by Mshta.exe.](https://lolbas-project.github.io/lolbas/Binaries/Mshta/)\n\nOpening this location in Regedit reveals this key including all the other values that was\nwritten by the malware. but watch this - when opening the value `eznyhwwfez, it looks`\nempty even though we can see something is there in the Regedit navigator:\n\n\n-----\n\nThis is happening because Kovter authors used a realy nice trick that abuses a known\nbug in the registry: all the values written to it were prefixed with a Null byte, which\ncauses the registry to display an empty value in newer versions of Windows, or crash\nthe program in older version.\n\nSo exporting all this registry data:\n\nWe've got a very obfuscated Javascript code that contains a big blob of binary data\nthat deobfuscated and being sent to \"eval\" function which executes it:\n\nA quick trick to analyze it is to comment out the \"eval\" function and write the content to\na file instead:\n\n\n-----\n\nwe've got another obfuscated code, deobfuscating it (removing junk comments, junk\nvariables and a indenting):\n\nSo what we've got here? Another Javascript layer that resizes the window to zero and\nhide it in the corner, creates a Powershell variable and initialize it with Powershell code\nthat decodes a big blob of base64 and executes it with \"iex\" (\"iex\" of Powershell =\n\"eval\" of Javascript and more languages). decoding the Powershell blob:\n\nAnd we've got another obfuscated Powershell layer 😒:\n\nDeobfuscating:\n\n\n-----\n\nSo what this code is doing is define a big blob of shellcode inside the `$sc32 variable,`\ncalling `VirtualAlloc to allocate virtual memory in the current process (which is still`\nPowershell.exe), copying the shellcode to it using `memset and then executing it using`\n```\nCreateThread .\n\n### Analyzing The Shellcode\n\n```\nThe shellcode is PIC (position independent code), thus has no imports, thus has to find\nthe needed imports by itself, and it does it by the known reflective loading method\n[(explained here, and in more other places). first it navigates to the PEB to get the](https://www.ired.team/offensive-security/code-injection-process-injection/finding-kernel32-base-and-function-addresses-in-shellcode)\naddress of Kernel32.dll:\n\nAfter retrieving the `LoadLibraryA and` `GetProcAddress addresses from`\nKernel32.exe, it can resolve all the rest of the calls it need.\n\nSo it loads Advapi32.dll (a library which contains all the registry API):\n\n\n-----\n\nAnd then reads an the encrypted Kovter main payload that was written to the registry:\n\nDecrypts it in memory, and executes it!\n\n### Main Activity\n\nThis main Kovter payload responsible for injecting itslef to Regsvr32.exe, which injects\nitself to another instance of Regsvr32.exe.\n\nSo in order to cut to the chase, i located the injected decrypted Kovter PE using\nProcess Hacker in Regsvr32.exe:\n\n\n-----\n\nAnd dumped it with Pe-Sieve:\n\n\n-----\n\nThe dumped PE is unpacked finally:\n\nAnd here is all of its imports:\n\n\n-----\n\nKovter uses [Thread Hijacking technique to injects itself:](https://www.ired.team/offensive-security/code-injection-process-injection/injecting-to-remote-process-via-thread-hijacking)\n\nAnd here is the functionality for the click-fruad activity:\n\nIt uses a long list of IP's and URL's:\n\n\n-----\n\nThe first 2 lines contain the C2 address:\n\n## Final Words\n\nFor my opinion, Kovter is one of the toughest, sophisticatest and hard-to-analyze\nmalwares i have seen.\n\nIt uses tons of tricks like lolbins, bugs, injections, insane persistence chain, and it lives\ntotally in the registry.\n\n[Months after my analysis i encountered this great \"KOVTER UNCOVERED\" paper](https://raw.githubusercontent.com/ewhitehats/kovterTools/master/KovterWhitepaper.pdf)\nwhich taught me some other stuff on Kovter.\n\nAnd [here, i found John Hammond getting knocked by it as well 😆.](https://www.youtube.com/watch?v=DXlqAH1IV6A)\n\nHope you enjoyed :)\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2022/2022-02-13 - Kovter Analysis.pdf"
+    ],
+    "report_names": [
+        "2022-02-13 - Kovter Analysis.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "f4f16213-7a22-4527-aecb-b964c64c2c46",
+            "created_at": "2024-06-19T02:03:08.090932Z",
+            "updated_at": "2025-03-27T02:05:17.387119Z",
+            "deleted_at": null,
+            "main_name": "GOLD NIAGARA",
+            "aliases": [
+                "Carbanak",
+                "Carbon Spider ",
+                "FIN7 ",
+                "Navigator ",
+                "Sangria Tempest ",
+                "TelePort Crew ",
+                "Calcium "
+            ],
+            "source_name": "Secureworks:GOLD NIAGARA",
+            "tools": [
+                " Carbanak",
+                " Cobalt Strike",
+                " DICELOADER",
+                " DRIFTPIN",
+                " GGLDR",
+                " GRIFFON",
+                " JSSLoader",
+                " Meterpreter",
+                " OFFTRACK",
+                " PILLOWMINT",
+                " POWERTRASH",
+                " SUPERSOFT",
+                " TAKEOUT",
+                " TinyMet",
+                "Bateleur"
+            ],
+            "source_id": "Secureworks",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535863,
+    "ts_updated_at": 1743041609,
+    "ts_creation_date": 1653753883,
+    "ts_modification_date": 1653753883,
+    "files": {
+        "pdf": "https://archive.orkl.eu/155b093a5ed25744eb40e65e67df22769500daa0.pdf",
+        "text": "https://archive.orkl.eu/155b093a5ed25744eb40e65e67df22769500daa0.txt",
+        "img": "https://archive.orkl.eu/155b093a5ed25744eb40e65e67df22769500daa0.jpg"
+    }
+}

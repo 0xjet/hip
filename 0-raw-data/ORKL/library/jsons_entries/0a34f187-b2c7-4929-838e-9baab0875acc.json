@@ -1,0 +1,62 @@
+{
+    "id": "0a34f187-b2c7-4929-838e-9baab0875acc",
+    "created_at": "2023-01-12T15:08:13.390606Z",
+    "updated_at": "2025-03-27T02:09:18.383566Z",
+    "deleted_at": null,
+    "sha1_hash": "2de20d6c82e3c7b86072a3934f199880e30ab385",
+    "title": "2020-12-08 - A Red Teamer Plays with JARM",
+    "authors": "",
+    "file_creation_date": "2022-05-28T16:15:52Z",
+    "file_modification_date": "2022-05-28T16:15:52Z",
+    "file_size": 107857,
+    "plain_text": "# A Red Teamer Plays with JARM\n\n**[blog.cobaltstrike.com/2020/12/08/a-red-teamer-plays-with-jarm/](https://blog.cobaltstrike.com/2020/12/08/a-red-teamer-plays-with-jarm/)**\n\nRaphael Mudge December 8, 2020\n\n[I spent a little time looking into Saleforce’s JARM tool released in November. JARM is an active tool](https://engineering.salesforce.com/easily-identify-malicious-servers-on-the-internet-with-jarm-e095edac525a)\nto probe the TLS/SSL stack of a listening internet application and generate a hash that’s unique to\nthat specific TLS/SSL stack.\n\nOne of the initial JARM fingerprints of interest relates to Cobalt Strike. The value associated with\nCobalt Strike is:\n\n**07d14d16d21d21d07c42d41d00041d24a458a375eef0c576d23a7bab9a9fb1**\n\n[To generate a JARM fingerprint for an application, use the JARM python tool:](https://github.com/salesforce/jarm)\n\n**python3 jarm.py [target] -p [port]**\n\nI opted to dig into this, because I wanted to get a sense of whether the fingerprint is Cobalt Strike or\nJava.\n\n## Cobalt Strike’s JARM Fingerprint is Java’s JARM Fingerprint\n\nI started my work with a hypothesis: Cobalt Strike’s JARM fingerprint is Java’s JARM fingerprint. To\n[validate this, I created a simple Java SSL server application (listens on port 1234) in Sleep.](http://sleep.dashnine.org/)\n\n\n-----\n\n```\nimport javax.net. ;\nimport javax.net.ssl.*;\n$factory = [SSLServerSocketFactory getDefault];\n$server = [$factory createServerSocket: 1234];\n[$server setSoTimeout: 0];\nif (checkError($error)) {\nwarn($error);\n}\nwhile (true) {\n$socket = [$server accept];\n[$socket startHandshake];\n[$socket close];\n}\n\n```\nI ran this server from Java 11 with:\n\n**java -jar sleep.jar server.sl**\n\nI assessed its JARM fingerprint as:\n\n**00000000000000000042d41d00041d7a6ef1dc1a653e7ae663e0a2214cc4d9**\n\nInteresting! This fingerprint does not match the supposed Cobalt Strike fingerprint. Does this mean\nwe’re done? No.\n\nThe current popular use of JARM is to fingerprint web server applications listening on port 443. This\nimplies that these servers have a certificate associated with their TLS communications. Does this\nchange the above JARM fingerprint? Let’s setup an experiment to find out.\n\nI generated a Java keystore with a self-signed certificate and I directed my simple server to use it:\n\nkeytool -keystore ./exp.store -storepass 123456 -keypass 123456 -genkey -keyalg RSA -dname “CN=,OU=,O=,L=,S=,C=”\njava -Djavax.net.ssl.keyStore=./exp.store -Djavax.net.ssl.keyStorePassword=123456 -jar sleep.jar server.sl\n\nThe JARM result:\n\n**07d14d16d21d21d07c42d41d00041d24a458a375eef0c576d23a7bab9a9fb1**\n\nInteresting. We’ve validated that the above JARM fingerprint is specific to a Java 11 TLS stack.\n\nAnother question: is the JARM fingerprint affected by Java version? I setup several experiments and\nvalidated that yes, different major Java versions have different JARM fingerprints in the above\ncircumstance.\n\n## How many Java-native Web servers are on the internet?\n\nPart of the value of JARM is to turn the internet haystack into something smaller for an analyst to sift\nthrough. I wanted to get a sense of how much Java is on the internet. Fortunately, this analysis was\n[easy thanks to some timely and available data. Silas Cutler had scanned the internet for port 443](https://twitter.com/silascutler)\n[and obtained JARM values for each of these hosts. This data was made available as an SQLite](https://twitter.com/silascutler/status/1334950896103530498)\ndatabase too Counting through this data was a relatively easy exercise of:\n\n\n-----\n\n**sqlite> .open jarm.sqlite**\n**sqlite> select COUNT(ip) FROM jarm WHERE hash = “[hash here]”;**\n\nHere’s what I found digging through this data:\n\n**Application** **Count** **JARM Hash**\n\nJava 1.8.0 21,099 07d14d16d21d21d07c07d14d07d21d9b2f5869a6985368a9dec764186a9175\n\nJava 1.9.0 9 05d14d16d04d04d05c05d14d05d04d4606ef7946105f20b303b9a05200e829\n\nJava 11.05 2,957 07d14d16d21d21d07c42d41d00041d24a458a375eef0c576d23a7bab9a9fb1\n\nJava 13.01 0 2ad2ad16d2ad2ad22c42d42d00042d58c7162162b6a603d3d90a2b76865b53\n\nI went a slight step further with this data. I opted to convert the Java 11.05 data to hostnames and\neyeball what appeared as interesting. I found several mail servers. I did not investigate which\n[application they are. I found an instance of Burp Intruder (corroborating Salesforce’s blog post). I](https://portswigger.net/burp/documentation/desktop/tools/intruder)\n[also found several instances of Oracle Peoplesoft as well. These JARM hashes are a fingerprint for](https://www.oracle.com/applications/peoplesoft/)\nJava applications, in general.\n\n## Closing Thoughts\n\nFor defenders, I wouldn’t act on a JARM value as proof of application identity alone. For red\nteamers, this is a good reminder to think about pro-active identification of command and control\nservers. This is a [commoditized threat intelligence practice. If your blue team uses this type of](https://twitter.com/armitagehacker/status/1315702007743868930)\ninformation, there are a lot of options to protect your infrastructure. Part 3 of Red Team Operations\nwith Cobalt Strike covers this topic starting at [1h 26m 15s:](https://youtu.be/Z8n9bIPAIao?t=5175)\n\nWatch Video At:\n\nhttps://youtu.be/Z8n9bIPAIao\n\n\n-----\n\nJARM is a pretty cool way to probe a server and learn more about what it s running. I d love to see a\ndatabase of JARM hashes and which applications they map to as a reconaissance tool. The C2\nfingerprinting is a neat application of JARM too. It’s a good reminder to keep up on your\ninfrastructure OPSEC.\n\n\n-----",
+    "language": "EN",
+    "sources": [
+        {
+            "id": "05d7b179-7656-44d8-a74c-9ab34d3df3a2",
+            "created_at": "2023-01-12T14:38:44.599904Z",
+            "updated_at": "2023-01-12T14:38:44.599904Z",
+            "deleted_at": null,
+            "name": "VXUG",
+            "url": "https://www.vx-underground.org",
+            "description": "vx-underground Papers",
+            "reports": null
+        }
+    ],
+    "references": [
+        "https://papers.vx-underground.org/papers/Malware Defense/Malware Analysis 2020/2020-12-08 - A Red Teamer Plays with JARM.pdf"
+    ],
+    "report_names": [
+        "2020-12-08 - A Red Teamer Plays with JARM.pdf"
+    ],
+    "threat_actors": [
+        {
+            "id": "610a7295-3139-4f34-8cec-b3da40add480",
+            "created_at": "2023-01-06T13:46:38.608142Z",
+            "updated_at": "2025-03-27T02:00:02.87217Z",
+            "deleted_at": null,
+            "main_name": "Cobalt",
+            "aliases": [
+                "Cobalt Gang",
+                "GOLD KINGSWOOD",
+                "COBALT SPIDER",
+                "G0080",
+                "Mule Libra",
+                "Cobalt Group"
+            ],
+            "source_name": "MISPGALAXY:Cobalt",
+            "tools": [],
+            "source_id": "MISPGALAXY",
+            "reports": null
+        }
+    ],
+    "ts_created_at": 1673536093,
+    "ts_updated_at": 1743041358,
+    "ts_creation_date": 1653754552,
+    "ts_modification_date": 1653754552,
+    "files": {
+        "pdf": "https://archive.orkl.eu/2de20d6c82e3c7b86072a3934f199880e30ab385.pdf",
+        "text": "https://archive.orkl.eu/2de20d6c82e3c7b86072a3934f199880e30ab385.txt",
+        "img": "https://archive.orkl.eu/2de20d6c82e3c7b86072a3934f199880e30ab385.jpg"
+    }
+}
